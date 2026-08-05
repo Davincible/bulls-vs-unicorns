@@ -286,3 +286,23 @@ total value exchanged between any two fighters at the smaller of their two stake
 can win up to $1 from a whale and lose at most $1 to it, instead of being ground down over
 repeated clashes. Consistent with the side-level matched book already in place, and it caps
 nothing globally.
+
+## 2026-08-05 - bug sweep (user repro + partial agent sweep, completed by hand)
+
+- [x] **"Invisible attackers" in Extraction** (user repro: bulls wiped visible unicorns, last
+      bull kept taking hits from a pale circle, then "unicorns won" at $0 with 0 alive).
+      TWO display-layer bugs, money was always correct:
+      (1) UI alive-ness still used the old flat $1.20 dust while the sim knocks fighters out at
+          3% of their OWN stake - micro-stake fighters were sim-alive but UI-dead (invisible,
+          missing from lists/counts). `alive()` now uses the sim rule via `dustLim` mirrored in
+          syncFromSim. Reproduced headlessly: 2 fighters mismatched under old rule, 0 under new.
+      (2) Side pools/strength bar counted only ring value; the engine decides the winner on
+          ring + BANKED, so a side that banked everything showed $0 while winning. `agg()`/
+          `aggV()` now include banked holdings (of dead fighters too).
+- [x] Adopted the stopped sweep-agent's in-progress fixes (verified, syntax-clean): separate
+      online/offline localStorage slots so engine sessions never clobber the offline demo save
+      (`goOnline()`, `bvu13on_*` keys), profile lookups keyed by wallet not display name,
+      leaderboard name ellipsis, house-take pill labelled, timer placeholder, toast offset.
+- [x] #pClose false alarm: created via innerHTML then wired immediately after - working as is.
+- [x] Full black-box regression run before this commit: 13/13 money-loop checks (incl. deposit
+      replay + cap attacks), 8/8 client/engine parity, explorer re-simulation + solvency PASS.

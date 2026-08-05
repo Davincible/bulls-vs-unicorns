@@ -179,7 +179,10 @@ setInterval(() => {
     list: s.phase === "lobby" ? s.entries.slice(0, 40).map(e => ({ id: e.id, name: nameFor(e.id), side: e.side, stake: e.stake })) : [],
     leaders: leadersFor(mode),
     house: { take: treasury[mode], conv: convFees, deployed: totalDeployed[mode],
-             accounts: botsFor(mode).length, created: created[mode], busted: bustedCount[mode] } }; };
+             accounts: botsFor(mode).length,
+             bulls: botsFor(mode).filter(a => a.side === "bull").length,
+             unis: botsFor(mode).filter(a => a.side === "uwu").length,
+             created: created[mode], busted: bustedCount[mode] } }; };
   broadcast({ t: "state", normal: snap("normal"), extraction: snap("extraction"), accounts: { normal: botsFor("normal").length, extraction: botsFor("extraction").length } });
 }, 1000);
 
