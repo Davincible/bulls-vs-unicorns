@@ -1,0 +1,79 @@
+// Round orchestrator with commit-reveal fairness.
+// Lifecycle: LOBBY (deposits open, seed committed) → BATTLE (deposits locked, seed revealed,
+// simulate) → SETTLE (post net deltas on-chain, credit off-chain ledger) → repeat.
+import { randomBytes } from "crypto";
+import { simulateRound, seedHash } from "./game.ts";
+import type { Entry, RoundConfig, RoundResult, Mode } from "./game.ts";
+
+export type Phase = "lobby" | "battle" | "settle";
+
+export interface RoundState {
+  round: number; mode: Mode; phase: Phase;
+  seedHashPublished: string;      // published at lobby start; seed hidden until reveal
+  seed?: string;                  // revealed after battle
+  entries: Entry[];
+  result?: RoundResult;
+  multiplier: number;
+  openedAt: number; closesAt: number;
+}
+
+const LOBBY_MS = 20_000;   // real players need time to join
+const BATTLE_MS = 60_000;
+
+export function newRoundConfig(mode: Mode, multiplier: number): RoundConfig {
+  return { mode, multiplier, base: 0.085, hitCapFrac: 0.25, battleMs: BATTLE_MS, tickMs: 500, dust: 1.2 };
+}
+
+// A per-mode round runner. `onSettle` receives the net per-player wallet balances to (a) update
+// the Postgres ledger and (b) batch into an on-chain `settle_round` posting.
+export class RoundRunner {
+  state: RoundState;
+  mode: Mode;
+  private onSettle: (r: RoundResult, s: RoundState) => Promise<void>;
+  private seed = "";
+  constructor(mode: Mode, onSettle: (r: RoundResult, s: RoundState) => Promise<void>) {
+    this.mode = mode; this.onSettle = onSettle;
+    this.state = this.freshLobby(1);
+  }
+
+  private rollMultiplier(): number {
+    const u = Math.random(); return u < 0.7 ? 1 : u < 0.85 ? 2 : u < 0.93 ? 4 : u < 0.97 ? 6 : u < 0.99 ? 8 : 10;
+  }
+
+  private freshLobby(round: number): RoundState {
+    this.seed = randomBytes(32).toString("hex");   // committed now, revealed after battle
+    const mult = this.rollMultiplier();
+    const now = Date.now();
+    return {
+      round, mode: this.mode, phase: "lobby", seedHashPublished: seedHash(this.seed),
+      entries: [], multiplier: mult, openedAt: now, closesAt: now + LOBBY_MS,
+    };
+  }
+
+  /** Player enters the round during lobby with a stake already reserved from their ledger balance. */
+  enter(playerId: string, side: "bull" | "uwu", stake: number): boolean {
+    if (this.state.phase !== "lobby") return false;
+    // one entry per side per player; stake is the NET (fee already taken on deposit/reserve)
+    this.state.entries.push({ id: playerId, side, stake });
+    return true;
+  }
+
+  /** Called by the engine tick loop; advances the phase machine and returns true when a round settled. */
+  async tick(now = Date.now()): Promise<boolean> {
+    const s = this.state;
+    if (s.phase === "lobby" && now >= s.closesAt) {
+      s.phase = "battle";
+      s.seed = this.seed;                                   // REVEAL
+      s.result = simulateRound(this.seed, s.entries, newRoundConfig(s.mode, s.multiplier));
+      s.closesAt = now + BATTLE_MS;                         // clients animate the (already-decided) result
+      return false;
+    }
+    if (s.phase === "battle" && now >= s.closesAt) {
+      s.phase = "settle";
+      if (s.result) await this.onSettle(s.result, s);       // ledger + on-chain batched settlement
+      this.state = this.freshLobby(s.round + 1);
+      return true;
+    }
+    return false;
+  }
+}

@@ -1,0 +1,115 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bulls ⚔ Unicorns — Arena (devnet)</title>
+<style>
+  :root{--bg:#0a0a10;--panel:#12121c;--panel2:#171725;--line:#242438;--ink:#eef0f7;--ink-soft:#9aa0b8;--ink-faint:#5f6480;--bull:#18e08a;--uni:#c46bff;--gold:#ffc048;--danger:#ff4d6d;--mono:ui-monospace,"Cascadia Code","SF Mono",Menlo,Consolas,monospace;--sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  *{box-sizing:border-box}body{margin:0;background:radial-gradient(1000px 500px at 20% -10%,rgba(24,224,138,.10),transparent 60%),radial-gradient(1000px 500px at 80% -10%,rgba(196,107,255,.10),transparent 60%),var(--bg);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased;min-height:100vh}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 16px 40px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 0;flex-wrap:wrap}
+  h1{font-size:clamp(18px,3vw,26px);font-weight:800;margin:0;display:flex;align-items:center;gap:9px}.b{color:var(--bull)}.u{color:var(--uni)}.vs{color:var(--gold)}
+  .conn{font-family:var(--mono);font-size:12px;display:flex;align-items:center;gap:8px;color:var(--ink-faint)}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--danger)}.dot.on{background:var(--bull);box-shadow:0 0 8px var(--bull)}
+  .btn{font-family:var(--sans);font-weight:700;font-size:13px;border:none;border-radius:10px;padding:10px 14px;cursor:pointer;background:var(--gold);color:#241c00}.btn:hover{filter:brightness(1.08)}
+  .btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:8px}@media(max-width:720px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+  .card h2{margin:0 0 4px;font-size:15px;font-weight:800;display:flex;align-items:center;gap:8px}.card.norm h2{color:var(--bull)}.card.extr h2{color:var(--gold)}
+  .phase{font-family:var(--mono);font-size:12px;color:var(--ink-faint);margin-bottom:12px}
+  .bar{height:6px;border-radius:99px;background:#0c0c14;overflow:hidden;margin:10px 0}.bar>i{display:block;height:100%;background:var(--gold);transition:width .3s}
+  .kv{display:flex;justify-content:space-between;font-family:var(--mono);font-size:12.5px;padding:5px 0;border-bottom:1px solid var(--line)}.kv:last-child{border:none}.kv b{color:var(--ink)}
+  .pill{font-family:var(--mono);font-size:11px;padding:3px 9px;border-radius:99px;border:1px solid var(--line)}.pill.lobby{color:var(--bull);border-color:var(--bull)}.pill.battle{color:var(--gold);border-color:var(--gold)}
+  .wallet{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-top:14px}
+  .wallet h2{margin:0 0 10px;font-size:14px;font-weight:800}
+  .seg{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
+  .seg .in{font-family:var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:9px 11px;width:90px}
+  .note{font-family:var(--mono);font-size:11px;color:var(--ink-faint);line-height:1.6;margin-top:10px}
+  .feed{font-family:var(--mono);font-size:11.5px;color:var(--ink-soft);margin-top:12px;max-height:120px;overflow:auto}.feed div{padding:3px 0;border-bottom:1px solid var(--line)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:11px}
+</style></head><body>
+<div class="wrap">
+  <header>
+    <h1><span class="b">🐂</span><span class="vs">⚔</span><span class="u">🦄</span> ARENA <span style="font-size:11px;color:var(--ink-faint);font-family:var(--mono)">devnet</span></h1>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span class="conn"><span class="dot" id="connDot"></span><span id="connTxt">engine: connecting…</span></span>
+      <button class="btn" id="connectWallet">Connect Phantom</button>
+    </div>
+  </header>
+
+  <div class="grid">
+    <div class="card norm"><h2>Normal <span class="pill lobby" id="nPhase">—</span></h2><div class="phase">raids compound in-ring</div>
+      <div class="bar"><i id="nBar" style="width:0%"></i></div>
+      <div class="kv"><span>Round</span><b id="nRound">#—</b></div>
+      <div class="kv"><span>Fighters entered</span><b id="nEntries">0</b></div>
+      <div class="kv"><span>Multiplier</span><b id="nMult">1×</b></div>
+      <div class="kv"><span>Bot accounts</span><b id="nBots">0</b></div>
+      <div class="kv"><span>Last winner</span><b id="nWin">—</b></div>
+      <div class="seg"><button class="btn ghost" data-mode="normal" data-side="bull">Deploy BULL 🐂</button><button class="btn ghost" data-mode="normal" data-side="uwu">Deploy UWU 🦄</button></div>
+    </div>
+    <div class="card extr"><h2>Extraction <span class="pill lobby" id="xPhase">—</span></h2><div class="phase">raids bank to your wallet</div>
+      <div class="bar"><i id="xBar" style="width:0%"></i></div>
+      <div class="kv"><span>Round</span><b id="xRound">#—</b></div>
+      <div class="kv"><span>Fighters entered</span><b id="xEntries">0</b></div>
+      <div class="kv"><span>Multiplier</span><b id="xMult">1×</b></div>
+      <div class="kv"><span>Bot accounts</span><b id="xBots">0</b></div>
+      <div class="kv"><span>Last winner</span><b id="xWin">—</b></div>
+      <div class="seg"><button class="btn ghost" data-mode="extraction" data-side="bull">Deploy BULL 🐂</button><button class="btn ghost" data-mode="extraction" data-side="uwu">Deploy UWU 🦄</button></div>
+    </div>
+  </div>
+
+  <div class="wallet">
+    <h2>Your wallet <span id="walletAddr" style="font-family:var(--mono);font-size:11px;color:var(--ink-faint);font-weight:400">— not connected</span></h2>
+    <div class="seg">
+      <span class="note" style="margin:0">Stake $</span><input class="in" id="stake" type="number" value="10" min="1" max="100">
+      <span class="note" style="margin:0">— deposit to the vault, then Deploy to a side above.</span>
+    </div>
+    <button class="btn ghost" id="deposit" style="margin-top:10px">Deposit to vault (devnet)</button>
+    <div class="note" id="walletNote">Connect Phantom (set it to <code>Devnet</code>) to deposit test BULL/UWU. Real on-chain deposit activates once the vault is deployed to devnet.</div>
+    <div class="feed" id="feed"></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  // ENGINE URL — replace with your Railway wss:// URL after deploying the engine (or use ?engine=)
+  const params = new URLSearchParams(location.search);
+  const LOCAL = location.hostname==="localhost" || location.hostname==="127.0.0.1";
+  const ENGINE = params.get("engine") || window.ENGINE_URL || (LOCAL ? "ws://localhost:8090" : "wss://REPLACE-WITH-YOUR-ENGINE.up.railway.app");
+  const $ = s => document.getElementById(s);
+  const feed = (t) => { const d=document.createElement("div"); d.textContent=new Date().toLocaleTimeString().slice(0,8)+"  "+t; $("feed").prepend(d); while($("feed").children.length>40)$("feed").lastChild.remove(); };
+
+  // --- engine websocket ---
+  let ws, wallet=null;
+  function connect(){
+    try{ ws = new WebSocket(ENGINE); }catch(e){ $("connTxt").textContent="engine: bad URL"; return; }
+    ws.onopen = ()=>{ $("connDot").classList.add("on"); $("connTxt").textContent="engine: live"; feed("connected to engine"); };
+    ws.onclose = ()=>{ $("connDot").classList.remove("on"); $("connTxt").textContent="engine: reconnecting…"; setTimeout(connect,2000); };
+    ws.onerror = ()=>{};
+    ws.onmessage = (ev)=>{ const m=JSON.parse(ev.data);
+      if(m.t==="state"){ paint("n", m.normal, m.accounts.normal); paint("x", m.extraction, m.accounts.extraction); }
+      if(m.t==="settled"){ const p = m.mode==="normal"?"n":"x"; $(p+"Win").textContent = m.winner==="bull"?"🐂 Bulls":"🦄 Unicorns"; feed((m.mode==="normal"?"Normal":"Extraction")+" R"+m.round+" → "+(m.winner==="bull"?"Bulls":"Unicorns")+" win ("+m.hits+" hits · seed "+String(m.seed).slice(0,8)+"…)"); }
+    };
+  }
+  function paint(p, s, bots){
+    if(!s)return; $(p+"Round").textContent="#"+s.round; $(p+"Entries").textContent=s.entries; $(p+"Mult").textContent=s.multiplier+"×"; $(p+"Bots").textContent=bots;
+    const ph=$(p+"Phase"); ph.textContent=s.phase.toUpperCase(); ph.className="pill "+(s.phase==="lobby"?"lobby":"battle");
+    const total = s.phase==="lobby"?20000:60000; $(p+"Bar").style.width=Math.max(0,100-(s.closesInMs/total*100))+"%";
+  }
+  connect();
+
+  // --- Phantom wallet ---
+  $("connectWallet").onclick = async ()=>{
+    const ph = window.solana; if(!ph||!ph.isPhantom){ $("walletNote").textContent="Phantom not found — install the Phantom extension, then reload."; return; }
+    try{ const r = await ph.connect(); wallet = r.publicKey.toString(); $("walletAddr").textContent = wallet.slice(0,4)+"…"+wallet.slice(-4); $("connectWallet").textContent="Connected"; feed("wallet connected: "+wallet.slice(0,8)+"…"); }
+    catch(e){ feed("wallet connect cancelled"); }
+  };
+  $("deposit").onclick = ()=>{ if(!wallet){$("walletNote").textContent="Connect Phantom first.";return;}
+    $("walletNote").textContent="Deposit of $"+$("stake").value+" ready — activates once the vault program is deployed to devnet (on-chain deposit CPI). Wiring next.";
+    feed("deposit intent: $"+$("stake").value+" (pending vault deploy)"); };
+  // deploy-to-side buttons → tell the engine you're entering (real stake reserved after deposit lands)
+  document.querySelectorAll("[data-side]").forEach(b=> b.onclick = ()=>{
+    if(!wallet){$("walletNote").textContent="Connect Phantom first.";return;}
+    if(ws&&ws.readyState===1){ ws.send(JSON.stringify({t:"enter",wallet,mode:b.dataset.mode,side:b.dataset.side,stake:+$("stake").value})); feed("entered "+b.dataset.mode+" as "+(b.dataset.side==="bull"?"🐂":"🦄")+" for $"+$("stake").value); }
+  });
+})();
+</script>
+</body></html>
