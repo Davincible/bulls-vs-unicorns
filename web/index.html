@@ -455,7 +455,7 @@
       const tk=side==="bull"?"bull":"uwu";
       if(WALLET[tk]<0.01){$("#walletNote").textContent="No "+tk.toUpperCase()+" in your game wallet — use Faucet then Deposit.";return;}
       const stake=Math.min(amt,WALLET[tk],CAP);
-      w.lastSide=side;
+      w.lastSide=side; (w.playedSides=w.playedSides||{})[side]=true;
       if(window.__sendEngine)window.__sendEngine({t:"enter",wallet:MYWALLET,mode:w.mode,side:cSide(side),stake,ref:window.__REF||undefined});
       $("#walletNote").textContent="Deploying "+fmt(stake)+" "+tk.toUpperCase()+" to "+(side==="bull"?"Bulls":"Unicorns")+"…";
       return;
@@ -626,7 +626,7 @@
     $("#miniGrid").innerHTML=list.slice(0,26).map((p,i)=>`<div class="fRow ${alive(p)?'':'dead'} ${p.isUser?'you':''}" data-name="${p.name}" style="opacity:${alive(p)?1:.42}"><span style="color:var(--ink-faint);width:18px;text-align:right">${i+1}</span><span class="aliveDot ${alive(p)?'':'dead'}"></span><span class="dot ${p.side==="bull"?"bull":"uni"}"></span><span class="fn">${p.isUser?'YOU':p.name}${alive(p)?'':' 💀'}</span><span class="fv">${fmt(tot(p)+(p.isUser?(p.banked||0):0))}</span></div>`).join("");
     $("#prRows").innerHTML=w.userRounds.slice(0,12).map((r,i)=>{
       const hits=(r.hits||[]),log=hits.length?hits.slice().reverse().map(h=>{const te=h.tk==="bull"?"🐂":"🦄";return h.dir==="out"?`<div style="color:var(--bull)">→ raided ${fmt(h.amt)} ${te} off ${h.who}</div>`:`<div style="color:var(--danger)">← ${h.who} took ${fmt(h.amt)} ${te}</div>`;}).join(""):'<div style="color:var(--ink-faint)">no hits logged</div>';
-      return `<div class="prRow" style="cursor:pointer"><span>#${r.round} ▸</span><span><span class="dot ${r.side==="bull"?"bull":"uni"}"></span> ${r.side==="bull"?"Bull":"Uni"}</span><span>${fmt(r.dep)}</span><span>${fmt(r.out)}</span><span class="pnl ${r.pnl>=0?'pos':'neg'}">${r.pnl>=0?'+':'−'}${fmt(Math.abs(r.pnl))}</span></div><div class="hitlog" style="display:none;font-family:var(--mono);font-size:10.5px;padding:4px 0 8px 46px;border-bottom:1px solid var(--line)">${log}</div>`;
+      return `<div class="prRow" style="cursor:pointer"><span>#${r.round} ▸</span><span><span class="dot ${r.side==="bull"?"bull":"uni"}"></span> ${r.side==="bull"?"Bull":"Uni"}</span><span>${fmt(r.dep)}</span><span>${r.outB!==undefined?`<span style="color:var(--bull)">${fmt(r.outB)}🐂</span> <span style="color:var(--uni)">+ ${fmt(r.outU)}🦄</span>`:fmt(r.out)}</span><span class="pnl ${r.pnl>=0?'pos':'neg'}">${r.pnl>=0?'+':'−'}${fmt(Math.abs(r.pnl))}</span></div><div class="hitlog" style="display:none;font-family:var(--mono);font-size:10.5px;padding:4px 0 8px 46px;border-bottom:1px solid var(--line)">${log}</div>`;
     }).join("")||'';
     const nP=worlds.normal.userRounds.reduce((s,r)=>s+r.pnl,0), xP=worlds.extraction.userRounds.reduce((s,r)=>s+r.pnl,0);
     $("#prNote").innerHTML=`Realized P/L — <span style="color:var(--bull)">Normal ${nP>=0?'+':'−'}$${Math.abs(nP).toFixed(0)}</span> · <span style="color:var(--gold)">Extraction ${xP>=0?'+':'−'}$${Math.abs(xP).toFixed(0)}</span>. Both sides show as separate lines; click a round to see every hit.`;
@@ -945,7 +945,9 @@
     w.bannerTxt=win==="bull"?"\ud83d\udc02 BULLS WIN!":"\ud83e\udd84 UNICORNS WIN!"; w.bannerA=1;
     w.history.unshift(snapshot(w,win)); if(w.history.length>24)w.history.pop();
     for(const c of w.userCircles){ const dep=c.deposited, out=ring(c)+safeV(c)+(c.unmatched||0);
-      w.userRounds.unshift({round:w.roundNo,side:c.side,dep,out,pnl:out-dep,win:c.side===win,mode:w.mode,hits:(c.hits||[]).slice(-30)});
+      const outB=c.bull+(c.sBull||0)+(c.side==="bull"?(c.unmatched||0):0);
+      const outU=c.uwu+(c.sUwu||0)+(c.side==="unicorn"?(c.unmatched||0):0);
+      w.userRounds.unshift({round:w.roundNo,side:c.side,dep,out,outB,outU,pnl:out-dep,win:c.side===win,mode:w.mode,hits:(c.hits||[]).slice(-30)});
       if(w.userRounds.length>60)w.userRounds.pop(); }
     // Hall of Fame: best single-round returns, from the authoritative settlement
     for(const p of w.players){
@@ -1145,8 +1147,13 @@
         if(m.refEarned!==undefined&&$("#refEarned"))$("#refEarned").textContent=fmt(m.refEarned);
         recordBal(m.bull,m.uwu);
         const aw=W();
+        // AUTO-CONVERT only makes sense for a single-side player: it converts the whole
+        // off-side balance, so if you deploy BOTH sides it would nuke one of your stacks
+        // every settle (and charge 0.3% for the privilege). Skip when playing both.
         if(aw.online&&aw.autoConvOn&&PK){
-          const mySide=aw.lastSide||((aw.autoSide&&aw.autoSide!=="both")?aw.autoSide:null);
+          const played=aw.playedSides||{};
+          const both=played.bull&&played.unicorn;
+          const mySide=!both?(aw.lastSide||((aw.autoSide&&aw.autoSide!=="both")?aw.autoSide:null)):null;
           if(mySide){const tk2=mySide==="bull"?"bull":"uwu", off=tk2==="bull"?"uwu":"bull";
             if(WALLET[off]>1&&!window.__convBusy){window.__convBusy=true;setTimeout(()=>window.__convBusy=false,5000);
               send({t:"convert",wallet:PK,to:tk2});}}
