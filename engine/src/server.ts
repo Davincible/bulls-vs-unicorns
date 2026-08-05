@@ -259,14 +259,15 @@ wss.on("connection", (ws) => {
         ws.send(JSON.stringify({ t: "faucetDone", side: m.side, sig, amount: 500 }));
       } else if (m.t === "fundMe") {                          // one-click: SOL for fees + both tokens
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
+        const amt = Math.min(Math.max(Number(m.amount) || 500, 1), 1000);
         const steps: string[] = [];
         const sol = await solBalance(m.wallet);
         if (sol < 0.5) {
           try { await airdropSol(m.wallet, 2); steps.push("2 SOL"); }
           catch { steps.push("SOL airdrop unavailable (faucet limited) — you need a little SOL for fees"); }
         } else steps.push(`${sol.toFixed(2)} SOL already`);
-        try { await faucet(m.wallet, "bull", 500); steps.push("500 BULL"); } catch (e) { steps.push("BULL failed: " + (e as Error).message); }
-        try { await faucet(m.wallet, "uwu", 500); steps.push("500 UWU"); } catch (e) { steps.push("UWU failed: " + (e as Error).message); }
+        try { await faucet(m.wallet, "bull", amt); steps.push(amt + " BULL"); } catch (e) { steps.push("BULL failed: " + (e as Error).message); }
+        try { await faucet(m.wallet, "uwu", amt); steps.push(amt + " UWU"); } catch (e) { steps.push("UWU failed: " + (e as Error).message); }
         ws.send(JSON.stringify({ t: "fundMeDone", steps }));
       } else if (m.t === "solBalance") {
         if (!chainReady()) return;

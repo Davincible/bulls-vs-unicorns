@@ -95,7 +95,7 @@
       <div class="brand"><h1><span class="b">🐂</span><span class="vs">⚔</span><span class="u">🦄</span> ARENA</h1></div>
       <div class="hstats">
         <div class="pill" title="House take (0.2% of deploys + 1% of converts)"><b class="g" id="treasury">$0</b><span class="brk" id="treasuryBrk">🐂$0 · 🦄$0</span><span>House take</span></div>
-        <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button></div>
+        <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button><button data-view="referrals">Referrals</button></div>
         <div class="modes"><button data-mode="normal" class="on">Normal</button><button data-mode="extraction">💰 Extraction</button></div>
         <button class="ficon" id="infoBtn" title="How the game works">ⓘ</button>
         <div class="pill" id="fairPill" style="cursor:pointer" title="Provably fair: the engine publishes sha256(seed) before the lobby opens, then reveals the seed. Your browser recomputes the whole round from it — no trust required. Click to verify the last round."><b class="g">✓</b><span>fair</span></div>
@@ -133,13 +133,6 @@
             <h3 style="margin-top:14px">Account overview</h3>
             <canvas id="ovGraph" width="292" height="84" style="width:100%;background:var(--panel2);border:1px solid var(--line2);border-radius:8px"></canvas>
             <div class="note" style="font-size:10px">🐂 green · 🦄 purple — your game balance over this session</div>
-            <h3 style="margin-top:12px">Referrals <span class="youtag" style="background:var(--gold);color:#000">10%</span></h3>
-            <div class="note">Share your link — you earn 10% of the house fee on every round your signups play, forever.</div>
-            <div style="display:flex;gap:6px;margin-top:6px">
-              <code id="refLink" style="flex:1;font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">connect a wallet first</code>
-              <button class="abtn ghost" id="refCopy" style="padding:6px 10px;font-size:11px">Copy</button>
-            </div>
-            <div class="note" style="margin-top:6px">Earned so far: <b id="refEarned" style="color:var(--gold)">$0</b></div>
             <h3 style="margin-top:12px">Identity</h3>
             <div style="display:flex;gap:8px;align-items:center">
               <img id="xAvatar" style="width:34px;height:34px;border-radius:50%;border:1px solid var(--line2);display:none">
@@ -156,15 +149,23 @@
     <div class="ticker"><div class="lbl">🏆 Big Wins</div><div class="track" id="tickerTrack"></div></div>
     <div id="introModal" style="display:none;position:fixed;inset:0;background:rgba(5,5,10,.8);z-index:100;align-items:center;justify-content:center">
       <div style="max-width:520px;margin:auto;background:var(--panel);border:1px solid var(--line2);border-radius:16px;padding:24px 26px;position:relative">
-        <h2 style="margin:0 0 4px">🐂 ⚔ 🦄 Welcome to the Arena</h2>
-        <div class="note" style="font-size:13px;line-height:1.6">
-          Two token armies fight in 60-second rounds. Here's the loop:<br><br>
-          <b>1. Get funds</b> — open the 👛 wallet (top right), connect, grab test tokens, deposit.<br>
-          <b>2. Deploy</b> — pick an amount and toggle 🐂 and/or 🦄. Your fighter enters the next round.<br>
-          <b>3. Fight</b> — collisions raid coins off the enemy. <b>Normal</b>: winnings compound in the ring (win big, lose big). <b>Extraction</b>: raids bank straight to your balance (safer).<br>
-          <b>4. Withdraw</b> — cash your balance back to your wallet any time.<br><br>
-          Every round is <b>provably fair</b> — the ✓ pill up top lets you re-verify any result yourself. House fee is 0.2% on deploys, and only the amount both sides can match is ever at risk (the excess is refunded).
+        <h2 style="margin:0 0 4px">🐂 Bulls vs Unicorns 🦄</h2>
+        <div class="note" style="font-size:13px;line-height:1.55">
+          We made this so two memecoins can have <b>epic battles</b> together.<br>
+          Deploy your Bulls or your Unicorns and send them to fight — when fighters <b>collide</b>,
+          they take some of each other's tokens.
         </div>
+        <div style="display:flex;gap:10px;margin-top:12px">
+          <div style="flex:1;background:var(--panel2);border:1px solid var(--line2);border-radius:10px;padding:10px">
+            <div style="font-size:20px">⚔</div><b>Normal</b>
+            <div class="note" style="font-size:11px;margin-top:4px">Everything you raid goes <b>into your fighter</b> — it grows, hits harder, and it's all still at risk. Win big or lose it.</div>
+          </div>
+          <div style="flex:1;background:var(--panel2);border:1px solid var(--gold);border-radius:10px;padding:10px">
+            <div style="font-size:20px">💰</div><b>Extraction</b>
+            <div class="note" style="font-size:11px;margin-top:4px">Every raid is <b>banked instantly</b> to your balance. Your fighter can die — the loot is already safe.</div>
+          </div>
+        </div>
+        <div class="note" style="font-size:12px;margin-top:12px">🔐 <b>Provably fair</b> — every round's outcome is committed before betting closes; your browser can re-verify any result (✓ pill up top). House fee: 0.2% on deploys. Only what both sides can match is at risk — the excess is refunded.</div>
         <button class="abtn jb" id="introClose" style="width:100%;margin-top:16px">Let's go</button>
       </div>
     </div>
@@ -249,6 +250,14 @@
       </div>
     </div>
 
+    <div class="view" id="viewReferrals"><div class="card" style="max-width:560px;margin:12px auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px">            <h3 style="margin-top:12px">Referrals <span class="youtag" style="background:var(--gold);color:#000">10%</span></h3>
+            <div class="note">Share your link — you earn 10% of the house fee on every round your signups play, forever.</div>
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <code id="refLink" style="flex:1;font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">connect a wallet first</code>
+              <button class="abtn ghost" id="refCopy" style="padding:6px 10px;font-size:11px">Copy</button>
+            </div>
+            <div class="note" style="margin-top:6px">Earned so far: <b id="refEarned" style="color:var(--gold)">$0</b></div>
+</div></div>
     <div class="view" id="viewDashboard">
       <div class="card"><h2>Dashboard <span style="font-family:var(--mono);font-size:12px;color:var(--ink-faint)" id="dashMode"></span></h2>
         <div class="dgrid" style="margin-top:8px">
@@ -689,9 +698,12 @@
   $("#autoConv").addEventListener("click",()=>{const w=W();w.autoConvOn=!w.autoConvOn;w.userCircles.forEach(c=>c.autoConv=w.autoConvOn);$("#autoConv").classList.toggle("on",w.autoConvOn);});
   const SEL={bull:false,unicorn:false};
   function paintSel(){[["bull","joinBull","joinBull2"],["unicorn","joinUni","joinUni2"]].forEach(([sd,...ids])=>ids.forEach(id=>{const el=$("#"+id);if(el)el.classList.toggle("selGold",SEL[sd]);}));}
-  function toggleSel(sd){SEL[sd]=!SEL[sd];paintSel();if(SEL[sd]){deposit(W(),sd,room);syncDOM();}else $("#walletNote").textContent=(sd==="bull"?"Bulls":"Unicorns")+" deselected.";}
-  $("#joinBull").onclick=$("#joinBull2").onclick=()=>toggleSel("bull");
-  $("#joinUni").onclick=$("#joinUni2").onclick=()=>toggleSel("unicorn");
+  function deploySide(sd){SEL[sd]=true;paintSel();deposit(W(),sd,room);syncDOM();}
+  function unselSide(sd){SEL[sd]=false;paintSel();$("#walletNote").textContent=(sd==="bull"?"Bulls":"Unicorns")+" removed from auto-deploy.";}
+  $("#joinBull").onclick=$("#joinBull2").onclick=()=>deploySide("bull");
+  $("#joinUni").onclick=$("#joinUni2").onclick=()=>deploySide("unicorn");
+  $("#joinBull").ondblclick=$("#joinBull2").ondblclick=()=>unselSide("bull");
+  $("#joinUni").ondblclick=$("#joinUni2").ondblclick=()=>unselSide("unicorn");
   function convertWallet(to){const from=to==="bull"?"uwu":"bull";if(WALLET[from]<=0.01){$("#walletNote").textContent="No "+from.toUpperCase()+" to convert.";return;}
     if(W().online){ if(!MYWALLET){$("#walletNote").textContent="Connect a wallet first.";return;}
       if(window.__sendEngine)window.__sendEngine({t:"convert",wallet:MYWALLET,to});
@@ -950,8 +962,18 @@
     return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,"0")).join("");
   }
   window.__shareLegend=(i)=>{const w=W();const l=(w.legends||[])[i];if(!l)return;
-    const em=l.side==="bull"?"🐂":"🦄";
-    shareX(`${em} Turned ${fmt(l.inAmt)} into ${fmt(l.outAmt)} (+${((l.roi-1)*100).toFixed(0)}%) as a ${l.side==="bull"?"BULL":"UNICORN"} in round ${l.round} of Bulls vs Unicorns ⚔ provably-fair on-chain token battles`);};
+    const bull=l.side==="bull", em=bull?"🐂":"🦄";
+    const team=bull?"@blknoiz06":"@unicornandmemes", tick=bull?"$BULL":"$UWU";
+    let x=null; try{x=JSON.parse(localStorage.getItem("bvu_x")||"null");}catch(e){}
+    const winner=(l.name==="You"&&x)?("@"+x.h):l.name;                       // mention connected winners
+    let ref=""; try{if(MYWALLET)ref=" "+location.origin+location.pathname+"?ref="+MYWALLET;}catch(e){}
+    const core=`${em} ${winner} turned ${fmt(l.inAmt)} into ${fmt(l.outAmt)} (+${((l.roi-1)*100).toFixed(0)}%) in one round of Bulls vs Unicorns`;
+    const variants=[
+      `${core} — riding with ${team} ⚔ provably fair${ref}`,
+      `${core} — ${tick} army stays winning ⚔${ref}`,
+      `${core} ⚔ ${tick} vs ${bull?"$UWU":"$BULL"} — pick your side${ref}`,
+    ];
+    shareX(variants[(Math.random()*3)|0]);};
   async function verifyLastRound(){
     const w=W();
     const out={set innerHTML(v){const b=$("#devnetBanner");if(b){b.style.display="block";b.innerHTML=v;}},set textContent(v){this.innerHTML=v;}};
@@ -1203,7 +1225,11 @@
       connectedOnce=true;
       send({t:"chainBalance",wallet:PK}); send({t:"getBalance",wallet:PK}); send({t:"solBalance",wallet:PK});
       note("Dev wallet ready. Getting test SOL + tokens…");
-      send({t:"fundMe",wallet:PK});                 // fund it immediately so you can just play
+      send({t:"fundMe",wallet:PK,amount:window.__DEMO?100:500});
+      if(window.__DEMO){ for(const md of ["normal","extraction"]){worlds[md].autoPct=0.05;worlds[md].autoSide="bull";}
+        setTimeout(()=>{ send({t:"buildDeposit",wallet:PK,side:"bull",amount:100}); },2500);   // auto-deposit so auto-deploy has balance
+        setTimeout(()=>{ send({t:"buildDeposit",wallet:PK,side:"uwu",amount:100}); },4000);
+      }
     }
     async function connect(){
       if(!window.solana||!window.solana.isPhantom){ note("Phantom not found — install the Phantom extension, set it to Devnet."); banner("🦊 Phantom wallet not detected. Install it and switch it to <b>Devnet</b>."); return; }
@@ -1248,9 +1274,13 @@
       WALLET[tk]-=a; saveWallet(); syncDOM(); lastWd={tk,amt:a}; note("Withdrawing "+a.toFixed(2)+" "+tk.toUpperCase()+"…"); send({t:"withdraw",wallet:PK,side,amount:a}); }
 
     connectWS();
+    window.__DEMO=new URLSearchParams(location.search).get("demo")==="1";
+    if(window.__DEMO){ localStorage.removeItem("bvu_devwallet"); localStorage.removeItem("bvu_balhist");
+      localStorage.removeItem("bvu13_wallet_on"); localStorage.removeItem("bvu13on_normal"); localStorage.removeItem("bvu13on_extraction"); }
     // auto-reconnect the wallet you used last time
     setTimeout(()=>{ const m2=localStorage.getItem("bvu_wmeth");
-      if(m2==="dev"&&localStorage.getItem("bvu_devwallet")&&!PK)useDevWallet();
+      if(window.__DEMO&&!PK)useDevWallet();
+      else if(m2==="dev"&&localStorage.getItem("bvu_devwallet")&&!PK)useDevWallet();
       else if(m2==="phantom"&&window.solana&&!PK)window.solana.connect({onlyIfTrusted:true}).then(()=>connect()).catch(()=>{});
       // re-apply X identity after connect
       setTimeout(()=>{try{const x=JSON.parse(localStorage.getItem("bvu_x")||"null");
