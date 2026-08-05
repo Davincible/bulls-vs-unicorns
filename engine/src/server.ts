@@ -16,7 +16,8 @@ const FEE = 0.002, CAP = 100, CONVERT_FEE = 0.01, MIN_ENTRY = 0.01;
 
 // ---- ledger: real players (by wallet) + persistent bot accounts ----
 interface Account { id: string; name: string; side: Side; bull: number; uwu: number; isBot: boolean; dep: number; ret: number; games: number; wins: number;
-  raided?: number; best?: number; depIn?: number; wOut?: number; }   // real on-chain money in / out — the basis for true P&L
+  raided?: number; best?: number; depIn?: number; wOut?: number;
+  refBy?: string; refEarned?: number; }   // referral: who brought them, and lifetime cut earned   // real on-chain money in / out — the basis for true P&L
 const ledger = new Map<string, Account>();
 const NAMES = ["degenDan","sol_sniper","0xViper","moonboy","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","gigaGwei","turboTina","sendit","wenLambo","diamondD","fomoFrank","nakamotto","zkZoe","based_bri","saylorsz","jitoJoe","rugproof","exitliq","ser_pump","mevMike","validatorV","anonape","solstice","tapedeck"];
 // community growth: the arena starts small and fills up over time
@@ -71,7 +72,7 @@ const walletOf = new Map<WebSocket, string>();          // ws -> wallet (for tar
 function broadcast(msg: unknown) { const s = JSON.stringify(msg); for (const c of clients) if (c.readyState === WebSocket.OPEN) c.send(s); }
 function balPayload(wallet: string) { const a = ledger.get(wallet);
   return { t: "balance", wallet, bull: a?.bull||0, uwu: a?.uwu||0,
-           depIn: a?.depIn||0, wOut: a?.wOut||0,      // client: invested = depIn - wOut
+           depIn: a?.depIn||0, wOut: a?.wOut||0, refEarned: a?.refEarned||0,
            games: a?.games||0, wins: a?.wins||0 }; }
 
 // Leaderboard the engine owns, so real players actually appear on it.
@@ -236,7 +237,17 @@ wss.on("connection", (ws) => {
         if (stake < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: `Minimum entry is $${MIN_ENTRY}.` }));
         if (m.side === "bull") a.bull -= stake; else a.uwu -= stake;   // debit real balance into the round
         a.dep += stake; a.side = m.side;
-        treasury[m.mode as Mode] += stake * FEE; totalDeployed[m.mode as Mode] += stake; depSide[m.mode as Mode][m.side as Side] += stake;
+        if (m.ref && !a.refBy && m.ref !== m.wallet) a.refBy = String(m.ref).slice(0, 64);
+        const fee = stake * FEE;
+        let refCut = 0;
+        if (a.refBy) {   // referrer earns 10% of every fee their signups generate, forever
+          refCut = fee * 0.10;
+          const r = acct(a.refBy, m.side);
+          if (m.side === "bull") r.bull += refCut; else r.uwu += refCut;
+          r.refEarned = (r.refEarned || 0) + refCut;
+          pushBalance(a.refBy);
+        }
+        treasury[m.mode as Mode] += fee - refCut; totalDeployed[m.mode as Mode] += stake; depSide[m.mode as Mode][m.side as Side] += stake;
         rn.enter(`${m.wallet}|${m.side}`, m.side, stake * (1 - FEE));
         ws.send(JSON.stringify({ t: "entered", mode: m.mode, side: m.side, stake }));
         pushBalance(m.wallet); persist();

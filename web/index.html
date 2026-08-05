@@ -97,7 +97,8 @@
         <div class="pill" title="House take (0.2% of deploys + 1% of converts)"><b class="g" id="treasury">$0</b><span class="brk" id="treasuryBrk">🐂$0 · 🦄$0</span><span>House take</span></div>
         <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button></div>
         <div class="modes"><button data-mode="normal" class="on">Normal</button><button data-mode="extraction">💰 Extraction</button></div>
-        <div class="pill" id="fairPill" style="cursor:pointer" title="Provably fair: the engine publishes sha256(seed) before the lobby opens, then reveals the seed. Your browser recomputes the whole round from it — no trust required. Click to verify the last round."><b class="g">✓</b><span>fair</span></div>
+        <button class="ficon" id="infoBtn" title="How the game works">ⓘ</button>
+        <div class="pill" id="fairPill style="cursor:pointer" title="Provably fair: the engine publishes sha256(seed) before the lobby opens, then reveals the seed. Your browser recomputes the whole round from it — no trust required. Click to verify the last round."><b class="g">✓</b><span>fair</span></div>
         <div id="profWrap" style="position:relative">
           <button class="ficon" id="profBtn" title="Wallet & profile">👛</button>
           <div id="profDrop">
@@ -129,16 +130,38 @@
             <span class="wlabel" style="margin-top:8px">Game wallet → Phantom</span>
             <div class="row2"><button class="abtn ghost" id="wdBull">Withdraw 🐂</button><button class="abtn ghost2" id="wdUwu">Withdraw 🦄</button></div>
             <div class="note" id="chainNote" style="margin-top:8px">—</div>
+            <h3 style="margin-top:14px">Account overview</h3>
+            <canvas id="ovGraph" width="292" height="84" style="width:100%;background:var(--panel2);border:1px solid var(--line2);border-radius:8px"></canvas>
+            <div class="note" style="font-size:10px">🐂 green · 🦄 purple — your game balance over this session</div>
+            <h3 style="margin-top:12px">Referrals <span class="youtag" style="background:var(--gold);color:#000">10%</span></h3>
+            <div class="note">Share your link — you earn 10% of the house fee on every round your signups play, forever.</div>
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <code id="refLink" style="flex:1;font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">connect a wallet first</code>
+              <button class="abtn ghost" id="refCopy" style="padding:6px 10px;font-size:11px">Copy</button>
+            </div>
+            <div class="note" style="margin-top:6px">Earned so far: <b id="refEarned" style="color:var(--gold)">$0</b></div>
           </div>
         </div>
-          <div class="toggle" id="autoConv"><span class="sw"></span><span>Auto-convert my raids → my team's coin</span></div>
-          <div class="note">Auto-convert turns coins you steal into your own side's coin each raid (−1% fee).</div>
           </div>
         </div>
         <button class="ficon" id="fsBtn" title="Fullscreen">⛶</button>
       </div>
     </header>
     <div class="ticker"><div class="lbl">🏆 Big Wins</div><div class="track" id="tickerTrack"></div></div>
+    <div id="introModal" style="display:none;position:fixed;inset:0;background:rgba(5,5,10,.8);z-index:100;align-items:center;justify-content:center">
+      <div style="max-width:520px;margin:auto;background:var(--panel);border:1px solid var(--line2);border-radius:16px;padding:24px 26px;position:relative">
+        <h2 style="margin:0 0 4px">🐂 ⚔ 🦄 Welcome to the Arena</h2>
+        <div class="note" style="font-size:13px;line-height:1.6">
+          Two token armies fight in 60-second rounds. Here's the loop:<br><br>
+          <b>1. Get funds</b> — open the 👛 wallet (top right), connect, grab test tokens, deposit.<br>
+          <b>2. Deploy</b> — pick an amount and toggle 🐂 and/or 🦄. Your fighter enters the next round.<br>
+          <b>3. Fight</b> — collisions raid coins off the enemy. <b>Normal</b>: winnings compound in the ring (win big, lose big). <b>Extraction</b>: raids bank straight to your balance (safer).<br>
+          <b>4. Withdraw</b> — cash your balance back to your wallet any time.<br><br>
+          Every round is <b>provably fair</b> — the ✓ pill up top lets you re-verify any result yourself. House fee is 0.2% on deploys, and only the amount both sides can match is ever at risk (the excess is refunded).
+        </div>
+        <button class="abtn jb" id="introClose" style="width:100%;margin-top:16px">Let's go</button>
+      </div>
+    </div>
     <div id="devnetBanner" style="display:none;margin:8px 0;padding:8px 12px;border:1px solid var(--line2);border-radius:10px;background:var(--panel2);font-family:var(--mono);font-size:12px;color:var(--ink-soft)"></div>
 
     <div class="view on" id="viewArena">
@@ -199,6 +222,9 @@
           <div class="seg" id="autobuy"><button data-pct="0" class="on">Off</button><button data-pct="0.05">5%</button><button data-pct="0.1">10%</button><button data-pct="0.25">25%</button></div>
           <span class="wlabel">…to which side</span>
           <div class="seg" id="autoside"><button data-side="bull">🐂 Bulls</button><button data-side="unicorn">🦄 Unicorns</button><button data-side="both" class="on">Both</button></div>
+          <div class="toggle" id="autoConv"><span class="sw"></span><span>Auto-convert my raids → my team's coin</span></div>
+          <div class="note">Auto-convert turns coins you steal into your own side's coin each raid (−1% fee).</div>
+
         </div>
       </div>
 
@@ -415,7 +441,7 @@
       if(WALLET[tk]<0.01){$("#walletNote").textContent="No "+tk.toUpperCase()+" in your game wallet — use Faucet then Deposit.";return;}
       const stake=Math.min(amt,WALLET[tk],CAP);
       w.lastSide=side;
-      if(window.__sendEngine)window.__sendEngine({t:"enter",wallet:MYWALLET,mode:w.mode,side:cSide(side),stake});
+      if(window.__sendEngine)window.__sendEngine({t:"enter",wallet:MYWALLET,mode:w.mode,side:cSide(side),stake,ref:window.__REF||undefined});
       $("#walletNote").textContent="Deploying "+fmt(stake)+" "+tk.toUpperCase()+" to "+(side==="bull"?"Bulls":"Unicorns")+"…";
       return;
     }
@@ -664,7 +690,7 @@
       $("#walletNote").textContent="Converting "+from.toUpperCase()+" → "+to.toUpperCase()+" (1% fee)…"; return; }const c=WALLET[from]*(1-FEE);W().treasury[from]+=WALLET[from]*FEE;WALLET[to]+=c;WALLET[from]=0;$("#walletNote").textContent="Converted wallet "+from.toUpperCase()+" → "+to.toUpperCase()+" (1% fee).";saveWallet();syncDOM();}
   $("#convBull").onclick=()=>convertWallet("bull"); $("#convUwu").onclick=()=>convertWallet("uwu");
   $("#fairPill").onclick=verifyLastRound;
-  $("#profBtn").onclick=()=>$("#profDrop").classList.toggle("on");
+  $("#profBtn").onclick=()=>{$("#profDrop").classList.toggle("on");if(window.drawOverview)drawOverview();};
   $("#addFunds").onclick=()=>{WALLET.bull+=100;WALLET.uwu+=100;INVESTED+=200;$("#walletNote").textContent="Added $100 BULL + $100 UWU.";saveWallet();syncDOM();};
   document.querySelectorAll(".modes button").forEach(b=>b.onclick=()=>{activeMode=b.dataset.mode;document.querySelectorAll(".modes button").forEach(x=>x.classList.toggle("on",x===b));
     W().floaters.length=0;W().particles.length=0;W().shake=0;   // start the newly-shown mode clean (no flood)
@@ -939,6 +965,39 @@
   }
   // ================================================================================================
 
+  // ---- account overview graph + intro modal + referral link ----
+  function recordBal(b,u){
+    try{
+      const k="bvu_balhist", now=Date.now();
+      const h=JSON.parse(localStorage.getItem(k)||"[]");
+      if(!h.length||now-h[h.length-1].t>20000){h.push({t:now,b,u});while(h.length>200)h.shift();localStorage.setItem(k,JSON.stringify(h));}
+      drawOverview();
+    }catch(e){}
+  }
+  function drawOverview(){
+    const cv=$("#ovGraph"); if(!cv)return; const ctx2=cv.getContext("2d");
+    const h=JSON.parse(localStorage.getItem("bvu_balhist")||"[]"); ctx2.clearRect(0,0,cv.width,cv.height);
+    if(h.length<2){ctx2.fillStyle="#5f6480";ctx2.font="11px monospace";ctx2.fillText("play a few rounds to build your graph",8,44);return;}
+    const W3=cv.width,H3=cv.height,mx=Math.max(1,...h.map(p=>p.b+p.u));
+    const X=i=>i/(h.length-1)*(W3-4)+2, Y=v=>H3-2-(v/mx)*(H3-8);
+    // stacked: bull area then uwu on top
+    ctx2.beginPath();ctx2.moveTo(X(0),Y(0));h.forEach((p,i)=>ctx2.lineTo(X(i),Y(p.b)));ctx2.lineTo(X(h.length-1),Y(0));ctx2.closePath();
+    ctx2.fillStyle="rgba(24,224,138,.35)";ctx2.fill();
+    ctx2.beginPath();h.forEach((p,i)=>ctx2[i?"lineTo":"moveTo"](X(i),Y(p.b)));h.slice().reverse().forEach((p,j)=>{const i=h.length-1-j;ctx2.lineTo(X(i),Y(p.b+p.u));});ctx2.closePath();
+    ctx2.fillStyle="rgba(196,107,255,.35)";ctx2.fill();
+    ctx2.strokeStyle="#18e08a";ctx2.beginPath();h.forEach((p,i)=>ctx2[i?"lineTo":"moveTo"](X(i),Y(p.b)));ctx2.stroke();
+    ctx2.strokeStyle="#c46bff";ctx2.beginPath();h.forEach((p,i)=>ctx2[i?"lineTo":"moveTo"](X(i),Y(p.b+p.u)));ctx2.stroke();
+    ctx2.fillStyle="#9aa0b8";ctx2.font="10px monospace";ctx2.fillText("$"+mx.toFixed(0),4,10);
+  }
+  (function intro(){
+    const seen=localStorage.getItem("bvu_intro_seen");
+    const im=$("#introModal");
+    if(im&&!seen){im.style.display="flex";}
+    const close=()=>{if(im)im.style.display="none";localStorage.setItem("bvu_intro_seen","1");};
+    if($("#introClose"))$("#introClose").onclick=close;
+    if($("#infoBtn"))$("#infoBtn").onclick=()=>{if(im)im.style.display="flex";};
+  })();
+
   // ===================== DEVNET CHAIN LAYER (Phantom + engine) =====================
   // Faucet → get real devnet test BULL/UWU. Deposit → move on-chain tokens into your game
   // wallet. Withdraw → send game-wallet balance back to Phantom. Engine is the vault proxy.
@@ -951,6 +1010,7 @@
     const banner=t=>{const b=$("#devnetBanner");if(b){b.style.display="block";b.innerHTML=t;}};
     const send=o=>{try{if(ws&&ws.readyState===1)ws.send(JSON.stringify(o));}catch(e){}};
     window.__sendEngine=send;                      // used by deposit() to enter rounds
+    window.__REF=new URLSearchParams(location.search).get("ref")||null;
     const amt=()=>Math.max(1,Math.min(100000,+($("#chainAmt")||{}).value||50));
 
     function connectWS(){
@@ -1034,6 +1094,8 @@
             if(m.community.joined>0)ev(w,"🆕 "+m.community.joined+" new wallet"+(m.community.joined>1?"s":"")+" joined — "+m.community.total+" in the arena","round");
             if(m.community.busted>0)ev(w,"💀 "+m.community.busted+" wallet"+(m.community.busted>1?"s":"")+" busted out","bust"); } } }
       else if(m.t==="balance"){ WALLET.bull=m.bull; WALLET.uwu=m.uwu;
+        if(m.refEarned!==undefined&&$("#refEarned"))$("#refEarned").textContent=fmt(m.refEarned);
+        recordBal(m.bull,m.uwu);
         const aw=W();
         if(aw.online&&aw.autoConvOn&&PK){
           const mySide=aw.lastSide||((aw.autoSide&&aw.autoSide!=="both")?aw.autoSide:null);
@@ -1114,6 +1176,7 @@
       PK=DEVKP.publicKey.toString(); MYWALLET=PK;
       $("#chainOff").style.display="none"; $("#chainOn").style.display="block";
       $("#chainAddr").textContent=PK.slice(0,4)+"…"+PK.slice(-4)+"  ·  dev wallet (local)";
+      if($("#refLink"))$("#refLink").textContent=location.origin+location.pathname+"?ref="+PK;
       connectedOnce=true;
       send({t:"chainBalance",wallet:PK}); send({t:"getBalance",wallet:PK}); send({t:"solBalance",wallet:PK});
       note("Dev wallet ready. Getting test SOL + tokens…");
@@ -1126,6 +1189,7 @@
         PK=(window.solana.publicKey||r.publicKey).toString();
         $("#chainOff").style.display="none"; $("#chainOn").style.display="block";
         $("#chainAddr").textContent=PK.slice(0,4)+"…"+PK.slice(-4)+"  ·  devnet";
+        if($("#refLink"))$("#refLink").textContent=location.origin+location.pathname+"?ref="+PK;
         connectedOnce=true; MYWALLET=PK; send({t:"chainBalance",wallet:PK}); send({t:"getBalance",wallet:PK}); send({t:"solBalance",wallet:PK});
         note("Connected. Faucet some test tokens, then Deposit.");
       }catch(e){ note("Connection rejected."); }
@@ -1135,6 +1199,8 @@
     // wire buttons
     $("#btnDevWallet").onclick=useDevWallet;
     $("#btnConnect").onclick=connect;
+    if($("#refCopy"))$("#refCopy").onclick=()=>{const u=$("#refLink").textContent.trim();
+      if(u.startsWith("http"))navigator.clipboard&&navigator.clipboard.writeText(u).then(()=>{$("#refCopy").textContent="Copied";setTimeout(()=>$("#refCopy").textContent="Copy",1400);});};
     $("#copyRpc").onclick=()=>{ const u=$("#rpcUrl").textContent.trim();
       (navigator.clipboard?navigator.clipboard.writeText(u):Promise.reject()).then(()=>{$("#copyRpc").textContent="Copied";setTimeout(()=>$("#copyRpc").textContent="Copy",1400);}).catch(()=>{}); };
     $("#btnFundMe").onclick=()=>{ if(guard()){ note("Requesting test SOL + tokens…"); send({t:"fundMe",wallet:PK}); } };
