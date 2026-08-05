@@ -1260,12 +1260,30 @@
       window.__privy=new P({appId:PRIVY_APP,storage:new LS()});
       return window.__privy;
     }
+    // raw-API PKCE flow — proven working against auth.privy.io from this origin
+    async function privyRawStart(){
+      const rand=n=>{const a=new Uint8Array(n);crypto.getRandomValues(a);return btoa(String.fromCharCode(...a)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");};
+      const verifier=rand(48), state=rand(24);
+      const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(verifier));
+      const challenge=btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+      localStorage.setItem("bvu_pkce",JSON.stringify({verifier,state}));
+      const r=await fetch("https://auth.privy.io/api/v1/oauth/init",{method:"POST",
+        headers:{"privy-app-id":PRIVY_APP,"Content-Type":"application/json"},
+        body:JSON.stringify({provider:"twitter",redirect_to:location.origin+location.pathname,state_code:state,code_challenge:challenge})});
+      const j=await r.json();
+      if(!j.url)throw new Error(j.error||("init "+r.status));
+      return j.url;
+    }
     if($("#btnX"))$("#btnX").onclick=async()=>{
       try{
         note("Opening X authorization…");
-        const p=await privyClient();
-        const url=await p.auth.oauth.generateURL("twitter",location.origin+location.pathname);
-        location.href=url;                         // → X's own authorize screen, back here after
+        let url=null;
+        try{ const p=await privyClient();
+          const g=await p.auth.oauth.generateURL("twitter",location.origin+location.pathname);
+          url=(typeof g==="string")?g:(g&&(g.url||g.href));      // SDKs differ on return shape
+        }catch(sdkErr){ console.warn("privy sdk:",sdkErr); }
+        if(!url||typeof url!=="string"||!/^https?:/.test(url)) url=await privyRawStart();
+        location.href=url;
       }catch(e){
         note("X connect unavailable ("+String(e.message||e).slice(0,60)+") — using handle entry instead.");
         const h=(prompt("Your X handle (without @):")||"").trim().replace(/^@/,"");
@@ -1279,9 +1297,21 @@
       const q=new URLSearchParams(location.search);
       const code=q.get("privy_oauth_code"), st=q.get("privy_oauth_state");
       if(!code||!st)return;
-      privyClient().then(async p=>{
-        const r=await p.auth.oauth.loginWithCode(code,st,"twitter");
-        const u=(r&&r.user)||r||{};
+      (async()=>{
+        let u=null;
+        try{ const p=await privyClient();
+          const r=await p.auth.oauth.loginWithCode(code,st,"twitter");
+          u=(r&&r.user)||r||{};
+        }catch(sdkErr){
+          console.warn("sdk exchange failed, raw:",sdkErr);
+          const pk=JSON.parse(localStorage.getItem("bvu_pkce")||"{}");
+          const r=await fetch("https://auth.privy.io/api/v1/oauth/authenticate",{method:"POST",
+            headers:{"privy-app-id":PRIVY_APP,"Content-Type":"application/json"},
+            body:JSON.stringify({authorization_code:code,state_code:st,code_verifier:pk.verifier,provider:"twitter"})});
+          const j=await r.json();
+          if(!r.ok)throw new Error(j.error||("auth "+r.status));
+          u=j.user||j;
+        }
         const tw=(u.linked_accounts||u.linkedAccounts||[]).find(a=>(a.type||"").startsWith("twitter"));
         if(!tw){note("X login finished but no account came back.");return;}
         const h=tw.username||tw.handle, av=tw.profile_picture_url||tw.profilePictureUrl||("https://unavatar.io/x/"+h);
@@ -1290,7 +1320,7 @@
         const wire=()=>{if(PK)send({t:"setName",wallet:PK,name:"@"+h,avatar:av});else setTimeout(wire,1500);};wire();
         history.replaceState({},"",location.pathname+([...q.entries()].filter(([k])=>!k.startsWith("privy_")).map(([k,v],i)=>(i?"&":"?")+k+"="+encodeURIComponent(v)).join("")));
         note("✅ Verified as @"+h);
-      }).catch(e=>note("X verify failed: "+String(e.message||e).slice(0,80)));
+      })().catch(e=>note("X verify failed: "+String(e.message||e).slice(0,80)));
     })();
     applyX();
     if($("#refCopy"))$("#refCopy").onclick=()=>{const u=$("#refLink").textContent.trim();
