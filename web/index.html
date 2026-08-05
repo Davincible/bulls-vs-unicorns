@@ -95,7 +95,7 @@
       <div class="brand"><h1><span class="b">🐂</span><span class="vs">⚔</span><span class="u">🦄</span> ARENA</h1></div>
       <div class="hstats">
         <div class="pill" title="House take (0.1% of deploys + 0.3% converts)"><b class="g" id="treasury">$0</b><span class="brk" id="treasuryBrk">🐂$0 · 🦄$0</span><span>House take</span></div>
-        <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button><button data-view="referrals">Referrals</button></div>
+        <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button><button data-view="referrals">Referrals</button><button data-view="arenas">Arenas</button></div>
         <div class="modes"><button data-mode="normal" class="on">Mayhem</button><button data-mode="extraction">💰 Extraction</button></div>
         <button class="ficon" id="infoBtn" title="How the game works">ⓘ</button>
         <div class="pill" id="fairPill" style="cursor:pointer" title="Provably fair: the engine publishes sha256(seed) before the lobby opens, then reveals the seed. Your browser recomputes the whole round from it — no trust required. Click to verify the last round."><b class="g">✓</b><span>fair</span></div>
@@ -250,6 +250,13 @@
       </div>
     </div>
 
+    <div class="view" id="viewArenas">
+      <div style="max-width:900px;margin:12px auto">
+        <h2 style="margin:6px 0">Arenas</h2>
+        <div class="note">Live token prices feed the USD arenas. ANSEM/UWU is live now; the rest come online with the engine's arena registry (next update).</div>
+        <div id="arenaCards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:12px"></div>
+      </div>
+    </div>
     <div class="view" id="viewReferrals"><div class="card" style="max-width:560px;margin:12px auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px">            <h3 style="margin-top:12px">Referrals <span class="youtag" style="background:var(--gold);color:#000">10%</span></h3>
             <div class="note">Share your link — you earn 10% of the house fee on every round your signups play, forever.</div>
             <div style="display:flex;gap:6px;margin-top:6px">
@@ -1348,8 +1355,7 @@
 
     connectWS();
     window.__DEMO=new URLSearchParams(location.search).get("demo")==="1";
-    if(window.__DEMO){ localStorage.removeItem("bvu_devwallet"); localStorage.removeItem("bvu_balhist");
-      localStorage.removeItem("bvu13_wallet_on"); localStorage.removeItem("bvu13on_normal"); localStorage.removeItem("bvu13on_extraction"); }
+    // demo mode keeps its wallet and history across reloads — it just tops the balance up
     // auto-reconnect the wallet you used last time
     setTimeout(()=>{ const m2=localStorage.getItem("bvu_wmeth");
       if(window.__DEMO&&!PK)useDevWallet();
@@ -1364,6 +1370,39 @@
   // =================================================================================
 
   window.addEventListener("beforeunload",()=>{for(const m in worlds)save(worlds[m]);saveWallet();});
+  // ---- arena picker cards + live prices ----
+  const ARENA_DEFS=[
+    {id:"ansem-uwu",name:"ANSEM vs UWU",icons:"🐂⚔🦄",live:true,tokens:["ansem","uwu"]},
+    {id:"ansem-sol",name:"ANSEM vs SOL",icons:"🐂⚔◎",live:false,tokens:["ansem","sol"]},
+    {id:"uwu-sol",name:"UWU vs SOL",icons:"🦄⚔◎",live:false,tokens:["uwu","sol"]},
+    {id:"3way",name:"3-WAY",icons:"🐂🦄◎",live:false,tokens:["ansem","uwu","sol"]},
+    {id:"ffa-bull",name:"BULLS FFA",icons:"🐂🐂🐂",live:false,tokens:["ansem"],note:"free-for-all · biggest bag wins"},
+  ];
+  const PXMINTS={ansem:"9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump",uwu:"UWUy7J86LUiBv5SjAUZ53LMGhtnqvbQ7QNSSkyupump",sol:"So11111111111111111111111111111111111111112"};
+  const PX={};
+  async function loadPrices(){
+    for(const[k,m]of Object.entries(PXMINTS)){
+      try{const j=await fetch("https://api.dexscreener.com/latest/dex/tokens/"+m).then(r=>r.json());
+        const p=(j.pairs||[]).filter(x=>x.priceUsd).sort((a,b)=>(b.liquidity?.usd||0)-(a.liquidity?.usd||0))[0];
+        if(p)PX[k]=Number(p.priceUsd);}catch(e){}
+    }
+    renderArenaCards();
+  }
+  function renderArenaCards(){
+    const el=$("#arenaCards"); if(!el)return;
+    el.innerHTML=ARENA_DEFS.map(a=>{
+      const px=a.tokens.map(t=>PX[t]!==undefined?`<span style="color:var(--ink-soft)">${t.toUpperCase()} $${PX[t]<1?PX[t].toFixed(4):PX[t].toFixed(2)}</span>`:"").filter(Boolean).join(" · ");
+      return `<div class="card" data-arena="${a.id}" style="background:var(--panel);border:1px solid ${a.live?"var(--gold)":"var(--line)"};border-radius:14px;padding:14px;cursor:${a.live?"pointer":"default"};opacity:${a.live?1:.72}">
+        <div style="font-size:22px">${a.icons}</div><b>${a.name}</b>
+        <div class="note" style="font-size:11px;margin-top:4px">${a.note||"Mayhem + Extraction"}</div>
+        <div style="font-family:var(--mono);font-size:10.5px;margin-top:6px">${px||"prices loading…"}</div>
+        <div style="margin-top:8px">${a.live?'<span class="youtag" style="background:var(--bull);color:#000">LIVE — enter</span>':'<span class="youtag">OPENING SOON</span>'}</div>
+      </div>`;}).join("");
+  }
+  if($("#arenaCards")){renderArenaCards();loadPrices();setInterval(loadPrices,60000);
+    $("#arenaCards").addEventListener("click",e=>{const c=e.target.closest("[data-arena]");
+      if(c&&c.dataset.arena==="ansem-uwu"){document.querySelector('.nav button[data-view=arena]').click();}});}
+
   let tx=0;(function scroll(){const t=$("#tickerTrack");
     const fits=t.scrollWidth<=(t.parentElement?t.parentElement.clientWidth-90:0);   // 90px ≈ the label block
     if(fits)tx=0; else {tx-=0.5;if(-tx>t.scrollWidth/2)tx=0;}

@@ -1,0 +1,10 @@
+{
+  "cluster": "devnet",
+  "rpc": "https://devnet.helius-rpc.com/?api-key=REPLACE",
+  "vault": "4iDuXiq95uRT74xvGkz4icqnu6ma9qKZmzDuquRZGAFy",
+  "mints": {
+    "bull": "6on6K1aLWJG7gfS4m82taXn3SaqDPyxMxuutxqGdGtBr",
+    "uwu": "3MtivLLey4F89Gy3DXSsCtTP8bXkznhUxwYsXP8jcZQ3"
+  },
+  "decimals": 6
+}

@@ -55,7 +55,7 @@ Fairness (120 rounds each):
   Extraction) — the known median-rule trade; money stays fair.
 - FFA Extraction: flat (±1%) across stakes. Big stakes win the biggest-bag badge ~21%
   (they start biggest — consider an ROI-based "best multiplier" badge alongside).
-- **FFA Mayhem: UNSHIPPABLE — small stakes ≈ −40% ROI.** Cause is structural: death
+- **FFA Mayhem: small stakes ≈ −40% ROI (structural).** Max's call 2026-08-06: ship big FFA anyway, no weight classes / rank payouts / insurance / respawn / bounties — players see the risk. FFA **Extraction is the fair variant** (±1% across stakes) and is the recommended mode. Cause is structural: death
   forfeits the ring, small fighters die more, survivors compound. A pairwise matched cap
   was tried and did not move the number (reverted). FFA launches EXTRACTION-ONLY.
 
