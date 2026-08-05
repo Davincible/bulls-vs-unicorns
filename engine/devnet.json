@@ -1,0 +1,9 @@
+{
+  "cluster": "devnet",
+  "vault": "4iDuXiq95uRT74xvGkz4icqnu6ma9qKZmzDuquRZGAFy",
+  "mints": {
+    "bull": "Gk9N18x5RiYegrq4Pr5WuLzz9iWvDucELspv1ur13Mos",
+    "uwu": "5T5hSTxju3LjYRNhr6Y3Fxy9fiVxFWgEw4Fr6DF5KEVf"
+  },
+  "decimals": 6
+}

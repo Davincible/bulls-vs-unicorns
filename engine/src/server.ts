@@ -1,13 +1,16 @@
-// Bulls ⚔ Unicorns engine server.
-// Runs both mode round-loops, drives hybrid bots, keeps a ledger, and streams state to clients
-// over WebSocket. On-chain settlement (settle_round) + Postgres are wired in the *-onchain
-// modules; this server runs standalone (in-memory ledger) so it can host the devnet test now.
+// Bulls ⚔ Unicorns engine server — AUTHORITATIVE.
+// The engine owns: the round lifecycle (commit-reveal), the battle simulation, and the
+// game-wallet ledger. Clients are renderers + verifiers: they replay the broadcast hit log
+// and can independently recompute the round from the revealed seed.
+// On-chain: real SPL deposits credit the ledger; withdrawals are paid out of the vault.
 import { WebSocketServer, WebSocket } from "ws";
-import { RoundRunner } from "./round.ts";
+import { RoundRunner, newRoundConfig } from "./round.ts";
 import type { RoundResult, RoundState } from "./round.ts";
 import type { Mode, Side } from "./game.ts";
+import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildDepositTx, walletTokenBalance } from "./chain-ops.ts";
 
 const PORT = Number(process.env.PORT || 8090);
+const FEE = 0.002, CAP = 100;
 
 // ---- ledger: real players (by wallet) + persistent bot accounts ----
 interface Account { id: string; name: string; side: Side; bull: number; uwu: number; isBot: boolean; dep: number; ret: number; games: number; wins: number; }
@@ -17,24 +20,35 @@ let seq = 0;
 function newBot(mode: Mode, side: Side): Account { const id = `${mode}:bot:${++seq}`; const a: Account = { id, name: NAMES[seq % NAMES.length] + "_" + seq, side, bull: side==="bull"? 60+Math.random()*180 : 0, uwu: side==="uwu"? 60+Math.random()*180 : 0, isBot: true, dep:0, ret:0, games:0, wins:0 }; ledger.set(id, a); return a; }
 function seedBots(mode: Mode, n: number) { for (let i=0;i<n;i++) newBot(mode, i%2 ? "uwu":"bull"); }
 const botsFor = (mode: Mode) => [...ledger.values()].filter(a => a.isBot && a.id.startsWith(mode+":"));
+function acct(wallet: string, side: Side): Account {
+  let a = ledger.get(wallet);
+  if (!a) { a = { id: wallet, name: "You", side, bull: 0, uwu: 0, isBot: false, dep:0, ret:0, games:0, wins:0 }; ledger.set(wallet, a); }
+  return a;
+}
 
-// ---- round runners per mode ----
+// ---- clients ----
 const clients = new Set<WebSocket>();
+const walletOf = new Map<WebSocket, string>();          // ws -> wallet (for targeted balance pushes)
 function broadcast(msg: unknown) { const s = JSON.stringify(msg); for (const c of clients) if (c.readyState === WebSocket.OPEN) c.send(s); }
+function balPayload(wallet: string) { const a = ledger.get(wallet); return { t: "balance", wallet, bull: a?.bull||0, uwu: a?.uwu||0 }; }
+function pushBalance(wallet: string) { const s = JSON.stringify(balPayload(wallet)); for (const c of clients) if (c.readyState===WebSocket.OPEN && walletOf.get(c)===wallet) c.send(s); }
 
 async function onSettle(mode: Mode, r: RoundResult, s: RoundState) {
-  // credit each entry's final wallet balance back to its account (bots + players)
+  const touched = new Set<string>();
   for (const [id, bal] of Object.entries(r.settlement)) {
     const a = ledger.get(id); if (!a) continue;
     a.bull += bal.bull; a.uwu += bal.uwu; a.games++; a.ret += bal.bull + bal.uwu;
     if (a.side === r.winner) a.wins++;
+    if (!a.isBot) touched.add(id);
   }
   // hybrid bots: bust the broke, add fresh (growing base; throttles down as real players fill)
   const realPlaying = s.entries.filter(e => !e.id.includes(":bot:")).length;
   for (const a of botsFor(mode)) if (a.bull + a.uwu < 5) ledger.delete(a.id);
   const targetBots = Math.max(6, 22 - realPlaying * 2);
   while (botsFor(mode).length < targetBots) newBot(mode, botsFor(mode).filter(b=>b.side==="bull").length <= botsFor(mode).filter(b=>b.side==="uwu").length ? "bull":"uwu");
-  broadcast({ t: "settled", mode, round: s.round, winner: r.winner, seed: s.seed, seedHash: s.seedHashPublished, hits: r.hits.length });
+  broadcast({ t: "settled", mode, round: s.round, winner: r.winner, seed: s.seed, seedHash: s.seedHashPublished,
+              settlement: r.settlement, hits: r.hits.length });
+  for (const w of touched) pushBalance(w);
 }
 
 const runners: Record<Mode, RoundRunner> = {
@@ -44,7 +58,6 @@ const runners: Record<Mode, RoundRunner> = {
 seedBots("normal", 22); seedBots("extraction", 22);
 
 // bots auto-enter each lobby (a fraction, with a fee taken on deploy)
-const FEE = 0.002, CAP = 100;
 function botsEnter(mode: Mode) {
   const rn = runners[mode]; if (rn.state.phase !== "lobby") return;
   for (const a of botsFor(mode)) {
@@ -57,14 +70,28 @@ function botsEnter(mode: Mode) {
   }
 }
 
+// name lookup so clients can label fighters
+const nameFor = (id: string) => ledger.get(id)?.name || (id.length > 8 ? id.slice(0,4)+"…"+id.slice(-4) : id);
+
 // ---- tick loop ----
-let lastPhase: Record<Mode, string> = { normal: "", extraction: "" };
+const lastPhase: Record<Mode, string> = { normal: "", extraction: "" };
 setInterval(async () => {
   for (const mode of ["normal", "extraction"] as Mode[]) {
     const rn = runners[mode];
     if (rn.state.phase === "lobby" && lastPhase[mode] !== "lobby") botsEnter(mode); // seed bots at lobby start
+    const was = rn.state.phase;
     lastPhase[mode] = rn.state.phase;
     await rn.tick();
+    // battle just started → broadcast the FULL replayable round (seed revealed + ordered hit log)
+    if (was === "lobby" && rn.state.phase === "battle" && rn.state.result) {
+      const s = rn.state;
+      broadcast({ t: "roundStart", mode, round: s.round, multiplier: s.multiplier,
+        seed: s.seed, seedHash: s.seedHashPublished,
+        entries: s.entries.map(e => ({ id: e.id, side: e.side, stake: e.stake, name: nameFor(e.id), bot: e.id.includes(":bot:") })),
+        cfg: newRoundConfig(mode, s.multiplier),
+        hits: s.result.hits, winner: s.result.winner, settlement: s.result.settlement,
+        startedAt: Date.now(), battleMs: newRoundConfig(mode, s.multiplier).battleMs });
+    }
   }
 }, 500);
 
@@ -79,17 +106,69 @@ const wss = new WebSocketServer({ port: PORT });
 wss.on("error", (e) => console.error("wss error:", (e as Error).message));
 wss.on("connection", (ws) => {
   clients.add(ws);
-  ws.on("error", () => clients.delete(ws));   // don't crash on a client disconnect/error
-  ws.on("close", () => clients.delete(ws));
-  ws.on("message", (raw) => {
+  ws.send(JSON.stringify({ t: "chain", ready: chainReady(), vault: chainReady() ? vaultPubkey() : null, mints: mints() }));
+  // send the in-flight round immediately so a joiner isn't staring at an empty arena
+  for (const mode of ["normal","extraction"] as Mode[]) {
+    const s = runners[mode].state;
+    if (s.phase === "battle" && s.result) ws.send(JSON.stringify({ t: "roundStart", mode, round: s.round, multiplier: s.multiplier,
+      seed: s.seed, seedHash: s.seedHashPublished,
+      entries: s.entries.map(e => ({ id: e.id, side: e.side, stake: e.stake, name: nameFor(e.id), bot: e.id.includes(":bot:") })),
+      cfg: newRoundConfig(mode, s.multiplier), hits: s.result.hits, winner: s.result.winner, settlement: s.result.settlement,
+      startedAt: s.closesAt - newRoundConfig(mode, s.multiplier).battleMs,   // true start, so a joiner syncs mid-battle
+      battleMs: newRoundConfig(mode, s.multiplier).battleMs, resumed: true }));
+  }
+  const cleanup = () => { clients.delete(ws); walletOf.delete(ws); };
+  ws.on("error", cleanup);
+  ws.on("close", cleanup);
+  ws.on("message", async (raw) => {
+    let m: any; try { m = JSON.parse(raw.toString()); } catch { return; }
     try {
-      const m = JSON.parse(raw.toString());
+      if (m.wallet) walletOf.set(ws, m.wallet);
       if (m.t === "enter") {                                  // { t:'enter', wallet, mode, side, stake }
-        const a = ledger.get(m.wallet) || (ledger.set(m.wallet, { id: m.wallet, name: "You", side: m.side, bull: 0, uwu: 0, isBot: false, dep:0, ret:0, games:0, wins:0 }).get(m.wallet)!);
-        // (real deposits credit a.bull/a.uwu via the on-chain deposit watcher; here we trust the reserve)
-        runners[m.mode as Mode].enter(m.wallet, m.side, m.stake * (1 - FEE));
+        const a = acct(m.wallet, m.side);
+        const bank = m.side === "bull" ? a.bull : a.uwu;
+        const stake = Math.min(Number(m.stake)||0, bank, CAP);
+        if (stake < 1) return ws.send(JSON.stringify({ t: "error", msg: "Insufficient game balance — deposit or use the faucet." }));
+        const rn = runners[m.mode as Mode]; if (!rn) return;
+        if (rn.state.phase !== "lobby") return ws.send(JSON.stringify({ t: "error", msg: "Deposits closed — wait for the next lobby." }));
+        if (m.side === "bull") a.bull -= stake; else a.uwu -= stake;   // debit real balance into the round
+        a.dep += stake; a.side = m.side;
+        rn.enter(m.wallet, m.side, stake * (1 - FEE));
+        ws.send(JSON.stringify({ t: "entered", mode: m.mode, side: m.side, stake }));
+        pushBalance(m.wallet);
+      } else if (m.t === "faucet") {                          // { t:'faucet', wallet, side }
+        if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
+        const sig = await faucet(m.wallet, m.side, 500);
+        ws.send(JSON.stringify({ t: "faucetDone", side: m.side, sig, amount: 500 }));
+      } else if (m.t === "buildDeposit") {                    // → unsigned tx for Phantom to sign
+        if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
+        const txB64 = await buildDepositTx(m.wallet, m.side, m.amount);
+        ws.send(JSON.stringify({ t: "depositTx", side: m.side, amount: m.amount, txB64 }));
+      } else if (m.t === "deposit") {                         // { t:'deposit', wallet, side, sig }
+        if (!chainReady()) return;
+        const credited = await verifyDeposit(m.sig, m.side);
+        if (credited > 0) { const a = acct(m.wallet, m.side); if (m.side === "bull") a.bull += credited; else a.uwu += credited; }
+        ws.send(JSON.stringify({ t: "depositDone", side: m.side, credited, sig: m.sig }));
+        pushBalance(m.wallet);
+      } else if (m.t === "withdraw") {                        // { t:'withdraw', wallet, side, amount }
+        if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
+        const a = acct(m.wallet, m.side);
+        const bank = m.side === "bull" ? a.bull : a.uwu;
+        const amt = Math.min(Number(m.amount)||0, bank);
+        if (amt < 1) return ws.send(JSON.stringify({ t: "error", msg: "Nothing to withdraw on that side." }));
+        if (m.side === "bull") a.bull -= amt; else a.uwu -= amt;       // debit first, refund on failure
+        pushBalance(m.wallet);
+        try { const sig = await withdraw(m.wallet, m.side, amt); ws.send(JSON.stringify({ t: "withdrawDone", side: m.side, amount: amt, sig })); }
+        catch (e) { if (m.side === "bull") a.bull += amt; else a.uwu += amt; pushBalance(m.wallet);
+                    ws.send(JSON.stringify({ t: "error", msg: "Withdraw failed: " + (e as Error).message })); }
+      } else if (m.t === "chainBalance") {                    // on-chain (Phantom) balances
+        if (!chainReady()) return;
+        const [bull, uwu] = await Promise.all([walletTokenBalance(m.wallet, "bull"), walletTokenBalance(m.wallet, "uwu")]);
+        ws.send(JSON.stringify({ t: "chainBalance", bull, uwu }));
+      } else if (m.t === "getBalance") {
+        ws.send(JSON.stringify(balPayload(m.wallet)));
       }
-    } catch {}
+    } catch (e) { ws.send(JSON.stringify({ t: "error", msg: (e as Error).message })); }
   });
 });
-console.log(`⚔  engine live on ws://localhost:${PORT}  (normal + extraction, hybrid bots)`);
+console.log(`⚔  engine live on ws://localhost:${PORT}  (authoritative rounds + hybrid bots) chain=${chainReady()}`);
