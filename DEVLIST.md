@@ -138,3 +138,38 @@ already-decided result - damage rained on everyone with nothing on screen causin
   **favourite side is still worth roughly +6-8% vs -8-11%** for the underdog. Fix this in the
   lobby (deploy caps / matchmaking) - a damage handicap was tried and made it far worse.
 - House edge measures exactly 0.200% of deploys in every run.
+
+## Bankroll study (`npm run strategy`) - 2026-08-05
+
+8 strategies x 120 rounds x 14 players, $500 start, both modes.
+
+### EXTRACTION: balanced. No strategy beats another.
+Every style lands within about +/-1% per-round ROI and finishes near $500. Flat, %-of-bankroll,
+all-in, favourite-chasing - all the same. This mode is done.
+
+### NORMAL: two dominant metas remain.
+
+| strategy | median end | ended up | per-round ROI |
+|---|---|---|---|
+| flat $25 on the FAVOURITE side | $990 | **14/14** | **+15.98%** |
+| flat $25 (random side) | $807 | 12/14 | +9.05% |
+| 5% of bankroll | $603 | 12/14 | +4.49% |
+| flat $5 | $424 | 1/14 | -15.69% |
+| 25% of bankroll | $5 | 0/14 | -8.62% |
+| flat $100 (max) | $1 | 0/14 (14 busted) | -14.01% |
+| all-in | $1 | 0/14 (13 busted) | -13.38% |
+
+1. **Side-chasing is a solved game.** Joining the heavier side won for *every single player*,
+   roughly doubling the bankroll in 120 rounds. That is not a choice, it is the correct answer.
+2. **Stake size is not a preference either.** Mid stakes ($25) compound; the maximum stake
+   ($100) busted 14/14. A whale is swarmed: each clash is capped at a share of the *smaller*
+   position, so it can only ever win small amounts back, while many small opponents keep taking
+   bites. Big play is structurally punished, small play ($5) bleeds to the fee.
+
+### Recommended fixes (Normal only)
+- **Balance sides in the lobby, not in damage.** Cap a deploy that would push your side's total
+  more than ~15-20% above the other, or close the heavy side once the gap opens. A damage
+  handicap was tried and swung it to underdog +64%/favourite -49%.
+- **Cap aggregate damage per round per fighter** (e.g. a fighter cannot lose more than ~40% of
+  its deployed stake in one round) so a whale can't be nibbled to death by a swarm.
+- Re-run `npm run strategy` after each change; target is every row within a few % like Extraction.
