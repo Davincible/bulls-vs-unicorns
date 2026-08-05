@@ -259,3 +259,30 @@ still loses badly.
 size rather than the nearest enemy, so a $1 stake mostly fights other small stakes and a whale
 fights whales. That makes % returns comparable across sizes without capping anyone - and it is
 also what makes the *matches* fair, which is the original goal. Not implemented yet.
+
+## 2026-08-05 - size-banded targeting (SIZE_WEIGHT = 0.9)
+
+Fighters now seek opponents of comparable size instead of the nearest body: a size mismatch is
+scored as extra distance, so small stakes meet small stakes and whales meet whales.
+
+**It only helps when peers exist.** A lone $0.05 entry in a field of $5-$100 still meets ~$56
+opponents, because there is nobody its size - banding cannot invent a peer.
+
+In the realistic mature field (mostly small auto-deployers, a few mid, rare whales), which is the
+case that actually matters:
+
+| bucket | Normal ROI | Extraction ROI | avg opponent |
+|---|---|---|---|
+| micro <$1.50 | -16.8% | **-2.4%** | $4.6 (was ~$56) |
+| small $1.50-10 | +7.2% | -0.1% | $11.7 |
+| mid $10-50 | -1.6% | -0.2% | $26.5 |
+| whale $50+ | -0.2% | -0.1% | $34.9 |
+
+Extraction is close to flat across every size. Normal still punishes micro (-16.8%) because it
+compounds in-ring.
+
+**If micro needs to be viable in Normal too**, the next step is a per-pair matched book: cap the
+total value exchanged between any two fighters at the smaller of their two stakes, so a $1 entry
+can win up to $1 from a whale and lose at most $1 to it, instead of being ground down over
+repeated clashes. Consistent with the side-level matched book already in place, and it caps
+nothing globally.

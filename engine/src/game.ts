@@ -50,6 +50,12 @@ export const SMALL_EDGE = 1.03;
 // $1.20 anyone entering at or below that never became a live fighter at all - they paid the fee
 // and got their stake back untouched, which made the $0.01 minimum meaningless.
 export const DUST_FRAC = 0.03;
+// Fighters seek opponents of COMPARABLE SIZE, not just the nearest body. A mismatched enemy is
+// treated as if it were further away, so small stakes mostly meet small stakes and whales meet
+// whales. This is what makes the matches themselves fair: without it a $1 entry walks into a
+// field of $100 fighters, risks a quarter of its ring every clash and is wiped before it can
+// win anything back. 0 = pure nearest-enemy, higher = stricter matchmaking.
+export const SIZE_WEIGHT = 0.9;
 export const dustFor = (f: Fighter) => Math.max(0.005, f.deposited * DUST_FRAC);
 
 // --- deterministic RNG: xmur3 seed -> sfc32 stream (fast, reproducible across JS engines) ---
@@ -133,10 +139,14 @@ export function stepSim(s: SimState): HitLog[] {
   for (const p of A) {
     p.r += (radiusFor(p) - p.r) * 0.15;
     let tgt: Fighter | null = null, td = 1e18;
+    const rp = Math.max(0.01, ring(p));
     for (const q of A) {
       if (q.side === p.side) continue;
-      const dx = q.x - p.x, dy = q.y - p.y, d = dx * dx + dy * dy;
-      if (d < td) { td = d; tgt = q; }
+      const dx = q.x - p.x, dy = q.y - p.y, d = Math.sqrt(dx * dx + dy * dy);
+      const rq = Math.max(0.01, ring(q));
+      const ratio = Math.min(rp > rq ? rp / rq : rq / rp, 8);       // 1 = same size
+      const score = d * (1 + SIZE_WEIGHT * (ratio - 1));            // mismatch reads as distance
+      if (score < td) { td = score; tgt = q; }
     }
     if (tgt) {
       const ax = tgt.x - p.x, ay = tgt.y - p.y, al = Math.hypot(ax, ay) || 1;

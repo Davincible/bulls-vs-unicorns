@@ -646,7 +646,7 @@
     a=b^(b>>>9);b=(c+(c<<3))|0;c=(c<<21)|(c>>>11);d=(d+1)|0;t=(t+d)|0;c=(c+t)|0;return(t>>>0)/4294967296;};}
   function rngFromSeed(seed){const s=xmur3(seed);return sfc32(s(),s(),s(),s());}
 
-  const ARENA={w:900,h:560}, SCOMBAT={speed:112,accel:250,hitCd:430}, FINISH_RATIO=0.08, SMALL_EDGE=1.03, DUST_FRAC=0.03;
+  const ARENA={w:900,h:560}, SCOMBAT={speed:112,accel:250,hitCd:430}, FINISH_RATIO=0.08, SMALL_EDGE=1.03, DUST_FRAC=0.03, SIZE_WEIGHT=0.9;
   const sRing=f=>f.bull+f.uwu;
   const sDust=f=>Math.max(0.005,f.deposited*DUST_FRAC);   // knocked out at 3% of your own stake
   const sAlive=(f,dust)=>!f.dead&&sRing(f)>sDust(f);
@@ -685,8 +685,15 @@
     const dt=cfg.tickMs/1000, nowMs=s.t*cfg.tickMs, ramp=1+1.6*(s.t/s.steps);
     for(const p of A){
       p.r+=(sRadius(p)-p.r)*0.15;
+      // size-banded targeting (matches engine/src/game.ts)
       let tgt=null,td=1e18;
-      for(const q of A){ if(q.side===p.side)continue; const dx=q.x-p.x,dy=q.y-p.y,d=dx*dx+dy*dy; if(d<td){td=d;tgt=q;} }
+      const rp=Math.max(0.01,sRing(p));
+      for(const q of A){ if(q.side===p.side)continue;
+        const dx=q.x-p.x,dy=q.y-p.y,d=Math.sqrt(dx*dx+dy*dy);
+        const rq=Math.max(0.01,sRing(q));
+        const ratio=Math.min(rp>rq?rp/rq:rq/rp,8);
+        const score=d*(1+SIZE_WEIGHT*(ratio-1));
+        if(score<td){td=score;tgt=q;} }
       if(tgt){const ax=tgt.x-p.x,ay=tgt.y-p.y,al=Math.hypot(ax,ay)||1;
         p.vx+=(ax/al)*SCOMBAT.accel*ramp*dt; p.vy+=(ay/al)*SCOMBAT.accel*ramp*dt;}
       p.vx+=rr(-8,8)*dt; p.vy+=rr(-8,8)*dt;
