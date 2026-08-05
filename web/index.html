@@ -646,9 +646,10 @@
     a=b^(b>>>9);b=(c+(c<<3))|0;c=(c<<21)|(c>>>11);d=(d+1)|0;t=(t+d)|0;c=(c+t)|0;return(t>>>0)/4294967296;};}
   function rngFromSeed(seed){const s=xmur3(seed);return sfc32(s(),s(),s(),s());}
 
-  const ARENA={w:900,h:560}, SCOMBAT={speed:112,accel:250,hitCd:430}, FINISH_RATIO=0.08, SMALL_EDGE=1.03;
+  const ARENA={w:900,h:560}, SCOMBAT={speed:112,accel:250,hitCd:430}, FINISH_RATIO=0.08, SMALL_EDGE=1.03, DUST_FRAC=0.03;
   const sRing=f=>f.bull+f.uwu;
-  const sAlive=(f,dust)=>!f.dead&&sRing(f)>dust;
+  const sDust=f=>Math.max(0.005,f.deposited*DUST_FRAC);   // knocked out at 3% of your own stake
+  const sAlive=(f,dust)=>!f.dead&&sRing(f)>sDust(f);
   const sRadius=f=>clamp(7+1.7*Math.sqrt(sRing(f)),7,26);
 
   function createSimJS(seed,entries,cfg){
@@ -739,8 +740,8 @@
       const snapA={bull:a.bull,uwu:a.uwu}, snapB={bull:b.bull,uwu:b.uwu};
       const hitOnB=planHit(b,snapB,dAB), hitOnA=planHit(a,snapA,dBA);
       applyHit(a,b,hitOnB); applyHit(b,a,hitOnA);
-      if(sRing(a)<=cfg.dust)a.dead=true;
-      if(sRing(b)<=cfg.dust)b.dead=true;
+      if(sRing(a)<=sDust(a))a.dead=true;
+      if(sRing(b)<=sDust(b))b.dead=true;
     }
     s.t++;
     if(s.t>=s.steps){s.endTick=s.steps;s.done=true;}

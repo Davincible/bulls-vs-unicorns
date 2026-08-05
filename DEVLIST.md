@@ -231,3 +231,31 @@ by design (it compounds in-ring); its small bucket swings with a 6% wipeout rate
 - [x] **Fighter IDs collided across sides.** Entries were keyed by wallet only, so deploying on
       BOTH sides overwrote one fighter in the settlement map and destroyed value (a live round
       showed $24 vanish). Entries are now keyed `wallet|side` and split back on settle.
+
+## 2026-08-05 - micro stakes ($0.05 / $0.50 / $1)
+
+**Bug found:** `dust` (knocked out) was a flat $1.20, so any entry at or below it never became a
+live fighter - 0 out of 140 rounds saw a single hit. Those players paid the 0.2% fee and got the
+stake straight back. The $0.01 minimum was meaningless. Fixed: dust is now 3% of your OWN
+deposited stake (`DUST_FRAC`), floored at half a cent.
+
+**But micro stakes are now heavily -EV**, because exposure still scales with how many opponents
+you meet, not with your stake:
+
+| stake | Normal ROI | Extraction ROI |
+|---|---|---|
+| $0.05 | -53.5% | -62.1% |
+| $0.50 | -81.1% | -6.4% |
+| $1 | -70.0% | -2.6% |
+| $5 | -17.2% | +1.7% |
+| $25 | +10.3% | -2.6% |
+| $100 | -14.7% | -0.4% |
+
+A $1 fighter meets a field of $5-$100 fighters; every clash risks 25% of its own ring and it is
+wiped long before it can win anything back. Extraction is far gentler (raids bank out) but $0.05
+still loses badly.
+
+**Recommended next step: size-banded targeting.** Fighters should seek opponents of comparable
+size rather than the nearest enemy, so a $1 stake mostly fights other small stakes and a whale
+fights whales. That makes % returns comparable across sizes without capping anyone - and it is
+also what makes the *matches* fair, which is the original goal. Not implemented yet.

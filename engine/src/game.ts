@@ -46,6 +46,11 @@ export const FINISH_RATIO = 0.08;   // and only late in the round (see below)
 // beat fresh larger deposits, liquidity would sit idle. A mild edge keeps value circulating.
 // 1.0 = perfectly neutral. Keep it small - this is a thumb on the scale, not a strategy.
 export const SMALL_EDGE = 1.03;
+// "Dust" (knocked out) has to be a share of YOUR OWN stake, not a flat dollar floor. With a flat
+// $1.20 anyone entering at or below that never became a live fighter at all - they paid the fee
+// and got their stake back untouched, which made the $0.01 minimum meaningless.
+export const DUST_FRAC = 0.03;
+export const dustFor = (f: Fighter) => Math.max(0.005, f.deposited * DUST_FRAC);
 
 // --- deterministic RNG: xmur3 seed -> sfc32 stream (fast, reproducible across JS engines) ---
 function xmur3(str: string) {
@@ -63,7 +68,7 @@ function rngFromSeed(seed: string) { const s = xmur3(seed); return sfc32(s(), s(
 export function seedHash(seed: string): string { return createHash("sha256").update(seed).digest("hex"); }
 
 export const ring = (f: Fighter) => f.bull + f.uwu;
-const aliveF = (f: Fighter, dust: number) => !f.dead && ring(f) > dust;
+const aliveF = (f: Fighter, _dust: number) => !f.dead && ring(f) > dustFor(f);
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
 export const radiusFor = (f: Fighter) => clamp(7 + 1.7 * Math.sqrt(ring(f)), 7, 26);
 
@@ -203,8 +208,8 @@ export function stepSim(s: SimState): HitLog[] {
     const snapA = { bull: a.bull, uwu: a.uwu }, snapB = { bull: b.bull, uwu: b.uwu };
     const hitOnB = planHit(b, snapB, dAB), hitOnA = planHit(a, snapA, dBA);
     applyHit(a, b, hitOnB); applyHit(b, a, hitOnA);
-    if (ring(a) <= cfg.dust) a.dead = true;
-    if (ring(b) <= cfg.dust) b.dead = true;
+    if (ring(a) <= dustFor(a)) a.dead = true;
+    if (ring(b) <= dustFor(b)) b.dead = true;
   }
 
   s.t++;
