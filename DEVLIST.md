@@ -38,3 +38,14 @@
       (needs ~0.05 devnet SOL in the vault).
 - [ ] Lobby currently shows bots only until a real player deploys; consider showing pending
       entries live during the lobby.
+
+## 2026-08-05 — Phantom vs localnet
+
+- [x] **Phantom blocks every localnet transaction.** It simulates transactions on Phantom's own
+      servers, which cannot reach a validator on your machine — so it reports "Failed to simulate
+      the results of this request", shows a 0 SOL fee, and refuses to proceed. Nothing was
+      misconfigured; this is a hard limitation of Phantom + localhost.
+      **Fix:** added a **dev wallet** — a burner keypair kept in the browser that signs locally
+      and submits straight to the game's RPC. One click also auto-funds it with SOL + both
+      tokens. Phantom stays supported (and is now sign-only, with the page submitting the tx)
+      for when we move to public devnet.
