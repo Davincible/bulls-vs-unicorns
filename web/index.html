@@ -574,7 +574,10 @@
   $("#autoConv").addEventListener("click",()=>{const w=W();w.autoConvOn=!w.autoConvOn;w.userCircles.forEach(c=>c.autoConv=w.autoConvOn);$("#autoConv").classList.toggle("on",w.autoConvOn);});
   $("#joinBull").onclick=$("#joinBull2").onclick=()=>{deposit(W(),"bull",room);syncDOM();};
   $("#joinUni").onclick=$("#joinUni2").onclick=()=>{deposit(W(),"unicorn",room);syncDOM();};
-  function convertWallet(to){const from=to==="bull"?"uwu":"bull";if(WALLET[from]<=0.01){$("#walletNote").textContent="No "+from.toUpperCase()+" to convert.";return;}const c=WALLET[from]*(1-FEE);W().treasury[from]+=WALLET[from]*FEE;WALLET[to]+=c;WALLET[from]=0;$("#walletNote").textContent="Converted wallet "+from.toUpperCase()+" → "+to.toUpperCase()+" (1% fee).";saveWallet();syncDOM();}
+  function convertWallet(to){const from=to==="bull"?"uwu":"bull";if(WALLET[from]<=0.01){$("#walletNote").textContent="No "+from.toUpperCase()+" to convert.";return;}
+    if(W().online){ if(!MYWALLET){$("#walletNote").textContent="Connect a wallet first.";return;}
+      if(window.__sendEngine)window.__sendEngine({t:"convert",wallet:MYWALLET,to});
+      $("#walletNote").textContent="Converting "+from.toUpperCase()+" → "+to.toUpperCase()+" (1% fee)…"; return; }const c=WALLET[from]*(1-FEE);W().treasury[from]+=WALLET[from]*FEE;WALLET[to]+=c;WALLET[from]=0;$("#walletNote").textContent="Converted wallet "+from.toUpperCase()+" → "+to.toUpperCase()+" (1% fee).";saveWallet();syncDOM();}
   $("#convBull").onclick=()=>convertWallet("bull"); $("#convUwu").onclick=()=>convertWallet("uwu");
   $("#btnVerify").onclick=verifyLastRound;
   $("#addFunds").onclick=()=>{WALLET.bull+=100;WALLET.uwu+=100;INVESTED+=200;$("#walletNote").textContent="Added $100 BULL + $100 UWU.";saveWallet();syncDOM();};
@@ -603,7 +606,7 @@
     a=b^(b>>>9);b=(c+(c<<3))|0;c=(c<<21)|(c>>>11);d=(d+1)|0;t=(t+d)|0;c=(c+t)|0;return(t>>>0)/4294967296;};}
   function rngFromSeed(seed){const s=xmur3(seed);return sfc32(s(),s(),s(),s());}
 
-  const ARENA={w:900,h:560}, SCOMBAT={speed:112,accel:250,hitCd:430}, FINISH_RATIO=0.12;
+  const ARENA={w:900,h:560}, SCOMBAT={speed:112,accel:250,hitCd:430}, FINISH_RATIO=0.08;
   const sRing=f=>f.bull+f.uwu;
   const sAlive=(f,dust)=>!f.dead&&sRing(f)>dust;
   const sRadius=f=>clamp(7+1.7*Math.sqrt(sRing(f)),7,26);
@@ -648,17 +651,21 @@
       if(p.y<p.r){p.y=p.r;p.vy=Math.abs(p.vy);}
       if(p.y>ARENA.h-p.r){p.y=ARENA.h-p.r;p.vy=-Math.abs(p.vy);}
     }
-    const strike=(atk,def,dmg)=>{
-      const takeEnemy=(def.side==="bull"?def.uwu:def.bull)>0.05;
+    // clash resolved atomically from a pre-clash snapshot (see engine/src/game.ts)
+    const planHit=(def,snap,dmg)=>{
+      const takeEnemy=(def.side==="bull"?snap.uwu:snap.bull)>0.05;
       const tk=takeEnemy?(def.side==="bull"?"uwu":"bull"):def.side;
-      const amt=Math.min(dmg,tk==="bull"?def.bull:def.uwu);
+      return {tk,amt:Math.min(dmg,tk==="bull"?snap.bull:snap.uwu)};
+    };
+    const applyHit=(atk,def,hit)=>{
+      const amt=Math.min(hit.amt,hit.tk==="bull"?def.bull:def.uwu);
       if(amt<=0.01)return;
-      if(tk==="bull")def.bull-=amt; else def.uwu-=amt;
-      if(cfg.mode==="extraction"){ if(tk==="bull")atk.sBull+=amt; else atk.sUwu+=amt; }
-      else { if(tk==="bull")atk.bull+=amt; else atk.uwu+=amt; }
+      if(hit.tk==="bull")def.bull-=amt; else def.uwu-=amt;
+      if(cfg.mode==="extraction"){ if(hit.tk==="bull")atk.sBull+=amt; else atk.sUwu+=amt; }
+      else { if(hit.tk==="bull")atk.bull+=amt; else atk.uwu+=amt; }
       atk.raided+=amt; atk.dmgDealt+=amt; def.dmgTaken+=amt;
       if(amt>atk.bestHit)atk.bestHit=amt;
-      const h={t:s.t,atk:atk.id,def:def.id,amt,tk}; s.hits.push(h); out.push(h);
+      const h={t:s.t,atk:atk.id,def:def.id,amt,tk:hit.tk}; s.hits.push(h); out.push(h);
     };
     for(let i=0;i<A.length;i++)for(let j=i+1;j<A.length;j++){
       const a=A[i],b=A[j];
@@ -676,11 +683,15 @@
       s.pairCd.set(key,nowMs);
       const base=cfg.base*Math.min(cfg.multiplier,4)*(0.7+0.3*ramp);
       const gm=Math.sqrt(sRing(a)*sRing(b))*base;
-      // once you're far smaller than your attacker the 25% cap lifts, so fights finish
-      const capFor=(def,atk)=>sRing(def)<sRing(atk)*FINISH_RATIO?sRing(def):sRing(def)*cfg.hitCapFrac;
+      // both sides risk the same: cap is a share of the SMALLER position (finisher below ratio)
+      const small=Math.min(sRing(a),sRing(b));
+      const lateGame=s.t>s.steps*0.5;   // finisher only in the back half (matches engine)
+      const capFor=(def,atk)=>(lateGame&&sRing(def)<sRing(atk)*FINISH_RATIO)?sRing(def):small*cfg.hitCapFrac;
       const dAB=Math.min(gm*roll(),capFor(b,a));
       const dBA=Math.min(gm*roll(),capFor(a,b));
-      strike(a,b,dAB); strike(b,a,dBA);
+      const snapA={bull:a.bull,uwu:a.uwu}, snapB={bull:b.bull,uwu:b.uwu};
+      const hitOnB=planHit(b,snapB,dAB), hitOnA=planHit(a,snapA,dBA);
+      applyHit(a,b,hitOnB); applyHit(b,a,hitOnA);
       if(sRing(a)<=cfg.dust)a.dead=true;
       if(sRing(b)<=cfg.dust)b.dead=true;
     }
@@ -840,7 +851,7 @@
         if(!window.__onlineUI){ window.__onlineUI=true;      // real balances only — no play-money buttons
           WALLET.bull=0; WALLET.uwu=0; INVESTED=0; saveWallet();   // clear the offline demo balance
           const af=$("#addFunds"); if(af){af.style.display="none";}
-          const cb=$("#convBull"), cu=$("#convUwu"); if(cb)cb.style.display="none"; if(cu)cu.style.display="none";
+          // convert stays: you raid the enemy's coin, so you need to swap back to deploy your side
           const wn=$("#walletNote"); if(wn)wn.textContent="Balance is your on-chain deposit, held by the engine. Faucet → Deposit → Deploy.";
         }
         for(const mode of ["normal","extraction"]){ const w=worlds[mode], s=m[mode]; if(!w||!s)continue;
@@ -853,7 +864,7 @@
             dep:L.dep||0,ret:L.ret||0,games:L.games,wins:L.wins,raided:L.raided||0,best:L.best||0,
             last:0,you:!L.isBot,pnl:L.pnl}));
           // house take / user base come from the engine, not the dead local-sim counters
-          if(s.house){ w.treasury.bull=s.house.take; w.treasury.uwu=0;
+          if(s.house){ w.treasury.bull=s.house.take; w.treasury.uwu=s.house.conv||0;
             w.engDeployed=s.house.deployed; w.acctCreated=s.house.created; w.acctBusted=s.house.busted; }
           // show fighters gathering during the lobby instead of an empty arena
           if(s.phase==="lobby"&&s.list&&w.phase==="lobby"&&w.players.length!==s.list.length){
@@ -901,6 +912,7 @@
       else if(m.t==="depositDone"){ if(m.credited>0){ const tk=m.side==="bull"?"bull":"uwu"; WALLET[tk]+=m.credited; saveWallet(); syncDOM(); note("✅ Deposited "+m.credited.toFixed(2)+" "+tk.toUpperCase()+" into your game wallet."); } else note("Deposit not confirmed yet — try again in a moment."); if(PK)send({t:"chainBalance",wallet:PK}); }
       else if(m.t==="faucetDone"){ note("✅ Faucet sent "+(m.amount||500)+" "+m.side.toUpperCase()+" to your Phantom. Now Deposit it."); setTimeout(()=>{if(PK)send({t:"chainBalance",wallet:PK});},1500); }
       else if(m.t==="fundMeDone"){ note("🎁 Sent: "+m.steps.join(" · ")+". Now set an Amount and hit Deposit."); setTimeout(()=>{if(PK){send({t:"chainBalance",wallet:PK});send({t:"solBalance",wallet:PK});}},1800); }
+      else if(m.t==="converted"){ $("#walletNote").textContent="✅ Converted "+fmt(m.amount)+" → "+m.to.toUpperCase()+" (fee "+fmt(m.fee)+")."; }
       else if(m.t==="solBalance"){ const el=$("#ocSol"); if(el)el.textContent=(m.sol||0).toFixed(3); }
       else if(m.t==="withdrawDone"){ lastWd=null; note("✅ Withdrew "+m.amount.toFixed(2)+" "+m.side.toUpperCase()+" to Phantom."); setTimeout(()=>{if(PK)send({t:"chainBalance",wallet:PK});},1500); }
       else if(m.t==="chainBalance"){ if($("#ocBull"))$("#ocBull").textContent=(m.bull||0).toFixed(2); if($("#ocUwu"))$("#ocUwu").textContent=(m.uwu||0).toFixed(2); }

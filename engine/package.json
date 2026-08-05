@@ -6,9 +6,12 @@
   "scripts": {
     "start": "tsx src/server.ts",
     "setup:devnet": "tsx src/setup-devnet.ts",
-    "test:sim": "tsx src/test-sim.ts"
+    "test:sim": "tsx src/test-sim.ts",
+    "study": "tsx src/study.ts"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.98.4",

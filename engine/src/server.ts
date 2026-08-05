@@ -11,7 +11,7 @@ import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildD
 import { RPC } from "./chain.ts";
 
 const PORT = Number(process.env.PORT || 8090);
-const FEE = 0.002, CAP = 100;
+const FEE = 0.002, CAP = 100, CONVERT_FEE = 0.01;
 
 // ---- ledger: real players (by wallet) + persistent bot accounts ----
 interface Account { id: string; name: string; side: Side; bull: number; uwu: number; isBot: boolean; dep: number; ret: number; games: number; wins: number;
@@ -23,6 +23,7 @@ const POP_START = 22, POP_GROWTH = 0.7, POP_MAX = 90;
 const rounds: Record<Mode, number> = { normal: 0, extraction: 0 };
 // house take: the 0.2% skimmed on every deploy, tracked per mode
 const treasury: Record<Mode, number> = { normal: 0, extraction: 0 };
+let convFees = 0;   // 1% taken when players swap raided enemy coin back to their own side
 const totalDeployed: Record<Mode, number> = { normal: 0, extraction: 0 };
 const created: Record<Mode, number> = { normal: 0, extraction: 0 };
 const bustedCount: Record<Mode, number> = { normal: 0, extraction: 0 };
@@ -154,7 +155,7 @@ setInterval(() => {
     // who's already in the lobby, so the arena shows fighters gathering instead of sitting empty
     list: s.phase === "lobby" ? s.entries.slice(0, 40).map(e => ({ id: e.id, name: nameFor(e.id), side: e.side, stake: e.stake })) : [],
     leaders: leadersFor(mode),
-    house: { take: treasury[mode], deployed: totalDeployed[mode],
+    house: { take: treasury[mode], conv: convFees, deployed: totalDeployed[mode],
              accounts: botsFor(mode).length, created: created[mode], busted: bustedCount[mode] } }; };
   broadcast({ t: "state", normal: snap("normal"), extraction: snap("extraction"), accounts: { normal: botsFor("normal").length, extraction: botsFor("extraction").length } });
 }, 1000);
@@ -234,6 +235,20 @@ wss.on("connection", (ws) => {
         try { const sig = await withdraw(m.wallet, m.side, amt); a.wOut = (a.wOut||0) + amt; ws.send(JSON.stringify({ t: "withdrawDone", side: m.side, amount: amt, sig })); }
         catch (e) { if (m.side === "bull") a.bull += amt; else a.uwu += amt; pushBalance(m.wallet);
                     ws.send(JSON.stringify({ t: "error", msg: "Withdraw failed: " + (e as Error).message })); }
+      } else if (m.t === "convert") {          // { wallet, to:'bull'|'uwu', amount? }
+        // You raid the ENEMY's coin, so your own side's token drains while theirs piles up.
+        // Without this you eventually cannot deploy on your own side at all.
+        const to: Side = m.to === "bull" ? "bull" : "uwu";
+        const a = acct(m.wallet, to);
+        const avail = to === "bull" ? a.uwu : a.bull;
+        const amt = Math.min(Number(m.amount) > 0 ? Number(m.amount) : avail, avail);
+        if (amt < 0.01) return ws.send(JSON.stringify({ t: "error", msg: "Nothing to convert." }));
+        const fee = amt * CONVERT_FEE;
+        if (to === "bull") { a.uwu -= amt; a.bull += amt - fee; }
+        else { a.bull -= amt; a.uwu += amt - fee; }
+        convFees += fee;
+        ws.send(JSON.stringify({ t: "converted", to, amount: amt, fee }));
+        pushBalance(m.wallet);
       } else if (m.t === "chainBalance") {                    // on-chain (Phantom) balances
         if (!chainReady()) return;
         const [bull, uwu] = await Promise.all([walletTokenBalance(m.wallet, "bull"), walletTokenBalance(m.wallet, "uwu")]);

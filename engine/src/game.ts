@@ -36,7 +36,7 @@ export interface RoundResult {
 export const ARENA = { w: 900, h: 560 };
 export const COMBAT = { speed: 112, accel: 250, hitCd: 430 };
 // below this size ratio vs your attacker, the per-hit cap no longer protects you
-export const FINISH_RATIO = 0.12;
+export const FINISH_RATIO = 0.08;   // and only late in the round (see below)
 
 // --- deterministic RNG: xmur3 seed -> sfc32 stream (fast, reproducible across JS engines) ---
 function xmur3(str: string) {
@@ -81,6 +81,9 @@ export function createSim(seed: string, entries: Entry[], cfg: RoundConfig): Sim
     return f;
   });
   const steps = Math.floor(cfg.battleMs / cfg.tickMs);
+  // NOTE: a damage handicap for the lighter side was tried here and reverted - at a 1.4x cap it
+  // swung Normal from favourite +8%/underdog -11% to underdog +64%/favourite -49% and also broke
+  // Extraction, which was already neutral. Side balance should be handled in the lobby instead.
   return { rnd, F, byId: new Map(F.map(f => [f.id, f])), hits: [], t: 0, steps, cfg, pairCd: new Map(), endTick: steps, done: false };
 }
 
@@ -126,17 +129,24 @@ export function stepSim(s: SimState): HitLog[] {
   }
 
   // --- collisions: separate, exchange momentum, and fight if they're on opposite sides ---
-  const strike = (atk: Fighter, def: Fighter, dmg: number) => {
-    const takeEnemy = (def.side === "bull" ? def.uwu : def.bull) > 0.05;   // stolen coins are lost first
+  // A clash is resolved ATOMICALLY. Both blows are planned against a snapshot taken before
+  // either lands, then applied. Resolving them in sequence let the first fighter's stolen coins
+  // sit in its ring before the counter-blow was measured, which in Normal mode handed whoever
+  // deployed first a compounding edge (they won ~100% of rounds).
+  const planHit = (def: Fighter, snap: { bull: number; uwu: number }, dmg: number) => {
+    const takeEnemy = (def.side === "bull" ? snap.uwu : snap.bull) > 0.05;   // stolen coins are lost first
     const tk: Side = takeEnemy ? (def.side === "bull" ? "uwu" : "bull") : def.side;
-    const amt = Math.min(dmg, tk === "bull" ? def.bull : def.uwu);
+    return { tk, amt: Math.min(dmg, tk === "bull" ? snap.bull : snap.uwu) };
+  };
+  const applyHit = (atk: Fighter, def: Fighter, hit: { tk: Side; amt: number }) => {
+    const amt = Math.min(hit.amt, hit.tk === "bull" ? def.bull : def.uwu);
     if (amt <= 0.01) return;
-    if (tk === "bull") def.bull -= amt; else def.uwu -= amt;
-    if (cfg.mode === "extraction") { if (tk === "bull") atk.sBull += amt; else atk.sUwu += amt; }
-    else { if (tk === "bull") atk.bull += amt; else atk.uwu += amt; }
+    if (hit.tk === "bull") def.bull -= amt; else def.uwu -= amt;
+    if (cfg.mode === "extraction") { if (hit.tk === "bull") atk.sBull += amt; else atk.sUwu += amt; }
+    else { if (hit.tk === "bull") atk.bull += amt; else atk.uwu += amt; }
     atk.raided += amt; atk.dmgDealt += amt; def.dmgTaken += amt;
     if (amt > atk.bestHit) atk.bestHit = amt;
-    const h: HitLog = { t: s.t, atk: atk.id, def: def.id, amt, tk };
+    const h: HitLog = { t: s.t, atk: atk.id, def: def.id, amt, tk: hit.tk };
     s.hits.push(h); out.push(h);
   };
 
@@ -156,14 +166,21 @@ export function stepSim(s: SimState): HitLog[] {
     s.pairCd.set(key, nowMs);
     const base = cfg.base * Math.min(cfg.multiplier, 4) * (0.7 + 0.3 * ramp);
     const gm = Math.sqrt(ring(a) * ring(b)) * base;
-    // The 25% cap is per-hit protection so nobody gets one-shot, but it also made stragglers
-    // unkillable: a tiny fighter only ever loses 25% of a tiny number while raiding back just as
-    // much. Once you're far smaller than your opponent the cap lifts, so fights actually finish.
+    // Both sides of a clash risk the same amount: the cap is a share of the SMALLER position.
+    // Capping by the defender's own size let a minnow risk pennies while raiding a whale for
+    // real money - tiny stakes returned ~+290% ROI against the whale's -26%.
+    // Below FINISH_RATIO the cap lifts so hopeless stragglers actually die.
+    const small = Math.min(ring(a), ring(b));
+    // The finisher only switches on in the back half of the round. Applying it from the start
+    // meant a small stake was deleted on contact, which made small play a trap (-58% ROI).
+    const lateGame = s.t > s.steps * 0.5;
     const capFor = (def: Fighter, atk: Fighter) =>
-      ring(def) < ring(atk) * FINISH_RATIO ? ring(def) : ring(def) * cfg.hitCapFrac;
+      (lateGame && ring(def) < ring(atk) * FINISH_RATIO) ? ring(def) : small * cfg.hitCapFrac;
     const dAB = Math.min(gm * roll(), capFor(b, a));
     const dBA = Math.min(gm * roll(), capFor(a, b));
-    strike(a, b, dAB); strike(b, a, dBA);
+    const snapA = { bull: a.bull, uwu: a.uwu }, snapB = { bull: b.bull, uwu: b.uwu };
+    const hitOnB = planHit(b, snapB, dAB), hitOnA = planHit(a, snapA, dBA);
+    applyHit(a, b, hitOnB); applyHit(b, a, hitOnA);
     if (ring(a) <= cfg.dust) a.dead = true;
     if (ring(b) <= cfg.dust) b.dead = true;
   }
