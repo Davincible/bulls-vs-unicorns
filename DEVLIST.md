@@ -20,12 +20,16 @@
       button (engine airdrops SOL for fees and mints both tokens), a SOL balance readout, and a
       copyable RPC URL with Phantom setup steps.
 
+- [x] **Phantom network** — answer is Phantom → Developer Settings → **Testnet Mode ON** +
+      **Solana Localnet** (its built-in `http://localhost:8899`). No custom RPC needed. Verified
+      the validator answers POST with extension-friendly CORS on both `127.0.0.1` and `localhost`.
+      ("Used HTTP Method is not allowed" is just the RPC rejecting a browser GET — harmless.)
+
 ## Open
 
-- [ ] **Deposits need Phantom on the game's RPC.** Tokens live on the local validator
-      (`http://127.0.0.1:8899`). Until Phantom points there, every deposit fails with
-      "not enough SOL". Public devnet would be friction-free but its faucet is rate-limiting
-      this machine, so the vault can't be funded there yet.
+- [ ] **Public devnet demo.** Still blocked: the devnet faucet rate-limits this machine, so the
+      vault can't be funded there and the mints can't be recreated on public devnet. Localnet
+      works fully in the meantime.
 - [ ] **Trustless custody (Anchor vault).** `programs/vault/src/lib.rs` is written but not
       deployed — needs a C toolchain in WSL (`sudo apt install -y build-essential`), which needs
       the user's password. Custody is currently an engine-held keypair: fine for devnet,
