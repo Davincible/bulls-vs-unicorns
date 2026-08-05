@@ -177,7 +177,14 @@
           <h3>Deploy this round <span class="youtag" id="depMode">NORMAL</span></h3>
           <span class="wlabel" style="margin-top:0">Stake (max $100/side)</span>
           <div class="seg" id="rooms"><button data-room="5" class="on">$5</button><button data-room="20">$20</button><button data-room="50">$50</button><button data-room="100">$100</button></div>
-          <div class="row2"><button class="abtn jb" id="joinBull">Deploy BULL 🐂</button><button class="abtn ju" id="joinUni">Deploy UWU 🦄</button></div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+            <span style="font-family:var(--mono);font-size:13px;color:var(--gold)">$</span>
+            <input id="stakeAmt" type="number" min="1" max="100" step="1" value="5"
+              style="width:76px;background:var(--panel2);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:6px 8px;font-family:var(--mono);font-size:14px">
+            <input id="stakeRange" type="range" min="1" max="100" step="1" value="5" style="flex:1;accent-color:var(--gold)">
+            <button class="abtn ghost" id="stakeMax" style="padding:6px 10px;font-size:11px">Max</button>
+          </div>
+          <div class="row2" style="margin-top:8px"><button class="abtn jb" id="joinBull">Deploy BULL 🐂</button><button class="abtn ju" id="joinUni">Deploy UWU 🦄</button></div>
           <div class="note" id="walletNote">Deploy on BOTH sides at once if you like. Deposits open only in the lobby.</div>
         </div>
         <div class="panelC">
@@ -441,9 +448,15 @@
     for(let i=w.floaters.length-1;i>=0;i--){const f=w.floaters[i];f.life-=0.018;f.y-=0.7;if(f.life<=0){w.floaters.splice(i,1);continue;}ctx.globalAlpha=Math.max(0,f.life);ctx.fillStyle=f.col;ctx.font=(f.big?"800 22px ":"700 14px ")+"system-ui";ctx.textAlign="center";ctx.fillText(f.txt,f.x,f.y);}ctx.globalAlpha=1;
     for(let i=w.particles.length-1;i>=0;i--){const p=w.particles[i];p.x+=p.vx;p.y+=p.vy;p.vy+=0.15;p.life-=0.02;if(p.life<=0){w.particles.splice(i,1);continue;}ctx.globalAlpha=p.life;ctx.fillStyle=p.c;ctx.fillRect(p.x,p.y,3,3);}ctx.globalAlpha=1;ctx.restore();
     const ban=$("#banner");if(w.bannerA>0){ban.textContent=w.bannerTxt;ban.style.opacity=w.bannerA;ban.style.color=w.bannerTxt.indexOf("BULLS")>=0?"#18e08a":"#c46bff";}else ban.style.opacity=0;
-    const hud=$("#myhud");if(w.userCircles.length){hud.style.display="block";hud.textContent="▼ YOU · "+w.userCircles.map(x=>fmt(ring(x))+(x.side==="bull"?"🐂":"🦄")).join(" + ")+(MODE[w.mode].extract?" · banked "+fmt(w.userCircles.reduce((s,c)=>s+(c.banked||0),0)):"");}else hud.style.display="none";
+    const hud=$("#myhud");
+    if(w.userCircles.length){hud.style.display="block";
+      // banked is split by token — you bank whatever you raided, which is mostly the ENEMY's coin
+      const bB=w.userCircles.reduce((s,c)=>s+(c.sBull||0),0), bU=w.userCircles.reduce((s,c)=>s+(c.sUwu||0),0);
+      const bank=MODE[w.mode].extract?" · banked "+fmt(bB)+"🐂 + "+fmt(bU)+"🦄":"";
+      hud.textContent="▼ YOU · "+w.userCircles.map(x=>fmt(ring(x))+(x.side==="bull"?"🐂":"🦄")).join(" + ")+bank;
+    }else hud.style.display="none";
     const hp=w.players.find(p=>p.id===w.hoverId&&alive(p)),tip=$("#tip");
-    if(hp){const bk=hp.isUser?(hp.banked||0):0, pl=tot(hp)+bk-hp.deposited;tip.innerHTML=`<div class="nm"><span class="dot ${hp.side==="bull"?"bull":"uni"}"></span>${hp.isUser?'<span class="youtag">YOU</span> ':''}${hp.name}</div><div class="r"><span>Ring size</span><b>${fmt(ring(hp))}</b></div><div class="r"><span>🐂 BULL held</span><b>${(bullTot(hp)+(hp.isUser&&hp.side==='bull'?bk:0)).toFixed(1)}</b></div><div class="r"><span>🦄 UWU held</span><b>${(uwuTot(hp)+(hp.isUser&&hp.side==='unicorn'?bk:0)).toFixed(1)}</b></div><div class="r"><span>Raided</span><b>${fmt(hp.raided)}</b></div><div class="r"><span>Won/lost</span><b class="${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}</b></div><div class="r" style="color:var(--ink-faint);margin-top:3px">click for full profile</div>`;
+    if(hp){const bk=safeV(hp), pl=tot(hp)-hp.deposited;tip.innerHTML=`<div class="nm"><span class="dot ${hp.side==="bull"?"bull":"uni"}"></span>${hp.isUser?'<span class="youtag">YOU</span> ':''}${hp.name}</div><div class="r"><span>Ring size</span><b>${fmt(ring(hp))}</b></div><div class="r"><span>🐂 BULL held</span><b>${bullTot(hp).toFixed(1)}</b></div><div class="r"><span>🦄 UWU held</span><b>${uwuTot(hp).toFixed(1)}</b></div>${bk>0?`<div class="r"><span>banked (safe)</span><b style="color:var(--gold)">${fmt(hp.sBull||0)}🐂 + ${fmt(hp.sUwu||0)}🦄</b></div>`:''}<div class="r"><span>Raided</span><b>${fmt(hp.raided)}</b></div><div class="r"><span>Won/lost</span><b class="${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}</b></div><div class="r" style="color:var(--ink-faint);margin-top:3px">click for full profile</div>`;
       const r=canvas.getBoundingClientRect();tip.style.opacity=1;let tx=hp.x*(r.width/W2)+18,ty=hp.y*(r.height/H2)-10;if(tx+180>r.width)tx=hp.x*(r.width/W2)-190;if(ty<44)ty=44;tip.style.left=tx+"px";tip.style.top=ty+"px";}else tip.style.opacity=0;
     requestAnimationFrame(render);
   }
@@ -454,14 +467,16 @@
     return `<div class="csize"><div class="compbar" title="🐂 ${fmt(bull)} BULL · 🦄 ${fmt(uwu)} UWU" style="width:${wpct}%"><div class="track"><div class="cg" style="width:${gp}%"></div><div class="cp" style="width:${100-gp}%"></div></div><div class="div" style="left:${gp}%"></div></div><span class="csizeNum">${fmt(t)}</span></div>`;}
 
   function openProfile(w,p){
-    const r=(w.accounts&&w.accounts.find(a=>a.name===p.name))||{dep:0,ret:0,games:0,wins:0,raided:0,best:0,bankroll:0}; const side=p.side, bk=p.isUser?(p.banked||0):0, pl=tot(p)+bk-p.deposited, av=side==="bull"?"🐂":"🦄";
+    const r=(w.accounts&&w.accounts.find(a=>a.name===p.name))||{dep:0,ret:0,games:0,wins:0,raided:0,best:0,bankroll:0}; const side=p.side, bk=safeV(p), pl=tot(p)-p.deposited, av=side==="bull"?"🐂":"🦄";
     const atPnl=(r.ret||0)-(r.dep||0);
     $("#pcard").innerHTML=`<div class="top"><div class="av ${side==="bull"?'bull':'uni'}">${av}</div><div><h3>${p.isUser?'You':p.name}</h3><div class="sub">${side==="bull"?"Bull":"Unicorn"} · ${alive(p)?'alive':'💀 out'}</div></div><button class="close" id="pClose">✕</button></div>
       <div class="sec">This round</div>
-      <div class="pg"><div class="pstat"><div class="v">${fmt(tot(p)+bk)}</div><div class="n">Bag size</div></div>
+      <div class="pg"><div class="pstat"><div class="v">${fmt(tot(p))}</div><div class="n">Bag size</div></div>
         <div class="pstat"><div class="v ${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}</div><div class="n">Won / loss</div></div>
-        <div class="pstat"><div class="v" style="color:var(--bull)">${(bullTot(p)+(p.isUser&&side==='bull'?bk:0)).toFixed(1)}</div><div class="n">🐂 BULL held</div></div>
-        <div class="pstat"><div class="v" style="color:var(--uni)">${(uwuTot(p)+(p.isUser&&side==='unicorn'?bk:0)).toFixed(1)}</div><div class="n">🦄 UWU held</div></div>
+        <div class="pstat"><div class="v" style="color:var(--bull)">${bullTot(p).toFixed(1)}</div><div class="n">🐂 BULL held</div></div>
+        <div class="pstat"><div class="v" style="color:var(--uni)">${uwuTot(p).toFixed(1)}</div><div class="n">🦄 UWU held</div></div>
+        ${bk>0?`<div class="pstat"><div class="v" style="color:var(--gold)">${(p.sBull||0).toFixed(1)}</div><div class="n">🐂 banked (safe)</div></div>
+        <div class="pstat"><div class="v" style="color:var(--gold)">${(p.sUwu||0).toFixed(1)}</div><div class="n">🦄 banked (safe)</div></div>`:''}
         <div class="pstat"><div class="v">${fmt(p.deposited)}</div><div class="n">Deposited</div></div>
         <div class="pstat"><div class="v">${fmt(p.raided)}</div><div class="n">Raided this round</div></div>
         <div class="pstat"><div class="v">${fmt(p.dmgDealt)}</div><div class="n">Damage dealt</div></div>
@@ -568,7 +583,23 @@
   setInterval(syncDOM,110);
 
   let room=5;
-  $("#rooms").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;room=+b.dataset.room;document.querySelectorAll("#rooms button").forEach(x=>x.classList.toggle("on",x===b));});
+  const STAKE_MAX=100;
+  // free-form stake: presets, a number box and a slider all drive the same value (max $100/side)
+  function setStake(v,from){
+    room=clamp(Math.round((+v||0)*100)/100,1,STAKE_MAX);
+    if(from!=="num"&&$("#stakeAmt"))$("#stakeAmt").value=room;
+    if(from!=="range"&&$("#stakeRange"))$("#stakeRange").value=Math.min(STAKE_MAX,room);
+    document.querySelectorAll("#rooms button").forEach(x=>x.classList.toggle("on",+x.dataset.room===room));
+  }
+  $("#rooms").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;setStake(+b.dataset.room);});
+  $("#stakeAmt").addEventListener("input",e=>setStake(e.target.value,"num"));
+  $("#stakeRange").addEventListener("input",e=>setStake(e.target.value,"range"));
+  $("#stakeMax").onclick=()=>{
+    const w=W(), tk=null;   // "Max" = the most you can still put on either side this round
+    const avail=Math.max(WALLET.bull,WALLET.uwu);
+    setStake(Math.min(STAKE_MAX,Math.floor(avail)||1));
+  };
+  setStake(5);
   $("#autobuy").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;W().autoPct=+b.dataset.pct;document.querySelectorAll("#autobuy button").forEach(x=>x.classList.toggle("on",x===b));$("#walletNote").textContent=+b.dataset.pct>0?("Auto-deploy ("+MODE[activeMode].cap+") on: "+(+b.dataset.pct*100)+"% each round."):"Auto-deploy off for "+MODE[activeMode].cap+".";});
   $("#autoside").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;W().autoSide=b.dataset.side;document.querySelectorAll("#autoside button").forEach(x=>x.classList.toggle("on",x===b));});
   $("#autoConv").addEventListener("click",()=>{const w=W();w.autoConvOn=!w.autoConvOn;w.userCircles.forEach(c=>c.autoConv=w.autoConvOn);$("#autoConv").classList.toggle("on",w.autoConvOn);});

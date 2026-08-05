@@ -9,6 +9,7 @@ import type { RoundResult, RoundState } from "./round.ts";
 import type { Mode, Side } from "./game.ts";
 import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildDepositTx, walletTokenBalance, airdropSol, solBalance } from "./chain-ops.ts";
 import { RPC } from "./chain.ts";
+import { loadSnapshot, saveSnapshot, flushSnapshot } from "./store.ts";
 
 const PORT = Number(process.env.PORT || 8090);
 const FEE = 0.002, CAP = 100, CONVERT_FEE = 0.01;
@@ -24,6 +25,23 @@ const rounds: Record<Mode, number> = { normal: 0, extraction: 0 };
 // house take: the 0.2% skimmed on every deploy, tracked per mode
 const treasury: Record<Mode, number> = { normal: 0, extraction: 0 };
 let convFees = 0;   // 1% taken when players swap raided enemy coin back to their own side
+
+function persist() {
+  saveSnapshot({ accounts: [...ledger.values()], treasury, totalDeployed, created,
+                 busted: bustedCount, convFees, rounds });
+}
+function restore() {
+  const snap = loadSnapshot(); if (!snap) return;
+  for (const a of snap.accounts || []) ledger.set(a.id, a);
+  Object.assign(treasury, snap.treasury || {});
+  Object.assign(totalDeployed, snap.totalDeployed || {});
+  Object.assign(created, snap.created || {});
+  Object.assign(bustedCount, snap.busted || {});
+  Object.assign(rounds, snap.rounds || {});
+  convFees = snap.convFees || 0;
+  const players = [...ledger.values()].filter(a => !a.isBot);
+  console.log(`restored ledger: ${ledger.size} accounts (${players.length} real) from disk`);
+}
 const totalDeployed: Record<Mode, number> = { normal: 0, extraction: 0 };
 const created: Record<Mode, number> = { normal: 0, extraction: 0 };
 const bustedCount: Record<Mode, number> = { normal: 0, extraction: 0 };
@@ -101,14 +119,17 @@ async function onSettle(mode: Mode, r: RoundResult, s: RoundState) {
               settlement: r.settlement, hits: r.hits.length,
               community: { total: botsFor(mode).length + realPlaying, joined, busted, cap: popCap } });
   for (const w of touched) pushBalance(w);
+  persist();
 }
 
 const runners: Record<Mode, RoundRunner> = {
   normal: new RoundRunner("normal", (r, s) => onSettle("normal", r, s)),
   extraction: new RoundRunner("extraction", (r, s) => onSettle("extraction", r, s)),
 };
-// start below the population cap so the arena visibly fills up as rounds go by
-seedBots("normal", 18); seedBots("extraction", 18);
+restore();
+// only seed a fresh community if we didn't restore one
+if (botsFor("normal").length === 0) seedBots("normal", 18);
+if (botsFor("extraction").length === 0) seedBots("extraction", 18);
 
 // bots auto-enter each lobby (a fraction, with a fee taken on deploy)
 function botsEnter(mode: Mode) {
@@ -162,7 +183,16 @@ setInterval(() => {
 
 // ---- websocket ----
 const wss = new WebSocketServer({ port: PORT });
-wss.on("error", (e) => console.error("wss error:", (e as Error).message));
+wss.on("error", (e) => {
+  const err = e as NodeJS.ErrnoException;
+  // Never limp along on a taken port: a second engine writing the same ledger file would
+  // clobber real balances. Die loudly instead.
+  if (err.code === "EADDRINUSE") {
+    console.error(`FATAL: port ${PORT} is already in use — another engine is running. Exiting so the ledger stays consistent.`);
+    process.exit(1);
+  }
+  console.error("wss error:", err.message);
+});
 wss.on("connection", (ws) => {
   clients.add(ws);
   ws.send(JSON.stringify({ t: "chain", ready: chainReady(), vault: chainReady() ? vaultPubkey() : null, mints: mints(), rpc: RPC }));
@@ -186,16 +216,21 @@ wss.on("connection", (ws) => {
       if (m.t === "enter") {                                  // { t:'enter', wallet, mode, side, stake }
         const a = acct(m.wallet, m.side);
         const bank = m.side === "bull" ? a.bull : a.uwu;
-        const stake = Math.min(Number(m.stake)||0, bank, CAP);
-        if (stake < 1) return ws.send(JSON.stringify({ t: "error", msg: "Insufficient game balance — deposit or use the faucet." }));
         const rn = runners[m.mode as Mode]; if (!rn) return;
         if (rn.state.phase !== "lobby") return ws.send(JSON.stringify({ t: "error", msg: "Deposits closed — wait for the next lobby." }));
+        // the CAP is per side per round, so topping up cannot push you past it
+        const already = rn.state.entries.filter(e => e.id === m.wallet && e.side === m.side)
+                          .reduce((n, e) => n + e.stake / (1 - FEE), 0);
+        const headroom = Math.max(0, CAP - already);
+        const stake = Math.min(Number(m.stake)||0, bank, headroom);
+        if (headroom < 1) return ws.send(JSON.stringify({ t: "error", msg: `You're at the $${CAP} cap on that side this round.` }));
+        if (stake < 1) return ws.send(JSON.stringify({ t: "error", msg: "Insufficient game balance — deposit or use the faucet." }));
         if (m.side === "bull") a.bull -= stake; else a.uwu -= stake;   // debit real balance into the round
         a.dep += stake; a.side = m.side;
         treasury[m.mode as Mode] += stake * FEE; totalDeployed[m.mode as Mode] += stake;
         rn.enter(m.wallet, m.side, stake * (1 - FEE));
         ws.send(JSON.stringify({ t: "entered", mode: m.mode, side: m.side, stake }));
-        pushBalance(m.wallet);
+        pushBalance(m.wallet); persist();
       } else if (m.t === "faucet") {                          // { t:'faucet', wallet, side }
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
         const sig = await faucet(m.wallet, m.side, 500);
@@ -223,7 +258,7 @@ wss.on("connection", (ws) => {
         const credited = await verifyDeposit(m.sig, m.side);
         if (credited > 0) { const a = acct(m.wallet, m.side); if (m.side === "bull") a.bull += credited; else a.uwu += credited; a.depIn = (a.depIn||0) + credited; }
         ws.send(JSON.stringify({ t: "depositDone", side: m.side, credited, sig: m.sig }));
-        pushBalance(m.wallet);
+        pushBalance(m.wallet); persist();
       } else if (m.t === "withdraw") {                        // { t:'withdraw', wallet, side, amount }
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
         const a = acct(m.wallet, m.side);
@@ -232,7 +267,7 @@ wss.on("connection", (ws) => {
         if (amt < 1) return ws.send(JSON.stringify({ t: "error", msg: "Nothing to withdraw on that side." }));
         if (m.side === "bull") a.bull -= amt; else a.uwu -= amt;       // debit first, refund on failure
         pushBalance(m.wallet);
-        try { const sig = await withdraw(m.wallet, m.side, amt); a.wOut = (a.wOut||0) + amt; ws.send(JSON.stringify({ t: "withdrawDone", side: m.side, amount: amt, sig })); }
+        try { const sig = await withdraw(m.wallet, m.side, amt); a.wOut = (a.wOut||0) + amt; persist(); ws.send(JSON.stringify({ t: "withdrawDone", side: m.side, amount: amt, sig })); }
         catch (e) { if (m.side === "bull") a.bull += amt; else a.uwu += amt; pushBalance(m.wallet);
                     ws.send(JSON.stringify({ t: "error", msg: "Withdraw failed: " + (e as Error).message })); }
       } else if (m.t === "convert") {          // { wallet, to:'bull'|'uwu', amount? }
@@ -248,7 +283,7 @@ wss.on("connection", (ws) => {
         else { a.bull -= amt; a.uwu += amt - fee; }
         convFees += fee;
         ws.send(JSON.stringify({ t: "converted", to, amount: amt, fee }));
-        pushBalance(m.wallet);
+        pushBalance(m.wallet); persist();
       } else if (m.t === "chainBalance") {                    // on-chain (Phantom) balances
         if (!chainReady()) return;
         const [bull, uwu] = await Promise.all([walletTokenBalance(m.wallet, "bull"), walletTokenBalance(m.wallet, "uwu")]);
@@ -259,4 +294,7 @@ wss.on("connection", (ws) => {
     } catch (e) { ws.send(JSON.stringify({ t: "error", msg: (e as Error).message })); }
   });
 });
+for (const sig of ["SIGINT", "SIGTERM"] as const)
+  process.on(sig, () => { flushSnapshot(); console.log("ledger flushed to disk"); process.exit(0); });
+process.on("exit", () => flushSnapshot());
 console.log(`⚔  engine live on ws://localhost:${PORT}  (authoritative rounds + hybrid bots) chain=${chainReady()}`);

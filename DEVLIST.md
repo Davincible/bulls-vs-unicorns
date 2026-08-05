@@ -114,3 +114,27 @@ already-decided result - damage rained on everyone with nothing on screen causin
 
 - Projectile visuals (fighters shooting little projectiles at their target instead of contact
   damage). Noted as a nice-to-have; current collision model already drives hits.
+
+## 2026-08-05 - persistence, stakes, and a data-integrity bug
+
+- [x] **Restarting the engine wiped every player's balance.** The ledger was in memory only, so a
+      crash or redeploy erased what players were owed while their tokens sat in the vault. This is
+      what happened mid-session. `engine/src/store.ts` now snapshots the ledger to
+      `engine/data/ledger.json` (debounced, atomic rename) and restores on boot; verified a
+      deposit of $250 survives a hard kill.
+- [x] **Multiple engines were running at once.** `wss.on("error")` swallowed EADDRINUSE, so failed
+      instances kept running and several engines wrote the same ledger file, clobbering each
+      other. The engine now exits loudly on a taken port.
+- [x] **Free-form entry amount** - number box + slider + Max button, $1-$100, alongside the
+      presets. The $100 cap is now enforced per side per round, so topping up cannot exceed it
+      (verified: $70 then $70 -> second accepted at $30, total exactly $100).
+- [x] **Banked shows per token** in the HUD and the fighter profile - you bank whatever you
+      raided, which is mostly the enemy's coin, so a single total was misleading.
+
+## Balance status (after the fairness fixes)
+
+- Extraction: every stake size, side and position within about +/-1.7% ROI. No dominant play.
+- Normal: sizes within about +/-8% (small/medium slightly ahead, minnows worst), but joining the
+  **favourite side is still worth roughly +6-8% vs -8-11%** for the underdog. Fix this in the
+  lobby (deploy caps / matchmaking) - a damage handicap was tried and made it far worse.
+- House edge measures exactly 0.200% of deploys in every run.

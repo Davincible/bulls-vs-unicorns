@@ -7,7 +7,8 @@
     "start": "tsx src/server.ts",
     "setup:devnet": "tsx src/setup-devnet.ts",
     "test:sim": "tsx src/test-sim.ts",
-    "study": "tsx src/study.ts"
+    "study": "tsx src/study.ts",
+    "strategy": "tsx src/strategy.ts"
   },
   "engines": {
     "node": ">=18"
