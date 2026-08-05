@@ -22,6 +22,7 @@ export interface Fighter {
 export interface RoundConfig {
   mode: Mode; multiplier: number; base: number; hitCapFrac: number;
   battleMs: number; tickMs: number; dust: number;
+  matchTol?: number;   // allowed side-size mismatch before the excess is refunded (0 = strict)
 }
 export interface HitLog { t: number; atk: string; def: string; amt: number; tk: Side; }
 export interface RoundResult {
@@ -93,8 +94,9 @@ export function createSim(seed: string, entries: Entry[], cfg: RoundConfig): Sim
   // cannot be an edge, and nobody's stake is capped or confiscated.
   const tot = { bull: 0, uwu: 0 };
   for (const e of entries) tot[e.side] += e.stake;
-  const matched = Math.min(tot.bull, tot.uwu);
-  const inPlayFrac = (side: Side) => (tot[side] > 0 ? Math.min(1, matched / tot[side]) : 1);
+  const tol = cfg.matchTol || 0;   // e.g. 0.10 lets a side be up to 10% heavier in play
+  const capFor2 = (side: Side) => tot[side === "bull" ? "uwu" : "bull"] * (1 + tol);
+  const inPlayFrac = (side: Side) => (tot[side] > 0 ? Math.min(1, capFor2(side) / tot[side]) : 1);
   const F: Fighter[] = entries.map(e => {
     const frac = inPlayFrac(e.side);
     const inPlay = e.stake * frac;

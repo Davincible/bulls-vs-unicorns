@@ -1,0 +1,9 @@
+{
+  "cluster": "mainnet-beta",
+  "vault": "REPLACE_WITH_ANCHOR_VAULT_PDA",
+  "mints": {
+    "bull": "9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump",
+    "uwu": "UWUy7J86LUiBv5SjAUZ53LMGhtnqvbQ7QNSSkyupump"
+  },
+  "decimals": 6
+}
