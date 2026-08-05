@@ -68,3 +68,22 @@
 - [x] **Community growth.** Population starts at 12 and grows ~0.5/round up to 60, throttling
       down as real players join; broke wallets bust out, newcomers arrive (a third as raw
       addresses). Round settle reports joined/busted and the client announces them.
+
+## 2026-08-05 (later still) - collisions decide hits again
+
+The complaint "everyone takes ticks of damage every second" had a structural cause, not a
+tuning one. In the prototype the browser WAS the game: a hit happened because two circles
+collided. Going server-authoritative dropped physics entirely (it can't be reproduced across
+machines), so the engine decided hits on a fixed schedule and the client animated around an
+already-decided result - damage rained on everyone with nothing on screen causing it.
+
+- [x] **Deterministic physics moved into the sim itself.** `engine/src/game.ts` now runs
+      movement, wall bounces, circle collisions and the prototype's per-pair 430ms hit cooldown
+      on a fixed 50ms timestep, seeded from the round seed. A hit happens because two fighters
+      actually collided.
+- [x] **The browser runs that same sim.** It no longer replays a hit log; it recreates the round
+      from the revealed seed and renders its own simulation, so what you watch IS the
+      authoritative fight. Verified: 846/846 hits, winner and settlement identical to the engine
+      in both modes, and re-running a seed reproduces it exactly.
+- [x] Virtual arena is fixed at 900x560 in the sim and scaled to whatever the canvas is, so the
+      result never depends on window size.

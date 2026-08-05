@@ -22,7 +22,8 @@ const LOBBY_MS = 20_000;   // real players need time to join
 const BATTLE_MS = 60_000;
 
 export function newRoundConfig(mode: Mode, multiplier: number): RoundConfig {
-  return { mode, multiplier, base: 0.085, hitCapFrac: 0.25, battleMs: BATTLE_MS, tickMs: 500, dust: 1.2 };
+  // tickMs is the physics timestep now — collisions decide hits, so it must be fine-grained
+  return { mode, multiplier, base: 0.085, hitCapFrac: 0.25, battleMs: BATTLE_MS, tickMs: 50, dust: 1.2 };
 }
 
 // A per-mode round runner. `onSettle` receives the net per-player wallet balances to (a) update

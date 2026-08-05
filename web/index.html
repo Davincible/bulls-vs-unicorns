@@ -398,11 +398,8 @@
   function physics(w,dt,now,noCombat){
     const A=w.players.filter(alive),ramp=1+1.6*(w.roundT/(w.battleMs||BATTLE_MS));
     for(const p of A){p.r+=(radiusFor(p)-p.r)*0.15;
-      let tgt=null,td=1e18;
-      // ONLINE: chase the opponent the ENGINE has us fighting next, so the circles that clash
-      // on screen are the ones actually trading value. Offline: nearest enemy.
-      if(p.chaseId&&w.byId){const c=w.byId.get(p.chaseId);if(c&&alive(c))tgt=c;}
-      if(!tgt)for(const q of A){if(q.side!==p.side){const dx=q.x-p.x,dy=q.y-p.y,d=dx*dx+dy*dy;if(d<td){td=d;tgt=q;}}}
+      let tgt=null,td=1e18;   // offline demo only — online, positions come from the shared sim
+      for(const q of A){if(q.side!==p.side){const dx=q.x-p.x,dy=q.y-p.y,d=dx*dx+dy*dy;if(d<td){td=d;tgt=q;}}}
       if(tgt){const ax=tgt.x-p.x,ay=tgt.y-p.y,al=Math.hypot(ax,ay)||1;p.vx+=ax/al*COMBAT.accel*ramp*dt;p.vy+=ay/al*COMBAT.accel*ramp*dt;}
       p.vx+=rand(-8,8)*dt;p.vy+=rand(-8,8)*dt;let s=Math.hypot(p.vx,p.vy)||0.001,mx=COMBAT.speed*ramp*1.4;if(s>mx){p.vx*=mx/s;p.vy*=mx/s;}
       p.x+=p.vx*dt;p.y+=p.vy*dt;
@@ -589,90 +586,184 @@
   $("#rPrev").onclick=()=>{lbIdx=Math.min(lbIdx+1,W().history.length);renderLB();};
   $("#rNext").onclick=()=>{lbIdx=Math.max(lbIdx-1,0);renderLB();};
   $("#fsBtn").onclick=()=>{const s=$("#stage");if(!document.fullscreenElement){if(activeView!=="arena")$('.nav button[data-view=arena]').click();s.requestFullscreen&&s.requestFullscreen();}else document.exitFullscreen();};
-  // ================= SERVER-AUTHORITATIVE ROUNDS (engine replay) ==================
-  // When connected, the ENGINE decides everything: it commits a seed hash, reveals the seed,
-  // and ships the full ordered hit log. The client is a renderer — it replays those hits on
-  // the exact schedule — and a verifier: it recomputes the round from the seed and checks it.
+  // ============ AUTHORITATIVE ROUNDS: the browser runs the SAME physics sim ============
+  // The engine commits sha256(seed) before the lobby, reveals the seed at battle start, and
+  // sends the entries. Your browser then runs the identical deterministic simulation from that
+  // seed - so a hit happens because two circles actually collided, exactly like the prototype,
+  // and the outcome still provably matches the engine's.
   const eSide=s=>s==="uwu"?"unicorn":"bull";        // engine side -> client side
   const cSide=s=>s==="unicorn"?"uwu":"bull";        // client side -> engine side
   let MYWALLET=null;
 
+  // ---- deterministic RNG + physics sim: a faithful port of engine/src/game.ts ----
+  function xmur3(str){let h=1779033703^str.length;for(let i=0;i<str.length;i++){h=Math.imul(h^str.charCodeAt(i),3432918353);h=(h<<13)|(h>>>19);}
+    return()=>{h=Math.imul(h^(h>>>16),2246822507);h=Math.imul(h^(h>>>13),3266489909);return(h^=h>>>16)>>>0;};}
+  function sfc32(a,b,c,d){return()=>{a>>>=0;b>>>=0;c>>>=0;d>>>=0;let t=(a+b)|0;
+    a=b^(b>>>9);b=(c+(c<<3))|0;c=(c<<21)|(c>>>11);d=(d+1)|0;t=(t+d)|0;c=(c+t)|0;return(t>>>0)/4294967296;};}
+  function rngFromSeed(seed){const s=xmur3(seed);return sfc32(s(),s(),s(),s());}
+
+  const ARENA={w:900,h:560}, SCOMBAT={speed:112,accel:250,hitCd:430};
+  const sRing=f=>f.bull+f.uwu;
+  const sAlive=(f,dust)=>!f.dead&&sRing(f)>dust;
+  const sRadius=f=>clamp(7+1.7*Math.sqrt(sRing(f)),7,26);
+
+  function createSimJS(seed,entries,cfg){
+    const rnd=rngFromSeed(seed);
+    const rr=(a,b)=>a+rnd()*(b-a);
+    const F=entries.map(e=>{
+      const f={id:e.id,side:e.side,bull:e.side==="bull"?e.stake:0,uwu:e.side==="uwu"?e.stake:0,
+        sBull:0,sUwu:0,deposited:e.stake,raided:0,dmgDealt:0,dmgTaken:0,bestHit:0,dead:false,
+        x:0,y:0,vx:rr(-1,1),vy:rr(-1,1),r:12};
+      f.x=e.side==="bull"?rr(30,ARENA.w*0.34):rr(ARENA.w*0.66,ARENA.w-30);
+      f.y=rr(40,ARENA.h-40); f.r=sRadius(f); return f;
+    });
+    const steps=Math.floor(cfg.battleMs/cfg.tickMs);
+    return {rnd,F,byId:new Map(F.map(f=>[f.id,f])),hits:[],t:0,steps,cfg,pairCd:new Map(),endTick:steps,done:false};
+  }
+
+  function stepSimJS(s){
+    const cfg=s.cfg, rnd=s.rnd;
+    const rr=(a,b)=>a+rnd()*(b-a);
+    const roll=()=>{const u=rnd();return u<0.88?rr(0.2,1.5):u<0.97?rr(1.5,4):rr(4,13);};
+    const out=[];
+    if(s.done)return out;
+    const A=s.F.filter(f=>sAlive(f,cfg.dust));
+    const bulls=A.filter(f=>f.side==="bull"), unis=A.filter(f=>f.side==="uwu");
+    if(!bulls.length||!unis.length){s.endTick=s.t;s.done=true;return out;}
+    if(s.t>=s.steps){s.endTick=s.steps;s.done=true;return out;}
+    const dt=cfg.tickMs/1000, nowMs=s.t*cfg.tickMs, ramp=1+1.6*(s.t/s.steps);
+    for(const p of A){
+      p.r+=(sRadius(p)-p.r)*0.15;
+      let tgt=null,td=1e18;
+      for(const q of A){ if(q.side===p.side)continue; const dx=q.x-p.x,dy=q.y-p.y,d=dx*dx+dy*dy; if(d<td){td=d;tgt=q;} }
+      if(tgt){const ax=tgt.x-p.x,ay=tgt.y-p.y,al=Math.hypot(ax,ay)||1;
+        p.vx+=(ax/al)*SCOMBAT.accel*ramp*dt; p.vy+=(ay/al)*SCOMBAT.accel*ramp*dt;}
+      p.vx+=rr(-8,8)*dt; p.vy+=rr(-8,8)*dt;
+      const sp=Math.hypot(p.vx,p.vy)||0.001, mx=SCOMBAT.speed*ramp*1.4;
+      if(sp>mx){p.vx*=mx/sp;p.vy*=mx/sp;}
+      p.x+=p.vx*dt; p.y+=p.vy*dt;
+      if(p.x<p.r){p.x=p.r;p.vx=Math.abs(p.vx);}
+      if(p.x>ARENA.w-p.r){p.x=ARENA.w-p.r;p.vx=-Math.abs(p.vx);}
+      if(p.y<p.r){p.y=p.r;p.vy=Math.abs(p.vy);}
+      if(p.y>ARENA.h-p.r){p.y=ARENA.h-p.r;p.vy=-Math.abs(p.vy);}
+    }
+    const strike=(atk,def,dmg)=>{
+      const takeEnemy=(def.side==="bull"?def.uwu:def.bull)>0.05;
+      const tk=takeEnemy?(def.side==="bull"?"uwu":"bull"):def.side;
+      const amt=Math.min(dmg,tk==="bull"?def.bull:def.uwu);
+      if(amt<=0.01)return;
+      if(tk==="bull")def.bull-=amt; else def.uwu-=amt;
+      if(cfg.mode==="extraction"){ if(tk==="bull")atk.sBull+=amt; else atk.sUwu+=amt; }
+      else { if(tk==="bull")atk.bull+=amt; else atk.uwu+=amt; }
+      atk.raided+=amt; atk.dmgDealt+=amt; def.dmgTaken+=amt;
+      if(amt>atk.bestHit)atk.bestHit=amt;
+      const h={t:s.t,atk:atk.id,def:def.id,amt,tk}; s.hits.push(h); out.push(h);
+    };
+    for(let i=0;i<A.length;i++)for(let j=i+1;j<A.length;j++){
+      const a=A[i],b=A[j];
+      if(a.dead||b.dead)continue;
+      const dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy),m=a.r+b.r;
+      if(d>=m||d<=0)continue;
+      const nx=dx/d,ny=dy/d,ov=(m-d)/2;
+      a.x-=nx*ov;a.y-=ny*ov;b.x+=nx*ov;b.y+=ny*ov;
+      const va=a.vx*nx+a.vy*ny, vb=b.vx*nx+b.vy*ny, diff=vb-va;
+      a.vx+=nx*diff;a.vy+=ny*diff;b.vx-=nx*diff;b.vy-=ny*diff;
+      if(a.side===b.side)continue;
+      const key=a.id<b.id?a.id+"|"+b.id:b.id+"|"+a.id;
+      const last=s.pairCd.has(key)?s.pairCd.get(key):-1e9;
+      if(nowMs-last<SCOMBAT.hitCd/ramp)continue;
+      s.pairCd.set(key,nowMs);
+      const base=cfg.base*Math.min(cfg.multiplier,4)*(0.7+0.3*ramp);
+      const gm=Math.sqrt(sRing(a)*sRing(b))*base;
+      const dAB=Math.min(gm*roll(),sRing(b)*cfg.hitCapFrac);
+      const dBA=Math.min(gm*roll(),sRing(a)*cfg.hitCapFrac);
+      strike(a,b,dAB); strike(b,a,dBA);
+      if(sRing(a)<=cfg.dust)a.dead=true;
+      if(sRing(b)<=cfg.dust)b.dead=true;
+    }
+    s.t++;
+    if(s.t>=s.steps){s.endTick=s.steps;s.done=true;}
+    return out;
+  }
+
+  function simulateRoundJS(seed,entries,cfg){
+    const s=createSimJS(seed,entries,cfg);
+    while(!s.done)stepSimJS(s);
+    const bullV=s.F.filter(f=>f.side==="bull").reduce((a,f)=>a+sRing(f)+f.sBull+f.sUwu,0);
+    const uwuV=s.F.filter(f=>f.side==="uwu").reduce((a,f)=>a+sRing(f)+f.sBull+f.sUwu,0);
+    const settlement={};
+    for(const f of s.F)settlement[f.id]={bull:f.bull+f.sBull,uwu:f.uwu+f.sUwu};
+    return {winner:bullV>=uwuV?"bull":"uwu",hits:s.hits,settlement};
+  }
+
+  // ---- run the round live in the browser ----
   function startEngineRound(mode,p){
     const w=worlds[mode]; if(!w)return;
     w.online=true; w.players.length=0; w.userCircles.length=0; w.floaters.length=0; w.particles.length=0;
     w.roundNo=p.round; w.multiplier=p.multiplier; w.phase="battle"; w.roundT=0; w.phaseT=0;
     w.seed=p.seed; w.seedHash=p.seedHash; w.eWinner=p.winner; w.settlement=p.settlement||{};
-    w.battleMs=p.battleMs||60000; w.tickMs=(p.cfg&&p.cfg.tickMs)||500;
-    w.hitLog=(p.hits||[]).slice(); w.hitIdx=0; w.entries=p.entries||[];
-    w.startedAt=Date.now()-Math.max(0,Date.now()-(p.startedAt||Date.now()));   // sync to engine clock
-    w.elapsed=Math.max(0,Date.now()-(p.startedAt||Date.now()));
+    w.battleMs=p.battleMs||60000; w.tickMs=(p.cfg&&p.cfg.tickMs)||50; w.entries=p.entries||[];
     w.lastRound={round:p.round,seed:p.seed,seedHash:p.seedHash,entries:p.entries,cfg:p.cfg,hits:p.hits,winner:p.winner,settlement:p.settlement};
-    const fh=$("#fairHash"); if(fh&&mode===activeMode)fh.textContent="commit: "+String(p.seedHash).slice(0,40)+"…";
+    const fh=$("#fairHash"); if(fh&&mode===activeMode)fh.textContent="commit: "+String(p.seedHash).slice(0,40)+"\u2026";
+    w.sim=createSimJS(p.seed,w.entries.map(e=>({id:e.id,side:e.side,stake:e.stake})),p.cfg);
     w.byId=new Map();
     for(const e of w.entries){
-      const side=eSide(e.side), tk=e.side==="uwu"?"uwu":"bull";
+      const side=eSide(e.side);
       const c={id:e.id,eid:e.id,acct:null,name:e.name||"anon",side,bull:0,uwu:0,sBull:0,sUwu:0,banked:0,
-        isUser:!!(MYWALLET&&e.id===MYWALLET),x:side==="bull"?rand(30,W2*0.34):rand(W2*0.66,W2-30),y:rand(40,H2-40),
-        vx:rand(-1,1),vy:rand(-1,1),r:12,dmgDealt:0,dmgTaken:0,rDmg:0,raided:0,bestHit:0,deposited:e.stake,flash:0,dead:false};
-      c[tk]=e.stake; w.players.push(c); w.byId.set(e.id,c);
-      if(c.isUser){w.userCircles.push(c);}
+        isUser:!!(MYWALLET&&e.id===MYWALLET),x:0,y:0,vx:0,vy:0,r:12,dmgDealt:0,dmgTaken:0,rDmg:0,
+        raided:0,bestHit:0,deposited:e.stake,flash:0,dead:false};
+      w.players.push(c); w.byId.set(e.id,c);
+      if(c.isUser)w.userCircles.push(c);
       w.dep[side]=(w.dep[side]||0)+e.stake;
     }
-    ev(w,"⚔ Round "+w.roundNo+" — "+w.multiplier+"× — FIGHT! (engine seed "+String(w.seedHash).slice(0,8)+"…)","round");
-    // fast-forward any hits already elapsed (joined mid-battle)
-    applyHitsUpTo(w,w.elapsed,true);
+    w.elapsed=Math.max(0,Date.now()-(p.startedAt||Date.now()));
+    syncFromSim(w,true);
+    ev(w,"\u2694 Round "+w.roundNo+" \u2014 "+w.multiplier+"\u00d7 \u2014 FIGHT! (seed "+String(w.seedHash).slice(0,8)+"\u2026)","round");
   }
 
-  function applyHitsUpTo(w,elapsedMs,silent){
-    if(!w.hitLog)return;
-    while(w.hitIdx<w.hitLog.length && w.hitLog[w.hitIdx].t*w.tickMs<=elapsedMs){
-      const h=w.hitLog[w.hitIdx++];
-      const atk=w.byId.get(h.atk), def=w.byId.get(h.def); if(!atk||!def)continue;
-      const tk=h.tk==="uwu"?"uwu":"bull", amt=h.amt;
-      def[tk]=Math.max(0,def[tk]-amt);
-      if(MODE[w.mode].extract){ atk[tk==="bull"?"sBull":"sUwu"]+=amt; if(atk.isUser)atk.banked=(atk.banked||0)+amt; }
-      else atk[tk]+=amt;
-      atk.raided+=amt; atk.dmgDealt+=amt; atk.rDmg+=amt; def.dmgTaken+=amt; if(amt>atk.bestHit)atk.bestHit=amt;
-      w[atk.side==="bull"?"dmgBull":"dmgUni"]+=amt;
-      if(atk.isUser){(atk.hits=atk.hits||[]).push({dir:"out",who:def.name,amt,tk});if(atk.hits.length>80)atk.hits.shift();}
-      if(def.isUser){(def.hits=def.hits||[]).push({dir:"in",who:atk.name,amt,tk});if(def.hits.length>80)def.hits.shift();}
-      if(!silent){
-        atk.flash=def.flash=1;
-        // the raider GAINS what the defender LOSES — show both, on the right circles
-        w.floaters.push({x:def.x,y:def.y-def.r-6,txt:"-"+fmt(amt),life:1,col:"#ff90a5",big:amt>=6});
-        w.floaters.push({x:atk.x,y:atk.y-atk.r-6,txt:"+"+fmt(amt),life:1.1,col:amt>=6?"#ffe14d":"#ffc048",big:amt>=6});
-        pushWin(w,atk,amt,amt>=6?4:1);
-        if(atk.isUser)ev(w,"You raided "+fmt(amt)+" from "+def.name+(amt>=6?" ⚡CRIT!":"!"),amt>=6?"crit":"win");
-        else if(def.isUser)ev(w,atk.name+" hit you for "+fmt(amt)+"!","hit");
-        else if(amt>=12)ev(w,atk.name+" CRIT "+fmt(amt)+" off "+def.name,"crit");
-        if(amt>=6){w.shake=Math.max(w.shake,14);burst(w,(atk.x+def.x)/2,(atk.y+def.y)/2);}
-      }
-      if(ring(def)<=DUST&&!def.dead){def.dead=true;if(!silent)burst(w,def.x,def.y);
-        if(def.isUser)ev(w,"💀 Your fighter died!"+(MODE[w.mode].extract?" (extracted winnings are safe)":" (in-ring value lost)"),"bust");}
+  // advance the sim to wall-clock, mirroring positions/values onto the drawn circles
+  function syncFromSim(w,silent){
+    if(!w.sim)return;
+    let guard=0;
+    while(!w.sim.done && w.sim.t*w.tickMs<=w.elapsed && guard++<4000){
+      const hits=stepSimJS(w.sim);
+      for(const h of hits)onSimHit(w,h,silent);
+    }
+    const sx=W2/ARENA.w, sy=H2/ARENA.h, sr=Math.min(sx,sy);
+    for(const f of w.sim.F){
+      const c=w.byId.get(f.id); if(!c)continue;
+      c.x=f.x*sx; c.y=f.y*sy; c.r=f.r*sr;
+      c.bull=f.bull; c.uwu=f.uwu; c.sBull=f.sBull; c.sUwu=f.sUwu;
+      c.raided=f.raided; c.dmgDealt=f.dmgDealt; c.dmgTaken=f.dmgTaken; c.bestHit=f.bestHit;
+      if(f.dead&&!c.dead){c.dead=true; if(!silent){burst(w,c.x,c.y);
+        if(c.isUser)ev(w,"\ud83d\udc80 Your fighter died!"+(MODE[w.mode].extract?" (extracted winnings are safe)":" (in-ring value lost)"),"bust");}}
+      if(c.isUser)c.banked=f.sBull+f.sUwu;
     }
   }
 
-  // Look ahead in the authoritative hit log and point each fighter at the opponent it is about
-  // to trade with, so the circles that visually clash are the ones actually exchanging value.
-  function retarget(w){
-    if(!w.hitLog||!w.byId)return;
-    for(const p of w.players)p.chaseId=null;
-    const end=Math.min(w.hitLog.length,w.hitIdx+140);
-    for(let i=w.hitIdx;i<end;i++){
-      const h=w.hitLog[i];
-      const a=w.byId.get(h.atk), d=w.byId.get(h.def);
-      if(a&&!a.chaseId&&d&&!d.dead)a.chaseId=h.def;
-      if(d&&!d.chaseId&&a&&!a.dead)d.chaseId=h.atk;   // defender faces its attacker
-    }
+  function onSimHit(w,h,silent){
+    const atk=w.byId.get(h.atk), def=w.byId.get(h.def); if(!atk||!def)return;
+    const amt=h.amt, tk=h.tk;
+    w[atk.side==="bull"?"dmgBull":"dmgUni"]+=amt;
+    if(atk.isUser){(atk.hits=atk.hits||[]).push({dir:"out",who:def.name,amt,tk});if(atk.hits.length>80)atk.hits.shift();}
+    if(def.isUser){(def.hits=def.hits||[]).push({dir:"in",who:atk.name,amt,tk});if(def.hits.length>80)def.hits.shift();}
+    if(silent)return;
+    atk.flash=def.flash=1;
+    w.floaters.push({x:def.x,y:def.y-def.r-6,txt:"-"+fmt(amt),life:1,col:"#ff90a5",big:amt>=6});
+    w.floaters.push({x:atk.x,y:atk.y-atk.r-6,txt:"+"+fmt(amt),life:1.1,col:amt>=6?"#ffe14d":"#ffc048",big:amt>=6});
+    pushWin(w,atk,amt,amt>=6?4:1);
+    if(atk.isUser)ev(w,"You raided "+fmt(amt)+" from "+def.name+(amt>=6?" \u26a1CRIT!":"!"),amt>=6?"crit":"win");
+    else if(def.isUser)ev(w,atk.name+" hit you for "+fmt(amt)+"!","hit");
+    else if(amt>=12)ev(w,atk.name+" CRIT "+fmt(amt)+" off "+def.name,"crit");
+    if(amt>=6){w.shake=Math.max(w.shake,14);burst(w,(atk.x+def.x)/2,(atk.y+def.y)/2);}
   }
 
   function tickOnline(w,dt,now){
     w.elapsed=(w.elapsed||0)+dt*1000; w.roundT=w.elapsed;
     if(w.phase==="battle"){
-      applyHitsUpTo(w,w.elapsed,false);
-      w.retargetT=(w.retargetT||0)+dt; if(w.retargetT>0.35){w.retargetT=0;retarget(w);}
-      physics(w,dt,now,true);                       // movement only — engine owns the damage
-      if(w.elapsed>=w.battleMs){ finishEngineRound(w); }
+      syncFromSim(w,false);
+      for(const p of w.players)if(p.flash>0)p.flash-=dt*3;
+      if(w.elapsed>=w.battleMs||(w.sim&&w.sim.done))finishEngineRound(w);
     } else if(w.phase==="lobby"){ lobbyDrift(w,dt); }
   }
 
@@ -681,78 +772,16 @@
     const win=eSide(w.eWinner||"bull");
     w.matchWins[win]=(w.matchWins[win]||0)+1;
     w.matches.unshift({round:w.roundNo,winner:win,mult:w.multiplier}); if(w.matches.length>16)w.matches.pop();
-    w.bannerTxt=win==="bull"?"🐂 BULLS WIN!":"🦄 UNICORNS WIN!"; w.bannerA=1;
+    w.bannerTxt=win==="bull"?"\ud83d\udc02 BULLS WIN!":"\ud83e\udd84 UNICORNS WIN!"; w.bannerA=1;
     w.history.unshift(snapshot(w,win)); if(w.history.length>24)w.history.pop();
     for(const c of w.userCircles){ const dep=c.deposited, out=ring(c)+safeV(c);
       w.userRounds.unshift({round:w.roundNo,side:c.side,dep,out,pnl:out-dep,win:c.side===win,mode:w.mode,hits:(c.hits||[]).slice(-30)});
       if(w.userRounds.length>60)w.userRounds.pop(); }
     w.userCircles.length=0;
-    ev(w,"🏆 Round "+w.roundNo+" — "+(win==="bull"?"Bulls":"Unicorns")+" win! Seed revealed — verifiable.","round");
+    ev(w,"\ud83c\udfc6 Round "+w.roundNo+" \u2014 "+(win==="bull"?"Bulls":"Unicorns")+" win! Seed revealed \u2014 verifiable.","round");
     save(w);
   }
-  // =================================================================================
 
-  // ================= PROVABLY-FAIR VERIFIER (faithful port of engine/src/game.ts) =================
-  // Recomputes a round in YOUR browser from the revealed seed. If this matches what the engine
-  // broadcast, the engine could not have altered the outcome after seeing the bets.
-  function xmur3(str){let h=1779033703^str.length;for(let i=0;i<str.length;i++){h=Math.imul(h^str.charCodeAt(i),3432918353);h=(h<<13)|(h>>>19);}
-    return()=>{h=Math.imul(h^(h>>>16),2246822507);h=Math.imul(h^(h>>>13),3266489909);return(h^=h>>>16)>>>0;};}
-  function sfc32(a,b,c,d){return()=>{a>>>=0;b>>>=0;c>>>=0;d>>>=0;let t=(a+b)|0;
-    a=b^(b>>>9);b=(c+(c<<3))|0;c=(c<<21)|(c>>>11);d=(d+1)|0;t=(t+d)|0;c=(c+t)|0;return(t>>>0)/4294967296;};}
-  function rngFromSeed(seed){const s=xmur3(seed);return sfc32(s(),s(),s(),s());}
-
-  function simulateRoundJS(seed,entries,cfg){
-    const rnd=rngFromSeed(seed);
-    const rnd2=(a,b)=>a+rnd()*(b-a);
-    const roll=()=>{const u=rnd();return u<0.88?rnd2(0.2,1.5):u<0.97?rnd2(1.5,4):rnd2(4,13);};
-    const F=entries.map(e=>({id:e.id,side:e.side,ownedBull:e.side==="bull"?e.stake:0,ownedUwu:e.side==="uwu"?e.stake:0,
-      bankedBull:0,bankedUwu:0,deposited:e.stake,raided:0,dmgDealt:0,dead:false}));
-    const hits=[];
-    const ringF=f=>f.ownedBull+f.ownedUwu;
-    const aliveF=f=>!f.dead&&ringF(f)>cfg.dust;
-    const ownK=f=>f.side==="bull"?"ownedBull":"ownedUwu";
-    const enemK=f=>f.side==="bull"?"ownedUwu":"ownedBull";
-    const strike=(t,atk,def,dmg)=>{
-      const tkField=def[enemK(def)]>0.05?enemK(def):ownK(def);
-      const tkSide=tkField==="ownedBull"?"bull":"uwu";
-      dmg=Math.min(dmg,def[tkField]); if(dmg<=0.01)return;
-      def[tkField]-=dmg;
-      if(cfg.mode==="extraction"){ if(tkSide==="bull")atk.bankedBull+=dmg; else atk.bankedUwu+=dmg; }
-      else atk[tkField]+=dmg;
-      atk.raided+=dmg; atk.dmgDealt+=dmg;
-      hits.push({t,atk:atk.id,def:def.id,amt:dmg,tk:tkSide});
-    };
-    const base=cfg.base*Math.min(cfg.multiplier,4);
-    const steps=Math.floor(cfg.battleMs/cfg.tickMs);
-    const DUEL_TICKS=8;                       // MUST match engine/src/game.ts exactly
-    const idMap=new Map(F.map(f=>[f.id,f]));
-    const duelFoe=new Map(), duelUntil=new Map();
-    for(let t=0;t<steps;t++){
-      const A=F.filter(aliveF);
-      const bulls=A.filter(f=>f.side==="bull"), unis=A.filter(f=>f.side==="uwu");
-      if(!bulls.length||!unis.length)break;
-      for(const f of A){
-        if(!aliveF(f))continue;
-        let g=idMap.get(duelFoe.get(f.id)||"");
-        if(!g||!aliveF(g)||(duelUntil.get(f.id)||0)<=t){
-          const foes=f.side==="bull"?unis:bulls;
-          g=foes[Math.floor(rnd()*foes.length)];
-          if(g){ duelFoe.set(f.id,g.id); duelUntil.set(f.id,t+DUEL_TICKS);
-                 duelFoe.set(g.id,f.id); duelUntil.set(g.id,t+DUEL_TICKS); }
-        }
-        if(!g||!aliveF(g))continue;
-        const ramp=1+1.6*(t/steps);
-        const gm=Math.sqrt(ringF(f)*ringF(g))*base*(0.7+0.3*ramp);
-        let d=gm*roll(); d=Math.min(d,ringF(g)*cfg.hitCapFrac);
-        strike(t,f,g,d);
-      }
-    }
-    const bullV=F.filter(f=>f.side==="bull").reduce((s,f)=>s+ringF(f)+f.bankedBull+f.bankedUwu,0);
-    const uwuV=F.filter(f=>f.side==="uwu").reduce((s,f)=>s+ringF(f)+f.bankedBull+f.bankedUwu,0);
-    const settlement={};
-    for(const f of F)settlement[f.id]={bull:f.ownedBull+f.bankedBull,uwu:f.ownedUwu+f.bankedUwu};
-    return {winner:bullV>=uwuV?"bull":"uwu",hits,settlement};
-  }
 
   async function sha256hex(s){
     const buf=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s));
