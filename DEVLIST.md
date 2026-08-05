@@ -173,3 +173,39 @@ all-in, favourite-chasing - all the same. This mode is done.
 - **Cap aggregate damage per round per fighter** (e.g. a fighter cannot lose more than ~40% of
   its deployed stake in one round) so a whale can't be nibbled to death by a swarm.
 - Re-run `npm run strategy` after each change; target is every row within a few % like Extraction.
+
+## 2026-08-05 - the fairness structure (bounded exposure)
+
+**The problem, stated properly:** a fighter's exposure scaled with *how many enemies it faced*,
+not with its stake. A whale met 9 opponents, took 9 streams of damage, and could only win small
+amounts back from each (per-clash caps are a share of the smaller position) - so max stakes
+busted 14/14. And because value flowed toward whichever side was stronger, side-chasing paid
++16%/round and won for 14/14 players.
+
+**The structure adopted: bounded exposure per fighter.**
+- `MAX_LOSS = 0.5` - a fighter can lose at most 50% of its OWN deposited stake in a round, then
+  it retires and keeps the rest. Downside is set by your stake, not by the crowd.
+- `MAX_GAIN = 2.0` - a loose ceiling on winnings (a 3x round is still possible) so a small stake
+  can't compound uncapped while risking the same 50%.
+- Clash damage stays collision-driven, zero-sum and capped by the smaller position.
+
+| metric | before | after |
+|---|---|---|
+| max-stake players busting | 14/14 | **0** |
+| favourite side ROI | +6..8% (14/14 won) | **-1.5%** |
+| underdog side ROI | -8..11% | +1.5% |
+| bull vs uwu | - | -0.01% / -0.38% |
+| stake spread (Normal) | -26% .. +293% | -2.9% .. +9.8% |
+| house edge | 0.200% | 0.200% |
+
+Verified live: seed commit, hit count, settlement, value conservation and the 50% cap all hold
+in both modes (10/10 checks).
+
+**Still open:** a residual gradient favours small stakes (whale -2.9% vs minnow +9.8% in Normal).
+Cause: total losses available in the pool are 50% of everyone's stakes, and a whale cannot
+realise its 2x ceiling against opponents who can only shed half of much smaller positions.
+Closing it fully means scaling clash size by the attacker's stake, which trades away some of the
+small-player protection - a design call, not a bug.
+
+- [x] Hall of Fame is now a **tab in the Leaderboard** (was a dashboard card), and legends are
+      populated from the authoritative settlement so it fills up during online play.

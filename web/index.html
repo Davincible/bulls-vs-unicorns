@@ -206,7 +206,7 @@
 
     <div class="view" id="viewLeaderboard">
       <div class="card">
-        <div class="lbhead"><div class="tabs"><button data-tab="round" class="on">This round</button><button data-tab="alltime">All-time</button></div>
+        <div class="lbhead"><div class="tabs"><button data-tab="round" class="on">This round</button><button data-tab="alltime">All-time</button><button data-tab="legends">👑 Hall of Fame</button></div>
           <div class="rnav" id="rnav"><button id="rPrev">◀</button><span class="lab" id="rLab">LIVE</span><button id="rNext">▶</button></div></div>
         <div class="lbHrow"><span class="rk">#</span><span>Fighter</span><span id="lbColBar">Wallet size (🐂/🦄 split)</span><span class="wl">Won / loss ($)</span><span class="rd rdh" id="lbColRd">Raided</span></div>
         <div id="lbRows"></div>
@@ -495,6 +495,15 @@
   let lbTab="round", lbIdx=0;
   function renderLB(){
     const w=W();
+    if(lbTab==="legends"){
+      $("#rnav").style.visibility="hidden";$("#lbColBar").textContent="Deposit → final";$("#lbColRd").textContent="Return";
+      const L=(w.legends||[]).slice(0,40);
+      const maxV=Math.max(1,...L.map(l=>l.outAmt||0));
+      $("#lbRows").innerHTML=L.length?L.map((l,i)=>{
+        const pnl=(l.outAmt||0)-(l.inAmt||0);
+        return `<div class="lbRow" data-name="${l.name}"><span class="rk">${i+1}</span><span class="who"><span class="dot ${l.side==="bull"?"bull":"uni"}"></span>${l.name}<div class="pct" style="color:var(--ink-faint)">round ${l.round} · ${l.mode||""}</div></span>${compBar(l.side==="bull"?(l.outAmt||0):0,l.side==="bull"?0:(l.outAmt||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}${fmt(Math.abs(pnl))}<div class="pct">${fmt(l.inAmt)} → ${fmt(l.outAmt)}</div></span><span class="rd" style="color:var(--gold)">${(l.roi*100).toFixed(0)}%</span></div>`;
+      }).join(""):'<div class="note">Best single-round returns will show here once rounds settle.</div>';
+      return;}
     if(lbTab==="alltime"){$("#rnav").style.visibility="hidden";$("#lbColBar").textContent="Wallet now (size)";$("#lbColRd").textContent="Raided (all-time)";
       const rows=w.accounts.slice().sort((a,b)=>(b.ret-b.dep)-(a.ret-a.dep)).slice(0,40);
       const maxV=Math.max(1,...rows.map(a=>a.bankroll||0));
@@ -637,9 +646,9 @@
     a=b^(b>>>9);b=(c+(c<<3))|0;c=(c<<21)|(c>>>11);d=(d+1)|0;t=(t+d)|0;c=(c+t)|0;return(t>>>0)/4294967296;};}
   function rngFromSeed(seed){const s=xmur3(seed);return sfc32(s(),s(),s(),s());}
 
-  const ARENA={w:900,h:560}, SCOMBAT={speed:112,accel:250,hitCd:430}, FINISH_RATIO=0.08;
+  const ARENA={w:900,h:560}, SCOMBAT={speed:112,accel:250,hitCd:430}, FINISH_RATIO=0.08, MAX_LOSS=0.5, MAX_GAIN=2.0;
   const sRing=f=>f.bull+f.uwu;
-  const sAlive=(f,dust)=>!f.dead&&sRing(f)>dust;
+  const sAlive=(f,dust)=>!f.dead&&!f.retired&&sRing(f)>dust;
   const sRadius=f=>clamp(7+1.7*Math.sqrt(sRing(f)),7,26);
 
   function createSimJS(seed,entries,cfg){
@@ -647,7 +656,7 @@
     const rr=(a,b)=>a+rnd()*(b-a);
     const F=entries.map(e=>{
       const f={id:e.id,side:e.side,bull:e.side==="bull"?e.stake:0,uwu:e.side==="uwu"?e.stake:0,
-        sBull:0,sUwu:0,deposited:e.stake,raided:0,dmgDealt:0,dmgTaken:0,bestHit:0,dead:false,
+        sBull:0,sUwu:0,deposited:e.stake,raided:0,dmgDealt:0,dmgTaken:0,bestHit:0,dead:false,lost:0,retired:false,
         x:0,y:0,vx:rr(-1,1),vy:rr(-1,1),r:12};
       f.x=e.side==="bull"?rr(30,ARENA.w*0.34):rr(ARENA.w*0.66,ARENA.w-30);
       f.y=rr(40,ARENA.h-40); f.r=sRadius(f); return f;
@@ -689,12 +698,15 @@
       return {tk,amt:Math.min(dmg,tk==="bull"?snap.bull:snap.uwu)};
     };
     const applyHit=(atk,def,hit)=>{
-      const amt=Math.min(hit.amt,hit.tk==="bull"?def.bull:def.uwu);
-      if(amt<=0.01)return;
+      const budget=Math.max(0,def.deposited*MAX_LOSS-def.lost);      // downside cap (matches engine)
+      const room=Math.max(0,atk.deposited*MAX_GAIN-atk.raided);       // upside cap
+      const amt=Math.min(hit.amt,hit.tk==="bull"?def.bull:def.uwu,budget,room);
+      if(amt<=0.01){ if(budget<=0.01)def.retired=true; if(room<=0.01)atk.retired=true; return; }
       if(hit.tk==="bull")def.bull-=amt; else def.uwu-=amt;
       if(cfg.mode==="extraction"){ if(hit.tk==="bull")atk.sBull+=amt; else atk.sUwu+=amt; }
       else { if(hit.tk==="bull")atk.bull+=amt; else atk.uwu+=amt; }
-      atk.raided+=amt; atk.dmgDealt+=amt; def.dmgTaken+=amt;
+      atk.raided+=amt; atk.dmgDealt+=amt; def.dmgTaken+=amt; def.lost+=amt;
+      if(def.lost>=def.deposited*MAX_LOSS-0.01)def.retired=true;
       if(amt>atk.bestHit)atk.bestHit=amt;
       const h={t:s.t,atk:atk.id,def:def.id,amt,tk:hit.tk}; s.hits.push(h); out.push(h);
     };
@@ -822,6 +834,14 @@
     for(const c of w.userCircles){ const dep=c.deposited, out=ring(c)+safeV(c);
       w.userRounds.unshift({round:w.roundNo,side:c.side,dep,out,pnl:out-dep,win:c.side===win,mode:w.mode,hits:(c.hits||[]).slice(-30)});
       if(w.userRounds.length>60)w.userRounds.pop(); }
+    // Hall of Fame: best single-round returns, from the authoritative settlement
+    for(const p of w.players){
+      const dep=p.deposited, out=ring(p)+safeV(p);
+      if(dep>0.2&&out/dep>1.05){
+        w.legends.push({name:p.isUser?"You":p.name,side:p.side,inAmt:dep,outAmt:out,roi:out/dep,round:w.roundNo,mode:w.mode});
+      }
+    }
+    w.legends.sort((a,b)=>b.roi-a.roi); if(w.legends.length>40)w.legends.length=40;
     w.userCircles.length=0;
     ev(w,"\ud83c\udfc6 Round "+w.roundNo+" \u2014 "+(win==="bull"?"Bulls":"Unicorns")+" win! Seed revealed \u2014 verifiable.","round");
     save(w);
