@@ -1009,7 +1009,7 @@
     return o.ok?o.img:null; }
   function applyX(){try{const x=JSON.parse(localStorage.getItem("bvu_x")||"null");
     if(x){const im=$("#xAvatar");if(im){im.src=x.av;im.style.display="block";}
-      if($("#btnX"))$("#btnX").textContent="𝕏 @"+x.h;}}catch(e){}}
+      if($("#btnX"))$("#btnX").textContent="𝕏 @"+x.h+(x.verified?" ✓":"");}}catch(e){}}
   function shareX(text){window.open("https://twitter.com/intent/tweet?text="+encodeURIComponent(text),"_blank");}
 
   // ---- account overview graph + intro modal + referral link ----
@@ -1252,14 +1252,46 @@
     // wire buttons
     $("#btnDevWallet").onclick=useDevWallet;
     $("#btnConnect").onclick=connect;
-    if($("#btnX"))$("#btnX").onclick=()=>{
-      const h=(prompt("Your X / Twitter handle (without @):")||"").trim().replace(/^@/,"");
-      if(!h)return;
-      const av="https://unavatar.io/x/"+h;
-      localStorage.setItem("bvu_x",JSON.stringify({h,av}));
-      applyX();
-      if(PK)send({t:"setName",wallet:PK,name:"@"+h,avatar:av});
+    const PRIVY_APP="cmsgbjr5q005l0cl4jeg4wizn";
+    async function privyClient(){
+      if(window.__privy)return window.__privy;
+      const mod=await import("https://esm.sh/@privy-io/js-sdk-core?bundle");
+      const P=mod.default||mod.Privy, LS=mod.LocalStorage;
+      window.__privy=new P({appId:PRIVY_APP,storage:new LS()});
+      return window.__privy;
+    }
+    if($("#btnX"))$("#btnX").onclick=async()=>{
+      try{
+        note("Opening X authorization…");
+        const p=await privyClient();
+        const url=await p.auth.oauth.generateURL("twitter",location.origin+location.pathname);
+        location.href=url;                         // → X's own authorize screen, back here after
+      }catch(e){
+        note("X connect unavailable ("+String(e.message||e).slice(0,60)+") — using handle entry instead.");
+        const h=(prompt("Your X handle (without @):")||"").trim().replace(/^@/,"");
+        if(!h)return;
+        localStorage.setItem("bvu_x",JSON.stringify({h,av:"https://unavatar.io/x/"+h}));
+        applyX(); if(PK)send({t:"setName",wallet:PK,name:"@"+h,avatar:"https://unavatar.io/x/"+h});
+      }
     };
+    // returning from X: exchange the code for the VERIFIED account
+    (function xCallback(){
+      const q=new URLSearchParams(location.search);
+      const code=q.get("privy_oauth_code"), st=q.get("privy_oauth_state");
+      if(!code||!st)return;
+      privyClient().then(async p=>{
+        const r=await p.auth.oauth.loginWithCode(code,st,"twitter");
+        const u=(r&&r.user)||r||{};
+        const tw=(u.linked_accounts||u.linkedAccounts||[]).find(a=>(a.type||"").startsWith("twitter"));
+        if(!tw){note("X login finished but no account came back.");return;}
+        const h=tw.username||tw.handle, av=tw.profile_picture_url||tw.profilePictureUrl||("https://unavatar.io/x/"+h);
+        localStorage.setItem("bvu_x",JSON.stringify({h,av,verified:true}));
+        applyX();
+        const wire=()=>{if(PK)send({t:"setName",wallet:PK,name:"@"+h,avatar:av});else setTimeout(wire,1500);};wire();
+        history.replaceState({},"",location.pathname+([...q.entries()].filter(([k])=>!k.startsWith("privy_")).map(([k,v],i)=>(i?"&":"?")+k+"="+encodeURIComponent(v)).join("")));
+        note("✅ Verified as @"+h);
+      }).catch(e=>note("X verify failed: "+String(e.message||e).slice(0,80)));
+    })();
     applyX();
     if($("#refCopy"))$("#refCopy").onclick=()=>{const u=$("#refLink").textContent.trim();
       if(u.startsWith("http"))navigator.clipboard&&navigator.clipboard.writeText(u).then(()=>{$("#refCopy").textContent="Copied";setTimeout(()=>$("#refCopy").textContent="Copy",1400);});};
