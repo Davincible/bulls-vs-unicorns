@@ -1,4 +1,6 @@
-<title>Bulls ⚔ Unicorns — The Arena (v8)</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bulls ⚔ Unicorns — The Arena</title>
 <style>
   :root{--bg:#0a0a10;--panel:#12121c;--panel2:#171725;--line:#242438;--line2:#2f2f48;--ink:#eef0f7;--ink-soft:#9aa0b8;--ink-faint:#5f6480;
     --bull:#18e08a;--bull-dk:#0f9f63;--uni:#c46bff;--uni-dk:#8b3fd4;--gold:#ffc048;--danger:#ff4d6d;--crit:#ffe14d;
@@ -46,7 +48,8 @@
   .tip{position:absolute;pointer-events:none;z-index:20;background:rgba(12,12,22,.97);border:1px solid var(--line2);border-radius:10px;padding:9px 11px;min-width:160px;opacity:0;box-shadow:0 10px 30px -12px #000}
   .tip .nm{font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;margin-bottom:5px} .tip .r{display:flex;justify-content:space-between;gap:14px;font-family:var(--mono);font-size:11.5px;color:var(--ink-soft)} .tip .r b{color:var(--ink)} .pos{color:var(--bull)} .neg{color:var(--danger)}
   .dot{width:8px;height:8px;border-radius:50%;flex:none} .dot.bull{background:var(--bull)} .dot.uni{background:var(--uni)}
-  .dock{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:12px;margin-top:12px} @media(max-width:980px){.dock{grid-template-columns:1fr}}
+  .dock{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px;margin-top:12px;align-items:start} @media(max-width:640px){.dock{grid-template-columns:1fr}}
+  .panelC{min-width:0} .panelC .note{overflow-wrap:anywhere}
   .panelC{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
   .panelC h3{margin:0 0 10px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-soft);font-family:var(--mono);display:flex;justify-content:space-between;align-items:center} .youtag{font-family:var(--mono);font-size:9px;background:var(--gold);color:#241c00;border-radius:5px;padding:1px 5px;font-weight:700}
   .wcells{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px} .cell{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 10px} .cell .v{font-family:var(--mono);font-size:15px;font-weight:700} .cell .n{font-family:var(--mono);font-size:8px;color:var(--ink-faint);letter-spacing:.05em;text-transform:uppercase;margin-top:2px} .cell.b .v{color:var(--bull)} .cell.u .v{color:var(--uni)}
@@ -110,7 +113,7 @@
           <div class="banner" id="banner"></div>
           <div class="toasts" id="toasts"></div>
           <div class="tip" id="tip"></div>
-          <div class="helpbar" id="helpbar">Deploy in the 7s lobby. Raiding TAKES the enemy's coin into your bag — watch a circle change colour as it eats the enemy. Click any circle for its profile.</div>
+          <div class="helpbar" id="helpbar">Deploy during the lobby. Raiding TAKES the enemy's coin into your bag — watch a circle change colour as it eats the enemy. Click any circle for its profile.</div>
         </div>
         <div class="team uni"><h2>🦄 Unicorns</h2><div class="big" id="uniPool">$0</div><div class="kv"><span>Alive</span><b id="uniCount">0</b></div>
           <div class="wlabel" style="margin:2px 0 0">Alive fighters (health)</div><div class="sideList" id="uniList"></div>
@@ -136,7 +139,12 @@
         <div class="panelC" id="chainPanel">
           <h3>Devnet wallet <span class="youtag" id="chainNet" style="background:#9945FF">SOLANA</span></h3>
           <div id="chainOff">
-            <div class="note">Real BULL/UWU on <b>Solana devnet</b>. Set Phantom to <b>Devnet</b>, then connect.</div>
+            <div class="note">Real BULL/UWU tokens on Solana. Point Phantom at this network first:</div>
+            <div style="margin-top:6px;display:flex;gap:6px;align-items:center">
+              <code id="rpcUrl" style="flex:1;font-family:var(--mono);font-size:11px;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">http://127.0.0.1:8899</code>
+              <button class="abtn ghost" id="copyRpc" style="padding:6px 10px;font-size:11px">Copy</button>
+            </div>
+            <div class="note" style="margin-top:6px;font-size:11px;color:var(--ink-faint)">Phantom → Settings → Developer Settings → Solana → <b>Custom RPC</b> → paste → then Connect.</div>
             <button class="abtn jb" id="btnConnect" style="width:100%;margin-top:8px">🦊 Connect Phantom</button>
           </div>
           <div id="chainOn" style="display:none">
@@ -145,7 +153,9 @@
               <div class="cell b"><div class="v" id="ocBull">0</div><div class="n">🐂 on-chain BULL</div></div>
               <div class="cell u"><div class="v" id="ocUwu">0</div><div class="n">🦄 on-chain UWU</div></div>
             </div>
-            <div class="row2" style="margin-top:8px"><button class="abtn ghost" id="fauBull">Faucet 🐂 500</button><button class="abtn ghost2" id="fauUwu">Faucet 🦄 500</button></div>
+            <div class="cell" style="margin-top:6px"><div class="v" id="ocSol">0</div><div class="n">◎ SOL (for tx fees)</div></div>
+            <button class="abtn jb" id="btnFundMe" style="width:100%;margin-top:8px">🎁 Get test SOL + 500 BULL + 500 UWU</button>
+            <div class="row2" style="margin-top:6px"><button class="abtn ghost" id="fauBull">Faucet 🐂 500</button><button class="abtn ghost2" id="fauUwu">Faucet 🦄 500</button></div>
             <span class="wlabel" style="margin-top:10px">Amount</span>
             <input id="chainAmt" type="number" value="50" min="1" step="1" style="width:100%;background:var(--panel2);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:8px;font-family:var(--mono);font-size:14px">
             <span class="wlabel" style="margin-top:8px">On-chain → game wallet</span>
@@ -387,7 +397,11 @@
   function physics(w,dt,now,noCombat){
     const A=w.players.filter(alive),ramp=1+1.6*(w.roundT/(w.battleMs||BATTLE_MS));
     for(const p of A){p.r+=(radiusFor(p)-p.r)*0.15;
-      let tgt=null,td=1e18;for(const q of A){if(q.side!==p.side){const dx=q.x-p.x,dy=q.y-p.y,d=dx*dx+dy*dy;if(d<td){td=d;tgt=q;}}}
+      let tgt=null,td=1e18;
+      // ONLINE: chase the opponent the ENGINE has us fighting next, so the circles that clash
+      // on screen are the ones actually trading value. Offline: nearest enemy.
+      if(p.chaseId&&w.byId){const c=w.byId.get(p.chaseId);if(c&&alive(c))tgt=c;}
+      if(!tgt)for(const q of A){if(q.side!==p.side){const dx=q.x-p.x,dy=q.y-p.y,d=dx*dx+dy*dy;if(d<td){td=d;tgt=q;}}}
       if(tgt){const ax=tgt.x-p.x,ay=tgt.y-p.y,al=Math.hypot(ax,ay)||1;p.vx+=ax/al*COMBAT.accel*ramp*dt;p.vy+=ay/al*COMBAT.accel*ramp*dt;}
       p.vx+=rand(-8,8)*dt;p.vy+=rand(-8,8)*dt;let s=Math.hypot(p.vx,p.vy)||0.001,mx=COMBAT.speed*ramp*1.4;if(s>mx){p.vx*=mx/s;p.vy*=mx/s;}
       p.x+=p.vx*dt;p.y+=p.vy*dt;
@@ -635,10 +649,25 @@
     }
   }
 
+  // Look ahead in the authoritative hit log and point each fighter at the opponent it is about
+  // to trade with, so the circles that visually clash are the ones actually exchanging value.
+  function retarget(w){
+    if(!w.hitLog||!w.byId)return;
+    for(const p of w.players)p.chaseId=null;
+    const end=Math.min(w.hitLog.length,w.hitIdx+140);
+    for(let i=w.hitIdx;i<end;i++){
+      const h=w.hitLog[i];
+      const a=w.byId.get(h.atk), d=w.byId.get(h.def);
+      if(a&&!a.chaseId&&d&&!d.dead)a.chaseId=h.def;
+      if(d&&!d.chaseId&&a&&!a.dead)d.chaseId=h.atk;   // defender faces its attacker
+    }
+  }
+
   function tickOnline(w,dt,now){
     w.elapsed=(w.elapsed||0)+dt*1000; w.roundT=w.elapsed;
     if(w.phase==="battle"){
       applyHitsUpTo(w,w.elapsed,false);
+      w.retargetT=(w.retargetT||0)+dt; if(w.retargetT>0.35){w.retargetT=0;retarget(w);}
       physics(w,dt,now,true);                       // movement only — engine owns the damage
       if(w.elapsed>=w.battleMs){ finishEngineRound(w); }
     } else if(w.phase==="lobby"){ lobbyDrift(w,dt); }
@@ -782,10 +811,15 @@
       else if(m.t==="balance"){ WALLET.bull=m.bull; WALLET.uwu=m.uwu; saveWallet(); syncDOM(); }
       else if(m.t==="entered"){ const w=worlds[m.mode]; if(w)ev(w,"You deployed "+fmt(m.stake)+" "+cSide(eSide(m.side)).toUpperCase()+" to "+(m.side==="bull"?"🐂":"🦄"),"you");
         $("#walletNote").textContent="✅ Deployed "+fmt(m.stake)+" to "+(m.side==="bull"?"Bulls":"Unicorns")+" — you're in round "+(worlds[m.mode]||{}).roundNo+"."; }
-      else if(m.t==="chain"){ CHAIN=m; if(!m.ready) banner("🟡 Chain not configured — rounds are live, but deposits are off."); else banner("🟢 Live on-chain. Faucet → Deposit → Deploy → Withdraw. Rounds are engine-authoritative &amp; seed-verifiable."); }
+      else if(m.t==="chain"){ CHAIN=m;
+        if(m.rpc){ const r=$("#rpcUrl"); if(r)r.textContent=m.rpc; }
+        if(!m.ready) banner("🟡 Chain not configured — rounds are live, but deposits are off.");
+        else banner("🟢 Live on-chain at <b>"+(m.rpc||"?")+"</b> — point Phantom at this RPC. Rounds are engine-authoritative &amp; seed-verifiable."); }
       else if(m.t==="depositTx"){ signAndSend(m); }
       else if(m.t==="depositDone"){ if(m.credited>0){ const tk=m.side==="bull"?"bull":"uwu"; WALLET[tk]+=m.credited; saveWallet(); syncDOM(); note("✅ Deposited "+m.credited.toFixed(2)+" "+tk.toUpperCase()+" into your game wallet."); } else note("Deposit not confirmed yet — try again in a moment."); if(PK)send({t:"chainBalance",wallet:PK}); }
       else if(m.t==="faucetDone"){ note("✅ Faucet sent "+(m.amount||500)+" "+m.side.toUpperCase()+" to your Phantom. Now Deposit it."); setTimeout(()=>{if(PK)send({t:"chainBalance",wallet:PK});},1500); }
+      else if(m.t==="fundMeDone"){ note("🎁 Sent: "+m.steps.join(" · ")+". Now set an Amount and hit Deposit."); setTimeout(()=>{if(PK){send({t:"chainBalance",wallet:PK});send({t:"solBalance",wallet:PK});}},1800); }
+      else if(m.t==="solBalance"){ const el=$("#ocSol"); if(el)el.textContent=(m.sol||0).toFixed(3); }
       else if(m.t==="withdrawDone"){ lastWd=null; note("✅ Withdrew "+m.amount.toFixed(2)+" "+m.side.toUpperCase()+" to Phantom."); setTimeout(()=>{if(PK)send({t:"chainBalance",wallet:PK});},1500); }
       else if(m.t==="chainBalance"){ if($("#ocBull"))$("#ocBull").textContent=(m.bull||0).toFixed(2); if($("#ocUwu"))$("#ocUwu").textContent=(m.uwu||0).toFixed(2); }
       else if(m.t==="error"){ if(lastWd){ WALLET[lastWd.tk]+=lastWd.amt; saveWallet(); syncDOM(); lastWd=null; } note("⚠ "+m.msg); }
@@ -800,7 +834,13 @@
         const sig=res.signature||res;
         note("Deposit sent, confirming on devnet…");
         send({t:"deposit",wallet:PK,side:m.side,sig});
-      }catch(e){ note("⚠ Deposit cancelled/failed: "+(e.message||e)); }
+      }catch(e){
+        const msg=String(e.message||e);
+        if(/simulat|insufficient|not enough|blockhash|0x1\b/i.test(msg)){
+          note("⚠ Phantom is on the WRONG NETWORK. Your tokens live on "+((CHAIN&&CHAIN.rpc)||"the game's RPC")
+              +" — set Phantom → Settings → Developer Settings → Custom RPC to that URL, then reconnect. (Phantom reported: "+msg.slice(0,60)+")");
+        } else note("⚠ Deposit cancelled/failed: "+msg);
+      }
     }
     async function connect(){
       if(!window.solana||!window.solana.isPhantom){ note("Phantom not found — install the Phantom extension, set it to Devnet."); banner("🦊 Phantom wallet not detected. Install it and switch it to <b>Devnet</b>."); return; }
@@ -809,7 +849,7 @@
         PK=(window.solana.publicKey||r.publicKey).toString();
         $("#chainOff").style.display="none"; $("#chainOn").style.display="block";
         $("#chainAddr").textContent=PK.slice(0,4)+"…"+PK.slice(-4)+"  ·  devnet";
-        connectedOnce=true; MYWALLET=PK; send({t:"chainBalance",wallet:PK}); send({t:"getBalance",wallet:PK});
+        connectedOnce=true; MYWALLET=PK; send({t:"chainBalance",wallet:PK}); send({t:"getBalance",wallet:PK}); send({t:"solBalance",wallet:PK});
         note("Connected. Faucet some test tokens, then Deposit.");
       }catch(e){ note("Connection rejected."); }
     }
@@ -817,6 +857,9 @@
 
     // wire buttons
     $("#btnConnect").onclick=connect;
+    $("#copyRpc").onclick=()=>{ const u=$("#rpcUrl").textContent.trim();
+      (navigator.clipboard?navigator.clipboard.writeText(u):Promise.reject()).then(()=>{$("#copyRpc").textContent="Copied";setTimeout(()=>$("#copyRpc").textContent="Copy",1400);}).catch(()=>{}); };
+    $("#btnFundMe").onclick=()=>{ if(guard()){ note("Requesting test SOL + tokens…"); send({t:"fundMe",wallet:PK}); } };
     $("#fauBull").onclick=()=>{ if(guard())send({t:"faucet",wallet:PK,side:"bull"}); };
     $("#fauUwu").onclick=()=>{ if(guard())send({t:"faucet",wallet:PK,side:"uwu"}); };
     $("#depBull").onclick=()=>{ if(guard()){note("Building deposit…");send({t:"buildDeposit",wallet:PK,side:"bull",amount:amt()});} };
@@ -828,7 +871,7 @@
       WALLET[tk]-=a; saveWallet(); syncDOM(); lastWd={tk,amt:a}; note("Withdrawing "+a.toFixed(2)+" "+tk.toUpperCase()+"…"); send({t:"withdraw",wallet:PK,side,amount:a}); }
 
     connectWS();
-    setInterval(()=>{ if(PK&&ws&&ws.readyState===1)send({t:"chainBalance",wallet:PK}); },9000);
+    setInterval(()=>{ if(PK&&ws&&ws.readyState===1){send({t:"chainBalance",wallet:PK});send({t:"solBalance",wallet:PK});} },9000);
   })();
   // =================================================================================
 

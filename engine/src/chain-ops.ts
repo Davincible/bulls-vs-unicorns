@@ -48,6 +48,21 @@ export async function buildDepositTx(walletB58: string, side: "bull" | "uwu", am
   return tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
 }
 
+// Airdrop native SOL to a player so they can pay tx fees. Works on a local validator
+// (unlimited) and on devnet when the faucet is not rate-limited; fails soft otherwise.
+export async function airdropSol(walletB58: string, sol = 2): Promise<string> {
+  const conn = connection();
+  const owner = new PublicKey(walletB58);
+  const sig = await conn.requestAirdrop(owner, Math.round(sol * 1_000_000_000));
+  await conn.confirmTransaction(sig, "confirmed");
+  return sig;
+}
+
+export async function solBalance(walletB58: string): Promise<number> {
+  try { return (await connection().getBalance(new PublicKey(walletB58))) / 1_000_000_000; }
+  catch { return 0; }
+}
+
 // Read a player's own on-chain token balance for a side (whole tokens).
 export async function walletTokenBalance(walletB58: string, side: "bull" | "uwu"): Promise<number> {
   if (!cfg) return 0;

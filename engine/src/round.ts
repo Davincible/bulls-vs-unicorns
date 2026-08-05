@@ -15,6 +15,7 @@ export interface RoundState {
   result?: RoundResult;
   multiplier: number;
   openedAt: number; closesAt: number;
+  battleMs?: number;              // actual battle length (may be < BATTLE_MS if a side is wiped)
 }
 
 const LOBBY_MS = 20_000;   // real players need time to join
@@ -64,8 +65,12 @@ export class RoundRunner {
     if (s.phase === "lobby" && now >= s.closesAt) {
       s.phase = "battle";
       s.seed = this.seed;                                   // REVEAL
-      s.result = simulateRound(this.seed, s.entries, newRoundConfig(s.mode, s.multiplier));
-      s.closesAt = now + BATTLE_MS;                         // clients animate the (already-decided) result
+      const cfg = newRoundConfig(s.mode, s.multiplier);
+      s.result = simulateRound(this.seed, s.entries, cfg);
+      // the fight can be decided long before the clock runs out (a side gets wiped) — end it then,
+      // plus a short tail so the last hits and the win banner land on screen
+      s.battleMs = Math.min(BATTLE_MS, (s.result.endTick + 2) * cfg.tickMs + 1200);
+      s.closesAt = now + s.battleMs;
       return false;
     }
     if (s.phase === "battle" && now >= s.closesAt) {

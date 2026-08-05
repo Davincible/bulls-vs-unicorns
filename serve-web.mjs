@@ -3,7 +3,8 @@ import http from "node:http"; import fs from "node:fs"; import path from "node:p
 import { fileURLToPath } from "node:url";
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "web");
 const PORT = 8123;
-const types = { ".html":"text/html", ".js":"text/javascript", ".css":"text/css", ".png":"image/png", ".svg":"image/svg+xml", ".json":"application/json" };
+// charset matters: without it the browser guesses latin-1 and every emoji renders as "ðŸ"
+const types = { ".html":"text/html; charset=utf-8", ".js":"text/javascript; charset=utf-8", ".css":"text/css; charset=utf-8", ".png":"image/png", ".svg":"image/svg+xml", ".json":"application/json; charset=utf-8" };
 http.createServer((req, res) => {
   let p = decodeURIComponent(req.url.split("?")[0]); if (p === "/") p = "/index.html";
   const f = path.join(ROOT, p);

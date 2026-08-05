@@ -22,6 +22,7 @@ export interface RoundResult {
   winner: Side;
   hits: HitLog[];                 // full ordered log — replayable
   settlement: Record<string, { bull: number; uwu: number }>; // per-entry final wallet delta
+  endTick: number;                // tick the fight actually ended on (a side wiped, or time)
 }
 export interface HitLog { t: number; atk: string; def: string; amt: number; tk: Side; }
 
@@ -78,10 +79,11 @@ export function simulateRound(seed: string, entries: Entry[], cfg: RoundConfig):
 
   const base = cfg.base * Math.min(cfg.multiplier, 4);
   const steps = Math.floor(cfg.battleMs / cfg.tickMs);
+  let endTick = steps;
   for (let t = 0; t < steps; t++) {
     const A = F.filter(f => alive(f, cfg.dust));
     const bulls = A.filter(f => f.side === "bull"), unis = A.filter(f => f.side === "uwu");
-    if (!bulls.length || !unis.length) break;
+    if (!bulls.length || !unis.length) { endTick = t; break; }   // one side wiped — fight is over
     // deterministic pairing this tick: each alive fighter clashes a pseudo-random enemy
     for (const f of A) {
       if (!alive(f, cfg.dust)) continue;
@@ -100,7 +102,7 @@ export function simulateRound(seed: string, entries: Entry[], cfg: RoundConfig):
 
   const settlement: Record<string, { bull: number; uwu: number }> = {};
   for (const f of F) settlement[f.id] = { bull: f.ownedBull + f.bankedBull, uwu: f.ownedUwu + f.bankedUwu };
-  return { seedHash: seedHash(seed), fighters: F, winner, hits, settlement };
+  return { seedHash: seedHash(seed), fighters: F, winner, hits, settlement, endTick };
 }
 
 // verify: independently recompute and compare the settlement (what a player/auditor runs)

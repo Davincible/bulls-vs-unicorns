@@ -7,7 +7,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import { RoundRunner, newRoundConfig } from "./round.ts";
 import type { RoundResult, RoundState } from "./round.ts";
 import type { Mode, Side } from "./game.ts";
-import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildDepositTx, walletTokenBalance } from "./chain-ops.ts";
+import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildDepositTx, walletTokenBalance, airdropSol, solBalance } from "./chain-ops.ts";
+import { RPC } from "./chain.ts";
 
 const PORT = Number(process.env.PORT || 8090);
 const FEE = 0.002, CAP = 100;
@@ -90,7 +91,7 @@ setInterval(async () => {
         entries: s.entries.map(e => ({ id: e.id, side: e.side, stake: e.stake, name: nameFor(e.id), bot: e.id.includes(":bot:") })),
         cfg: newRoundConfig(mode, s.multiplier),
         hits: s.result.hits, winner: s.result.winner, settlement: s.result.settlement,
-        startedAt: Date.now(), battleMs: newRoundConfig(mode, s.multiplier).battleMs });
+        startedAt: Date.now(), battleMs: s.battleMs || newRoundConfig(mode, s.multiplier).battleMs });
     }
   }
 }, 500);
@@ -106,7 +107,7 @@ const wss = new WebSocketServer({ port: PORT });
 wss.on("error", (e) => console.error("wss error:", (e as Error).message));
 wss.on("connection", (ws) => {
   clients.add(ws);
-  ws.send(JSON.stringify({ t: "chain", ready: chainReady(), vault: chainReady() ? vaultPubkey() : null, mints: mints() }));
+  ws.send(JSON.stringify({ t: "chain", ready: chainReady(), vault: chainReady() ? vaultPubkey() : null, mints: mints(), rpc: RPC }));
   // send the in-flight round immediately so a joiner isn't staring at an empty arena
   for (const mode of ["normal","extraction"] as Mode[]) {
     const s = runners[mode].state;
@@ -114,8 +115,8 @@ wss.on("connection", (ws) => {
       seed: s.seed, seedHash: s.seedHashPublished,
       entries: s.entries.map(e => ({ id: e.id, side: e.side, stake: e.stake, name: nameFor(e.id), bot: e.id.includes(":bot:") })),
       cfg: newRoundConfig(mode, s.multiplier), hits: s.result.hits, winner: s.result.winner, settlement: s.result.settlement,
-      startedAt: s.closesAt - newRoundConfig(mode, s.multiplier).battleMs,   // true start, so a joiner syncs mid-battle
-      battleMs: newRoundConfig(mode, s.multiplier).battleMs, resumed: true }));
+      startedAt: s.closesAt - (s.battleMs || newRoundConfig(mode, s.multiplier).battleMs),   // true start, so a joiner syncs mid-battle
+      battleMs: s.battleMs || newRoundConfig(mode, s.multiplier).battleMs, resumed: true }));
   }
   const cleanup = () => { clients.delete(ws); walletOf.delete(ws); };
   ws.on("error", cleanup);
@@ -140,7 +141,21 @@ wss.on("connection", (ws) => {
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
         const sig = await faucet(m.wallet, m.side, 500);
         ws.send(JSON.stringify({ t: "faucetDone", side: m.side, sig, amount: 500 }));
-      } else if (m.t === "buildDeposit") {                    // → unsigned tx for Phantom to sign
+      } else if (m.t === "fundMe") {                          // one-click: SOL for fees + both tokens
+        if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
+        const steps: string[] = [];
+        const sol = await solBalance(m.wallet);
+        if (sol < 0.5) {
+          try { await airdropSol(m.wallet, 2); steps.push("2 SOL"); }
+          catch { steps.push("SOL airdrop unavailable (faucet limited) — you need a little SOL for fees"); }
+        } else steps.push(`${sol.toFixed(2)} SOL already`);
+        try { await faucet(m.wallet, "bull", 500); steps.push("500 BULL"); } catch (e) { steps.push("BULL failed: " + (e as Error).message); }
+        try { await faucet(m.wallet, "uwu", 500); steps.push("500 UWU"); } catch (e) { steps.push("UWU failed: " + (e as Error).message); }
+        ws.send(JSON.stringify({ t: "fundMeDone", steps }));
+      } else if (m.t === "solBalance") {
+        if (!chainReady()) return;
+        ws.send(JSON.stringify({ t: "solBalance", sol: await solBalance(m.wallet) }));
+      } else if (m.t === "buildDeposit") {                  // → unsigned tx for Phantom to sign
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
         const txB64 = await buildDepositTx(m.wallet, m.side, m.amount);
         ws.send(JSON.stringify({ t: "depositTx", side: m.side, amount: m.amount, txB64 }));
