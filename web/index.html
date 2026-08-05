@@ -96,7 +96,7 @@
       <div class="hstats">
         <div class="pill" title="House take (0.1% of deploys + 0.3% converts)"><b class="g" id="treasury">$0</b><span class="brk" id="treasuryBrk">🐂$0 · 🦄$0</span><span>House take</span></div>
         <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button><button data-view="referrals">Referrals</button></div>
-        <div class="modes"><button data-mode="normal" class="on">Normal</button><button data-mode="extraction">💰 Extraction</button></div>
+        <div class="modes"><button data-mode="normal" class="on">Mayhem</button><button data-mode="extraction">💰 Extraction</button></div>
         <button class="ficon" id="infoBtn" title="How the game works">ⓘ</button>
         <div class="pill" id="fairPill" style="cursor:pointer" title="Provably fair: the engine publishes sha256(seed) before the lobby opens, then reveals the seed. Your browser recomputes the whole round from it — no trust required. Click to verify the last round."><b class="g">✓</b><span>fair</span></div>
         <div id="profWrap" style="position:relative">
@@ -157,7 +157,7 @@
         </div>
         <div style="display:flex;gap:10px;margin-top:12px">
           <div style="flex:1;background:var(--panel2);border:1px solid var(--line2);border-radius:10px;padding:10px">
-            <div style="font-size:20px">⚔</div><b>Normal</b>
+            <div style="font-size:20px">⚔</div><b>Mayhem</b>
             <div class="note" style="font-size:11px;margin-top:4px">Everything you raid goes <b>into your fighter</b> — it grows, hits harder, and it's all still at risk. Win big or lose it.</div>
           </div>
           <div style="flex:1;background:var(--panel2);border:1px solid var(--gold);border-radius:10px;padding:10px">
@@ -306,7 +306,7 @@
   const NAMES=["degenDan","sol_sniper","0xViper","moonboy","rugproof","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","vibecheck","noReentry","gigaGwei","turboTina","elayne","copetrader","sendit","wenLambo","paperhandz","diamondD","fomoFrank","sizzle","nakamotto","zkZoe","based_bri","yeetard","hodlorbe","greenwick","stampede","hornsUp","glitter","prancer","charge","maxbid","alphaleak","serSlippy","tendieTom","voidwalker"];
   const EDGE=0.002, START=100, DUST=1.2, PER_SIDE=12, CAP=100, LOBBY_MS=7000, BATTLE_MS=32000, IMB=90, FEE=0.01;
   const COMBAT={speed:112,accel:250,base:0.085,hitCd:430, roll:()=>{const u=Math.random();return u<0.88?rand(0.2,1.5):u<0.97?rand(1.5,4):rand(4,13);}};
-  const MODE={ normal:{extract:false,cap:"NORMAL",color:"var(--bull)"}, extraction:{extract:true,cap:"EXTRACTION",color:"var(--gold)"} };
+  const MODE={ normal:{extract:false,cap:"MAYHEM",color:"var(--bull)"}, extraction:{extract:true,cap:"EXTRACTION",color:"var(--gold)"} };
   // token art (Ansem bull / UwU unicorn) embedded as data URIs
   const IMG={bull:new Image(),uwu:new Image()},imgOK={bull:false,uwu:false};
   IMG.bull.onload=()=>{imgOK.bull=true;}; IMG.uwu.onload=()=>{imgOK.uwu=true;};
@@ -406,7 +406,7 @@
     checkDeath(w,a);checkDeath(w,b);
   }
   function checkDeath(w,p){if(p.dead||ring(p)>DUST)return;p.dead=true;burst(w,p.x,p.y);
-    if(p.isUser)ev(w,"💀 Your "+p.side+" fighter died!"+(MODE[w.mode].extract?" (extracted winnings are safe in wallet)":" (winnings lost — that's Normal risk)"),"bust");
+    if(p.isUser)ev(w,"💀 Your "+p.side+" fighter died!"+(MODE[w.mode].extract?" (extracted winnings are safe in wallet)":" (winnings lost — that's Mayhem risk)"),"bust");
     else if(Math.random()<0.4)ev(w,"💀 "+p.name+" wiped out","bust");}
   const aliveN=(w,side)=>{let n=0;for(const p of w.players)if(alive(p)&&p.side===side)n++;return n;};
   // ring of the living + banked of everyone: matches how the engine decides the winner,
@@ -629,7 +629,7 @@
       return `<div class="prRow" style="cursor:pointer"><span>#${r.round} ▸</span><span><span class="dot ${r.side==="bull"?"bull":"uni"}"></span> ${r.side==="bull"?"Bull":"Uni"}</span><span>${fmt(r.dep)}</span><span>${r.outB!==undefined?`<span style="color:var(--bull)">${fmt(r.outB)}🐂</span> <span style="color:var(--uni)">+ ${fmt(r.outU)}🦄</span>`:fmt(r.out)}</span><span class="pnl ${r.pnl>=0?'pos':'neg'}">${r.pnl>=0?'+':'−'}${fmt(Math.abs(r.pnl))}</span></div><div class="hitlog" style="display:none;font-family:var(--mono);font-size:10.5px;padding:4px 0 8px 46px;border-bottom:1px solid var(--line)">${log}</div>`;
     }).join("")||'';
     const nP=worlds.normal.userRounds.reduce((s,r)=>s+r.pnl,0), xP=worlds.extraction.userRounds.reduce((s,r)=>s+r.pnl,0);
-    $("#prNote").innerHTML=`Realized P/L — <span style="color:var(--bull)">Normal ${nP>=0?'+':'−'}$${Math.abs(nP).toFixed(0)}</span> · <span style="color:var(--gold)">Extraction ${xP>=0?'+':'−'}$${Math.abs(xP).toFixed(0)}</span>. Both sides show as separate lines; click a round to see every hit.`;
+    $("#prNote").innerHTML=`Realized P/L — <span style="color:var(--bull)">Mayhem ${nP>=0?'+':'−'}$${Math.abs(nP).toFixed(0)}</span> · <span style="color:var(--gold)">Extraction ${xP>=0?'+':'−'}$${Math.abs(xP).toFixed(0)}</span>. Both sides show as separate lines; click a round to see every hit.`;
   }
   $("#miniGrid").addEventListener("click",e=>{const row=e.target.closest(".fRow");if(!row)return;const w=W();const p=w.players.find(x=>x.name===row.dataset.name);if(p)openProfile(w,p);});
   $("#prRows").addEventListener("click",e=>{const row=e.target.closest(".prRow");if(!row)return;const log=row.nextElementSibling;if(log&&log.classList.contains("hitlog"))log.style.display=log.style.display==="none"?"block":"none";});
@@ -718,7 +718,7 @@
   document.querySelectorAll(".modes button").forEach(b=>b.onclick=()=>{activeMode=b.dataset.mode;document.querySelectorAll(".modes button").forEach(x=>x.classList.toggle("on",x===b));
     W().floaters.length=0;W().particles.length=0;W().shake=0;   // start the newly-shown mode clean (no flood)
     $("#autoConv").classList.toggle("on",!!W().autoConvOn);document.querySelectorAll("#autobuy button").forEach(x=>x.classList.toggle("on",+x.dataset.pct===(W().autoPct||0)));document.querySelectorAll("#autoside button").forEach(x=>x.classList.toggle("on",x.dataset.side===W().autoSide));
-    $("#helpbar").textContent=activeMode==="extraction"?"💰 EXTRACTION — raids bank to your SHARED wallet in real time (survive death with winnings). Separate saved game.":"NORMAL — raids compound in your at-risk ring (circle grows & changes colour). Separate saved game.";syncDOM();});
+    $("#helpbar").textContent=activeMode==="extraction"?"💰 EXTRACTION — raids bank to your SHARED wallet in real time (survive death with winnings). Separate saved game.":"MAYHEM — raids compound in your at-risk ring (circle grows & changes colour). Separate saved game.";syncDOM();});
   document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>{activeView=b.dataset.view;document.querySelectorAll(".nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll(".view").forEach(v=>v.classList.remove("on"));$("#view"+activeView[0].toUpperCase()+activeView.slice(1)).classList.add("on");syncDOM();});
   document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{lbTab=b.dataset.tab;document.querySelectorAll(".tabs button").forEach(x=>x.classList.toggle("on",x===b));renderLB();});
   $("#rPrev").onclick=()=>{lbIdx=Math.min(lbIdx+1,W().history.length);renderLB();};
