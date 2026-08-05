@@ -48,6 +48,9 @@
   .tip{position:absolute;pointer-events:none;z-index:20;background:rgba(12,12,22,.97);border:1px solid var(--line2);border-radius:10px;padding:9px 11px;min-width:160px;opacity:0;box-shadow:0 10px 30px -12px #000}
   .tip .nm{font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;margin-bottom:5px} .tip .r{display:flex;justify-content:space-between;gap:14px;font-family:var(--mono);font-size:11.5px;color:var(--ink-soft)} .tip .r b{color:var(--ink)} .pos{color:var(--bull)} .neg{color:var(--danger)}
   .dot{width:8px;height:8px;border-radius:50%;flex:none} .dot.bull{background:var(--bull)} .dot.uni{background:var(--uni)}
+  #profDrop{display:none;position:absolute;right:0;top:42px;z-index:60;width:330px;max-height:76vh;overflow:auto;background:var(--panel);border:1px solid var(--line2);border-radius:14px;padding:14px;box-shadow:0 12px 40px rgba(0,0,0,.55)}
+  #profDrop.on{display:block}
+  .selGold{box-shadow:0 0 0 2px var(--gold),0 0 14px rgba(255,192,72,.45)}
   .dock{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px;margin-top:12px;align-items:start} @media(max-width:640px){.dock{grid-template-columns:1fr}}
   .panelC{min-width:0} .panelC .note{overflow-wrap:anywhere}
   .panelC{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
@@ -94,6 +97,44 @@
         <div class="pill" title="House take (0.2% of deploys + 1% of converts)"><b class="g" id="treasury">$0</b><span class="brk" id="treasuryBrk">🐂$0 · 🦄$0</span><span>House take</span></div>
         <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button></div>
         <div class="modes"><button data-mode="normal" class="on">Normal</button><button data-mode="extraction">💰 Extraction</button></div>
+        <div class="pill" id="fairPill" style="cursor:pointer" title="Provably fair: the engine publishes sha256(seed) before the lobby opens, then reveals the seed. Your browser recomputes the whole round from it — no trust required. Click to verify the last round."><b class="g">✓</b><span>fair</span></div>
+        <div id="profWrap" style="position:relative">
+          <button class="ficon" id="profBtn" title="Wallet & profile">👛</button>
+          <div id="profDrop">
+        <div class="panelC" id="chainPanel">
+          <h3>Devnet wallet <span class="youtag" id="chainNet" style="background:#9945FF">SOLANA</span></h3>
+          <div id="chainOff">
+            <div class="note">Real BULL/UWU tokens on Solana. Point Phantom at this network first:</div>
+            <div style="margin-top:6px;display:flex;gap:6px;align-items:center">
+              <code id="rpcUrl" style="flex:1;font-family:var(--mono);font-size:11px;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">http://127.0.0.1:8899</code>
+              <button class="abtn ghost" id="copyRpc" style="padding:6px 10px;font-size:11px">Copy</button>
+            </div>
+            <button class="abtn jb" id="btnDevWallet" style="width:100%;margin-top:8px">⚡ Use dev wallet (works on localnet)</button>
+            <div class="note" style="margin-top:6px;font-size:11px;color:var(--ink-faint)">A burner keypair kept in this browser. Phantom simulates transactions on its own servers, which can't reach a local validator — so it blocks every localnet tx. The dev wallet signs locally and just works. Use Phantom once we're on public devnet.</div>
+            <button class="abtn ghost" id="btnConnect" style="width:100%;margin-top:8px">🦊 Connect Phantom instead</button>
+          </div>
+          <div id="chainOn" style="display:none">
+            <div class="note" id="chainAddr" style="font-family:var(--mono)"></div>
+            <div class="wcells" style="margin-top:8px">
+              <div class="cell b"><div class="v" id="ocBull">0</div><div class="n">🐂 on-chain BULL</div></div>
+              <div class="cell u"><div class="v" id="ocUwu">0</div><div class="n">🦄 on-chain UWU</div></div>
+            </div>
+            <div class="cell" style="margin-top:6px"><div class="v" id="ocSol">0</div><div class="n">◎ SOL (for tx fees)</div></div>
+            <button class="abtn jb" id="btnFundMe" style="width:100%;margin-top:8px">🎁 Get test SOL + 500 BULL + 500 UWU</button>
+            <div class="row2" style="margin-top:6px"><button class="abtn ghost" id="fauBull">Faucet 🐂 500</button><button class="abtn ghost2" id="fauUwu">Faucet 🦄 500</button></div>
+            <span class="wlabel" style="margin-top:10px">Amount</span>
+            <input id="chainAmt" type="number" value="50" min="1" step="1" style="width:100%;background:var(--panel2);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:8px;font-family:var(--mono);font-size:14px">
+            <span class="wlabel" style="margin-top:8px">On-chain → game wallet</span>
+            <div class="row2"><button class="abtn jb" id="depBull">Deposit 🐂 BULL</button><button class="abtn ju" id="depUwu">Deposit 🦄 UWU</button></div>
+            <span class="wlabel" style="margin-top:8px">Game wallet → Phantom</span>
+            <div class="row2"><button class="abtn ghost" id="wdBull">Withdraw 🐂</button><button class="abtn ghost2" id="wdUwu">Withdraw 🦄</button></div>
+            <div class="note" id="chainNote" style="margin-top:8px">—</div>
+          </div>
+        </div>
+          <div class="toggle" id="autoConv"><span class="sw"></span><span>Auto-convert my raids → my team's coin</span></div>
+          <div class="note">Auto-convert turns coins you steal into your own side's coin each raid (−1% fee).</div>
+          </div>
+        </div>
         <button class="ficon" id="fsBtn" title="Fullscreen">⛶</button>
       </div>
     </header>
@@ -137,43 +178,6 @@
           <button class="abtn ghost2" id="addFunds" style="margin-top:8px;width:100%">+ Add $100 BULL &amp; $100 UWU</button>
           <div class="wcells" style="margin-top:10px"><div class="cell"><div class="v" id="myStake">$0</div><div class="n">In-ring size</div></div><div class="cell"><div class="v pos" id="myPnl">$0</div><div class="n">All-time P/L</div></div></div>
         </div>
-        <div class="panelC" id="chainPanel">
-          <h3>Devnet wallet <span class="youtag" id="chainNet" style="background:#9945FF">SOLANA</span></h3>
-          <div id="chainOff">
-            <div class="note">Real BULL/UWU tokens on Solana. Point Phantom at this network first:</div>
-            <div style="margin-top:6px;display:flex;gap:6px;align-items:center">
-              <code id="rpcUrl" style="flex:1;font-family:var(--mono);font-size:11px;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">http://127.0.0.1:8899</code>
-              <button class="abtn ghost" id="copyRpc" style="padding:6px 10px;font-size:11px">Copy</button>
-            </div>
-            <button class="abtn jb" id="btnDevWallet" style="width:100%;margin-top:8px">⚡ Use dev wallet (works on localnet)</button>
-            <div class="note" style="margin-top:6px;font-size:11px;color:var(--ink-faint)">A burner keypair kept in this browser. Phantom simulates transactions on its own servers, which can't reach a local validator — so it blocks every localnet tx. The dev wallet signs locally and just works. Use Phantom once we're on public devnet.</div>
-            <button class="abtn ghost" id="btnConnect" style="width:100%;margin-top:8px">🦊 Connect Phantom instead</button>
-          </div>
-          <div id="chainOn" style="display:none">
-            <div class="note" id="chainAddr" style="font-family:var(--mono)"></div>
-            <div class="wcells" style="margin-top:8px">
-              <div class="cell b"><div class="v" id="ocBull">0</div><div class="n">🐂 on-chain BULL</div></div>
-              <div class="cell u"><div class="v" id="ocUwu">0</div><div class="n">🦄 on-chain UWU</div></div>
-            </div>
-            <div class="cell" style="margin-top:6px"><div class="v" id="ocSol">0</div><div class="n">◎ SOL (for tx fees)</div></div>
-            <button class="abtn jb" id="btnFundMe" style="width:100%;margin-top:8px">🎁 Get test SOL + 500 BULL + 500 UWU</button>
-            <div class="row2" style="margin-top:6px"><button class="abtn ghost" id="fauBull">Faucet 🐂 500</button><button class="abtn ghost2" id="fauUwu">Faucet 🦄 500</button></div>
-            <span class="wlabel" style="margin-top:10px">Amount</span>
-            <input id="chainAmt" type="number" value="50" min="1" step="1" style="width:100%;background:var(--panel2);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:8px;font-family:var(--mono);font-size:14px">
-            <span class="wlabel" style="margin-top:8px">On-chain → game wallet</span>
-            <div class="row2"><button class="abtn jb" id="depBull">Deposit 🐂 BULL</button><button class="abtn ju" id="depUwu">Deposit 🦄 UWU</button></div>
-            <span class="wlabel" style="margin-top:8px">Game wallet → Phantom</span>
-            <div class="row2"><button class="abtn ghost" id="wdBull">Withdraw 🐂</button><button class="abtn ghost2" id="wdUwu">Withdraw 🦄</button></div>
-            <div class="note" id="chainNote" style="margin-top:8px">—</div>
-          </div>
-        </div>
-        <div class="panelC">
-          <h3>Provably fair <span class="youtag" style="background:var(--gold);color:#000">VERIFY</span></h3>
-          <div class="note">The engine publishes <b>sha256(seed)</b> before the lobby opens, then reveals the seed. Your browser recomputes the entire round and checks it — no trust required.</div>
-          <div style="margin-top:8px;font-family:var(--mono);font-size:10px;color:var(--ink-faint);word-break:break-all" id="fairHash">commit: —</div>
-          <button class="abtn ghost" id="btnVerify" style="width:100%;margin-top:8px">🔐 Verify last round</button>
-          <div class="note" id="fairOut" style="margin-top:8px">Waiting for a round to finish…</div>
-        </div>
         <div class="panelC">
           <h3>Deploy this round <span class="youtag" id="depMode">NORMAL</span></h3>
           <span class="wlabel" style="margin-top:0">Stake (max $100/side)</span>
@@ -185,6 +189,7 @@
             <input id="stakeRange" type="range" min="0.01" max="100" step="0.01" value="5" style="flex:1;accent-color:var(--gold)">
             <button class="abtn ghost" id="stakeMax" style="padding:6px 10px;font-size:11px">Max</button>
           </div>
+          <label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px;color:var(--ink-soft);cursor:pointer"><input type="checkbox" id="autoTick" style="accent-color:var(--gold)"> Auto-deploy this amount to my selected side(s) each lobby</label>
           <div class="row2" style="margin-top:8px"><button class="abtn jb" id="joinBull">Deploy BULL 🐂</button><button class="abtn ju" id="joinUni">Deploy UWU 🦄</button></div>
           <div class="note" id="walletNote">Deploy on BOTH sides at once if you like. Deposits open only in the lobby.</div>
         </div>
@@ -194,8 +199,6 @@
           <div class="seg" id="autobuy"><button data-pct="0" class="on">Off</button><button data-pct="0.05">5%</button><button data-pct="0.1">10%</button><button data-pct="0.25">25%</button></div>
           <span class="wlabel">…to which side</span>
           <div class="seg" id="autoside"><button data-side="bull">🐂 Bulls</button><button data-side="unicorn">🦄 Unicorns</button><button data-side="both" class="on">Both</button></div>
-          <div class="toggle" id="autoConv"><span class="sw"></span><span>Auto-convert my raids → my team's coin</span></div>
-          <div class="note">Auto-convert turns coins you steal into your own side's coin each raid (−1% fee).</div>
         </div>
       </div>
 
@@ -411,6 +414,7 @@
       const tk=side==="bull"?"bull":"uwu";
       if(WALLET[tk]<0.01){$("#walletNote").textContent="No "+tk.toUpperCase()+" in your game wallet — use Faucet then Deposit.";return;}
       const stake=Math.min(amt,WALLET[tk],CAP);
+      w.lastSide=side;
       if(window.__sendEngine)window.__sendEngine({t:"enter",wallet:MYWALLET,mode:w.mode,side:cSide(side),stake});
       $("#walletNote").textContent="Deploying "+fmt(stake)+" "+tk.toUpperCase()+" to "+(side==="bull"?"Bulls":"Unicorns")+"…";
       return;
@@ -587,7 +591,7 @@
   $("#prRows").addEventListener("click",e=>{const row=e.target.closest(".prRow");if(!row)return;const log=row.nextElementSibling;if(log&&log.classList.contains("hitlog"))log.style.display=log.style.display==="none"?"block":"none";});
   document.addEventListener("click",e=>{const row=e.target.closest(".sideList .fRow");if(!row)return;const w=W();const p=w.players.find(x=>x.name===row.dataset.name&&alive(x));if(p)openProfile(w,p);});
   function syncDashboard(){const w=W();$("#dashMode").textContent="· "+MODE[w.mode].cap;
-    $("#dDepBull").textContent=fmt(w.dep.bull);$("#dDepUni").textContent=fmt(w.dep.unicorn);$("#dWinBull").textContent=w.matchWins.bull;$("#dWinUni").textContent=w.matchWins.unicorn;
+    $("#dDepBull").textContent=fmt(w.online?(w.engDepBull||0):w.dep.bull);$("#dDepUni").textContent=fmt(w.online?(w.engDepUwu||0):w.dep.unicorn);$("#dWinBull").textContent=w.matchWins.bull;$("#dWinUni").textContent=w.matchWins.unicorn;
     $("#dDmgBull").textContent=fmt(w.dmgBull);$("#dDmgUni").textContent=fmt(w.dmgUni);
     const house=treasTotal(w),deployed=w.online?(w.engDeployed||0):(w.dep.bull+w.dep.unicorn);
     $("#dHouse").textContent=fmt(house);$("#dHousePct").textContent=(deployed>0?(house/deployed*100).toFixed(2):0)+"%";
@@ -649,14 +653,18 @@
   $("#autobuy").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;W().autoPct=+b.dataset.pct;document.querySelectorAll("#autobuy button").forEach(x=>x.classList.toggle("on",x===b));$("#walletNote").textContent=+b.dataset.pct>0?("Auto-deploy ("+MODE[activeMode].cap+") on: "+(+b.dataset.pct*100)+"% each round."):"Auto-deploy off for "+MODE[activeMode].cap+".";});
   $("#autoside").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;W().autoSide=b.dataset.side;document.querySelectorAll("#autoside button").forEach(x=>x.classList.toggle("on",x===b));});
   $("#autoConv").addEventListener("click",()=>{const w=W();w.autoConvOn=!w.autoConvOn;w.userCircles.forEach(c=>c.autoConv=w.autoConvOn);$("#autoConv").classList.toggle("on",w.autoConvOn);});
-  $("#joinBull").onclick=$("#joinBull2").onclick=()=>{deposit(W(),"bull",room);syncDOM();};
-  $("#joinUni").onclick=$("#joinUni2").onclick=()=>{deposit(W(),"unicorn",room);syncDOM();};
+  const SEL={bull:false,unicorn:false};
+  function paintSel(){[["bull","joinBull","joinBull2"],["unicorn","joinUni","joinUni2"]].forEach(([sd,...ids])=>ids.forEach(id=>{const el=$("#"+id);if(el)el.classList.toggle("selGold",SEL[sd]);}));}
+  function toggleSel(sd){SEL[sd]=!SEL[sd];paintSel();if(SEL[sd]){deposit(W(),sd,room);syncDOM();}else $("#walletNote").textContent=(sd==="bull"?"Bulls":"Unicorns")+" deselected.";}
+  $("#joinBull").onclick=$("#joinBull2").onclick=()=>toggleSel("bull");
+  $("#joinUni").onclick=$("#joinUni2").onclick=()=>toggleSel("unicorn");
   function convertWallet(to){const from=to==="bull"?"uwu":"bull";if(WALLET[from]<=0.01){$("#walletNote").textContent="No "+from.toUpperCase()+" to convert.";return;}
     if(W().online){ if(!MYWALLET){$("#walletNote").textContent="Connect a wallet first.";return;}
       if(window.__sendEngine)window.__sendEngine({t:"convert",wallet:MYWALLET,to});
       $("#walletNote").textContent="Converting "+from.toUpperCase()+" → "+to.toUpperCase()+" (1% fee)…"; return; }const c=WALLET[from]*(1-FEE);W().treasury[from]+=WALLET[from]*FEE;WALLET[to]+=c;WALLET[from]=0;$("#walletNote").textContent="Converted wallet "+from.toUpperCase()+" → "+to.toUpperCase()+" (1% fee).";saveWallet();syncDOM();}
   $("#convBull").onclick=()=>convertWallet("bull"); $("#convUwu").onclick=()=>convertWallet("uwu");
-  $("#btnVerify").onclick=verifyLastRound;
+  $("#fairPill").onclick=verifyLastRound;
+  $("#profBtn").onclick=()=>$("#profDrop").classList.toggle("on");
   $("#addFunds").onclick=()=>{WALLET.bull+=100;WALLET.uwu+=100;INVESTED+=200;$("#walletNote").textContent="Added $100 BULL + $100 UWU.";saveWallet();syncDOM();};
   document.querySelectorAll(".modes button").forEach(b=>b.onclick=()=>{activeMode=b.dataset.mode;document.querySelectorAll(".modes button").forEach(x=>x.classList.toggle("on",x===b));
     W().floaters.length=0;W().particles.length=0;W().shake=0;   // start the newly-shown mode clean (no flood)
@@ -908,7 +916,8 @@
     return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,"0")).join("");
   }
   async function verifyLastRound(){
-    const w=W(), out=$("#fairOut");
+    const w=W();
+    const out={set innerHTML(v){const b=$("#devnetBanner");if(b){b.style.display="block";b.innerHTML=v;}},set textContent(v){this.innerHTML=v;}};
     const R=w.lastRound;
     if(!R){ out.innerHTML="No completed round yet — wait for this one to finish."; return; }
     out.innerHTML="Recomputing "+R.hits.length+" hits from the seed…";
@@ -972,6 +981,7 @@
           // house take / user base come from the engine, not the dead local-sim counters
           if(s.house){ w.treasury.bull=s.house.take; w.treasury.uwu=s.house.conv||0;
             w.engDeployed=s.house.deployed; w.engAccounts=s.house.accounts; w.engBulls=s.house.bulls; w.engUnis=s.house.unis;
+            w.engDepBull=s.house.depBull; w.engDepUwu=s.house.depUwu;
             w.acctCreated=s.house.created; w.acctBusted=s.house.busted; }
           // show fighters gathering during the lobby instead of an empty arena.
           // MERGE by id: keep existing circles where they drift (no teleporting on every join),
@@ -998,6 +1008,10 @@
           }
           // AUTO-DEPLOY (online): the engine owns the lobby, so it has to fire from here —
           // the local-sim startLobby() that used to do this never runs when connected.
+          if(s.phase==="lobby"&&MYWALLET&&w.autoRound!==s.round&&$("#autoTick")&&$("#autoTick").checked){
+            w.autoRound=s.round;
+            for(const sd of ["bull","unicorn"])if(SEL[sd])deposit(w,sd,room);
+          }
           if(s.phase==="lobby"&&MYWALLET&&w.autoPct>0&&w.autoRound!==s.round){
             w.autoRound=s.round;
             const inLobby=new Set((s.list||[]).map(e=>String(e.id)));   // don't double-deploy after a reload/reconnect mid-lobby
@@ -1020,6 +1034,13 @@
             if(m.community.joined>0)ev(w,"🆕 "+m.community.joined+" new wallet"+(m.community.joined>1?"s":"")+" joined — "+m.community.total+" in the arena","round");
             if(m.community.busted>0)ev(w,"💀 "+m.community.busted+" wallet"+(m.community.busted>1?"s":"")+" busted out","bust"); } } }
       else if(m.t==="balance"){ WALLET.bull=m.bull; WALLET.uwu=m.uwu;
+        const aw=W();
+        if(aw.online&&aw.autoConvOn&&PK){
+          const mySide=aw.lastSide||((aw.autoSide&&aw.autoSide!=="both")?aw.autoSide:null);
+          if(mySide){const tk2=mySide==="bull"?"bull":"uwu", off=tk2==="bull"?"uwu":"bull";
+            if(WALLET[off]>1&&!window.__convBusy){window.__convBusy=true;setTimeout(()=>window.__convBusy=false,5000);
+              send({t:"convert",wallet:PK,to:tk2});}}
+        }
         INVESTED=(m.depIn||0)-(m.wOut||0);          // real cost basis: deposited minus withdrawn
         saveWallet(); syncDOM(); }
       else if(m.t==="entered"){ const w=worlds[m.mode]; if(w)ev(w,"You deployed "+fmt(m.stake)+" "+cSide(eSide(m.side)).toUpperCase()+" to "+(m.side==="bull"?"🐂":"🦄"),"you");

@@ -20,14 +20,14 @@ interface Account { id: string; name: string; side: Side; bull: number; uwu: num
 const ledger = new Map<string, Account>();
 const NAMES = ["degenDan","sol_sniper","0xViper","moonboy","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","gigaGwei","turboTina","sendit","wenLambo","diamondD","fomoFrank","nakamotto","zkZoe","based_bri","saylorsz","jitoJoe","rugproof","exitliq","ser_pump","mevMike","validatorV","anonape","solstice","tapedeck"];
 // community growth: the arena starts small and fills up over time
-const POP_START = 22, POP_GROWTH = 0.7, POP_MAX = 90;
+const POP_START = Number(process.env.POP_START || 22), POP_GROWTH = Number(process.env.POP_GROWTH || 0.7), POP_MAX = Number(process.env.POP_MAX || 90);
 const rounds: Record<Mode, number> = { normal: 0, extraction: 0 };
 // house take: the 0.2% skimmed on every deploy, tracked per mode
 const treasury: Record<Mode, number> = { normal: 0, extraction: 0 };
 let convFees = 0;   // 1% taken when players swap raided enemy coin back to their own side
 
 function persist() {
-  saveSnapshot({ accounts: [...ledger.values()], treasury, totalDeployed, created,
+  saveSnapshot({ accounts: [...ledger.values()], treasury, totalDeployed, depSide, created,
                  busted: bustedCount, convFees, rounds });
 }
 function restore() {
@@ -35,6 +35,7 @@ function restore() {
   for (const a of snap.accounts || []) ledger.set(a.id, a);
   Object.assign(treasury, snap.treasury || {});
   Object.assign(totalDeployed, snap.totalDeployed || {});
+  Object.assign(depSide, (snap as any).depSide || {});
   Object.assign(created, snap.created || {});
   Object.assign(bustedCount, snap.busted || {});
   Object.assign(rounds, snap.rounds || {});
@@ -43,6 +44,7 @@ function restore() {
   console.log(`restored ledger: ${ledger.size} accounts (${players.length} real) from disk`);
 }
 const totalDeployed: Record<Mode, number> = { normal: 0, extraction: 0 };
+const depSide: Record<Mode, { bull: number; uwu: number }> = { normal: { bull: 0, uwu: 0 }, extraction: { bull: 0, uwu: 0 } };
 const created: Record<Mode, number> = { normal: 0, extraction: 0 };
 const bustedCount: Record<Mode, number> = { normal: 0, extraction: 0 };
 const B58 = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ123456789";
@@ -110,7 +112,7 @@ async function onSettle(mode: Mode, r: RoundResult, s: RoundState) {
   for (const a of botsFor(mode)) if (a.bull + a.uwu < 5) { ledger.delete(a.id); busted++; bustedCount[mode]++; }
   rounds[mode]++;
   const popCap = Math.min(POP_MAX, POP_START + Math.floor(rounds[mode] * POP_GROWTH));
-  const target = Math.max(12, popCap - realPlaying * 2);
+  const target = Math.max(Number(process.env.POP_MIN || 12), popCap - realPlaying * 2);
   let joined = 0;
   while (botsFor(mode).length < target) {
     newBot(mode, botsFor(mode).filter(b=>b.side==="bull").length <= botsFor(mode).filter(b=>b.side==="uwu").length ? "bull":"uwu");
@@ -129,8 +131,9 @@ const runners: Record<Mode, RoundRunner> = {
 };
 restore();
 // only seed a fresh community if we didn't restore one
-if (botsFor("normal").length === 0) seedBots("normal", 18);
-if (botsFor("extraction").length === 0) seedBots("extraction", 18);
+const SEED = Number(process.env.SEED_BOTS || 18);
+if (botsFor("normal").length === 0) seedBots("normal", SEED);
+if (botsFor("extraction").length === 0) seedBots("extraction", SEED);
 
 // bots auto-enter each lobby (a fraction, with a fee taken on deploy)
 function botsEnter(mode: Mode) {
@@ -141,7 +144,7 @@ function botsEnter(mode: Mode) {
     const stake = Math.min(Math.max(6, bankroll * (0.18 + Math.random()*0.37)), CAP, bankroll);
     if (stake < 6) continue;
     if (a.side === "bull") a.bull -= stake; else a.uwu -= stake;
-    a.dep += stake; treasury[mode] += stake * FEE; totalDeployed[mode] += stake;
+    a.dep += stake; treasury[mode] += stake * FEE; totalDeployed[mode] += stake; depSide[mode][a.side] += stake;
     rn.enter(`${a.id}|${a.side}`, a.side, stake * (1 - FEE));   // net of deploy fee
   }
 }
@@ -179,6 +182,7 @@ setInterval(() => {
     list: s.phase === "lobby" ? s.entries.slice(0, 40).map(e => ({ id: e.id, name: nameFor(e.id), side: e.side, stake: e.stake })) : [],
     leaders: leadersFor(mode),
     house: { take: treasury[mode], conv: convFees, deployed: totalDeployed[mode],
+             depBull: depSide[mode].bull, depUwu: depSide[mode].uwu,
              accounts: botsFor(mode).length,
              bulls: botsFor(mode).filter(a => a.side === "bull").length,
              unis: botsFor(mode).filter(a => a.side === "uwu").length,
@@ -232,7 +236,7 @@ wss.on("connection", (ws) => {
         if (stake < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: `Minimum entry is $${MIN_ENTRY}.` }));
         if (m.side === "bull") a.bull -= stake; else a.uwu -= stake;   // debit real balance into the round
         a.dep += stake; a.side = m.side;
-        treasury[m.mode as Mode] += stake * FEE; totalDeployed[m.mode as Mode] += stake;
+        treasury[m.mode as Mode] += stake * FEE; totalDeployed[m.mode as Mode] += stake; depSide[m.mode as Mode][m.side as Side] += stake;
         rn.enter(`${m.wallet}|${m.side}`, m.side, stake * (1 - FEE));
         ws.send(JSON.stringify({ t: "entered", mode: m.mode, side: m.side, stake }));
         pushBalance(m.wallet); persist();

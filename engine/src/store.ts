@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "data");
+const DIR = process.env.LEDGER_DIR || join(dirname(fileURLToPath(import.meta.url)), "..", "data");
 const FILE = join(DIR, "ledger.json");
 const TMP = FILE + ".tmp";
 
