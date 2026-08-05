@@ -55,7 +55,10 @@ export class RoundRunner {
   /** Player enters the round during lobby with a stake already reserved from their ledger balance. */
   enter(playerId: string, side: "bull" | "uwu", stake: number): boolean {
     if (this.state.phase !== "lobby") return false;
-    // one entry per side per player; stake is the NET (fee already taken on deposit/reserve)
+    // one fighter per side per player — topping up adds to your existing fighter rather than
+    // spawning a second one. stake is the NET (fee already taken on deposit/reserve)
+    const existing = this.state.entries.find(e => e.id === playerId && e.side === side);
+    if (existing) { existing.stake += stake; return true; }
     this.state.entries.push({ id: playerId, side, stake });
     return true;
   }

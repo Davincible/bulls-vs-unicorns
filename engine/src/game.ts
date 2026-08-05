@@ -35,6 +35,8 @@ export interface RoundResult {
 // virtual arena — fixed so the sim is identical everywhere; the client scales it to its canvas
 export const ARENA = { w: 900, h: 560 };
 export const COMBAT = { speed: 112, accel: 250, hitCd: 430 };
+// below this size ratio vs your attacker, the per-hit cap no longer protects you
+export const FINISH_RATIO = 0.12;
 
 // --- deterministic RNG: xmur3 seed -> sfc32 stream (fast, reproducible across JS engines) ---
 function xmur3(str: string) {
@@ -154,8 +156,13 @@ export function stepSim(s: SimState): HitLog[] {
     s.pairCd.set(key, nowMs);
     const base = cfg.base * Math.min(cfg.multiplier, 4) * (0.7 + 0.3 * ramp);
     const gm = Math.sqrt(ring(a) * ring(b)) * base;
-    const dAB = Math.min(gm * roll(), ring(b) * cfg.hitCapFrac);
-    const dBA = Math.min(gm * roll(), ring(a) * cfg.hitCapFrac);
+    // The 25% cap is per-hit protection so nobody gets one-shot, but it also made stragglers
+    // unkillable: a tiny fighter only ever loses 25% of a tiny number while raiding back just as
+    // much. Once you're far smaller than your opponent the cap lifts, so fights actually finish.
+    const capFor = (def: Fighter, atk: Fighter) =>
+      ring(def) < ring(atk) * FINISH_RATIO ? ring(def) : ring(def) * cfg.hitCapFrac;
+    const dAB = Math.min(gm * roll(), capFor(b, a));
+    const dBA = Math.min(gm * roll(), capFor(a, b));
     strike(a, b, dAB); strike(b, a, dBA);
     if (ring(a) <= cfg.dust) a.dead = true;
     if (ring(b) <= cfg.dust) b.dead = true;

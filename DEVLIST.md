@@ -87,3 +87,30 @@ already-decided result - damage rained on everyone with nothing on screen causin
       in both modes, and re-running a seed reproduces it exactly.
 - [x] Virtual arena is fixed at 900x560 in the sim and scaled to whatever the canvas is, so the
       result never depends on window size.
+
+## 2026-08-05 - balance, scale and stats
+
+- [x] **Tiny fighters were unkillable.** Damage is capped at 25% of the *defender's* ring, so a
+      $2.62 fighter only ever lost ~$0.65 a hit while raiding back just as much - it could farm
+      two big fighters forever. Added a finisher: once you're below 12% of your attacker's size
+      the cap lifts. Verified on the exact case - the tiny fighter now dies at 8.8s instead of
+      surviving 60s, while an even 50v50 still goes the full distance (size-neutrality intact).
+- [x] **Multiple deposits spawned multiple "YOU" fighters.** Topping up now adds to your existing
+      fighter (3x$20 -> one fighter at $59.88 after fees).
+- [x] **More active accounts** - population starts at 22, grows 0.7/round to 90, and wallets skip
+      only 25% of rounds instead of 60%. Live rounds went from ~6-9 fighters to 17+.
+- [x] **House take was wrong** - it was computed as 0.2% of *damage* off a local counter that
+      never ran online. The engine tracks the real skim taken on every deploy; now reads exactly
+      0.200% of deployed.
+- [x] **Leaderboard / profile stats were all zero** - the engine sent only current value. It now
+      sends dep, ret, raided and best per account, so P&L, raided and win rate populate.
+- [x] **100 v 100 stress test**: 48,602 hits, 2.4s to compute a 60s round, value conserved
+      exactly, ~2ms per tick in the browser (needs <50ms for realtime). It exposed a real
+      problem - the hit log was **3.3 MB per round**. Since the browser recomputes the fight from
+      the seed it never needed the log: roundStart now ships a hit *count* (2.5 KB payload) and
+      the verifier proves fairness from its own recomputation plus the settlement.
+
+## Not doing (yet)
+
+- Projectile visuals (fighters shooting little projectiles at their target instead of contact
+  damage). Noted as a nice-to-have; current collision model already drives hits.
