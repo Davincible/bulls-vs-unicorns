@@ -12,7 +12,7 @@ import { RPC } from "./chain.ts";
 import { loadSnapshot, saveSnapshot, flushSnapshot } from "./store.ts";
 
 const PORT = Number(process.env.PORT || 8090);
-const FEE = 0.002, CAP = 100, CONVERT_FEE = 0.01, MIN_ENTRY = 0.01;
+const FEE = 0.001, CAP = 100, CONVERT_FEE = 0.003, MIN_ENTRY = 0.01;   // convert = PumpSwap pool fee (0.30%), swap executed on-chain at mainnet
 
 // ---- ledger: real players (by wallet) + persistent bot accounts ----
 interface Account { id: string; name: string; side: Side; bull: number; uwu: number; isBot: boolean; dep: number; ret: number; games: number; wins: number;
@@ -112,7 +112,8 @@ async function onSettle(mode: Mode, r: RoundResult, s: RoundState) {
   // real players fill the arena, so bots never crowd out humans.
   const realPlaying = s.entries.filter(e => !e.id.includes(":bot:")).length;
   let busted = 0;
-  for (const a of botsFor(mode)) if (a.bull + a.uwu < 5) { ledger.delete(a.id); busted++; bustedCount[mode]++; }
+  const BUST = Number(process.env.BOT_BUST || Math.min(5, BOT_BANK_MIN * 0.4));
+  for (const a of botsFor(mode)) if (a.bull + a.uwu < BUST) { ledger.delete(a.id); busted++; bustedCount[mode]++; }
   rounds[mode]++;
   const popCap = Math.min(POP_MAX, POP_START + Math.floor(rounds[mode] * POP_GROWTH));
   const target = Math.max(Number(process.env.POP_MIN || 12), popCap - realPlaying * 2);

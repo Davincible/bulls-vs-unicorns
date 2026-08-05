@@ -94,7 +94,7 @@
     <header>
       <div class="brand"><h1><span class="b">🐂</span><span class="vs">⚔</span><span class="u">🦄</span> ARENA</h1></div>
       <div class="hstats">
-        <div class="pill" title="House take (0.2% of deploys + 1% of converts)"><b class="g" id="treasury">$0</b><span class="brk" id="treasuryBrk">🐂$0 · 🦄$0</span><span>House take</span></div>
+        <div class="pill" title="House take (0.1% of deploys + 0.3% converts)"><b class="g" id="treasury">$0</b><span class="brk" id="treasuryBrk">🐂$0 · 🦄$0</span><span>House take</span></div>
         <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button><button data-view="referrals">Referrals</button></div>
         <div class="modes"><button data-mode="normal" class="on">Normal</button><button data-mode="extraction">💰 Extraction</button></div>
         <button class="ficon" id="infoBtn" title="How the game works">ⓘ</button>
@@ -165,7 +165,7 @@
             <div class="note" style="font-size:11px;margin-top:4px">Every raid is <b>banked instantly</b> to your balance. Your fighter can die — the loot is already safe.</div>
           </div>
         </div>
-        <div class="note" style="font-size:12px;margin-top:12px">🔐 <b>Provably fair</b> — every round's outcome is committed before betting closes; your browser can re-verify any result (✓ pill up top). House fee: 0.2% on deploys. Only what both sides can match is at risk — the excess is refunded.</div>
+        <div class="note" style="font-size:12px;margin-top:12px">🔐 <b>Provably fair</b> — every round's outcome is committed before betting closes; your browser can re-verify any result (✓ pill up top). House fee: 0.1% on deploys. Only what both sides can match is at risk — the excess is refunded.</div>
         <button class="abtn jb" id="introClose" style="width:100%;margin-top:16px">Let's go</button>
       </div>
     </div>
@@ -230,7 +230,7 @@
           <span class="wlabel">…to which side</span>
           <div class="seg" id="autoside"><button data-side="bull">🐂 Bulls</button><button data-side="unicorn">🦄 Unicorns</button><button data-side="both" class="on">Both</button></div>
           <div class="toggle" id="autoConv"><span class="sw"></span><span>Auto-convert my raids → my team's coin</span></div>
-          <div class="note">Auto-convert turns coins you steal into your own side's coin each raid (−1% fee).</div>
+          <div class="note">Auto-convert turns coins you steal into your own side's coin each raid (−0.3% fee).</div>
 
         </div>
       </div>
@@ -269,7 +269,7 @@
         <div class="dgrid" style="margin-top:12px">
           <div class="stat b"><div class="v" id="dDmgBull">$0</div><div class="n">Total damage · Bulls</div></div>
           <div class="stat u"><div class="v" id="dDmgUni">$0</div><div class="n">Total damage · Unicorns</div></div>
-          <div class="stat"><div class="v" id="dHouse" style="color:var(--gold)">$0</div><div class="n">House take · 0.2% of deploys</div></div>
+          <div class="stat"><div class="v" id="dHouse" style="color:var(--gold)">$0</div><div class="n">House take · 0.1% of deploys</div></div>
           <div class="stat"><div class="v" id="dHousePct">0%</div><div class="n">House take ÷ deployed</div></div>
         </div>
       </div>
@@ -354,7 +354,7 @@
   }
   function makeWorld(mode){
     const w={mode,treasury:{bull:0,uwu:0},roundNo:1,roundT:0,phase:"lobby",phaseT:0,multiplier:1,players:[],wins:[],floaters:[],particles:[],shake:0,pairCd:new Map(),events:[],hoverId:null,bannerTxt:"",bannerA:0,
-      dep:{bull:0,unicorn:0},matchWins:{bull:0,unicorn:0},matches:[],legends:[],history:[],userRounds:[],autoPct:0,autoSide:"both",autoConvOn:false,userCircles:[],
+      dep:{bull:0,unicorn:0},matchWins:{bull:0,unicorn:0},matches:[],legends:[],history:[],userRounds:[],autoPct:0,autoSide:"both",autoConvOn:true,userCircles:[],
       accounts:[],acctSeq:0,acctCreated:0,acctBusted:0,dmgBull:0,dmgUni:0};
     loadSave(w);
     if(w.accounts.length<8){for(let i=0;i<26;i++)newAccount(w,i%2?"unicorn":"bull");}  // seed a starting user base
@@ -583,7 +583,8 @@
       return;}
     if(lbTab==="alltime"){$("#rnav").style.visibility="hidden";$("#lbColBar").textContent="Wallet now (size)";$("#lbColRd").textContent="Raided (all-time)";
       const atPnl=a=>(a.pnl!==undefined?a.pnl:(a.ret||0)-(a.dep||0));   // engine sends true P&L for real players (counts withdrawals)
-      const rows=w.accounts.slice().sort((a,b)=>atPnl(b)-atPnl(a)).slice(0,40);
+      // rank by wallet SIZE — that's what the # and the bar imply; P/L stays a column
+      const rows=w.accounts.slice().sort((a,b)=>(b.bankroll||0)-(a.bankroll||0)).slice(0,40);
       const maxV=Math.max(1,...rows.map(a=>a.bankroll||0));
       $("#lbRows").innerHTML=rows.length?rows.map((a,i)=>{const pnl=atPnl(a),pct=a.dep>0?pnl/a.dep*100:0;
         return `<div class="lbRow ${a.you?'you':''}" data-name="${a.name}"><span class="rk">${i+1}</span><span class="who"><span class="dot ${a.side==="bull"?"bull":"uni"}"></span>${a.you?'<span class="youtag">YOU</span> ':''}<span class="nmx">${a.name}</span></span>${compBar(a.side==="bull"?(a.bankroll||0):0,a.side==="bull"?0:(a.bankroll||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}${fmt(Math.abs(pnl))}<div class="pct">${pct>=0?'+':''}${pct.toFixed(0)}% · ${a.wins}W/${a.games}g</div></span><span class="rd">${fmt(a.raided||0)}</span></div>`;}).join(""):'<div class="note">Accounts populate as rounds run.</div>';
@@ -695,6 +696,8 @@
   setStake(5);
   $("#autobuy").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;W().autoPct=+b.dataset.pct;document.querySelectorAll("#autobuy button").forEach(x=>x.classList.toggle("on",x===b));$("#walletNote").textContent=+b.dataset.pct>0?("Auto-deploy ("+MODE[activeMode].cap+") on: "+(+b.dataset.pct*100)+"% each round."):"Auto-deploy off for "+MODE[activeMode].cap+".";});
   $("#autoside").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;W().autoSide=b.dataset.side;document.querySelectorAll("#autoside button").forEach(x=>x.classList.toggle("on",x===b));});
+  $("#autoConv").classList.toggle("on",!!W().autoConvOn);
+  if($("#autoConv"))$("#autoConv").classList.toggle("on",!!W().autoConvOn);
   $("#autoConv").addEventListener("click",()=>{const w=W();w.autoConvOn=!w.autoConvOn;w.userCircles.forEach(c=>c.autoConv=w.autoConvOn);$("#autoConv").classList.toggle("on",w.autoConvOn);});
   const SEL={bull:false,unicorn:false};
   function paintSel(){[["bull","joinBull","joinBull2"],["unicorn","joinUni","joinUni2"]].forEach(([sd,...ids])=>ids.forEach(id=>{const el=$("#"+id);if(el)el.classList.toggle("selGold",SEL[sd]);}));}
@@ -707,7 +710,7 @@
   function convertWallet(to){const from=to==="bull"?"uwu":"bull";if(WALLET[from]<=0.01){$("#walletNote").textContent="No "+from.toUpperCase()+" to convert.";return;}
     if(W().online){ if(!MYWALLET){$("#walletNote").textContent="Connect a wallet first.";return;}
       if(window.__sendEngine)window.__sendEngine({t:"convert",wallet:MYWALLET,to});
-      $("#walletNote").textContent="Converting "+from.toUpperCase()+" → "+to.toUpperCase()+" (1% fee)…"; return; }const c=WALLET[from]*(1-FEE);W().treasury[from]+=WALLET[from]*FEE;WALLET[to]+=c;WALLET[from]=0;$("#walletNote").textContent="Converted wallet "+from.toUpperCase()+" → "+to.toUpperCase()+" (1% fee).";saveWallet();syncDOM();}
+      $("#walletNote").textContent="Converting "+from.toUpperCase()+" → "+to.toUpperCase()+" (0.3% fee)…"; return; }const c=WALLET[from]*(1-FEE);W().treasury[from]+=WALLET[from]*FEE;WALLET[to]+=c;WALLET[from]=0;$("#walletNote").textContent="Converted wallet "+from.toUpperCase()+" → "+to.toUpperCase()+" (0.3% fee).";saveWallet();syncDOM();}
   $("#convBull").onclick=()=>convertWallet("bull"); $("#convUwu").onclick=()=>convertWallet("uwu");
   $("#fairPill").onclick=verifyLastRound;
   $("#profBtn").onclick=()=>{$("#profDrop").classList.toggle("on");if(window.drawOverview)drawOverview();};
