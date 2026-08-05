@@ -1,7 +1,8 @@
 // N-team deterministic battle sim — powers 3-WAY and FFA arenas.
 // Same provable-fairness contract as game.ts (seeded RNG, physics collisions decide hits,
 // value conservation incl. refunds), generalized from two hardcoded sides to N teams:
-//   3-WAY: teams = ["ansem","uwu","sol"], matched to the MEDIAN team total (decided by Max)
+//   3-WAY: teams = ["ansem","uwu","sol"], matched to the SMALLEST team total (min rule -
+//   median was tried first and skewed the WIN badge mid 54%/light 5%; min measures 33/35/33)
 //   FFA:   every fighter is its own team, no matching (nothing to favour), biggest bag wins
 //   LAUNCH GATE: FFA ships EXTRACTION-ONLY. Measured: FFA+Mayhem grinds small stakes to
 //   about -40% ROI (death forfeits the ring; small fighters die more; survivors compound).

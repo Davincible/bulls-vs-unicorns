@@ -6,7 +6,7 @@
 | ANSEM vs UWU | 2 teams | today's game |
 | ANSEM vs SOL | 2 teams | new |
 | UWU vs SOL | 2 teams | new |
-| 3-WAY | ANSEM vs UWU vs SOL | matched to the MEDIAN side's total; heaviest side's excess refunded pro-rata; winner = highest ring+banked |
+| 3-WAY | ANSEM vs UWU vs SOL | matched to the SMALLEST side's total (min rule — Max removed the median rule 2026-08-06); excess of both heavier sides refunded pro-rata; winner = highest ring+banked. Verified win-neutral: 33/35/33 team-win, ROI within ±2.5% |
 | FFA (per token) | every fighter solo | BULL-only first (then UWU-only, SOL-only); biggest bag at the horn wins; raids hit anyone |
 
 Mayhem = renamed Normal (pure rename, done). Internal mode key stays "normal".
