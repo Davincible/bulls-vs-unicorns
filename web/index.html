@@ -98,7 +98,7 @@
         <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button></div>
         <div class="modes"><button data-mode="normal" class="on">Normal</button><button data-mode="extraction">💰 Extraction</button></div>
         <button class="ficon" id="infoBtn" title="How the game works">ⓘ</button>
-        <div class="pill" id="fairPill style="cursor:pointer" title="Provably fair: the engine publishes sha256(seed) before the lobby opens, then reveals the seed. Your browser recomputes the whole round from it — no trust required. Click to verify the last round."><b class="g">✓</b><span>fair</span></div>
+        <div class="pill" id="fairPill" style="cursor:pointer" title="Provably fair: the engine publishes sha256(seed) before the lobby opens, then reveals the seed. Your browser recomputes the whole round from it — no trust required. Click to verify the last round."><b class="g">✓</b><span>fair</span></div>
         <div id="profWrap" style="position:relative">
           <button class="ficon" id="profBtn" title="Wallet & profile">👛</button>
           <div id="profDrop">
@@ -140,6 +140,12 @@
               <button class="abtn ghost" id="refCopy" style="padding:6px 10px;font-size:11px">Copy</button>
             </div>
             <div class="note" style="margin-top:6px">Earned so far: <b id="refEarned" style="color:var(--gold)">$0</b></div>
+            <h3 style="margin-top:12px">Identity</h3>
+            <div style="display:flex;gap:8px;align-items:center">
+              <img id="xAvatar" style="width:34px;height:34px;border-radius:50%;border:1px solid var(--line2);display:none">
+              <button class="abtn ghost" id="btnX" style="flex:1">𝕏 Connect X</button>
+            </div>
+            <div class="note" style="font-size:10px;margin-top:4px">Your X name + avatar become your in-game profile and fighter logo.</div>
           </div>
         </div>
           </div>
@@ -489,7 +495,9 @@
     const g=ctx.createLinearGradient(0,0,W2,0);g.addColorStop(0,"rgba(24,224,138,.06)");g.addColorStop(.5,"rgba(255,192,72,.12)");g.addColorStop(1,"rgba(196,107,255,.06)");ctx.fillStyle=g;ctx.fillRect(W2/2-1.5,44,3,H2-56);
     for(const p of w.players){if(!alive(p))continue;const isB=p.side==="bull",col=isB?"#18e08a":"#c46bff",dk=isB?"#0f7d4e":"#6a2ba8",enemyCol=isB?"#c46bff":"#18e08a";
       if(p.isUser){ctx.beginPath();ctx.arc(p.x,p.y,p.r+6+pulse*4,0,7);ctx.strokeStyle="rgba(255,192,72,"+(0.5+pulse*0.4)+")";ctx.lineWidth=3;ctx.stroke();}
-      const art=isB?IMG.bull:IMG.uwu, artOK=isB?imgOK.bull:imgOK.uwu;
+      let art=isB?IMG.bull:IMG.uwu, artOK=isB?imgOK.bull:imgOK.uwu;
+      // X avatar becomes the fighter's face when the player connected their handle
+      if(p.avatar&&window.avatarImg){const av=avatarImg(p.avatar);if(av){art=av;artOK=true;}}
       if(artOK){ ctx.save();ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,7);ctx.clip();ctx.drawImage(art,p.x-p.r,p.y-p.r,p.r*2,p.r*2);ctx.restore(); }
       else { const grd=ctx.createRadialGradient(p.x-p.r*0.3,p.y-p.r*0.3,2,p.x,p.y,p.r);grd.addColorStop(0,col);grd.addColorStop(1,dk);ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,7);ctx.fillStyle=grd;ctx.fill(); }
       // stolen-coin wedge: shows how much of the ENEMY coin this fighter now holds
@@ -561,7 +569,7 @@
       const maxV=Math.max(1,...L.map(l=>l.outAmt||0));
       $("#lbRows").innerHTML=L.length?L.map((l,i)=>{
         const pnl=(l.outAmt||0)-(l.inAmt||0);
-        return `<div class="lbRow" data-name="${l.name}"><span class="rk">${i+1}</span><span class="who"><span class="dot ${l.side==="bull"?"bull":"uni"}"></span><span class="nmx">${l.name}</span><div class="pct" style="color:var(--ink-faint)">round ${l.round} · ${l.mode||""}</div></span>${compBar(l.side==="bull"?(l.outAmt||0):0,l.side==="bull"?0:(l.outAmt||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}${fmt(Math.abs(pnl))}<div class="pct">${fmt(l.inAmt)} → ${fmt(l.outAmt)}</div></span><span class="rd" style="color:var(--gold)">${(l.roi*100).toFixed(0)}%</span></div>`;
+        return `<div class="lbRow" data-name="${l.name}"><span class="rk">${i+1}</span><span class="who"><span class="dot ${l.side==="bull"?"bull":"uni"}"></span><span class="nmx">${l.name}</span><div class="pct" style="color:var(--ink-faint)">round ${l.round} · ${l.mode||""}</div></span>${compBar(l.side==="bull"?(l.outAmt||0):0,l.side==="bull"?0:(l.outAmt||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}${fmt(Math.abs(pnl))}<div class="pct">${fmt(l.inAmt)} → ${fmt(l.outAmt)}</div></span><span class="rd" style="color:var(--gold)">${(l.roi*100).toFixed(0)}%</span><button class="abtn ghost" style="padding:2px 8px;font-size:10px" onclick="event.stopPropagation();window.__shareLegend&&__shareLegend(${i})">𝕏</button></div>`;
       }).join(""):'<div class="note">Best single-round returns will show here once rounds settle.</div>';
       return;}
     if(lbTab==="alltime"){$("#rnav").style.visibility="hidden";$("#lbColBar").textContent="Wallet now (size)";$("#lbColRd").textContent="Raided (all-time)";
@@ -853,7 +861,7 @@
     w.byId=new Map();
     for(const e of w.entries){
       const side=eSide(e.side);
-      const c={id:e.id,eid:e.id,acct:null,name:e.name||"anon",side,bull:0,uwu:0,sBull:0,sUwu:0,banked:0,
+      const c={id:e.id,eid:e.id,acct:null,name:e.name||"anon",avatar:e.avatar,side,bull:0,uwu:0,sBull:0,sUwu:0,banked:0,
         isUser:isMe(e),x:0,y:0,vx:0,vy:0,r:12,dmgDealt:0,dmgTaken:0,rDmg:0,
         raided:0,bestHit:0,deposited:e.stake,flash:0,dead:false};
       w.players.push(c); w.byId.set(e.id,c);
@@ -941,6 +949,9 @@
     const buf=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s));
     return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,"0")).join("");
   }
+  window.__shareLegend=(i)=>{const w=W();const l=(w.legends||[])[i];if(!l)return;
+    const em=l.side==="bull"?"🐂":"🦄";
+    shareX(`${em} Turned ${fmt(l.inAmt)} into ${fmt(l.outAmt)} (+${((l.roi-1)*100).toFixed(0)}%) as a ${l.side==="bull"?"BULL":"UNICORN"} in round ${l.round} of Bulls vs Unicorns ⚔ provably-fair on-chain token battles`);};
   async function verifyLastRound(){
     const w=W();
     const out={set innerHTML(v){const b=$("#devnetBanner");if(b){b.style.display="block";b.innerHTML=v;}},set textContent(v){this.innerHTML=v;}};
@@ -964,6 +975,17 @@
     }catch(e){ out.textContent="Verify failed: "+(e.message||e); }
   }
   // ================================================================================================
+
+  // ---- X identity: handle -> name + avatar (unavatar, no OAuth needed) ----
+  const AVCACHE={};
+  window.avatarImg=avatarImg;
+  function avatarImg(url){ if(!url)return null; let o=AVCACHE[url];
+    if(!o){o={img:new Image(),ok:false};o.img.crossOrigin="anonymous";o.img.onload=()=>o.ok=true;o.img.src=url;AVCACHE[url]=o;}
+    return o.ok?o.img:null; }
+  function applyX(){try{const x=JSON.parse(localStorage.getItem("bvu_x")||"null");
+    if(x){const im=$("#xAvatar");if(im){im.src=x.av;im.style.display="block";}
+      if($("#btnX"))$("#btnX").textContent="𝕏 @"+x.h;}}catch(e){}}
+  function shareX(text){window.open("https://twitter.com/intent/tweet?text="+encodeURIComponent(text),"_blank");}
 
   // ---- account overview graph + intro modal + referral link ----
   function recordBal(b,u){
@@ -1172,6 +1194,7 @@
     }
     async function useDevWallet(){
       if(!window.solanaWeb3){ note("⚠ Solana lib not loaded — check your connection and reload."); return; }
+      localStorage.setItem("bvu_wmeth","dev");
       DEVKP=loadOrCreateDevKP();
       PK=DEVKP.publicKey.toString(); MYWALLET=PK;
       $("#chainOff").style.display="none"; $("#chainOn").style.display="block";
@@ -1190,6 +1213,7 @@
         $("#chainOff").style.display="none"; $("#chainOn").style.display="block";
         $("#chainAddr").textContent=PK.slice(0,4)+"…"+PK.slice(-4)+"  ·  devnet";
         if($("#refLink"))$("#refLink").textContent=location.origin+location.pathname+"?ref="+PK;
+        localStorage.setItem("bvu_wmeth","phantom");
         connectedOnce=true; MYWALLET=PK; send({t:"chainBalance",wallet:PK}); send({t:"getBalance",wallet:PK}); send({t:"solBalance",wallet:PK});
         note("Connected. Faucet some test tokens, then Deposit.");
       }catch(e){ note("Connection rejected."); }
@@ -1199,6 +1223,15 @@
     // wire buttons
     $("#btnDevWallet").onclick=useDevWallet;
     $("#btnConnect").onclick=connect;
+    if($("#btnX"))$("#btnX").onclick=()=>{
+      const h=(prompt("Your X / Twitter handle (without @):")||"").trim().replace(/^@/,"");
+      if(!h)return;
+      const av="https://unavatar.io/x/"+h;
+      localStorage.setItem("bvu_x",JSON.stringify({h,av}));
+      applyX();
+      if(PK)send({t:"setName",wallet:PK,name:"@"+h,avatar:av});
+    };
+    applyX();
     if($("#refCopy"))$("#refCopy").onclick=()=>{const u=$("#refLink").textContent.trim();
       if(u.startsWith("http"))navigator.clipboard&&navigator.clipboard.writeText(u).then(()=>{$("#refCopy").textContent="Copied";setTimeout(()=>$("#refCopy").textContent="Copy",1400);});};
     $("#copyRpc").onclick=()=>{ const u=$("#rpcUrl").textContent.trim();
@@ -1215,6 +1248,14 @@
       WALLET[tk]-=a; saveWallet(); syncDOM(); lastWd={tk,amt:a}; note("Withdrawing "+a.toFixed(2)+" "+tk.toUpperCase()+"…"); send({t:"withdraw",wallet:PK,side,amount:a}); }
 
     connectWS();
+    // auto-reconnect the wallet you used last time
+    setTimeout(()=>{ const m2=localStorage.getItem("bvu_wmeth");
+      if(m2==="dev"&&localStorage.getItem("bvu_devwallet")&&!PK)useDevWallet();
+      else if(m2==="phantom"&&window.solana&&!PK)window.solana.connect({onlyIfTrusted:true}).then(()=>connect()).catch(()=>{});
+      // re-apply X identity after connect
+      setTimeout(()=>{try{const x=JSON.parse(localStorage.getItem("bvu_x")||"null");
+        if(x&&PK)send({t:"setName",wallet:PK,name:"@"+x.h,avatar:x.av});}catch(e){}},2500);
+    },1800);
     setInterval(()=>{ if(PK&&ws&&ws.readyState===1){send({t:"chainBalance",wallet:PK});send({t:"solBalance",wallet:PK});} },9000);
   })();
   // =================================================================================

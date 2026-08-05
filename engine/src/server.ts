@@ -17,7 +17,7 @@ const FEE = 0.002, CAP = 100, CONVERT_FEE = 0.01, MIN_ENTRY = 0.01;
 // ---- ledger: real players (by wallet) + persistent bot accounts ----
 interface Account { id: string; name: string; side: Side; bull: number; uwu: number; isBot: boolean; dep: number; ret: number; games: number; wins: number;
   raided?: number; best?: number; depIn?: number; wOut?: number;
-  refBy?: string; refEarned?: number; }   // referral: who brought them, and lifetime cut earned   // real on-chain money in / out — the basis for true P&L
+  refBy?: string; refEarned?: number; avatar?: string; }   // referral: who brought them, and lifetime cut earned   // real on-chain money in / out — the basis for true P&L
 const ledger = new Map<string, Account>();
 const NAMES = ["degenDan","sol_sniper","0xViper","moonboy","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","gigaGwei","turboTina","sendit","wenLambo","diamondD","fomoFrank","nakamotto","zkZoe","based_bri","saylorsz","jitoJoe","rugproof","exitliq","ser_pump","mevMike","validatorV","anonape","solstice","tapedeck"];
 // community growth: the arena starts small and fills up over time
@@ -48,6 +48,7 @@ const totalDeployed: Record<Mode, number> = { normal: 0, extraction: 0 };
 const depSide: Record<Mode, { bull: number; uwu: number }> = { normal: { bull: 0, uwu: 0 }, extraction: { bull: 0, uwu: 0 } };
 const created: Record<Mode, number> = { normal: 0, extraction: 0 };
 const bustedCount: Record<Mode, number> = { normal: 0, extraction: 0 };
+const BOT_BANK_MIN = Number(process.env.BOT_BANK_MIN || 60), BOT_BANK_MAX = Number(process.env.BOT_BANK_MAX || 240), BOT_STAKE_MIN = Number(process.env.BOT_STAKE_MIN || 6);
 const B58 = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ123456789";
 const walletish = () => { let s=""; for(let i=0;i<4;i++) s += B58[(Math.random()*B58.length)|0]; return s + "…" + B58[(Math.random()*B58.length)|0] + B58[(Math.random()*B58.length)|0] + B58[(Math.random()*B58.length)|0]; };
 let seq = 0;
@@ -55,7 +56,8 @@ function newBot(mode: Mode, side: Side): Account {
   const id = `${mode}:bot:${++seq}`;
   // a third of newcomers show up as raw addresses — fresh wallets, no handle yet
   const name = Math.random() < 0.34 ? walletish() : NAMES[(Math.random()*NAMES.length)|0] + "_" + seq;
-  const a: Account = { id, name, side, bull: side==="bull"? 60+Math.random()*180 : 0, uwu: side==="uwu"? 60+Math.random()*180 : 0, isBot: true, dep:0, ret:0, games:0, wins:0 };
+  const bank = BOT_BANK_MIN + Math.random() * (BOT_BANK_MAX - BOT_BANK_MIN);
+  const a: Account = { id, name, side, bull: side === "bull" ? bank : 0, uwu: side === "uwu" ? bank : 0, isBot: true, dep: 0, ret: 0, games: 0, wins: 0 };
   ledger.set(id, a); created[mode]++; return a;
 }
 function seedBots(mode: Mode, n: number) { for (let i=0;i<n;i++) newBot(mode, i%2 ? "uwu":"bull"); }
@@ -78,7 +80,7 @@ function balPayload(wallet: string) { const a = ledger.get(wallet);
 // Leaderboard the engine owns, so real players actually appear on it.
 function leadersFor(mode: Mode) {
   const list = [...ledger.values()].filter(a => (a.isBot ? a.id.startsWith(mode + ":") : true));
-  const rows = list.map(a => ({ id: a.id, name: a.name, side: a.side, value: a.bull + a.uwu,
+  const rows = list.map(a => ({ id: a.id, name: a.name, avatar: a.avatar, side: a.side, value: a.bull + a.uwu,
       games: a.games, wins: a.wins, isBot: a.isBot,
       dep: a.dep, ret: a.ret, raided: a.raided||0, best: a.best||0,
       pnl: a.isBot ? a.ret - a.dep : (a.bull + a.uwu) + (a.wOut||0) - (a.depIn||0) }))
@@ -142,8 +144,8 @@ function botsEnter(mode: Mode) {
   for (const a of botsFor(mode)) {
     if (Math.random() < 0.25) continue;                     // most wallets play each round
     const bankroll = a.side === "bull" ? a.bull : a.uwu;
-    const stake = Math.min(Math.max(6, bankroll * (0.18 + Math.random()*0.37)), CAP, bankroll);
-    if (stake < 6) continue;
+    const stake = Math.min(Math.max(BOT_STAKE_MIN, bankroll * (0.18 + Math.random()*0.37)), CAP, bankroll);
+    if (stake < BOT_STAKE_MIN) continue;
     if (a.side === "bull") a.bull -= stake; else a.uwu -= stake;
     a.dep += stake; treasury[mode] += stake * FEE; totalDeployed[mode] += stake; depSide[mode][a.side] += stake;
     rn.enter(`${a.id}|${a.side}`, a.side, stake * (1 - FEE));   // net of deploy fee
@@ -168,7 +170,7 @@ setInterval(async () => {
       const s = rn.state;
       broadcast({ t: "roundStart", mode, round: s.round, multiplier: s.multiplier,
         seed: s.seed, seedHash: s.seedHashPublished,
-        entries: s.entries.map(e => ({ id: e.id, wallet: e.id.split("|")[0], side: e.side, stake: e.stake, name: nameFor(e.id), bot: e.id.includes(":bot:") })),
+        entries: s.entries.map(e => ({ id: e.id, wallet: e.id.split("|")[0], side: e.side, stake: e.stake, name: nameFor(e.id), avatar: ledger.get(e.id.split("|")[0])?.avatar, bot: e.id.includes(":bot:") })),
         cfg: newRoundConfig(mode, s.multiplier),
         hitCount: s.result.hits.length, winner: s.result.winner, settlement: s.result.settlement,
         startedAt: Date.now(), battleMs: s.battleMs || newRoundConfig(mode, s.multiplier).battleMs });
@@ -308,6 +310,11 @@ wss.on("connection", (ws) => {
         if (!chainReady()) return;
         const [bull, uwu] = await Promise.all([walletTokenBalance(m.wallet, "bull"), walletTokenBalance(m.wallet, "uwu")]);
         ws.send(JSON.stringify({ t: "chainBalance", bull, uwu }));
+      } else if (m.t === "setName") {          // { wallet, name, avatar } — X identity
+        const a = acct(m.wallet, "bull");
+        a.name = String(m.name || "").slice(0, 24) || a.name;
+        if (m.avatar) a.avatar = String(m.avatar).slice(0, 200);
+        ws.send(JSON.stringify({ t: "named", name: a.name }));
       } else if (m.t === "getBalance") {
         ws.send(JSON.stringify(balPayload(m.wallet)));
       }
