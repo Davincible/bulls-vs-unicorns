@@ -1,42 +1,62 @@
-# Deploy the devnet test online — the do-almost-nothing guide
+# Running & deploying Bulls ⚔ Unicorns
 
-You need 3 free accounts (all "Sign in with GitHub"). ~10 minutes of clicking.
-I've made every config; you just connect + click Deploy.
+## A. Play it locally (what works today)
 
-## 0. One-time: put the code on GitHub
-- Make a free **GitHub** account if you don't have one.
-- Create a new **empty repo** (e.g. `bulls-arena`), private is fine.
-- Upload this `bulls-arena/` folder to it (GitHub web: "uploading an existing file" → drag the folder),
-  **or** tell me and I'll give you the two `git` commands to paste.
+Double-click **`run-local.bat`**. It starts, in order:
 
-## 1. Engine → Railway (the live game server)
-1. Go to **railway.app** → "Sign in with GitHub".
-2. **New Project → Deploy from GitHub repo →** pick `bulls-arena`.
-3. Settings → **Root Directory** = `engine`.  (Start command auto-detects `npm start`.)
-4. It builds & gives you a public URL like `bulls-arena-production.up.railway.app`.
-   Your WebSocket URL is that with `wss://` in front:
-   **`wss://bulls-arena-production.up.railway.app`** ← copy this.
+| # | Piece | Where |
+|---|---|---|
+| 1 | Solana test validator (WSL) | `http://127.0.0.1:8899` |
+| 2 | Game engine (rounds + vault) | `ws://localhost:8090` |
+| 3 | Web server + browser | `http://localhost:8123` |
 
-## 2. Frontend → Netlify (or Vercel)
-**Netlify (you've used it):** drag the `web/` folder onto **app.netlify.com/drop**. Done — you get a URL.
-**Vercel:** New Project → import the repo → Root Directory = `web` → Deploy.
+Then in the browser:
 
-## 3. Point the frontend at the engine (one line)
-Open your live frontend URL and add the engine URL as a query param, e.g.:
-`https://your-site.netlify.app/?engine=wss://bulls-arena-production.up.railway.app`
-(That's the shareable link. Or tell me the Railway URL and I'll bake it into the file so no param is needed.)
+1. **Devnet wallet** panel → **Connect Phantom**
+   (Phantom → Settings → Developer Settings → **Custom RPC** → `http://127.0.0.1:8899`)
+2. **Faucet 🐂 500** / **Faucet 🦄 500** — mints real test tokens to your wallet
+3. **Deposit** — Phantom signs a real SPL transfer into the vault; your game balance is credited
+4. **Deploy BULL / UWU** in the lobby — the engine enters you into the round
+5. **🔐 Verify last round** — your browser recomputes the whole round from the revealed seed
+6. **Withdraw** — the vault sends tokens back to your wallet
 
-## 4. Play on devnet
-- Open the link, click **Connect Phantom** (set Phantom to **Devnet** in its settings).
-- You'll see both modes running live with bots. Deploy to a side.
-- (Real BULL/UWU deposits activate once the vault program is deployed to devnet — that's the
-  next step I do; it needs the Anchor toolchain, which is what WSL is for.)
+The mints live in `engine/devnet.json`. They persist as long as the validator ledger
+(`~/svalidator` in WSL) is kept. **Never pass `--reset` to `solana-test-validator`** — that
+wipes the mints and you must re-run `npm run setup:devnet`.
 
-## What I still do (no action from you)
-- Finish the Anchor toolchain (WSL) → compile & **deploy the vault to devnet** (free).
-- Mint devnet test BULL/UWU, wire real deposit/withdraw into the client.
-- Port the full canvas battle animation into the client (server-authoritative replay).
+## B. How the trust model works
 
-## Costs
-- Railway free tier, Netlify/Vercel free tier, Solana **devnet = free**. $0 to test.
-- Mainnet later: ~2–5 SOL one-time for the program + a house-liquidity float.
+- **Rounds are engine-authoritative.** The browser never decides damage. The engine commits
+  `sha256(seed)` *before* the lobby opens, reveals the seed when the battle starts, and ships
+  the full ordered hit log. The client only replays it.
+- **Anyone can verify.** The client recomputes the round from the seed and compares every hit,
+  the winner, and every payout. If the engine had altered anything after seeing the bets, the
+  hashes would not match.
+- **Custody today is custodial** (an engine-held vault keypair). See "What's left" below.
+
+## C. Deploying it online
+
+Frontend and engine deploy fine; **on-chain deposits do not survive the move** unless the
+chain the engine points at is publicly reachable — a local validator is not.
+
+1. **GitHub** — upload this folder (drag-drop in the web UI). `engine/.vault-keypair.json`
+   is gitignored and must stay that way.
+2. **Engine → Railway** — New Project → this repo → Settings → **Root Directory = `engine`**.
+   Env vars: `SOLANA_RPC` = a public devnet RPC (or leave unset → rounds run, deposits off).
+   Public URL becomes your `wss://…` engine URL.
+3. **Frontend → Vercel** — import repo → **Root Directory = `web`** → Deploy.
+4. Open `https://your-site.vercel.app/?engine=wss://your-engine.up.railway.app`
+   (or bake the URL into the `ENGINE` default in `web/index.html`).
+
+For a **public** devnet demo you must re-create the mints against public devnet:
+`SOLANA_RPC=https://api.devnet.solana.com npm run setup:devnet` — which needs ~0.05 devnet SOL
+in the vault. The public faucet was rate-limiting this machine; a local validator sidesteps it.
+
+## D. What's left
+
+- **Trustless custody (Anchor vault).** `programs/vault/src/lib.rs` is written — a pooled vault
+  with an on-chain fee skim and settlement-authority-gated withdrawals. It is **not deployed**:
+  building it needs a C toolchain in WSL (`sudo apt install build-essential`), which requires
+  your WSL password. Until then the vault is an engine-held keypair — fine for devnet, must be
+  replaced before real money.
+- **Mainnet:** point at the real BULL/UWU mints, deploy the Anchor program, fund a house float.
