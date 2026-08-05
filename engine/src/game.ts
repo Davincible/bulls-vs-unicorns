@@ -16,7 +16,7 @@ export interface Fighter {
   bull: number; uwu: number;        // in-ring holdings (what's at risk)
   sBull: number; sUwu: number;      // extraction: banked out of the ring
   deposited: number; raided: number; dmgDealt: number; dmgTaken: number; bestHit: number; dead: boolean;
-  lost: number; retired: boolean;   // retired = hit its loss cap and walked away with the rest
+  unmatched: number;   // stake returned untouched because the other side couldn't cover it
   x: number; y: number; vx: number; vy: number; r: number;
 }
 export interface RoundConfig {
@@ -38,14 +38,14 @@ export const ARENA = { w: 900, h: 560 };
 export const COMBAT = { speed: 112, accel: 250, hitCd: 430 };
 // below this size ratio vs your attacker, the per-hit cap no longer protects you
 export const FINISH_RATIO = 0.08;   // and only late in the round (see below)
-// Bounded exposure: a fighter can lose at most this share of its OWN deposited stake in a round,
-// then it retires keeping the rest. This is the core fairness rule - your downside is set by your
-// stake, not by how many enemies happen to be swinging at you. Upside stays uncapped (it is
-// funded by other fighters' losses), so big wins are still possible.
-export const MAX_LOSS = 0.5;
-// Gains are bounded too, but far looser (a 3x round is still on the table). Without any ceiling
-// a small fighter compounds uncapped while risking the same 50%, so % returns favoured minnows.
-export const MAX_GAIN = 2.0;
+// Fairness comes from a MATCHED BOOK, not from capping anyone: see createSim. Winnings are
+// uncapped and you can lose your whole in-play stake.
+//
+// SMALL_EDGE deliberately tilts play slightly toward smaller positions. With lots of wallets on
+// auto-deploy the average stake shrinks over time; if the small stakes left at the end couldn't
+// beat fresh larger deposits, liquidity would sit idle. A mild edge keeps value circulating.
+// 1.0 = perfectly neutral. Keep it small - this is a thumb on the scale, not a strategy.
+export const SMALL_EDGE = 1.03;
 
 // --- deterministic RNG: xmur3 seed -> sfc32 stream (fast, reproducible across JS engines) ---
 function xmur3(str: string) {
@@ -63,7 +63,7 @@ function rngFromSeed(seed: string) { const s = xmur3(seed); return sfc32(s(), s(
 export function seedHash(seed: string): string { return createHash("sha256").update(seed).digest("hex"); }
 
 export const ring = (f: Fighter) => f.bull + f.uwu;
-const aliveF = (f: Fighter, dust: number) => !f.dead && !f.retired && ring(f) > dust;
+const aliveF = (f: Fighter, dust: number) => !f.dead && ring(f) > dust;
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
 export const radiusFor = (f: Fighter) => clamp(7 + 1.7 * Math.sqrt(ring(f)), 7, 26);
 
@@ -76,12 +76,22 @@ export interface SimState {
 export function createSim(seed: string, entries: Entry[], cfg: RoundConfig): SimState {
   const rnd = rngFromSeed(seed);
   const rand = (a: number, b: number) => a + rnd() * (b - a);
+  // MATCHED BOOK — only the amount both sides can cover is actually at risk. If bulls put up
+  // $500 and unicorns $300, just $300 a side plays and the extra $200 is refunded pro-rata to
+  // the bull players at settlement. Sides therefore start exactly equal, so which side you pick
+  // cannot be an edge, and nobody's stake is capped or confiscated.
+  const tot = { bull: 0, uwu: 0 };
+  for (const e of entries) tot[e.side] += e.stake;
+  const matched = Math.min(tot.bull, tot.uwu);
+  const inPlayFrac = (side: Side) => (tot[side] > 0 ? Math.min(1, matched / tot[side]) : 1);
   const F: Fighter[] = entries.map(e => {
+    const frac = inPlayFrac(e.side);
+    const inPlay = e.stake * frac;
     const f: Fighter = {
       id: e.id, side: e.side,
-      bull: e.side === "bull" ? e.stake : 0, uwu: e.side === "uwu" ? e.stake : 0,
+      bull: e.side === "bull" ? inPlay : 0, uwu: e.side === "uwu" ? inPlay : 0,
       sBull: 0, sUwu: 0, deposited: e.stake, raided: 0, dmgDealt: 0, dmgTaken: 0, bestHit: 0, dead: false,
-      lost: 0, retired: false,
+      unmatched: e.stake - inPlay,
       x: 0, y: 0, vx: rand(-1, 1), vy: rand(-1, 1), r: 12,
     };
     // bulls start left, unicorns right
@@ -149,15 +159,12 @@ export function stepSim(s: SimState): HitLog[] {
     return { tk, amt: Math.min(dmg, tk === "bull" ? snap.bull : snap.uwu) };
   };
   const applyHit = (atk: Fighter, def: Fighter, hit: { tk: Side; amt: number }) => {
-    const budget = Math.max(0, def.deposited * MAX_LOSS - def.lost);          // downside cap
-    const room = Math.max(0, atk.deposited * MAX_GAIN - atk.raided);           // upside cap
-    const amt = Math.min(hit.amt, hit.tk === "bull" ? def.bull : def.uwu, budget, room);
-    if (amt <= 0.01) { if (budget <= 0.01) def.retired = true; if (room <= 0.01) atk.retired = true; return; }
+    const amt = Math.min(hit.amt, hit.tk === "bull" ? def.bull : def.uwu);
+    if (amt <= 0.01) return;
     if (hit.tk === "bull") def.bull -= amt; else def.uwu -= amt;
     if (cfg.mode === "extraction") { if (hit.tk === "bull") atk.sBull += amt; else atk.sUwu += amt; }
     else { if (hit.tk === "bull") atk.bull += amt; else atk.uwu += amt; }
-    atk.raided += amt; atk.dmgDealt += amt; def.dmgTaken += amt; def.lost += amt;
-    if (def.lost >= def.deposited * MAX_LOSS - 0.01) def.retired = true;   // walks away with the rest
+    atk.raided += amt; atk.dmgDealt += amt; def.dmgTaken += amt;
     if (amt > atk.bestHit) atk.bestHit = amt;
     const h: HitLog = { t: s.t, atk: atk.id, def: def.id, amt, tk: hit.tk };
     s.hits.push(h); out.push(h);
@@ -189,8 +196,10 @@ export function stepSim(s: SimState): HitLog[] {
     const lateGame = s.t > s.steps * 0.5;
     const capFor = (def: Fighter, atk: Fighter) =>
       (lateGame && ring(def) < ring(atk) * FINISH_RATIO) ? ring(def) : small * cfg.hitCapFrac;
-    const dAB = Math.min(gm * roll(), capFor(b, a));
-    const dBA = Math.min(gm * roll(), capFor(a, b));
+    const edgeA = ring(a) < ring(b) ? SMALL_EDGE : 1;   // the smaller fighter punches up
+    const edgeB = ring(b) < ring(a) ? SMALL_EDGE : 1;
+    const dAB = Math.min(gm * roll() * edgeA, capFor(b, a));
+    const dBA = Math.min(gm * roll() * edgeB, capFor(a, b));
     const snapA = { bull: a.bull, uwu: a.uwu }, snapB = { bull: b.bull, uwu: b.uwu };
     const hitOnB = planHit(b, snapB, dAB), hitOnA = planHit(a, snapA, dBA);
     applyHit(a, b, hitOnB); applyHit(b, a, hitOnA);
@@ -208,7 +217,10 @@ export function finishSim(s: SimState): RoundResult {
   const bullV = F.filter(f => f.side === "bull").reduce((a, f) => a + ring(f) + f.sBull + f.sUwu, 0);
   const uwuV = F.filter(f => f.side === "uwu").reduce((a, f) => a + ring(f) + f.sBull + f.sUwu, 0);
   const settlement: Record<string, { bull: number; uwu: number }> = {};
-  for (const f of F) settlement[f.id] = { bull: f.bull + f.sBull, uwu: f.uwu + f.sUwu };
+  for (const f of F) settlement[f.id] = {
+    bull: f.bull + f.sBull + (f.side === "bull" ? f.unmatched : 0),
+    uwu: f.uwu + f.sUwu + (f.side === "uwu" ? f.unmatched : 0),
+  };
   return { seedHash: "", fighters: F, winner: bullV >= uwuV ? "bull" : "uwu", hits: s.hits, settlement, endTick: s.endTick };
 }
 

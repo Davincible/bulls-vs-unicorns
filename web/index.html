@@ -179,9 +179,9 @@
           <div class="seg" id="rooms"><button data-room="5" class="on">$5</button><button data-room="20">$20</button><button data-room="50">$50</button><button data-room="100">$100</button></div>
           <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
             <span style="font-family:var(--mono);font-size:13px;color:var(--gold)">$</span>
-            <input id="stakeAmt" type="number" min="1" max="100" step="1" value="5"
+            <input id="stakeAmt" type="number" min="0.01" max="100" step="0.01" value="5"
               style="width:76px;background:var(--panel2);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:6px 8px;font-family:var(--mono);font-size:14px">
-            <input id="stakeRange" type="range" min="1" max="100" step="1" value="5" style="flex:1;accent-color:var(--gold)">
+            <input id="stakeRange" type="range" min="0.01" max="100" step="0.01" value="5" style="flex:1;accent-color:var(--gold)">
             <button class="abtn ghost" id="stakeMax" style="padding:6px 10px;font-size:11px">Max</button>
           </div>
           <div class="row2" style="margin-top:8px"><button class="abtn jb" id="joinBull">Deploy BULL 🐂</button><button class="abtn ju" id="joinUni">Deploy UWU 🦄</button></div>
@@ -385,7 +385,7 @@
       if(w.phase!=="lobby"){$("#walletNote").textContent="⛔ Deposits closed — fight's on. Next lobby soon.";return;}
       if(!MYWALLET){$("#walletNote").textContent="Connect Phantom first (Devnet wallet panel).";return;}
       const tk=side==="bull"?"bull":"uwu";
-      if(WALLET[tk]<1){$("#walletNote").textContent="No "+tk.toUpperCase()+" in your game wallet — use Faucet then Deposit.";return;}
+      if(WALLET[tk]<0.01){$("#walletNote").textContent="No "+tk.toUpperCase()+" in your game wallet — use Faucet then Deposit.";return;}
       const stake=Math.min(amt,WALLET[tk],CAP);
       if(window.__sendEngine)window.__sendEngine({t:"enter",wallet:MYWALLET,mode:w.mode,side:cSide(side),stake});
       $("#walletNote").textContent="Deploying "+fmt(stake)+" "+tk.toUpperCase()+" to "+(side==="bull"?"Bulls":"Unicorns")+"…";
@@ -595,7 +595,7 @@
   const STAKE_MAX=100;
   // free-form stake: presets, a number box and a slider all drive the same value (max $100/side)
   function setStake(v,from){
-    room=clamp(Math.round((+v||0)*100)/100,1,STAKE_MAX);
+    room=clamp(Math.round((+v||0)*100)/100,0.01,STAKE_MAX);
     if(from!=="num"&&$("#stakeAmt"))$("#stakeAmt").value=room;
     if(from!=="range"&&$("#stakeRange"))$("#stakeRange").value=Math.min(STAKE_MAX,room);
     document.querySelectorAll("#rooms button").forEach(x=>x.classList.toggle("on",+x.dataset.room===room));
@@ -606,7 +606,7 @@
   $("#stakeMax").onclick=()=>{
     const w=W(), tk=null;   // "Max" = the most you can still put on either side this round
     const avail=Math.max(WALLET.bull,WALLET.uwu);
-    setStake(Math.min(STAKE_MAX,Math.floor(avail)||1));
+    setStake(Math.min(STAKE_MAX,avail||0.01));
   };
   setStake(5);
   $("#autobuy").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;W().autoPct=+b.dataset.pct;document.querySelectorAll("#autobuy button").forEach(x=>x.classList.toggle("on",x===b));$("#walletNote").textContent=+b.dataset.pct>0?("Auto-deploy ("+MODE[activeMode].cap+") on: "+(+b.dataset.pct*100)+"% each round."):"Auto-deploy off for "+MODE[activeMode].cap+".";});
@@ -646,17 +646,23 @@
     a=b^(b>>>9);b=(c+(c<<3))|0;c=(c<<21)|(c>>>11);d=(d+1)|0;t=(t+d)|0;c=(c+t)|0;return(t>>>0)/4294967296;};}
   function rngFromSeed(seed){const s=xmur3(seed);return sfc32(s(),s(),s(),s());}
 
-  const ARENA={w:900,h:560}, SCOMBAT={speed:112,accel:250,hitCd:430}, FINISH_RATIO=0.08, MAX_LOSS=0.5, MAX_GAIN=2.0;
+  const ARENA={w:900,h:560}, SCOMBAT={speed:112,accel:250,hitCd:430}, FINISH_RATIO=0.08, SMALL_EDGE=1.03;
   const sRing=f=>f.bull+f.uwu;
-  const sAlive=(f,dust)=>!f.dead&&!f.retired&&sRing(f)>dust;
+  const sAlive=(f,dust)=>!f.dead&&sRing(f)>dust;
   const sRadius=f=>clamp(7+1.7*Math.sqrt(sRing(f)),7,26);
 
   function createSimJS(seed,entries,cfg){
     const rnd=rngFromSeed(seed);
     const rr=(a,b)=>a+rnd()*(b-a);
+    // MATCHED BOOK (matches engine/src/game.ts): only what both sides can cover is at risk,
+    // the excess on the heavier side is refunded at settlement.
+    const tot={bull:0,uwu:0}; for(const e of entries)tot[e.side]+=e.stake;
+    const matched=Math.min(tot.bull,tot.uwu);
+    const inPlayFrac=side=>tot[side]>0?Math.min(1,matched/tot[side]):1;
     const F=entries.map(e=>{
-      const f={id:e.id,side:e.side,bull:e.side==="bull"?e.stake:0,uwu:e.side==="uwu"?e.stake:0,
-        sBull:0,sUwu:0,deposited:e.stake,raided:0,dmgDealt:0,dmgTaken:0,bestHit:0,dead:false,lost:0,retired:false,
+      const inPlay=e.stake*inPlayFrac(e.side);
+      const f={id:e.id,side:e.side,bull:e.side==="bull"?inPlay:0,uwu:e.side==="uwu"?inPlay:0,
+        sBull:0,sUwu:0,deposited:e.stake,unmatched:e.stake-inPlay,raided:0,dmgDealt:0,dmgTaken:0,bestHit:0,dead:false,
         x:0,y:0,vx:rr(-1,1),vy:rr(-1,1),r:12};
       f.x=e.side==="bull"?rr(30,ARENA.w*0.34):rr(ARENA.w*0.66,ARENA.w-30);
       f.y=rr(40,ARENA.h-40); f.r=sRadius(f); return f;
@@ -698,15 +704,12 @@
       return {tk,amt:Math.min(dmg,tk==="bull"?snap.bull:snap.uwu)};
     };
     const applyHit=(atk,def,hit)=>{
-      const budget=Math.max(0,def.deposited*MAX_LOSS-def.lost);      // downside cap (matches engine)
-      const room=Math.max(0,atk.deposited*MAX_GAIN-atk.raided);       // upside cap
-      const amt=Math.min(hit.amt,hit.tk==="bull"?def.bull:def.uwu,budget,room);
-      if(amt<=0.01){ if(budget<=0.01)def.retired=true; if(room<=0.01)atk.retired=true; return; }
+      const amt=Math.min(hit.amt,hit.tk==="bull"?def.bull:def.uwu);
+      if(amt<=0.01)return;
       if(hit.tk==="bull")def.bull-=amt; else def.uwu-=amt;
       if(cfg.mode==="extraction"){ if(hit.tk==="bull")atk.sBull+=amt; else atk.sUwu+=amt; }
       else { if(hit.tk==="bull")atk.bull+=amt; else atk.uwu+=amt; }
-      atk.raided+=amt; atk.dmgDealt+=amt; def.dmgTaken+=amt; def.lost+=amt;
-      if(def.lost>=def.deposited*MAX_LOSS-0.01)def.retired=true;
+      atk.raided+=amt; atk.dmgDealt+=amt; def.dmgTaken+=amt;
       if(amt>atk.bestHit)atk.bestHit=amt;
       const h={t:s.t,atk:atk.id,def:def.id,amt,tk:hit.tk}; s.hits.push(h); out.push(h);
     };
@@ -730,8 +733,9 @@
       const small=Math.min(sRing(a),sRing(b));
       const lateGame=s.t>s.steps*0.5;   // finisher only in the back half (matches engine)
       const capFor=(def,atk)=>(lateGame&&sRing(def)<sRing(atk)*FINISH_RATIO)?sRing(def):small*cfg.hitCapFrac;
-      const dAB=Math.min(gm*roll(),capFor(b,a));
-      const dBA=Math.min(gm*roll(),capFor(a,b));
+      const edgeA=sRing(a)<sRing(b)?SMALL_EDGE:1, edgeB=sRing(b)<sRing(a)?SMALL_EDGE:1;
+      const dAB=Math.min(gm*roll()*edgeA,capFor(b,a));
+      const dBA=Math.min(gm*roll()*edgeB,capFor(a,b));
       const snapA={bull:a.bull,uwu:a.uwu}, snapB={bull:b.bull,uwu:b.uwu};
       const hitOnB=planHit(b,snapB,dAB), hitOnA=planHit(a,snapA,dBA);
       applyHit(a,b,hitOnB); applyHit(b,a,hitOnA);
@@ -749,7 +753,8 @@
     const bullV=s.F.filter(f=>f.side==="bull").reduce((a,f)=>a+sRing(f)+f.sBull+f.sUwu,0);
     const uwuV=s.F.filter(f=>f.side==="uwu").reduce((a,f)=>a+sRing(f)+f.sBull+f.sUwu,0);
     const settlement={};
-    for(const f of s.F)settlement[f.id]={bull:f.bull+f.sBull,uwu:f.uwu+f.sUwu};
+    for(const f of s.F)settlement[f.id]={bull:f.bull+f.sBull+(f.side==="bull"?f.unmatched:0),
+                                         uwu:f.uwu+f.sUwu+(f.side==="uwu"?f.unmatched:0)};
     return {winner:bullV>=uwuV?"bull":"uwu",hits:s.hits,settlement};
   }
 
@@ -767,7 +772,7 @@
     for(const e of w.entries){
       const side=eSide(e.side);
       const c={id:e.id,eid:e.id,acct:null,name:e.name||"anon",side,bull:0,uwu:0,sBull:0,sUwu:0,banked:0,
-        isUser:!!(MYWALLET&&e.id===MYWALLET),x:0,y:0,vx:0,vy:0,r:12,dmgDealt:0,dmgTaken:0,rDmg:0,
+        isUser:!!(MYWALLET&&(e.wallet||e.id)===MYWALLET),x:0,y:0,vx:0,vy:0,r:12,dmgDealt:0,dmgTaken:0,rDmg:0,
         raided:0,bestHit:0,deposited:e.stake,flash:0,dead:false};
       w.players.push(c); w.byId.set(e.id,c);
       if(c.isUser)w.userCircles.push(c);
@@ -923,7 +928,7 @@
             for(const e of s.list){
               const side=eSide(e.side), tk=e.side==="uwu"?"uwu":"bull";
               const c={id:e.id,name:e.name||"anon",side,bull:0,uwu:0,sBull:0,sUwu:0,banked:0,
-                isUser:!!(MYWALLET&&e.id===MYWALLET),x:side==="bull"?rand(30,W2*0.34):rand(W2*0.66,W2-30),
+                isUser:!!(MYWALLET&&(e.wallet||e.id)===MYWALLET),x:side==="bull"?rand(30,W2*0.34):rand(W2*0.66,W2-30),
                 y:rand(40,H2-40),vx:rand(-1,1),vy:rand(-1,1),r:12,dmgDealt:0,dmgTaken:0,rDmg:0,raided:0,
                 bestHit:0,deposited:e.stake,flash:0,dead:false};
               c[tk]=e.stake; w.players.push(c); w.byId.set(e.id,c); if(c.isUser)w.userCircles.push(c);
@@ -937,7 +942,7 @@
             for(const sd of sides){
               const tk=sd==="bull"?"bull":"uwu";
               const amt=Math.min(WALLET[tk]*w.autoPct/sides.length,WALLET[tk],CAP);
-              if(amt>=1&&window.__sendEngine){
+              if(amt>=0.01&&window.__sendEngine){
                 window.__sendEngine({t:"enter",wallet:MYWALLET,mode,side:cSide(sd),stake:amt});
                 ev(w,"🤖 Auto-deploy "+fmt(amt)+" "+tk.toUpperCase()+" → "+(sd==="bull"?"Bulls":"Unicorns"),"you");
               }

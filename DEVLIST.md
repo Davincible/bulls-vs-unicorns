@@ -209,3 +209,25 @@ small-player protection - a design call, not a bug.
 
 - [x] Hall of Fame is now a **tab in the Leaderboard** (was a dashboard card), and legends are
       populated from the authoritative settlement so it fills up during online play.
+
+## 2026-08-05 - matched book (the fairness structure we kept)
+
+Capping wins/losses was rejected. The structure adopted instead:
+
+- **Matched book.** Only the amount both sides can cover is at risk. Bulls put up $500 against
+  $300 of unicorns -> $300 a side plays and the surplus $200 is refunded pro-rata to the bull
+  players at settlement. Sides start exactly equal, so side choice cannot be an edge, and nobody
+  is capped or has stake confiscated. Winnings stay uncapped; you can still lose your in-play stake.
+- **SMALL_EDGE = 1.03** - the smaller fighter in a clash hits 3% harder. Deliberate: with wallets
+  on auto-deploy the average stake shrinks over time, and if the small stakes left couldn't beat
+  fresh larger deposits, liquidity would sit idle. 1.10 was tried first and Normal compounded it
+  to +46% - far too strong.
+- **Minimum entry is now $0.01** (was $1), free-form up to $100.
+
+Extraction lands where we want it: whale -0.59%, big -0.08%, medium +0.09%, small +0.56%,
+minnow +1.08% - a gentle gradient toward small, sides neutral (48/52). Normal stays high-variance
+by design (it compounds in-ring); its small bucket swings with a 6% wipeout rate.
+
+- [x] **Fighter IDs collided across sides.** Entries were keyed by wallet only, so deploying on
+      BOTH sides overwrote one fighter in the settlement map and destroyed value (a live round
+      showed $24 vanish). Entries are now keyed `wallet|side` and split back on settle.

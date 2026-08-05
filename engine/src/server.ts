@@ -12,7 +12,7 @@ import { RPC } from "./chain.ts";
 import { loadSnapshot, saveSnapshot, flushSnapshot } from "./store.ts";
 
 const PORT = Number(process.env.PORT || 8090);
-const FEE = 0.002, CAP = 100, CONVERT_FEE = 0.01;
+const FEE = 0.002, CAP = 100, CONVERT_FEE = 0.01, MIN_ENTRY = 0.01;
 
 // ---- ledger: real players (by wallet) + persistent bot accounts ----
 interface Account { id: string; name: string; side: Side; bull: number; uwu: number; isBot: boolean; dep: number; ret: number; games: number; wins: number;
@@ -93,11 +93,12 @@ function pushBalance(wallet: string) { const s = JSON.stringify(balPayload(walle
 
 async function onSettle(mode: Mode, r: RoundResult, s: RoundState) {
   const touched = new Set<string>();
-  for (const [id, bal] of Object.entries(r.settlement)) {
+  for (const [key, bal] of Object.entries(r.settlement)) {
+    const id = key.split("|")[0];
     const a = ledger.get(id); if (!a) continue;
     a.bull += bal.bull; a.uwu += bal.uwu; a.games++; a.ret += bal.bull + bal.uwu;
     if (a.side === r.winner) a.wins++;
-    const f = r.fighters.find(x => x.id === id);
+    const f = r.fighters.find(x => x.id === key);
     if (f) { a.raided = (a.raided||0) + f.raided; if (f.bestHit > (a.best||0)) a.best = f.bestHit; }
     if (!a.isBot) touched.add(id);
   }
@@ -141,12 +142,13 @@ function botsEnter(mode: Mode) {
     if (stake < 6) continue;
     if (a.side === "bull") a.bull -= stake; else a.uwu -= stake;
     a.dep += stake; treasury[mode] += stake * FEE; totalDeployed[mode] += stake;
-    rn.enter(a.id, a.side, stake * (1 - FEE));               // net of deploy fee
+    rn.enter(`${a.id}|${a.side}`, a.side, stake * (1 - FEE));   // net of deploy fee
   }
 }
 
 // name lookup so clients can label fighters
-const nameFor = (id: string) => ledger.get(id)?.name || (id.length > 8 ? id.slice(0,4)+"…"+id.slice(-4) : id);
+const nameFor = (key: string) => { const id = key.split("|")[0];
+  return ledger.get(id)?.name || (id.length > 8 ? id.slice(0,4)+"…"+id.slice(-4) : id); };
 
 // ---- tick loop ----
 const lastPhase: Record<Mode, string> = { normal: "", extraction: "" };
@@ -162,7 +164,7 @@ setInterval(async () => {
       const s = rn.state;
       broadcast({ t: "roundStart", mode, round: s.round, multiplier: s.multiplier,
         seed: s.seed, seedHash: s.seedHashPublished,
-        entries: s.entries.map(e => ({ id: e.id, side: e.side, stake: e.stake, name: nameFor(e.id), bot: e.id.includes(":bot:") })),
+        entries: s.entries.map(e => ({ id: e.id, wallet: e.id.split("|")[0], side: e.side, stake: e.stake, name: nameFor(e.id), bot: e.id.includes(":bot:") })),
         cfg: newRoundConfig(mode, s.multiplier),
         hitCount: s.result.hits.length, winner: s.result.winner, settlement: s.result.settlement,
         startedAt: Date.now(), battleMs: s.battleMs || newRoundConfig(mode, s.multiplier).battleMs });
@@ -201,7 +203,7 @@ wss.on("connection", (ws) => {
     const s = runners[mode].state;
     if (s.phase === "battle" && s.result) ws.send(JSON.stringify({ t: "roundStart", mode, round: s.round, multiplier: s.multiplier,
       seed: s.seed, seedHash: s.seedHashPublished,
-      entries: s.entries.map(e => ({ id: e.id, side: e.side, stake: e.stake, name: nameFor(e.id), bot: e.id.includes(":bot:") })),
+      entries: s.entries.map(e => ({ id: e.id, wallet: e.id.split("|")[0], side: e.side, stake: e.stake, name: nameFor(e.id), bot: e.id.includes(":bot:") })),
       cfg: newRoundConfig(mode, s.multiplier), hitCount: s.result.hits.length, winner: s.result.winner, settlement: s.result.settlement,
       startedAt: s.closesAt - (s.battleMs || newRoundConfig(mode, s.multiplier).battleMs),   // true start, so a joiner syncs mid-battle
       battleMs: s.battleMs || newRoundConfig(mode, s.multiplier).battleMs, resumed: true }));
@@ -219,16 +221,16 @@ wss.on("connection", (ws) => {
         const rn = runners[m.mode as Mode]; if (!rn) return;
         if (rn.state.phase !== "lobby") return ws.send(JSON.stringify({ t: "error", msg: "Deposits closed — wait for the next lobby." }));
         // the CAP is per side per round, so topping up cannot push you past it
-        const already = rn.state.entries.filter(e => e.id === m.wallet && e.side === m.side)
+        const already = rn.state.entries.filter(e => e.id === `${m.wallet}|${m.side}`)
                           .reduce((n, e) => n + e.stake / (1 - FEE), 0);
         const headroom = Math.max(0, CAP - already);
         const stake = Math.min(Number(m.stake)||0, bank, headroom);
-        if (headroom < 1) return ws.send(JSON.stringify({ t: "error", msg: `You're at the $${CAP} cap on that side this round.` }));
-        if (stake < 1) return ws.send(JSON.stringify({ t: "error", msg: "Insufficient game balance — deposit or use the faucet." }));
+        if (headroom < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: `You're at the $${CAP} cap on that side this round.` }));
+        if (stake < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: `Minimum entry is $${MIN_ENTRY}.` }));
         if (m.side === "bull") a.bull -= stake; else a.uwu -= stake;   // debit real balance into the round
         a.dep += stake; a.side = m.side;
         treasury[m.mode as Mode] += stake * FEE; totalDeployed[m.mode as Mode] += stake;
-        rn.enter(m.wallet, m.side, stake * (1 - FEE));
+        rn.enter(`${m.wallet}|${m.side}`, m.side, stake * (1 - FEE));
         ws.send(JSON.stringify({ t: "entered", mode: m.mode, side: m.side, stake }));
         pushBalance(m.wallet); persist();
       } else if (m.t === "faucet") {                          // { t:'faucet', wallet, side }
@@ -264,7 +266,7 @@ wss.on("connection", (ws) => {
         const a = acct(m.wallet, m.side);
         const bank = m.side === "bull" ? a.bull : a.uwu;
         const amt = Math.min(Number(m.amount)||0, bank);
-        if (amt < 1) return ws.send(JSON.stringify({ t: "error", msg: "Nothing to withdraw on that side." }));
+        if (amt < 0.01) return ws.send(JSON.stringify({ t: "error", msg: "Nothing to withdraw on that side." }));
         if (m.side === "bull") a.bull -= amt; else a.uwu -= amt;       // debit first, refund on failure
         pushBalance(m.wallet);
         try { const sig = await withdraw(m.wallet, m.side, amt); a.wOut = (a.wOut||0) + amt; persist(); ws.send(JSON.stringify({ t: "withdrawDone", side: m.side, amount: amt, sig })); }
