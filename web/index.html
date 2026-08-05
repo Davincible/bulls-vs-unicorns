@@ -413,7 +413,7 @@
   // so an extraction side that banked everything no longer shows $0 while winning.
   const aggV=(w,side)=>{let v=0;for(const p of w.players){if(p.side!==side)continue;if(alive(p))v+=ring(p);v+=safeV(p);}return v;};
 
-  function snapshot(w,win){return {round:w.roundNo,winner:win,mult:w.multiplier,rows:w.players.filter(p=>p.deposited>0||p.dmgDealt>0).map(p=>({name:p.name,side:p.side,bull:bullTot(p)+(p.isUser?(p.side==="bull"?(p.banked||0):0):0),uwu:uwuTot(p)+(p.isUser?(p.side==="unicorn"?(p.banked||0):0):0),dep:p.deposited,raided:p.raided,dmg:p.dmgDealt,dead:p.dead,you:p.isUser}))};}
+  function snapshot(w,win){return {round:w.roundNo,winner:win,mult:w.multiplier,rows:w.players.filter(p=>p.deposited>0||p.dmgDealt>0).map(p=>({name:p.name,side:p.side,bull:(p.side==="bull"?(p.unmatched||0):0)+bullTot(p)+(p.isUser?(p.side==="bull"?(p.banked||0):0):0),uwu:(p.side==="unicorn"?(p.unmatched||0):0)+uwuTot(p)+(p.isUser?(p.side==="unicorn"?(p.banked||0):0):0),dep:p.deposited,raided:p.raided,dmg:p.dmgDealt,dead:p.dead,you:p.isUser}))};}
   function endRound(w,winSide){
     w.phase="over";w.phaseT=0;
     const win=winSide==="time"?(aggV(w,"bull")>=aggV(w,"unicorn")?"bull":"unicorn"):winSide;
@@ -903,6 +903,7 @@
       c.dustLim=Math.max(0.005,f.deposited*DUST_FRAC);   // UI alive-ness == sim alive-ness
       c.bull=f.bull; c.uwu=f.uwu; c.sBull=f.sBull; c.sUwu=f.sUwu;
       c.raided=f.raided; c.dmgDealt=f.dmgDealt; c.dmgTaken=f.dmgTaken; c.bestHit=f.bestHit;
+      c.unmatched=f.unmatched||0;   // the matched-book refund — paid at settle, MUST show in results
       if(f.dead&&!c.dead){c.dead=true; if(!silent){burst(w,c.x,c.y);
         if(c.isUser)ev(w,"\ud83d\udc80 Your fighter died!"+(MODE[w.mode].extract?" (extracted winnings are safe)":" (in-ring value lost)"),"bust");}}
       // NOTE: c.banked stays 0 online \u2014 sBull/sUwu already carry banked value, and snapshot()/
@@ -943,7 +944,7 @@
     w.matches.unshift({round:w.roundNo,winner:win,mult:w.multiplier}); if(w.matches.length>16)w.matches.pop();
     w.bannerTxt=win==="bull"?"\ud83d\udc02 BULLS WIN!":"\ud83e\udd84 UNICORNS WIN!"; w.bannerA=1;
     w.history.unshift(snapshot(w,win)); if(w.history.length>24)w.history.pop();
-    for(const c of w.userCircles){ const dep=c.deposited, out=ring(c)+safeV(c);
+    for(const c of w.userCircles){ const dep=c.deposited, out=ring(c)+safeV(c)+(c.unmatched||0);
       w.userRounds.unshift({round:w.roundNo,side:c.side,dep,out,pnl:out-dep,win:c.side===win,mode:w.mode,hits:(c.hits||[]).slice(-30)});
       if(w.userRounds.length>60)w.userRounds.pop(); }
     // Hall of Fame: best single-round returns, from the authoritative settlement
