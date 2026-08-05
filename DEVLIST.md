@@ -49,3 +49,22 @@
       and submits straight to the game's RPC. One click also auto-funds it with SOL + both
       tokens. Phantom stays supported (and is now sign-only, with the page submitting the tx)
       for when we move to public devnet.
+
+## 2026-08-05 (later) — gameplay/readability pass
+
+- [x] **Auto-deploy did nothing online.** It lived in the local-sim `startLobby()`, which never
+      runs when the engine owns the lobby. Now fires from the lobby state message, once a round.
+- [x] **Damage numbers looked random.** The sim re-paired every fighter each 500ms tick, so no
+      one could reach their opponent and hits fired on a timer regardless of the screen. Fighters
+      now lock into **duels** for 8 ticks (~4s): 82% of consecutive hits keep the same opponent
+      (was ~0%). The client verifier was updated identically and still reproduces the engine.
+- [x] **Only losses were shown.** Now the defender shows `-amount` and the raider `+amount`.
+- [x] **Empty arena between rounds** (looked like extraction "wasn't running"). The lobby now
+      broadcasts its entries and the client shows fighters gathering.
+- [x] **P&L was wrong** — cost basis was zero online, so profit looked like your whole balance.
+      The engine now tracks real on-chain `depIn`/`wOut`; P&L = balance + withdrawn − deposited.
+- [x] **Player missing from the leaderboard.** The engine owns the board now and always includes
+      real players with their true rank, even outside the top 12.
+- [x] **Community growth.** Population starts at 12 and grows ~0.5/round up to 60, throttling
+      down as real players join; broke wallets bust out, newcomers arrive (a third as raw
+      addresses). Round settle reports joined/busted and the client announces them.

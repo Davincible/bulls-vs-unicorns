@@ -638,7 +638,9 @@
       if(def.isUser){(def.hits=def.hits||[]).push({dir:"in",who:atk.name,amt,tk});if(def.hits.length>80)def.hits.shift();}
       if(!silent){
         atk.flash=def.flash=1;
-        w.floaters.push({x:(atk.x+def.x)/2,y:(atk.y+def.y)/2,txt:"-"+fmt(amt),life:1,col:amt>=6?"#ffe14d":"#ff90a5",big:amt>=6});
+        // the raider GAINS what the defender LOSES — show both, on the right circles
+        w.floaters.push({x:def.x,y:def.y-def.r-6,txt:"-"+fmt(amt),life:1,col:"#ff90a5",big:amt>=6});
+        w.floaters.push({x:atk.x,y:atk.y-atk.r-6,txt:"+"+fmt(amt),life:1.1,col:amt>=6?"#ffe14d":"#ffc048",big:amt>=6});
         pushWin(w,atk,amt,amt>=6?4:1);
         if(atk.isUser)ev(w,"You raided "+fmt(amt)+" from "+def.name+(amt>=6?" ⚡CRIT!":"!"),amt>=6?"crit":"win");
         else if(def.isUser)ev(w,atk.name+" hit you for "+fmt(amt)+"!","hit");
@@ -722,14 +724,22 @@
     };
     const base=cfg.base*Math.min(cfg.multiplier,4);
     const steps=Math.floor(cfg.battleMs/cfg.tickMs);
+    const DUEL_TICKS=8;                       // MUST match engine/src/game.ts exactly
+    const idMap=new Map(F.map(f=>[f.id,f]));
+    const duelFoe=new Map(), duelUntil=new Map();
     for(let t=0;t<steps;t++){
       const A=F.filter(aliveF);
       const bulls=A.filter(f=>f.side==="bull"), unis=A.filter(f=>f.side==="uwu");
       if(!bulls.length||!unis.length)break;
       for(const f of A){
         if(!aliveF(f))continue;
-        const foes=f.side==="bull"?unis:bulls;
-        const g=foes[Math.floor(rnd()*foes.length)];
+        let g=idMap.get(duelFoe.get(f.id)||"");
+        if(!g||!aliveF(g)||(duelUntil.get(f.id)||0)<=t){
+          const foes=f.side==="bull"?unis:bulls;
+          g=foes[Math.floor(rnd()*foes.length)];
+          if(g){ duelFoe.set(f.id,g.id); duelUntil.set(f.id,t+DUEL_TICKS);
+                 duelFoe.set(g.id,f.id); duelUntil.set(g.id,t+DUEL_TICKS); }
+        }
         if(!g||!aliveF(g))continue;
         const ramp=1+1.6*(t/steps);
         const gm=Math.sqrt(ringF(f)*ringF(g))*base*(0.7+0.3*ramp);
@@ -806,10 +816,45 @@
           if(s.phase==="lobby"&&w.phase!=="lobby"&&w.phase!=="over"){ w.phase="lobby"; w.roundNo=s.round; w.multiplier=s.multiplier; }
           if(s.phase==="lobby"&&w.phase==="over"&&w.phaseT>2400){ w.phase="lobby"; w.players.length=0; w.userCircles.length=0; w.roundNo=s.round; w.multiplier=s.multiplier; ev(w,"🟢 Round "+s.round+" lobby — deposits OPEN!","round"); }
           w.lobbyEntries=s.entries;
+          // engine owns the leaderboard now, so real players actually appear on it
+          if(s.leaders)w.accounts=s.leaders.map(L=>({id:L.id,name:L.name,side:eSide(L.side),bankroll:L.value,
+            dep:0,ret:0,games:L.games,wins:L.wins,raided:0,best:0,last:0,you:!L.isBot,pnl:L.pnl}));
+          // show fighters gathering during the lobby instead of an empty arena
+          if(s.phase==="lobby"&&s.list&&w.phase==="lobby"&&w.players.length!==s.list.length){
+            w.players.length=0; w.userCircles.length=0; w.byId=new Map();
+            for(const e of s.list){
+              const side=eSide(e.side), tk=e.side==="uwu"?"uwu":"bull";
+              const c={id:e.id,name:e.name||"anon",side,bull:0,uwu:0,sBull:0,sUwu:0,banked:0,
+                isUser:!!(MYWALLET&&e.id===MYWALLET),x:side==="bull"?rand(30,W2*0.34):rand(W2*0.66,W2-30),
+                y:rand(40,H2-40),vx:rand(-1,1),vy:rand(-1,1),r:12,dmgDealt:0,dmgTaken:0,rDmg:0,raided:0,
+                bestHit:0,deposited:e.stake,flash:0,dead:false};
+              c[tk]=e.stake; w.players.push(c); w.byId.set(e.id,c); if(c.isUser)w.userCircles.push(c);
+            }
+          }
+          // AUTO-DEPLOY (online): the engine owns the lobby, so it has to fire from here —
+          // the local-sim startLobby() that used to do this never runs when connected.
+          if(s.phase==="lobby"&&MYWALLET&&w.autoPct>0&&w.autoRound!==s.round){
+            w.autoRound=s.round;
+            const sides=w.autoSide==="both"?["bull","unicorn"]:[w.autoSide];
+            for(const sd of sides){
+              const tk=sd==="bull"?"bull":"uwu";
+              const amt=Math.min(WALLET[tk]*w.autoPct/sides.length,WALLET[tk],CAP);
+              if(amt>=1&&window.__sendEngine){
+                window.__sendEngine({t:"enter",wallet:MYWALLET,mode,side:cSide(sd),stake:amt});
+                ev(w,"🤖 Auto-deploy "+fmt(amt)+" "+tk.toUpperCase()+" → "+(sd==="bull"?"Bulls":"Unicorns"),"you");
+              }
+            }
+          }
         }
       }
-      else if(m.t==="settled"){ const w=worlds[m.mode]; if(w){ w.lastSeed=m.seed; w.lastSeedHash=m.seedHash; } }
-      else if(m.t==="balance"){ WALLET.bull=m.bull; WALLET.uwu=m.uwu; saveWallet(); syncDOM(); }
+      else if(m.t==="settled"){ const w=worlds[m.mode];
+        if(w){ w.lastSeed=m.seed; w.lastSeedHash=m.seedHash;
+          if(m.community){ w.community=m.community;
+            if(m.community.joined>0)ev(w,"🆕 "+m.community.joined+" new wallet"+(m.community.joined>1?"s":"")+" joined — "+m.community.total+" in the arena","round");
+            if(m.community.busted>0)ev(w,"💀 "+m.community.busted+" wallet"+(m.community.busted>1?"s":"")+" busted out","bust"); } } }
+      else if(m.t==="balance"){ WALLET.bull=m.bull; WALLET.uwu=m.uwu;
+        INVESTED=(m.depIn||0)-(m.wOut||0);          // real cost basis: deposited minus withdrawn
+        saveWallet(); syncDOM(); }
       else if(m.t==="entered"){ const w=worlds[m.mode]; if(w)ev(w,"You deployed "+fmt(m.stake)+" "+cSide(eSide(m.side)).toUpperCase()+" to "+(m.side==="bull"?"🐂":"🦄"),"you");
         $("#walletNote").textContent="✅ Deployed "+fmt(m.stake)+" to "+(m.side==="bull"?"Bulls":"Unicorns")+" — you're in round "+(worlds[m.mode]||{}).roundNo+"."; }
       else if(m.t==="chain"){ CHAIN=m;

@@ -14,11 +14,23 @@ const PORT = Number(process.env.PORT || 8090);
 const FEE = 0.002, CAP = 100;
 
 // ---- ledger: real players (by wallet) + persistent bot accounts ----
-interface Account { id: string; name: string; side: Side; bull: number; uwu: number; isBot: boolean; dep: number; ret: number; games: number; wins: number; }
+interface Account { id: string; name: string; side: Side; bull: number; uwu: number; isBot: boolean; dep: number; ret: number; games: number; wins: number;
+  depIn?: number; wOut?: number; }   // real on-chain money in / out — the basis for true P&L
 const ledger = new Map<string, Account>();
-const NAMES = ["degenDan","sol_sniper","0xViper","moonboy","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","gigaGwei","turboTina","sendit","wenLambo","diamondD","fomoFrank","nakamotto","zkZoe","based_bri"];
+const NAMES = ["degenDan","sol_sniper","0xViper","moonboy","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","gigaGwei","turboTina","sendit","wenLambo","diamondD","fomoFrank","nakamotto","zkZoe","based_bri","saylorsz","jitoJoe","rugproof","exitliq","ser_pump","mevMike","validatorV","anonape","solstice","tapedeck"];
+// community growth: the arena starts small and fills up over time
+const POP_START = 14, POP_GROWTH = 0.5, POP_MAX = 60;
+const rounds: Record<Mode, number> = { normal: 0, extraction: 0 };
+const B58 = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ123456789";
+const walletish = () => { let s=""; for(let i=0;i<4;i++) s += B58[(Math.random()*B58.length)|0]; return s + "…" + B58[(Math.random()*B58.length)|0] + B58[(Math.random()*B58.length)|0] + B58[(Math.random()*B58.length)|0]; };
 let seq = 0;
-function newBot(mode: Mode, side: Side): Account { const id = `${mode}:bot:${++seq}`; const a: Account = { id, name: NAMES[seq % NAMES.length] + "_" + seq, side, bull: side==="bull"? 60+Math.random()*180 : 0, uwu: side==="uwu"? 60+Math.random()*180 : 0, isBot: true, dep:0, ret:0, games:0, wins:0 }; ledger.set(id, a); return a; }
+function newBot(mode: Mode, side: Side): Account {
+  const id = `${mode}:bot:${++seq}`;
+  // a third of newcomers show up as raw addresses — fresh wallets, no handle yet
+  const name = Math.random() < 0.34 ? walletish() : NAMES[(Math.random()*NAMES.length)|0] + "_" + seq;
+  const a: Account = { id, name, side, bull: side==="bull"? 60+Math.random()*180 : 0, uwu: side==="uwu"? 60+Math.random()*180 : 0, isBot: true, dep:0, ret:0, games:0, wins:0 };
+  ledger.set(id, a); return a;
+}
 function seedBots(mode: Mode, n: number) { for (let i=0;i<n;i++) newBot(mode, i%2 ? "uwu":"bull"); }
 const botsFor = (mode: Mode) => [...ledger.values()].filter(a => a.isBot && a.id.startsWith(mode+":"));
 function acct(wallet: string, side: Side): Account {
@@ -31,7 +43,27 @@ function acct(wallet: string, side: Side): Account {
 const clients = new Set<WebSocket>();
 const walletOf = new Map<WebSocket, string>();          // ws -> wallet (for targeted balance pushes)
 function broadcast(msg: unknown) { const s = JSON.stringify(msg); for (const c of clients) if (c.readyState === WebSocket.OPEN) c.send(s); }
-function balPayload(wallet: string) { const a = ledger.get(wallet); return { t: "balance", wallet, bull: a?.bull||0, uwu: a?.uwu||0 }; }
+function balPayload(wallet: string) { const a = ledger.get(wallet);
+  return { t: "balance", wallet, bull: a?.bull||0, uwu: a?.uwu||0,
+           depIn: a?.depIn||0, wOut: a?.wOut||0,      // client: invested = depIn - wOut
+           games: a?.games||0, wins: a?.wins||0 }; }
+
+// Leaderboard the engine owns, so real players actually appear on it.
+function leadersFor(mode: Mode) {
+  const list = [...ledger.values()].filter(a => (a.isBot ? a.id.startsWith(mode + ":") : true));
+  const rows = list.map(a => ({ id: a.id, name: a.name, side: a.side, value: a.bull + a.uwu,
+      games: a.games, wins: a.wins, isBot: a.isBot,
+      pnl: a.isBot ? a.ret - a.dep : (a.bull + a.uwu) + (a.wOut||0) - (a.depIn||0) }))
+    .sort((x, y) => y.value - x.value);
+  const top = rows.slice(0, 12).map((r, i) => ({ ...r, rank: i + 1 }));
+  // real players always appear, even when they're not in the top 12 — otherwise you can play a
+  // round and never see yourself on the board
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r.isBot && !top.some(t => t.id === r.id)) top.push({ ...r, rank: i + 1 });
+  }
+  return top;
+}
 function pushBalance(wallet: string) { const s = JSON.stringify(balPayload(wallet)); for (const c of clients) if (c.readyState===WebSocket.OPEN && walletOf.get(c)===wallet) c.send(s); }
 
 async function onSettle(mode: Mode, r: RoundResult, s: RoundState) {
@@ -42,13 +74,23 @@ async function onSettle(mode: Mode, r: RoundResult, s: RoundState) {
     if (a.side === r.winner) a.wins++;
     if (!a.isBot) touched.add(id);
   }
-  // hybrid bots: bust the broke, add fresh (growing base; throttles down as real players fill)
+  // Hybrid bots as a *community that grows*: broke wallets leave, new wallets arrive every
+  // round, and the population target creeps up over time — while still throttling down as
+  // real players fill the arena, so bots never crowd out humans.
   const realPlaying = s.entries.filter(e => !e.id.includes(":bot:")).length;
-  for (const a of botsFor(mode)) if (a.bull + a.uwu < 5) ledger.delete(a.id);
-  const targetBots = Math.max(6, 22 - realPlaying * 2);
-  while (botsFor(mode).length < targetBots) newBot(mode, botsFor(mode).filter(b=>b.side==="bull").length <= botsFor(mode).filter(b=>b.side==="uwu").length ? "bull":"uwu");
+  let busted = 0;
+  for (const a of botsFor(mode)) if (a.bull + a.uwu < 5) { ledger.delete(a.id); busted++; }
+  rounds[mode]++;
+  const popCap = Math.min(POP_MAX, POP_START + Math.floor(rounds[mode] * POP_GROWTH));
+  const target = Math.max(8, popCap - realPlaying * 2);
+  let joined = 0;
+  while (botsFor(mode).length < target) {
+    newBot(mode, botsFor(mode).filter(b=>b.side==="bull").length <= botsFor(mode).filter(b=>b.side==="uwu").length ? "bull":"uwu");
+    joined++;
+  }
   broadcast({ t: "settled", mode, round: s.round, winner: r.winner, seed: s.seed, seedHash: s.seedHashPublished,
-              settlement: r.settlement, hits: r.hits.length });
+              settlement: r.settlement, hits: r.hits.length,
+              community: { total: botsFor(mode).length + realPlaying, joined, busted, cap: popCap } });
   for (const w of touched) pushBalance(w);
 }
 
@@ -56,7 +98,8 @@ const runners: Record<Mode, RoundRunner> = {
   normal: new RoundRunner("normal", (r, s) => onSettle("normal", r, s)),
   extraction: new RoundRunner("extraction", (r, s) => onSettle("extraction", r, s)),
 };
-seedBots("normal", 22); seedBots("extraction", 22);
+// start below the population cap so the arena visibly fills up as rounds go by
+seedBots("normal", 12); seedBots("extraction", 12);
 
 // bots auto-enter each lobby (a fraction, with a fee taken on deploy)
 function botsEnter(mode: Mode) {
@@ -98,7 +141,10 @@ setInterval(async () => {
 
 // broadcast a light state snapshot for the UI
 setInterval(() => {
-  const snap = (mode: Mode) => { const s = runners[mode].state; return { round: s.round, phase: s.phase, multiplier: s.multiplier, entries: s.entries.length, seedHash: s.seedHashPublished, closesInMs: Math.max(0, s.closesAt - Date.now()) }; };
+  const snap = (mode: Mode) => { const s = runners[mode].state; return { round: s.round, phase: s.phase, multiplier: s.multiplier, entries: s.entries.length, seedHash: s.seedHashPublished, closesInMs: Math.max(0, s.closesAt - Date.now()),
+    // who's already in the lobby, so the arena shows fighters gathering instead of sitting empty
+    list: s.phase === "lobby" ? s.entries.slice(0, 40).map(e => ({ id: e.id, name: nameFor(e.id), side: e.side, stake: e.stake })) : [],
+    leaders: leadersFor(mode) }; };
   broadcast({ t: "state", normal: snap("normal"), extraction: snap("extraction"), accounts: { normal: botsFor("normal").length, extraction: botsFor("extraction").length } });
 }, 1000);
 
@@ -162,7 +208,7 @@ wss.on("connection", (ws) => {
       } else if (m.t === "deposit") {                         // { t:'deposit', wallet, side, sig }
         if (!chainReady()) return;
         const credited = await verifyDeposit(m.sig, m.side);
-        if (credited > 0) { const a = acct(m.wallet, m.side); if (m.side === "bull") a.bull += credited; else a.uwu += credited; }
+        if (credited > 0) { const a = acct(m.wallet, m.side); if (m.side === "bull") a.bull += credited; else a.uwu += credited; a.depIn = (a.depIn||0) + credited; }
         ws.send(JSON.stringify({ t: "depositDone", side: m.side, credited, sig: m.sig }));
         pushBalance(m.wallet);
       } else if (m.t === "withdraw") {                        // { t:'withdraw', wallet, side, amount }
@@ -173,7 +219,7 @@ wss.on("connection", (ws) => {
         if (amt < 1) return ws.send(JSON.stringify({ t: "error", msg: "Nothing to withdraw on that side." }));
         if (m.side === "bull") a.bull -= amt; else a.uwu -= amt;       // debit first, refund on failure
         pushBalance(m.wallet);
-        try { const sig = await withdraw(m.wallet, m.side, amt); ws.send(JSON.stringify({ t: "withdrawDone", side: m.side, amount: amt, sig })); }
+        try { const sig = await withdraw(m.wallet, m.side, amt); a.wOut = (a.wOut||0) + amt; ws.send(JSON.stringify({ t: "withdrawDone", side: m.side, amount: amt, sig })); }
         catch (e) { if (m.side === "bull") a.bull += amt; else a.uwu += amt; pushBalance(m.wallet);
                     ws.send(JSON.stringify({ t: "error", msg: "Withdraw failed: " + (e as Error).message })); }
       } else if (m.t === "chainBalance") {                    // on-chain (Phantom) balances

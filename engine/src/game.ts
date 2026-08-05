@@ -80,15 +80,27 @@ export function simulateRound(seed: string, entries: Entry[], cfg: RoundConfig):
   const base = cfg.base * Math.min(cfg.multiplier, 4);
   const steps = Math.floor(cfg.battleMs / cfg.tickMs);
   let endTick = steps;
+  // Fighters lock into a DUEL for several ticks instead of being re-paired every tick. Without
+  // this, opponents change faster than a circle can cross the arena, so the numbers on screen
+  // look disconnected from what the fighters are doing.
+  const DUEL_TICKS = 8;
+  const byId = new Map(F.map(f => [f.id, f]));
+  const duelFoe = new Map<string, string>(), duelUntil = new Map<string, number>();
   for (let t = 0; t < steps; t++) {
     const A = F.filter(f => alive(f, cfg.dust));
     const bulls = A.filter(f => f.side === "bull"), unis = A.filter(f => f.side === "uwu");
     if (!bulls.length || !unis.length) { endTick = t; break; }   // one side wiped — fight is over
-    // deterministic pairing this tick: each alive fighter clashes a pseudo-random enemy
     for (const f of A) {
       if (!alive(f, cfg.dust)) continue;
-      const foes = f.side === "bull" ? unis : bulls;
-      const g = foes[Math.floor(rnd() * foes.length)];
+      let g = byId.get(duelFoe.get(f.id) || "");
+      if (!g || !alive(g, cfg.dust) || (duelUntil.get(f.id) || 0) <= t) {
+        const foes = f.side === "bull" ? unis : bulls;
+        g = foes[Math.floor(rnd() * foes.length)];
+        if (g) {                                    // lock BOTH sides into the duel
+          duelFoe.set(f.id, g.id); duelUntil.set(f.id, t + DUEL_TICKS);
+          duelFoe.set(g.id, f.id); duelUntil.set(g.id, t + DUEL_TICKS);
+        }
+      }
       if (!g || !alive(g, cfg.dust)) continue;
       const ramp = 1 + 1.6 * (t / steps);
       const gm = Math.sqrt(ring(f) * ring(g)) * base * (0.7 + 0.3 * ramp);
