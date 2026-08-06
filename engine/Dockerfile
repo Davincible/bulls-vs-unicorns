@@ -18,9 +18,10 @@ ENV PORT=8090
 VOLUME ["/data"]
 EXPOSE 8090
 
-# Liveness: /health is 200 when solvent, 503 when the reconciliation freeze is active.
+# Liveness only — /live, NOT /health. /health returns 503 on a solvency freeze, which a restart
+# cannot fix; using it here would restart-loop the engine during a money incident.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8090)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8090)+'/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # Secrets (vault key) come from VAULT_SECRET_KEY at runtime — NEVER baked into the image.
 CMD ["npx", "tsx", "src/server.ts"]

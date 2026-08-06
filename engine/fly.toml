@@ -1,0 +1,51 @@
+# Fly.io config for the Bulls ⚔ Unicorns engine (custodial money service).
+# Deploy from this directory:  fly deploy
+#
+# TWO RULES THIS FILE ENFORCES, both of which protect real balances:
+#  1. Exactly ONE always-on machine. The ledger is SQLite on a volume — a second instance would
+#     mount nothing (or worse, a second copy) and split the book. Never `fly scale count 2`.
+#  2. No scale-to-zero. Rounds, bots and the reconciliation daemon run continuously; a stopped
+#     machine means the arena dies and solvency stops being checked.
+
+app = "bulls-arena-engine"
+primary_region = "iad"          # put it near your players; `fly platform regions` lists options
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8090"
+  LEDGER_DIR = "/data"          # the mounted volume below — NOT the container filesystem
+  RECONCILE_MS = "15000"
+  # SOLANA_RPC / CHAIN_CONFIG are set per-environment; secrets go in `fly secrets`, never here.
+
+[http_service]
+  internal_port = 8090
+  force_https = true            # players connect over wss://
+  auto_stop_machines = false    # see rule 2
+  auto_start_machines = true
+  min_machines_running = 1      # see rule 2
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "connections"        # this is a WebSocket service, not request/response
+    soft_limit = 800
+    hard_limit = 1000
+
+# Liveness only. Deliberately /live and NOT /health: /health returns 503 when a solvency breach
+# freezes withdrawals, and pointing the platform check at it would restart-loop during an incident.
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "30s"
+  method = "GET"
+  path = "/live"
+
+# The ledger. Create it once:  fly volumes create bulls_data --size 1 --region iad
+[[mounts]]
+  source = "bulls_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"              # bump if the arena population grows

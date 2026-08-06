@@ -331,6 +331,13 @@ const httpServer = createServer((req, res) => {
   const cors = { "access-control-allow-origin": "*", "content-type": "application/json" };
   const url = (req.url || "/").split("?")[0];
   if (req.method !== "GET") { res.writeHead(405, cors); return res.end('{"error":"GET only"}'); }
+  // LIVENESS — "is the process up?" only. The host's health check must point HERE, not at
+  // /health: a solvency freeze is a money problem that restarting cannot fix, and wiring the
+  // platform check to it would just restart-loop the engine during an incident.
+  if (url === "/live") {
+    res.writeHead(200, cors);
+    return res.end(JSON.stringify({ ok: true, uptimeSec: Math.floor((Date.now() - bootAt) / 1000) }));
+  }
   if (url === "/health" || url === "/") {
     // 200 only when solvent — a frozen book is unhealthy so a host can page on it
     const body = { ok: !isFrozen(), chain: chainReady(), vault: chainReady() ? vaultPubkey() : null,
