@@ -3,9 +3,30 @@
 Grounded in MagicBlock's current docs (fetched 2026-08-06), not from memory.
 Source: https://docs.magicblock.gg/pages/ephemeral-rollups-ers/how-to-guide/rust-program
 
-## 0. BLOCKER — the Rust toolchain is not installed (needs Max)
+## 0. Where things build and run (read this first)
 
-Nothing on-chain can be built until this is cleared. Verified on this machine today:
+Two different things get conflated constantly, so to be explicit:
+
+| Piece | Language | Where it BUILDS | Where it RUNS |
+|---|---|---|---|
+| Engine | TypeScript | nothing to compile | **a host** (Fly/Railway/VPS), 24/7 |
+| Web app | HTML/JS | nothing to compile | **static hosting** (Vercel/Cloudflare) |
+| Vault program | Rust/Anchor | **once**, into a `.so` | **on Solana itself** — no server of ours |
+
+The on-chain program is not a service that "runs online" on a machine we rent. It is compiled once
+into a binary and **deployed to the blockchain**, where Solana's validators execute it. The Rust
+toolchain is therefore a *build* tool, not a runtime dependency.
+
+**So Max does NOT need to install anything.** `.github/workflows/anchor-build.yml` compiles the
+program on a GitHub runner and uploads the `.so` + IDL as a downloadable artifact. Deploying that
+artifact needs only the `solana` CLI — **already installed in WSL (4.1.1)** — plus a funded keypair:
+
+```bash
+solana program deploy bulls_vault.so --url devnet
+```
+
+A local toolchain is optional (faster iteration), not required. Installing it on this machine has
+failed twice before, so the cloud build is the recommended path. Verified state today, for reference:
 
 | Tool | Windows | WSL (Ubuntu 24.04.3) | Needed |
 |---|---|---|---|
@@ -15,7 +36,7 @@ Nothing on-chain can be built until this is cleared. Verified on this machine to
 | `cc` / `gcc` | missing | **missing** | required to link |
 | `node` | **24.13.0** ✓ | — | 24.10.0 |
 
-**Max runs these in WSL** (the first needs your password — I can't sudo):
+**Optional** — only if you want to build locally instead of in CI (in WSL; the first needs sudo):
 
 ```bash
 sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev

@@ -1,0 +1,64 @@
+name: build solana program
+
+# Builds the on-chain program IN THE CLOUD so nobody needs a local Rust/Anchor toolchain.
+# The output (.so + IDL) is uploaded as a downloadable artifact; deploying it afterwards needs
+# only the `solana` CLI and a funded keypair — no compiler.
+#
+# Trigger manually from the Actions tab (Run workflow) or by pushing a change under programs/.
+on:
+  workflow_dispatch:
+  push:
+    paths: ["programs/**", "Anchor.toml", ".github/workflows/anchor-build.yml"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Anchor 0.30.1 (see Anchor.toml) pairs with the Solana 1.18 line. If the build fails on a
+      # version mismatch, adjust these two pins together — that is the usual cause.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('programs/**/Cargo.toml') }}
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v1.18.26/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+      - name: Install Anchor (avm)
+        run: |
+          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
+          avm install 0.30.1
+          avm use 0.30.1
+
+      - name: Versions
+        run: |
+          rustc --version
+          solana --version
+          anchor --version
+
+      - name: Build program
+        run: anchor build
+
+      - name: Show build output
+        run: ls -la target/deploy target/idl || true
+
+      # The .so is what gets deployed; the IDL is what the client needs to call it.
+      - name: Upload program artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bulls-vault-program
+          path: |
+            target/deploy/*.so
+            target/idl/*.json
+          if-no-files-found: error
