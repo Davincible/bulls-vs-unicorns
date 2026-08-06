@@ -22,3 +22,24 @@ jobs:
           node-version: "24"   # required: node:sqlite (ledger) + node:test
       - run: npm install --no-audit --no-fund
       - run: npm test
+
+  # Prove the deploy image actually builds and boots BEFORE Fly tries it. A broken Dockerfile
+  # discovered here costs a CI minute; discovered during `fly deploy` it costs a failed rollout
+  # on the money service.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build engine image
+        run: docker build -t bulls-engine:ci engine
+      - name: Boot it and check liveness
+        run: |
+          # no chain config and a throwaway ledger dir: we are testing the image, not the chain
+          docker run -d --name eng -p 8090:8090 -e LEDGER_DIR=/data bulls-engine:ci
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8090/live >/dev/null; then echo "engine answered /live"; break; fi
+            sleep 2
+          done
+          curl -sf http://localhost:8090/live || { echo "ENGINE DID NOT COME UP"; docker logs eng; exit 1; }
+          docker logs eng | tail -20
+          docker rm -f eng
