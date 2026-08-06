@@ -370,6 +370,22 @@ wss.on("connection", (ws) => {
       startedAt: s.closesAt - (s.battleMs || newRoundConfig(mode, s.multiplier).battleMs),   // true start, so a joiner syncs mid-battle
       battleMs: s.battleMs || newRoundConfig(mode, s.multiplier).battleMs, resumed: true }));
   }
+  // ...and the same for N-team arenas (3-WAY / FFA). Without this, loading the page while a 3-way
+  // or FFA round is mid-battle showed an EMPTY arena until the next round opened (up to ~60s).
+  for (const aid of NARENA_IDS) {
+    const def = NARENAS[aid];
+    const st = runnersN[aid].state;
+    if (st.phase !== "battle" || !st.result) continue;
+    const cfg = cfgN(def.eco, def.teams, st.multiplier);
+    ws.send(JSON.stringify({ t: "roundStartN", arena: aid, teams: def.teams, toks: def.toks,
+      round: st.round, multiplier: st.multiplier, seed: st.seed, seedHash: st.seedHashPublished,
+      entries: st.entries.map(e => ({ id: e.id, wallet: String(e.id).split("|")[0], team: e.team,
+        stake: e.stake, name: nameFor(String(e.id).split("|")[0]) })),
+      cfg, hitCount: st.result.hits.length, winnerTeam: st.result.winnerTeam, winnerId: st.result.winnerId,
+      settlement: st.result.settlement, teamTotals: st.result.teamTotals,
+      startedAt: st.closesAt - (st.battleMs || cfg.battleMs),   // true start, so a joiner syncs mid-battle
+      battleMs: st.battleMs || cfg.battleMs, resumed: true }));
+  }
   const cleanup = () => { clients.delete(ws); walletOf.delete(ws); authForget(ws); };
   ws.on("error", cleanup);
   ws.on("close", cleanup);
