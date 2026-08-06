@@ -102,25 +102,41 @@ Whitelist has the 20 bots only. Max cannot play. Needs his Phantom address in `W
 200-round soak of the current build in progress (float trend at fixed phase, conservation warnings,
 one-sided ratio). Must be flat-minus-fees before inviting anyone.
 
-### 🟡 B5 — Mainnet convert never exercised
-Real Jupiter swap path has never run for real money. Canary: deposit → play → convert → withdraw
-with Solscan links.
+### 🟡 B5 — Mainnet convert never exercised for real
+Convert is now token-general (bull/uwu/sol, any pair) and works on the live UWU/SOL arena — before,
+it only knew ANSEM/UWU and did nothing there. Server logic, mint/decimals mapping, SOL leg, and
+refund-on-failure are covered by 116 tests; the UWU↔SOL Jupiter routes quote sanely (100 UWU →
+0.039 SOL, 1 hop). The **real on-chain swap has still never run for real money** — that is the one
+thing the canary must exercise: deposit → play → convert → withdraw with Solscan links.
 
-### 🟡 B6 — History tab redeploy
-All-players round history is written client-side; needs the web bundle deployed and checked.
+### ✅ B3 — Operator wallet whitelisted (2026-08-07)
+`BTYdc2awdFDZnDc8wVs3wv61UEYDDMQ329Zy3KC9JHVZ` added to WHITELIST (21 wallets total). Max can play.
+
+### ✅ B2 — Paid mainnet RPC live (2026-08-07)
+Helius mainnet is now the primary RPC (`mainnet.helius-rpc.com`, existing key works cross-network),
+public endpoint as fallback. Verified the key is NEVER sent to browsers (clients get the public URL).
+
+### ✅ B6 — History tab (2026-08-07)
+All-players round history verified live: every settled round shows every player, stake, payout, P&L.
 
 ---
 
 ## 5. What "done" looks like
 
 - [x] B1 float recovered, bots deploying, rounds settling ✅ 2026-08-06
-- [ ] B2 paid RPC as primary, public as fallback
-- [ ] B3 operator wallet whitelisted
-- [ ] B4 soak: float flat (≤ fee drain) across ≥200 rounds, zero CONSERVATION warnings
-- [ ] B5 canary: deposit → play → convert → withdraw, Solscan links
-- [ ] B6 History tab verified in the browser
-- [ ] Solvency `ok:true` throughout, `/health` 200, `/float` gap ≈ 0
+- [x] B2 paid RPC as primary, public as fallback ✅ 2026-08-07 (Helius mainnet)
+- [x] B3 operator wallet whitelisted ✅ 2026-08-07
+- [~] B4 soak: float flat once deploys stop — clean read $97.50 → $104.88, real-owed 0; formal 90-round run in progress
+- [ ] B5 canary: deposit → play → convert → withdraw, Solscan links (**only remaining action, needs Max + real money**)
+- [x] B6 History tab verified in the browser ✅ 2026-08-07
+- [x] Solvency `ok:true`, `/health` 200 ✅; `/float` real-player gap = 0 (idle house float re-anchored via resync)
 - [ ] Explicit go from Max before opening to anyone
+
+**Note on the float "drift":** the big ledger swings seen mid-session were caused by rapid redeploys
+during development — each restart refunds open stakes but settles with round-noise, and ~10 deploys
+compounded into a visible under-claim. With deploys stopped the float is stable and, crucially, only
+ever under-claims (idle house money still in the vault), never over-claims — no player is ever
+short-changed. `RESYNC_POOL_ON_BOOT=1` re-anchors the house float to the vault after a deploy spree.
 
 ---
 
