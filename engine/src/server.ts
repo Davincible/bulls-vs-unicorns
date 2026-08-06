@@ -13,7 +13,7 @@ import type { RoundResult, RoundState } from "./round.ts";
 import type { Mode, Side } from "./game.ts";
 import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildDepositTx, walletTokenBalance, airdropSol, solBalance,
          buildSolDepositTx, verifySolDeposit, withdrawSol } from "./chain-ops.ts";
-import { priceUSD, startPriceLoop, allPrices } from "./prices.ts";
+import { priceUSD, startPriceLoop, allPrices, refreshPrices } from "./prices.ts";
 import { RPC, loadVaultKeypair } from "./chain.ts";
 import { swapExact } from "./swap.ts";
 import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, forget as authForget } from "./auth.ts";
@@ -22,6 +22,7 @@ import { start as startReconcile, isFrozen, latest as reconLatest } from "./reco
 import { allowMessage, connectionAllowed, releaseConnection, LIMITS } from "./limits.ts";
 import { initBotBank, drawBank, returnBank, poolBalance, botBankReady, type Field } from "./bot-bank.ts";
 import { recoverInPlace } from "./recover-float.ts";
+import { getFloatRecoveredAt, markFloatRecovered } from "./ledger.ts";
 import { poolPubkeys } from "./bot-wallets.ts";
 import { vaultTokenBalance } from "./chain-ops.ts";
 import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, totalDeployed, depSide,
@@ -270,12 +271,15 @@ restore();
 if (process.env.RECOVER_FLOAT_ON_BOOT === "1") {
   await (async () => {
     try {
+      // the price loop fires async at startup and has not resolved this early, so pull a fresh
+      // quote first - otherwise the SOL leg cannot be verified and recovery (correctly) refuses
+      await refreshPrices().catch(() => {});
       const pool = new Set(poolPubkeys());
       const held = { uwu: await vaultTokenBalance("uwu"), solUsd: 0 };
       const px = solUsd();
       held.solUsd = px ? (await solBalance(vaultPubkey())) * px : 0;
-      const r = await recoverInPlace(ledger, pool, held);
-      if (r.credited) { persist(); flush();
+      const r = await recoverInPlace(ledger, pool, held, !!getFloatRecoveredAt());
+      if (r.credited) { markFloatRecovered(); persist(); flush();
         console.log(`float recovery: credited ${r.credited} wallet(s) — ${r.uwu.toFixed(2)} UWU, $${r.sol.toFixed(2)} SOL`);
       } else console.log(`float recovery: skipped — ${r.reason}`);
     } catch (e) { console.error("float recovery failed:", (e as Error).message); }

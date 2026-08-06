@@ -36,6 +36,11 @@ export const bustedCount: Record<Mode, number> = { normal: 0, extraction: 0 };
 let convFees = 0;   // 1% taken when players swap raided enemy coin back to their own side
 export const getConvFees = () => convFees;
 export const addConvFees = (n: number) => { convFees += n; };
+// Set the first (and only) time float recovery credits the bot pool. Persisted so the guard
+// survives restarts - see recoverInPlace for why a second run would mint money.
+let floatRecoveredAt = 0;
+export const getFloatRecoveredAt = () => floatRecoveredAt;
+export const markFloatRecovered = () => { floatRecoveredAt = Date.now(); };
 
 // Player-supplied display strings are broadcast to every client and interpolated into the DOM.
 // Sanitise at THIS boundary (the engine is authoritative) so no render site can be tricked into
@@ -104,7 +109,7 @@ export function persist() {
   // to one acct() would recreate on demand, so dropping it is lossless for balances (it only forgets
   // a cosmetic display name) — and it stops free account creation from bloating the ledger forever.
   saveSnapshot({ accounts: [...ledger.values()].filter(hasActivity), treasury, totalDeployed, depSide, created,
-                 busted: bustedCount, convFees, rounds, statsA } as any);
+                 busted: bustedCount, convFees, rounds, statsA, floatRecoveredAt } as any);
 }
 
 /** Load the last snapshot on boot, then write off any SOL liability not backed by a real deposit. */
@@ -123,6 +128,7 @@ export function restore() {
   Object.assign(bustedCount, snap.busted || {});
   Object.assign(rounds, snap.rounds || {});
   convFees = snap.convFees || 0;
+  floatRecoveredAt = (snap as any).floatRecoveredAt || 0;
   Object.assign(statsA, (snap as any).statsA || {});
   // RECONCILE: SOL units must be backed by real deposits. Test faucets used to credit the ledger
   // directly, leaving liability the vault could not honour. Anything unbacked is written off here.

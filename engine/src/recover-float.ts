@@ -23,15 +23,26 @@ const APPLY = process.env.RECOVER_APPLY === "1";
 export async function recoverInPlace(
   ledger: Map<string, any>, pool: Set<string>,
   held: { uwu: number; solUsd: number },
+  alreadyRecovered = false,
 ): Promise<{ credited: number; uwu: number; sol: number; reason?: string }> {
+  // ONE SHOT, permanently. Recovery tops a wallet back up to (depIn - wOut), but a bot LOSING a
+  // round is a legitimate way for its balance to fall below that. Running twice would read those
+  // losses as damage and re-credit them, minting money the vault does not hold. The marker is
+  // persisted in the ledger, so it survives restarts and redeploys.
+  if (alreadyRecovered) return { credited: 0, uwu: 0, sol: 0, reason: "already recovered once - refusing to re-credit" };
   let wantUwu = 0, wantSol = 0;
   const plan: Array<[any, number, number]> = [];
   for (const a of ledger.values()) {
     if (!pool.has(a.id)) continue;
     const solBacked = Math.max(0, (a.depInSol || 0) - (a.wOutSol || 0));
     const tokenDep = Math.max(0, (a.depIn || 0) - (a.wOut || 0) - solBacked);
-    const addUwu = Math.max(0, tokenDep - (a.uwu || 0));
-    const addSol = Math.max(0, solBacked - (a.sol || 0));
+    // Only repair a wallet that was WIPED. The bug deleted accounts outright, so the signature is a
+    // balance at (or next to) zero against a real deposit. A bot that merely lost a round is down a
+    // fraction, not to nothing - and topping that back up would be inventing money. Anything holding
+    // more than 1% of its deposit is treated as honest play and left alone.
+    const wiped = (bal: number, dep: number) => dep > 0 && bal <= dep * 0.01;
+    const addUwu = wiped(a.uwu || 0, tokenDep) ? Math.max(0, tokenDep - (a.uwu || 0)) : 0;
+    const addSol = wiped(a.sol || 0, solBacked) ? Math.max(0, solBacked - (a.sol || 0)) : 0;
     if (addUwu > 0.0001 || addSol > 0.0001) { plan.push([a, addUwu, addSol]); wantUwu += addUwu; wantSol += addSol; }
   }
   if (!plan.length) return { credited: 0, uwu: 0, sol: 0, reason: "nothing to recover" };
