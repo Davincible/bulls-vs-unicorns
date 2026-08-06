@@ -16,6 +16,8 @@ import { isAllowed as walletAllowed } from "./allowlist.ts";
 import { start as startReconcile, isFrozen, latest as reconLatest } from "./reconcile.ts";
 import { loadSnapshot, saveSnapshot, flushSnapshot } from "./store.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
+import { type Tok, FIELD, PAIRINGS, ARENA_IDS, arenaTokens, arenaEco, NARENAS, NARENA_IDS,
+         FEE, CAP, CONVERT_FEE, MIN_ENTRY } from "./arenas.ts";
 
 const PORT = Number(process.env.PORT || 8090);
 // SOL arenas are denominated in USD units. On a test chain the price feed may be irrelevant, so
@@ -30,26 +32,9 @@ if (!FAUCET_ON) console.log("faucets DISABLED (mainnet-safe): fundMe/faucet will
 const solUsd = () => SOL_USD_FIXED > 0 ? SOL_USD_FIXED : priceUSD("sol");
 startPriceLoop();
 
-// ---- arena registry: pairing × economy. Slot A/B map onto the 2-team sim's bull/uwu slots. ----
-// Token names: ansem (ledger field `bull`), uwu, sol. SOL arenas play from the `sol` balance
-// (funded via fundMe on test chains; native-SOL on-chain deposits are the next wiring step).
-type Tok = "ansem" | "uwu" | "sol";
-const FIELD: Record<Tok, "bull" | "uwu" | "sol"> = { ansem: "bull", uwu: "uwu", sol: "sol" };
-const PAIRINGS: Record<string, [Tok, Tok]> = { au: ["ansem", "uwu"], as: ["ansem", "sol"], us: ["uwu", "sol"] };
-const ARENA_IDS = Object.keys(PAIRINGS).flatMap(p => ["normal", "extraction"].map(e => `${p}-${e}`));
-const arenaTokens = (aid: string): [Tok, Tok] => PAIRINGS[aid.split("-")[0]];
-const arenaEco = (aid: string): Mode => aid.split("-")[1] as Mode;
-
-// ---- N-team arenas: 3-WAY (ansem/uwu/sol) and BULLS FFA (Extraction only, see gameN.ts) ----
-const NARENAS: Record<string, { teams: number; toks: Tok[]; eco: Mode }> = {
-  "3w-normal":      { teams: 3, toks: ["ansem", "uwu", "sol"], eco: "normal" },
-  "3w-extraction":  { teams: 3, toks: ["ansem", "uwu", "sol"], eco: "extraction" },
-  "ffa-extraction": { teams: 0, toks: ["ansem"],               eco: "extraction" },
-  // FFA Mayhem is measurably harsher on small stakes (see ARENAS.md) but Max wants it playable.
-  "ffa-normal":     { teams: 0, toks: ["ansem"],               eco: "normal" },
-};
-const NARENA_IDS = Object.keys(NARENAS);
-const FEE = 0.002, CAP = 100, CONVERT_FEE = 0.003, MIN_ENTRY = 0.01;   // 0.2% deploy fee (locked by Max)   // convert = PumpSwap pool fee (0.30%), swap executed on-chain at mainnet
+// ---- arena registry lives in ./arenas.ts (pure: Tok/FIELD/PAIRINGS/ARENA_IDS/arenaTokens/
+// arenaEco for 2-team, NARENAS/NARENA_IDS for N-team, plus the FEE/CAP/CONVERT_FEE/MIN_ENTRY economy
+// constants). Slot A/B map onto the 2-team sim's bull/uwu slots; SOL arenas play from `sol`.
 
 // ---- ledger: real players (by wallet) + persistent bot accounts ----
 interface Account { id: string; name: string; side: Side; bull: number; uwu: number; sol: number; isBot: boolean; dep: number; ret: number; games: number; wins: number;
