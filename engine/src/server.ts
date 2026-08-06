@@ -423,6 +423,21 @@ httpServer.on("error", (e) => {
 const wss = new WebSocketServer({ server: httpServer });
 wss.on("error", (e) => console.error("wss error:", (e as Error).message));
 httpServer.listen(PORT);
+// One in-flight N-team round, in the shape the client expects. Used both when a socket connects
+// and when it switches arena, so a joiner never stares at an empty arena waiting up to a full round.
+function roundStartNPayload(aid: string) {
+  const def = NARENAS[aid]; const st = runnersN[aid]?.state;
+  if (!def || !st || st.phase !== "battle" || !st.result) return null;
+  const cfg = cfgN(def.eco, def.teams, st.multiplier);
+  return { t: "roundStartN", arena: aid, teams: def.teams, toks: def.toks,
+    round: st.round, multiplier: st.multiplier, seed: st.seed, seedHash: st.seedHashPublished,
+    entries: st.entries.map(e => ({ id: e.id, wallet: String(e.id).split("|")[0], team: e.team,
+      stake: e.stake, name: nameFor(String(e.id).split("|")[0]) })),
+    cfg, hitCount: st.result.hits.length, winnerTeam: st.result.winnerTeam, winnerId: st.result.winnerId,
+    settlement: st.result.settlement, teamTotals: st.result.teamTotals,
+    startedAt: st.closesAt - (st.battleMs || cfg.battleMs), battleMs: st.battleMs || cfg.battleMs, resumed: true };
+}
+
 wss.on("connection", (ws, req) => {
   // Cap concurrent sockets per address before doing any work for this client. Behind a proxy this
   // sees the proxy's address, so a hosted deploy should also rate-limit at the edge.
@@ -447,18 +462,8 @@ wss.on("connection", (ws, req) => {
   // ...and the same for N-team arenas (3-WAY / FFA). Without this, loading the page while a 3-way
   // or FFA round is mid-battle showed an EMPTY arena until the next round opened (up to ~60s).
   for (const aid of NARENA_IDS) {
-    const def = NARENAS[aid];
-    const st = runnersN[aid].state;
-    if (st.phase !== "battle" || !st.result) continue;
-    const cfg = cfgN(def.eco, def.teams, st.multiplier);
-    ws.send(JSON.stringify({ t: "roundStartN", arena: aid, teams: def.teams, toks: def.toks,
-      round: st.round, multiplier: st.multiplier, seed: st.seed, seedHash: st.seedHashPublished,
-      entries: st.entries.map(e => ({ id: e.id, wallet: String(e.id).split("|")[0], team: e.team,
-        stake: e.stake, name: nameFor(String(e.id).split("|")[0]) })),
-      cfg, hitCount: st.result.hits.length, winnerTeam: st.result.winnerTeam, winnerId: st.result.winnerId,
-      settlement: st.result.settlement, teamTotals: st.result.teamTotals,
-      startedAt: st.closesAt - (st.battleMs || cfg.battleMs),   // true start, so a joiner syncs mid-battle
-      battleMs: st.battleMs || cfg.battleMs, resumed: true }));
+    const p = roundStartNPayload(aid);
+    if (p) ws.send(JSON.stringify(p));
   }
   const cleanup = () => { clients.delete(ws); walletOf.delete(ws); authForget(ws); releaseConnection(ws, ip); };
   ws.on("error", cleanup);
@@ -507,6 +512,13 @@ wss.on("connection", (ws, req) => {
         ws.send(JSON.stringify({ t: "entered", arena: aid, mode: arenaEco(aid), side: m.side, stake }));
         pushBalance(m.wallet); persist();
       } else if (m.t === "resync") {          // { arenas: ["au-normal", ...] } -> in-flight rounds
+        // N arenas (3-way / FFA) go first: switching to one mid-battle used to show an empty arena
+        // until the next round opened, because resync only knew about the 2-team runners.
+        for (const aid of (m.arenas || NARENA_IDS)) {
+          if (!runnersN[aid]) continue;
+          const p = roundStartNPayload(aid);
+          if (p) ws.send(JSON.stringify(p));
+        }
         for (const aid of (m.arenas || ARENA_IDS)) {
           const rn = runners[aid]; if (!rn) continue;
           const st = rn.state;

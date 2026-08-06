@@ -949,7 +949,11 @@
     PAIRING=pr; localStorage.setItem("bvu_arena",PAIRING);
     for(const md in worlds){ const w=worlds[md];
       w.players.length=0; w.userCircles.length=0; w.floaters.length=0; w.particles.length=0;
-      w.byId=new Map(); w.sim=null; w.simN=null; w.isN=false; w.phase="lobby"; w.autoRound=-1; }
+      w.byId=new Map(); w.sim=null; w.simN=null; w.isN=false; w.phase="lobby"; w.autoRound=-1;
+      w.nTeams=0; w.toks=null; }
+    // the N-team strength bar is rendered separately, so it kept showing the OLD arena's armies
+    // (3-way bars sitting under a BULLS FFA header) until the next round arrived
+    { const nb=$("#nBar"); if(nb){ nb.innerHTML=""; nb.style.display="none"; } }
     applyArenaSkin(); syncDOM();
     if(window.__sendEngine)window.__sendEngine({t:"resync",arenas:[PAIRING+"-normal",PAIRING+"-extraction"]});
   }
@@ -964,7 +968,11 @@
   document.querySelectorAll(".modes button").forEach(b=>{if(b.closest("#pairSel"))return;b.onclick=()=>{activeMode=b.dataset.mode;document.querySelectorAll(".modes button").forEach(x=>x.classList.toggle("on",x===b));
     W().floaters.length=0;W().particles.length=0;W().shake=0;   // start the newly-shown mode clean (no flood)
     $("#autoConv").classList.toggle("on",!!W().autoConvOn);document.querySelectorAll("#autobuy button").forEach(x=>x.classList.toggle("on",+x.dataset.pct===(W().autoPct||0)));document.querySelectorAll("#autoside button").forEach(x=>x.classList.toggle("on",x.dataset.side===W().autoSide));
-    $("#helpbar").textContent=activeMode==="extraction"?"💰 EXTRACTION — raids bank to your SHARED wallet in real time (survive death with winnings). Separate saved game.":"MAYHEM — raids compound in your at-risk ring (circle grows & changes colour). Separate saved game.";syncDOM();};});
+    $("#helpbar").textContent=activeMode==="extraction"?"💰 EXTRACTION — raids bank to your SHARED wallet in real time (survive death with winnings). Separate saved game.":"MAYHEM — raids compound in your at-risk ring (circle grows & changes colour). Separate saved game.";
+    // Switching mode shows a DIFFERENT world. Without asking the engine for that mode's in-flight
+    // round it sits empty until the next lobby opens - which reads as "the battle didn't load".
+    if(window.__sendEngine)window.__sendEngine({t:"resync",arenas:[PAIRING+"-"+activeMode]});
+    syncDOM();};});
   document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>{activeView=b.dataset.view;document.querySelectorAll(".nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll(".view").forEach(v=>v.classList.remove("on"));$("#view"+activeView[0].toUpperCase()+activeView.slice(1)).classList.add("on");syncDOM();});
   document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{lbTab=b.dataset.tab;document.querySelectorAll(".tabs button").forEach(x=>x.classList.toggle("on",x===b));renderLB();});
   $("#rPrev").onclick=()=>{lbIdx=Math.min(lbIdx+1,W().history.length);renderLB();};
