@@ -1,0 +1,8 @@
+# Never ship the vault key, local ledger, or heavy/irrelevant files into the image.
+.vault-keypair.json
+data/
+node_modules/
+*.log
+ledger.json.imported
+.env
+.env.*
