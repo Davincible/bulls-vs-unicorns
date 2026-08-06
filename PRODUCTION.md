@@ -21,9 +21,11 @@ It's a restructure: pull the proven logic into clean services behind interfaces.
 
 ## Progress (2026-08-06)
 - [x] **Ledger → SQLite (WAL)** — `store.ts`, atomic per-save transactions, legacy JSON auto-import.
-- [x] **Committed test suite** — `npm test`, 27 tests: sim determinism/conservation/no-friendly-fire
-      (2-team, 3-way, FFA), ledger crash-safety, allowlist gate, reconciliation core, arena registry,
-      vault-key loading.
+- [x] **Committed test suite** — `npm test`, 44 tests (CI on push): sim determinism/conservation/
+      no-friendly-fire (2-team, 3-way, FFA); commit-reveal lifecycle for both round runners (seed
+      hidden in lobby, revealed seed hashes to the commitment, settlement conserves); ledger
+      crash-safety; allowlist gate; reconciliation core (+ NaN/unpriced edge cases); arena registry;
+      vault-key loading; auth security (unsigned refused, wrong-key rejected, nonce single-use).
 - [~] **Service split** — extracted: `auth.ts`, `arenas.ts` (registry), `ledger.ts` (money state),
       `reconcile.ts`, `allowlist.ts`. server.ts 623 → ~560 lines. Still inside: chain handlers +
       round/bot orchestration + gateway (ws dispatch) — the ws-coupled remainder.
