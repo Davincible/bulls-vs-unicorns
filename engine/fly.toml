@@ -46,6 +46,11 @@ primary_region = "iad"          # put it near your players; `fly platform region
   source = "bulls_data"
   destination = "/data"
 
+# Give the engine time to hand back every open stake before it dies. Entering a round debits the
+# account immediately, so a hard kill mid-battle destroys the pot (see refundOpenRounds).
+kill_signal = "SIGTERM"
+kill_timeout = "15s"
+
 [[vm]]
   size = "shared-cpu-1x"
   memory = "512mb"              # bump if the arena population grows

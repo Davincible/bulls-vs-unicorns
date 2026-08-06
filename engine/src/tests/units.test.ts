@@ -116,3 +116,26 @@ test("freezing the price cuts both ways — it also stops the house pocketing a 
   assert.ok(usd / pxUp < stakeUnits, "a price rise would have burned player tokens");
   assert.equal((usd / pxIn).toFixed(9), stakeUnits.toFixed(9));
 });
+
+// A round lives only in memory, but entering debits the account immediately. A restart in between
+// therefore destroyed the pot: tokens stayed in the vault, the ledger forgot who owned them.
+// The refund must be GROSS — a round that never happened does not get to keep the deploy fee.
+test("an interrupted round returns the FULL stake, fee included", () => {
+  const FEE = 0.002;
+  const stakeUnits = 500, px = 0.02953;
+  const usdIn = stakeUnits * px;
+  const entryHolds = usdIn * (1 - FEE);        // what the sim was handed
+
+  const netRefund = entryHolds / px;           // refunding what the entry holds
+  assert.ok(netRefund < stakeUnits, "a net refund silently keeps the fee");
+
+  const grossRefund = (entryHolds / (1 - FEE)) / px;
+  assert.ok(Math.abs(grossRefund - stakeUnits) < 1e-9, "gross refund makes the player whole");
+});
+
+test("refunding at the round's frozen price returns exactly the tokens staked", () => {
+  const stakeUnits = 500, pxRound = 0.02953, pxNow = 0.0330;
+  const usd = stakeUnits * pxRound;
+  assert.ok(Math.abs(usd / pxRound - stakeUnits) < 1e-9);
+  assert.ok(usd / pxNow < stakeUnits, "refunding at the current price would short the player");
+});

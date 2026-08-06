@@ -955,7 +955,55 @@ wss.on("connection", (ws, req) => {
     } catch (e) { ws.send(JSON.stringify({ t: "error", msg: (e as Error).message })); }
   });
 });
+/** Give every open stake back before we die.
+ *
+ *  A round lives only in memory. Entering debits the account immediately, so a restart between
+ *  entry and settlement destroyed the whole pot: the tokens stayed in the vault while the ledger
+ *  simply forgot who owned them. Across a day of deploys that is where the float went - measured at
+ *  ~$19 of a $27 book in a single restart, and 1520 UWU down to 995 over an afternoon.
+ *
+ *  Refunds are GROSS: the deploy fee was taken on the way in, and a round that never happened has
+ *  no business keeping it. */
+function refundOpenRounds(): number {
+  let refunded = 0;
+  const give = (aid: string, round: number, entries: any[], fieldFor: (e: any) => Field) => {
+    for (const e of entries) {
+      const a = ledger.get(String(e.id).split("|")[0]);
+      if (!a) continue;
+      const f = fieldFor(e);
+      const gross = (e.stake || 0) / (1 - FEE);          // undo the fee taken at entry
+      const units = unitsAtRound(aid, round, f, gross);
+      if (units > 0) { a[f] += units; refunded++; }
+    }
+  };
+  for (const aid of ARENA_IDS) {
+    // Refund in ANY phase. Bots and players enter during the LOBBY, so skipping it left those
+    // stakes debited and unreturned - the restart test lost ~$2.50 of SOL exactly that way.
+    // Settlement swaps in a fresh lobby (round.ts), so `entries` only ever holds unsettled stakes.
+    const st = runners[aid]?.state;
+    if (!st || !st.entries?.length) continue;
+    const [tokA, tokB] = arenaTokens(aid);
+    give(aid, st.round, st.entries, (e) => FIELD[e.side === "bull" ? tokA : tokB] as Field);
+  }
+  for (const aid of NARENA_IDS) {
+    const st = runnersN[aid]?.state;
+    if (!st || !st.entries?.length) continue;
+    const def = NARENAS[aid];
+    give(aid, st.round, st.entries, (e) => {
+      const t = Number(String(e.id).split("|")[1]) || 0;
+      return FIELD[def.teams === 0 ? def.toks[0] : (def.toks[t] || def.toks[0])] as Field;
+    });
+  }
+  return refunded;
+}
+
 for (const sig of ["SIGINT", "SIGTERM"] as const)
-  process.on(sig, () => { flush(); console.log("ledger flushed to disk"); process.exit(0); });
+  process.on(sig, () => {
+    const n = refundOpenRounds();
+    if (n) console.log(`refunded ${n} open stake(s) from the in-flight round`);
+    flush();
+    console.log("ledger flushed to disk");
+    process.exit(0);
+  });
 process.on("exit", () => flush());
 console.log(`⚔  engine live on ws://localhost:${PORT}  (authoritative rounds + hybrid bots) chain=${chainReady()}`);
