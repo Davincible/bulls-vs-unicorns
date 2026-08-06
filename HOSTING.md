@@ -7,6 +7,20 @@ uptime and WebSockets → **Fly.io**. The web app is static files → **Vercel**
 > Everything else below is already configured in the repo (`engine/fly.toml`, `engine/Dockerfile`,
 > `web/vercel.json`).
 
+## Plain-English map of the pieces
+
+| Thing | What it actually is | Why it needs hosting |
+|---|---|---|
+| **Engine** | The program that runs the game and holds players' money | Must run 24/7 — rounds fire every 60s and solvency is checked constantly |
+| **Web app** | The page players open in a browser | Just files; any static host serves them |
+| **Vault** | A Solana wallet the engine controls | Not hosted — it lives on the blockchain |
+
+**Neither deploy needs GitHub.** `fly deploy` and the Vercel CLI both upload straight from this
+folder on your PC. GitHub is only needed for the automated test/build workflows — and as a backup,
+which matters: as of 2026-08-06 this repo has **81 commits that exist nowhere but this PC**.
+`git ls-remote` returns "Repository not found", so either the GitHub repo is private and this
+machine has no credentials, or it no longer exists. Either way, nothing here is backed up.
+
 ---
 
 ## Part 1 — Engine on Fly.io
