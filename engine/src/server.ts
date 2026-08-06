@@ -51,6 +51,7 @@ const FEE = 0.002, CAP = 100, CONVERT_FEE = 0.003, MIN_ENTRY = 0.01;   // 0.2% d
 // ---- ledger: real players (by wallet) + persistent bot accounts ----
 interface Account { id: string; name: string; side: Side; bull: number; uwu: number; sol: number; isBot: boolean; dep: number; ret: number; games: number; wins: number;
   raided?: number; best?: number; depIn?: number; wOut?: number;
+  depInSol?: number; wOutSol?: number;   // native-SOL deposits/withdrawals, tracked separately
   refBy?: string; refEarned?: number; avatar?: string; }   // referral: who brought them, and lifetime cut earned   // real on-chain money in / out — the basis for true P&L
 const ledger = new Map<string, Account>();
 const NAMES = ["degenDan","sol_sniper","0xViper","moonboy","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","gigaGwei","turboTina","sendit","wenLambo","diamondD","fomoFrank","nakamotto","zkZoe","based_bri","saylorsz","jitoJoe","rugproof","exitliq","ser_pump","mevMike","validatorV","anonape","solstice","tapedeck"];
@@ -80,6 +81,19 @@ function restore() {
   Object.assign(rounds, snap.rounds || {});
   convFees = snap.convFees || 0;
   Object.assign(statsA, (snap as any).statsA || {});
+  // RECONCILE: SOL units must be backed by real deposits. Test faucets used to credit the
+  // ledger directly, leaving liability the vault could not honour. Anything unbacked is written
+  // off here rather than carried into production.
+  let wroteOff = 0, touched = 0;
+  for (const a of ledger.values()) {
+    if (a.isBot) continue;
+    const backed = Math.max(0, (a.depInSol || 0) - (a.wOutSol || 0));
+    if ((a.sol || 0) > backed + 0.0001) { wroteOff += (a.sol || 0) - backed; a.sol = backed; touched++; }
+  }
+  if (wroteOff > 0.01) {
+    console.log(`reconciled ledger: wrote off ${wroteOff.toFixed(2)} unbacked SOL units across ${touched} account(s)`);
+    setTimeout(persist, 0);   // write the corrected ledger immediately, not on the next money event
+  }
   const players = [...ledger.values()].filter(a => !a.isBot);
   console.log(`restored ledger: ${ledger.size} accounts (${players.length} real) from disk`);
 }
@@ -494,7 +508,8 @@ wss.on("connection", (ws) => {
         } else steps.push(`${sol.toFixed(2)} SOL already`);
         try { await faucet(m.wallet, "bull", amt); steps.push(amt + " BULL"); } catch (e) { steps.push("BULL failed: " + (e as Error).message); }
         try { await faucet(m.wallet, "uwu", amt); steps.push(amt + " UWU"); } catch (e) { steps.push("UWU failed: " + (e as Error).message); }
-        { const a2 = acct(m.wallet, "bull"); a2.sol += amt; steps.push(amt + " SOL-units (arena credit)"); persist(); }
+        // NOTE: no ledger credit here. The faucet funds the wallet; balance only moves on a
+        // verified on-chain deposit (see depositSol) so every unit is backed by vault holdings.
         ws.send(JSON.stringify({ t: "fundMeDone", steps }));
       } else if (m.t === "solBalance") {
         if (!chainReady()) return;
@@ -509,7 +524,7 @@ wss.on("connection", (ws) => {
         if (!px) return ws.send(JSON.stringify({ t: "error", msg: "SOL price unavailable — deposit not credited yet, retry shortly." }));
         const sol = await verifySolDeposit(String(m.sig));
         if (sol > 0) { const a = acct(m.wallet, "bull"); const units = sol * px;
-          a.sol += units; a.depIn = (a.depIn || 0) + units; persist(); }
+          a.sol += units; a.depIn = (a.depIn || 0) + units; a.depInSol = (a.depInSol || 0) + units; persist(); }
         ws.send(JSON.stringify({ t: "depositSolDone", sol, priceUsd: px, credited: sol * px }));
         pushBalance(m.wallet);
       } else if (m.t === "withdrawSol") {       // { wallet, units } -> pay out native SOL
@@ -520,7 +535,7 @@ wss.on("connection", (ws) => {
         if (units < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: "Nothing to withdraw." }));
         const sol = units / px;
         a.sol -= units; pushBalance(m.wallet);
-        try { const sig = await withdrawSol(m.wallet, sol); a.wOut = (a.wOut || 0) + units; persist();
+        try { const sig = await withdrawSol(m.wallet, sol); a.wOut = (a.wOut || 0) + units; a.wOutSol = (a.wOutSol || 0) + units; persist();
               ws.send(JSON.stringify({ t: "withdrawSolDone", units, sol, priceUsd: px, sig })); }
         catch (e) { a.sol += units; pushBalance(m.wallet);
               ws.send(JSON.stringify({ t: "error", msg: "SOL withdraw failed: " + (e as Error).message })); }
