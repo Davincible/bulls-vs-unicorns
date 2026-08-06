@@ -21,6 +21,9 @@ import { isAllowed as walletAllowed } from "./allowlist.ts";
 import { start as startReconcile, isFrozen, latest as reconLatest } from "./reconcile.ts";
 import { allowMessage, connectionAllowed, releaseConnection, LIMITS } from "./limits.ts";
 import { initBotBank, drawBank, returnBank, poolBalance, botBankReady, type Field } from "./bot-bank.ts";
+import { recoverInPlace } from "./recover-float.ts";
+import { poolPubkeys } from "./bot-wallets.ts";
+import { vaultTokenBalance } from "./chain-ops.ts";
 import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, totalDeployed, depSide,
          created, bustedCount, getConvFees, addConvFees, persist, restore, flush,
          acct, balPayload, leadersFor, cleanDisplayName, cleanAvatarUrl } from "./ledger.ts";
@@ -261,6 +264,23 @@ for (const aid of ARENA_IDS) runners[aid] = new RoundRunner(arenaEco(aid), (r, s
 const runnersN: Record<string, RoundRunnerN> = {};
 for (const aid of NARENA_IDS) runnersN[aid] = new RoundRunnerN(NARENAS[aid].eco, NARENAS[aid].teams, (r, s) => onSettleN(aid, r as any, s as any));
 restore();
+// One-off float repair, BEFORE the bot bank reads balances and before anything can persist over it.
+// Running the standalone CLI against a live engine loses the race: it writes the snapshot file and
+// the running process overwrites it from stale memory on the next save.
+if (process.env.RECOVER_FLOAT_ON_BOOT === "1") {
+  await (async () => {
+    try {
+      const pool = new Set(poolPubkeys());
+      const held = { uwu: await vaultTokenBalance("uwu"), solUsd: 0 };
+      const px = solUsd();
+      held.solUsd = px ? (await solBalance(vaultPubkey())) * px : 0;
+      const r = await recoverInPlace(ledger, pool, held);
+      if (r.credited) { persist(); flush();
+        console.log(`float recovery: credited ${r.credited} wallet(s) — ${r.uwu.toFixed(2)} UWU, $${r.sol.toFixed(2)} SOL`);
+      } else console.log(`float recovery: skipped — ${r.reason}`);
+    } catch (e) { console.error("float recovery failed:", (e as Error).message); }
+  })();
+}
 // Adopt the seeded bot wallets as house accounts — their real deposits become the bots' bankroll.
 {
   const p = initBotBank();

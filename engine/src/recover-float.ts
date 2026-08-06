@@ -13,8 +13,36 @@ import { loadSnapshot, saveSnapshot, flushSnapshot } from "./store.ts";
 import { poolPubkeys } from "./bot-wallets.ts";
 import { vaultTokenBalance, solBalance, vaultPubkey, chainReady } from "./chain-ops.ts";
 import { priceUSD, refreshPrices } from "./prices.ts";
+import { pathToFileURL } from "node:url";
 
 const APPLY = process.env.RECOVER_APPLY === "1";
+
+/** Credit pool wallets from the LIVE in-memory ledger. Running this inside the engine at boot is
+ *  race-free; the standalone CLI writes the snapshot file, which a running engine will overwrite
+ *  with its own stale in-memory state on the next persist. */
+export async function recoverInPlace(
+  ledger: Map<string, any>, pool: Set<string>,
+  held: { uwu: number; solUsd: number },
+): Promise<{ credited: number; uwu: number; sol: number; reason?: string }> {
+  let wantUwu = 0, wantSol = 0;
+  const plan: Array<[any, number, number]> = [];
+  for (const a of ledger.values()) {
+    if (!pool.has(a.id)) continue;
+    const solBacked = Math.max(0, (a.depInSol || 0) - (a.wOutSol || 0));
+    const tokenDep = Math.max(0, (a.depIn || 0) - (a.wOut || 0) - solBacked);
+    const addUwu = Math.max(0, tokenDep - (a.uwu || 0));
+    const addSol = Math.max(0, solBacked - (a.sol || 0));
+    if (addUwu > 0.0001 || addSol > 0.0001) { plan.push([a, addUwu, addSol]); wantUwu += addUwu; wantSol += addSol; }
+  }
+  if (!plan.length) return { credited: 0, uwu: 0, sol: 0, reason: "nothing to recover" };
+  let otherUwu = 0, otherSol = 0;
+  for (const a of ledger.values()) { if (pool.has(a.id) || a.isBot) continue; otherUwu += a.uwu || 0; otherSol += a.sol || 0; }
+  if (otherUwu + wantUwu > held.uwu + 1e-6) return { credited: 0, uwu: 0, sol: 0, reason: `would owe ${(otherUwu+wantUwu).toFixed(2)} UWU vs ${held.uwu.toFixed(2)} held` };
+  if (wantSol > 0.0001 && !(held.solUsd > 0)) return { credited: 0, uwu: 0, sol: 0, reason: "SOL price unavailable - cannot verify" };
+  if (otherSol + wantSol > held.solUsd + 1e-6) return { credited: 0, uwu: 0, sol: 0, reason: `would owe $${(otherSol+wantSol).toFixed(2)} SOL vs $${held.solUsd.toFixed(2)} held` };
+  for (const [a, u, so] of plan) { a.uwu = (a.uwu || 0) + u; a.sol = (a.sol || 0) + so; }
+  return { credited: plan.length, uwu: wantUwu, sol: wantSol };
+}
 
 async function main() {
   if (!chainReady()) { console.error("chain not configured"); process.exit(1); }
@@ -102,4 +130,11 @@ async function main() {
   flushSnapshot();
   console.log(`\nAPPLIED. Restart the engine so the bot bank picks the float up.`);
 }
-main().catch(e => { console.error("recover failed:", e.message); process.exit(1); });
+// Only run the CLI when this file is the ENTRY POINT. Without this guard, importing
+// recoverInPlace from the server executed main(), which called process.exit and killed the engine
+// on boot.
+const isEntry = (() => {
+  try { return import.meta.url === pathToFileURL(process.argv[1] || "").href; }
+  catch { return false; }
+})();
+if (isEntry) main().catch(e => { console.error("recover failed:", e.message); process.exit(1); });
