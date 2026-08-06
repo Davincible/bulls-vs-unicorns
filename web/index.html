@@ -16,6 +16,8 @@
   .pill{font-family:var(--sans);font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:7px 12px;display:flex;flex-direction:column;line-height:1.3;min-width:76px}
   .pill b{font-size:15px;font-family:var(--mono);letter-spacing:-.01em} .pill .g{color:var(--gold)} .pill span{color:var(--ink-faint);font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;margin-top:1px} .pill .brk{color:var(--ink-soft);font-size:10px;letter-spacing:0;text-transform:none}
   .nav,.modes{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:11px;overflow:hidden}
+  .nav button.off,.modes button.off{opacity:.32;cursor:not-allowed;filter:grayscale(1)}
+  .ticker .tkv{font-family:var(--mono)}
   .nav button,.modes button{font-family:var(--sans);font-size:12px;font-weight:600;letter-spacing:.01em;color:var(--ink-soft);background:none;border:none;padding:9px 13px;cursor:pointer;transition:color .15s,background .15s}
   .nav button:hover,.modes button:hover{color:var(--ink)}
   .nav button.on{background:var(--panel2);color:var(--gold)} .modes button.on[data-mode=normal]{background:var(--bull);color:#052} .modes button.on[data-mode=extraction]{background:var(--gold);color:#241c00} #pairSel button.on{background:var(--gold);color:#241c00;border-color:var(--gold);box-shadow:0 0 10px rgba(255,192,72,.35)}
@@ -72,7 +74,7 @@
   .panelC{min-width:0} .panelC .note{overflow-wrap:anywhere}
   .panelC{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:15px 17px;box-shadow:var(--shadow)}
   .panelC h3{margin:0 0 10px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-soft);font-family:var(--mono);display:flex;justify-content:space-between;align-items:center} .youtag{font-family:var(--mono);font-size:9px;background:var(--gold);color:#241c00;border-radius:5px;padding:1px 5px;font-weight:700}
-  .wcells{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px} .cell{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 10px} .cell .v{font-family:var(--mono);font-size:15px;font-weight:700} .cell .n{font-family:var(--mono);font-size:8px;color:var(--ink-faint);letter-spacing:.05em;text-transform:uppercase;margin-top:2px} .cell.b .v{color:var(--bull)} .cell.u .v{color:var(--uni)}
+  .wcells{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:8px;margin-bottom:10px} .cell{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 10px} .cell .v{font-family:var(--mono);font-size:15px;font-weight:700} .cell .n{font-family:var(--mono);font-size:8px;color:var(--ink-faint);letter-spacing:.05em;text-transform:uppercase;margin-top:2px} .cell.b .v{color:var(--bull)} .cell.u .v{color:var(--uni)}
   .seg{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden} .seg button{font-family:var(--mono);font-size:11.5px;background:var(--panel2);color:var(--ink-soft);border:none;padding:8px 6px;cursor:pointer;font-weight:600;border-right:1px solid var(--line);flex:1} .seg button:last-child{border-right:none} .seg button.on{background:var(--gold);color:#241c00}
   .row2{display:flex;gap:8px;margin-top:8px} .abtn{flex:1;font-family:var(--sans);font-weight:700;font-size:12.5px;border-radius:10px;padding:11px;cursor:pointer;border:1px solid var(--line);color:#0a0a10;transition:transform .08s,filter .15s}
   .abtn:hover{filter:brightness(1.06)} .abtn:active{transform:translateY(1px)} .abtn.jb{background:var(--bull)} .abtn.ju{background:var(--uni);color:#150425} .abtn.ghost{background:transparent;color:var(--ink);border-color:var(--gold)} .abtn.ghost2{background:transparent;color:var(--ink-soft)} .abtn:hover{filter:brightness(1.08)}
@@ -113,7 +115,7 @@
       <div class="brand"><h1><span class="b">🐂</span><span class="vs">⚔</span><span class="u">🦄</span> ARENA</h1></div>
       <div class="hstats">
         <div class="pill" title="House take (0.2% of deploys + 0.3% converts)"><b class="g" id="treasury">$0</b><span class="brk" id="treasuryBrk">🐂$0 · 🦄$0</span><span>House take</span></div>
-        <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button><button data-view="referrals">Referrals</button></div>
+        <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button><button data-view="referrals">Referrals</button><button data-view="history">History</button></div>
         <div class="modes"><button data-mode="normal" class="on">Mayhem</button><button data-mode="extraction">💰 Extraction</button></div>
         <div class="modes" id="pairSel"><button data-pair="au" class="on" title="ANSEM vs UWU">🐂⚔🦄</button><button data-pair="as" title="ANSEM vs SOL">🐂⚔◎</button><button data-pair="us" title="UWU vs SOL">🦄⚔◎</button><button data-pair="3w" title="3-WAY: all three armies">🐂🦄◎</button><button data-pair="ffa" title="BULLS FFA: every fighter for themselves">🐂🐂🐂</button></div>
         <button class="ficon" id="infoBtn" title="How the game works">ⓘ</button>
@@ -249,11 +251,10 @@
             <input id="stakeRange" type="range" min="0.01" max="100" step="0.01" value="5" style="flex:1;accent-color:var(--gold)">
             <button class="abtn ghost" id="stakeMax" style="padding:6px 10px;font-size:11px">Max</button>
           </div>
-          <label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px;color:var(--ink-soft);cursor:pointer"><input type="checkbox" id="autoTick" style="accent-color:var(--gold)"> <b>Repeat every round</b> — redeploy this amount to the same side(s) each lobby</label>
+          <label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px;color:var(--ink-soft);cursor:pointer"><input type="checkbox" id="autoTick" style="accent-color:var(--gold)"> <b>Repeat every round</b></label>
           <div class="seg" id="autobuy" style="margin-top:6px"><button data-pct="0" class="on">Fixed $</button><button data-pct="0.05">5% of wallet</button><button data-pct="0.1">10%</button><button data-pct="0.25">25%</button></div>
           <div id="autoside" style="display:none"><button data-side="both" class="on"></button></div>
-          <div class="toggle" id="autoConv"><span class="sw"></span><span>Auto-convert my raids → my team's coin</span></div>
-          <div class="note" style="font-size:10px">Turns coins you steal into your own side's coin each raid (−0.3% fee).</div>
+          <div class="toggle" id="autoConv"><span class="sw"></span><span>Auto-convert raids → my coin</span></div>
 
           <div class="row2" id="deploy2" style="margin-top:8px"><button class="abtn jb" id="joinBull">Deploy BULL 🐂</button><button class="abtn ju" id="joinUni">Deploy UWU 🦄</button></div>
           <div id="deployN" style="display:none;margin-top:8px"></div>
@@ -261,10 +262,7 @@
         </div>
       </div>
 
-      <div class="card" style="margin-top:12px"><h2 style="font-size:15px">My previous rounds</h2>
-        <div class="prTable"><div class="prRow h"><span>Round</span><span>Side</span><span>Deposit</span><span>Got back</span><span class="pnl">P/L</span></div><div id="prRows"></div></div>
-        <div class="note" id="prNote">Your finished rounds — deposit, total you got back (incl. extracted), and profit/loss. Shared across both modes.</div>
-      </div>
+
     </div>
 
     <div class="view" id="viewLeaderboard">
@@ -276,6 +274,12 @@
       </div>
     </div>
 
+    <div class="view" id="viewHistory">
+      <div class="card" style="margin-top:12px"><h2 style="font-size:15px">My previous rounds</h2>
+        <div class="prTable"><div class="prRow h"><span>Round</span><span>Side</span><span>Deposit</span><span>Got back</span><span class="pnl">P/L</span></div><div id="prRows"></div></div>
+        <div class="note" id="prNote">Your finished rounds — deposit, total you got back (incl. extracted), and profit/loss. Shared across both modes.</div>
+      </div>
+    </div>
     <div class="view" id="viewReferrals"><div class="card" style="max-width:560px;margin:12px auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px">            <h3 style="margin-top:12px">Referrals <span class="youtag" style="background:var(--gold);color:#000">10%</span></h3>
             <div class="note">Share your link — you earn 10% of the house fee on every round your signups play, forever.</div>
             <div style="display:flex;gap:6px;margin-top:6px">
@@ -428,7 +432,7 @@
   function userWorth(){let s=WALLET.bull+WALLET.uwu;for(const m in worlds)for(const c of worlds[m].userCircles)s+=tot(c);return s;}
   function rollMult(w){const u=Math.random();w.multiplier=u<0.7?1:u<0.85?2:u<0.93?4:u<0.97?6:u<0.99?8:10;}
   function ev(w,txt,kind){w.events.push({txt,kind,life:1.4});if(w.events.length>9)w.events.shift();}
-  function pushWin(w,atk,dmg,mult){if(dmg<0.5)return;w.wins.unshift({name:atk.name,side:atk.side,amt:dmg,mult,you:atk.isUser});if(w.wins.length>18)w.wins.pop();}
+  function pushWin(w,atk,dmg,mult){if(dmg<0.5)return;const _to=(atk.bull||0)+(atk.uwu||0)+(atk.sBull||0)+(atk.sUwu||0);w.wins.unshift({name:atk.name,side:atk.side,amt:dmg,mult,you:atk.isUser,from:atk.deposited||0,to:_to});if(w.wins.length>18)w.wins.pop();}
   function burst(w,x,y){for(let i=0;i<22;i++)w.particles.push({x,y,vx:rand(-4,4),vy:rand(-5,2),life:1,c:Math.random()<.5?"#ffe14d":"#fff"});}
 
   function strike(w,atk,def,dmg){
@@ -709,7 +713,7 @@
   }
   // the Big Wins ticker belongs to every arena, not just the two-team path
   function renderTicker(w){
-    $("#tickerTrack").innerHTML=(w.wins.length?w.wins:[{name:"first blood soon…",side:"bull",amt:0,mult:1}]).map(x=>`<span class="win"><span class="dot ${x.side==="bull"?"bull":"uni"}"></span>${x.you?'<span class="youtag">YOU</span> ':''}${esc(x.name)} raided <b>${fmt(x.amt)}</b>${x.mult>=1.8?' <span class="mult">'+x.mult.toFixed(1)+'×</span>':''}</span>`).join("");
+    $("#tickerTrack").innerHTML=(w.wins.length?w.wins:[{name:"first blood soon…",side:"bull",amt:0,mult:1}]).map(x=>`<span class="win"><span class="dot ${x.side==="bull"?"bull":"uni"}"></span>${x.you?'<span class="youtag">YOU</span> ':''}${esc(x.name)} <span class="tkv">${x.from?stand(x.from,x.to):'raided '+fmt(x.amt)}</span>${x.mult>=1.8?' <span class="mult">'+x.mult.toFixed(1)+'×</span>':''}</span>`).join("");
   }
   function syncArena(){
     const w=W();
@@ -1539,7 +1543,16 @@
           window.__pairsSynced=true;
           const live=new Set(Object.keys(m.arenas).map(a=>a.split("-")[0]));
           document.querySelectorAll("#pairSel button").forEach(b=>{
-            b.style.display=live.has(b.dataset.pair)?"":"none";
+            const on=live.has(b.dataset.pair);
+            b.disabled=!on; b.classList.toggle("off",!on);
+            b.title=on?(b.title||""):"Not running yet";
+          });
+          // same for the economy tabs - only offer modes an enabled arena actually uses
+          const modes=new Set(Object.keys(m.arenas).map(a=>a.split("-")[1]));
+          document.querySelectorAll(".modes:not(#pairSel) button").forEach(b=>{
+            const on=modes.has(b.dataset.mode);
+            b.disabled=!on; b.classList.toggle("off",!on);
+            b.title=on?"":"Not running yet";
           });
         }
         if(m.arenas&&!Object.keys(m.arenas).some(a=>a.startsWith(PAIRING+"-"))){
@@ -1755,14 +1768,6 @@
     }
     // Warn when the connected wallet has no presence on the game's chain — almost always means
     // Phantom is pointed at Mainnet while the game runs on Devnet.
-    async function checkWalletNetwork(pk){
-      try{
-        const bal=await rpcConn().getBalance(new window.solanaWeb3.PublicKey(pk));
-        if(bal===0){
-          banner("⚠ This wallet has <b>no SOL on the game's network</b>. If Phantom is on <b>Mainnet</b>, switch it: Settings → Developer Settings → Testnet Mode → <b>Solana Devnet</b>, then reconnect. Otherwise hit <b>🎁 Get test SOL + tokens</b>.");
-        }
-      }catch(e){ /* rpc hiccup - not worth alarming the user */ }
-    }
     async function connect(){
       if(!window.solana||!window.solana.isPhantom){ note("Phantom not found — install the Phantom extension, set it to Devnet."); banner("🦊 Phantom wallet not detected. Install it and switch it to <b>Devnet</b>."); return; }
       try{
@@ -1776,7 +1781,6 @@
         // Phantom on the wrong network is the #1 cause of "I connected but nothing works": the
         // wallet connects fine, then every balance reads zero and deposits silently fail. Detect it
         // by asking the game's chain whether this account exists there, and say so plainly.
-        checkWalletNetwork(PK);
         note("Sign the login message in Phantom…");
         const okA=await authenticate();
         if(!okA){ note("Sign-in required to play."); return; }
@@ -1891,7 +1895,8 @@
     setTimeout(()=>{ let m2=localStorage.getItem("bvu_wmeth");
       // anyone still flagged for the removed burner wallet gets reset to Phantom
       if(m2==="dev"){ try{localStorage.removeItem("bvu_wmeth");localStorage.removeItem("bvu_devwallet");}catch(e){} m2=null; }
-      if(m2==="phantom"&&window.solana&&!PK)window.solana.connect({onlyIfTrusted:true}).then(()=>connect()).catch(()=>{});
+      // deliberately NOT auto-connecting: opening the site should never touch a wallet.
+      // The player clicks Connect when they want to.
       // re-apply X identity after connect
       setTimeout(()=>{try{const x=JSON.parse(localStorage.getItem("bvu_x")||"null");
         if(x&&PK)send({t:"setName",wallet:PK,name:"@"+x.h,avatar:x.av});}catch(e){}},2500);
@@ -1955,7 +1960,10 @@
 
   let tx=0;(function scroll(){const t=$("#tickerTrack");
     const fits=t.scrollWidth<=(t.parentElement?t.parentElement.clientWidth-90:0);   // 90px ≈ the label block
-    if(fits)tx=0; else {tx-=0.5;if(-tx>t.scrollWidth/2)tx=0;}
+    if(fits){tx=0;t.dataset.dup="";}
+    else{ // duplicate once so the loop is seamless instead of scrolling into blank space
+      if(t.dataset.dup!=="1"){t.innerHTML+=t.innerHTML;t.dataset.dup="1";}
+      tx-=0.5; if(-tx>=t.scrollWidth/2)tx=0; }
     t.style.transform="translateX("+tx+"px)";requestAnimationFrame(scroll);})();
   document.querySelectorAll("#autobuy button").forEach(x=>x.classList.toggle("on",+x.dataset.pct===0));
   applyArenaSkin();

@@ -367,7 +367,14 @@ setInterval(() => {
       phase: st.phase, multiplier: st.multiplier, entries: st.entries.length,
       seedHash: st.seedHashPublished, closesInMs: Math.max(0, st.closesAt - Date.now()),
       stats: stat(aid), accounts: botsFor(aid).length }; }
-  broadcast({ t: "state", arenas, normal: snap("au-normal"), extraction: snap("au-extraction") });
+  // `normal`/`extraction` are legacy top-level fields the client still reads. They must point at an
+  // arena that is actually RUNNING — hardcoding au-* crashed the whole engine the moment
+  // ENABLED_ARENAS excluded au-normal (snap() dereferenced an undefined runner every second).
+  const firstOf = (eco: Mode) => ARENA_IDS.find(a => arenaEco(a) === eco);
+  const nAid = firstOf("normal"), xAid = firstOf("extraction");
+  broadcast({ t: "state", arenas,
+              normal: nAid ? snap(nAid) : null,
+              extraction: xAid ? snap(xAid) : null });
 }, 1000);
 
 // ---- http + websocket on one port ----
