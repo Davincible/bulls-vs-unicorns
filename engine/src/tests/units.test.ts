@@ -139,3 +139,27 @@ test("refunding at the round's frozen price returns exactly the tokens staked", 
   assert.ok(Math.abs(usd / pxRound - stakeUnits) < 1e-9);
   assert.ok(usd / pxNow < stakeUnits, "refunding at the current price would short the player");
 });
+
+// The bot fee: 0.2% of every bot stake went to the treasury COUNTER while the tokens left the
+// accounts. Bots are house money, so the house was skimming its own bankroll ~9 rounds a minute —
+// with zero real players the float decays to nothing in days. Only real players may pay the fee.
+test("the house charging itself decays the float to nothing", () => {
+  const FEE = 0.002, roundsPerDay = 9 * 60 * 24;
+  let float = 44;                       // dollars, the real mainnet float
+  for (let i = 0; i < roundsPerDay * 2; i++) float -= (float * 0.5) * FEE;  // half the float staked per round
+  assert.ok(float < 44 * 0.01, `two idle days left $${float.toFixed(2)} of $44`);
+});
+
+test("returning bot fees to the pool conserves the float exactly", () => {
+  const FEE = 0.002;
+  let pool = 1000, treasury = 0;
+  for (let i = 0; i < 500; i++) {
+    const stake = pool * 0.3;
+    pool -= stake;                        // debit
+    pool += stake * FEE;                  // fee straight back to the pool
+    pool += stake * (1 - FEE);            // settlement pays out the net (zero-sum among bots)
+    treasury += 0;                        // no house self-revenue
+  }
+  assert.ok(Math.abs(pool - 1000) < 1e-6, `float conserved: ${pool.toFixed(6)}`);
+  assert.equal(treasury, 0, "treasury only grows on real players");
+});

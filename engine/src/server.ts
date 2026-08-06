@@ -124,7 +124,7 @@ function flow(aid: string, round: number, f: Field) {
   const k = `${aid}:${round}`;
   let m = roundFlow.get(k);
   if (!m) { m = {}; roundFlow.set(k, m); if (roundFlow.size > 64) for (const o of [...roundFlow.keys()].slice(0, 32)) roundFlow.delete(o); }
-  return (m[f] ||= { out: 0, in: 0 });
+  return (m[f] ||= { out: 0, in: 0, fee: 0 });
 }
 function auditRound(aid: string, round: number): void {
   const m = roundFlow.get(`${aid}:${round}`);
@@ -132,7 +132,7 @@ function auditRound(aid: string, round: number): void {
   for (const [f, v] of Object.entries(m)) {
     if (v.out < 1e-9 && v.in < 1e-9) continue;
     const gap = v.in - v.out;                       // negative = burned, positive = minted
-    const expected = -v.out * FEE;                  // the deploy fee is the only allowed shrinkage
+    const expected = -(v.fee || 0);                 // fees actually KEPT are the only allowed shrinkage
     if (Math.abs(gap - expected) > Math.max(1e-6, v.out * 0.001)) {
       console.warn(`CONSERVATION ${aid} r${round} ${f}: staked ${v.out.toFixed(6)} paid ${v.in.toFixed(6)} ` +
                    `gap ${gap >= 0 ? "+" : ""}${gap.toFixed(6)} (expected ${expected.toFixed(6)})`);
@@ -362,8 +362,9 @@ function botsEnterN(aid: string) {
     const eco = NARENAS[aid].eco;
     const usdA = stake * pxForRound(aid, rn.state.round, FIELD[tok] as Field);
     if (!(usdA > 0)) { a[FIELD[tok]] += stake; continue; }   // no price -> undo the debit, sit out
-    a.dep += stake; treasury[eco] += usdA * FEE; totalDeployed[eco] += usdA;
-    stat(aid).deployed += usdA; stat(aid).take += usdA * FEE;
+    returnBank(FIELD[tok] as Field, stake * FEE);            // house does not charge itself
+    a.dep += stake; totalDeployed[eco] += usdA;
+    stat(aid).deployed += usdA;
     rn.enter(`${a.id}|${def.teams === 0 ? 0 : team}`, def.teams === 0 ? 0 : team, usdA * (1 - FEE));
   }
 }
@@ -500,8 +501,15 @@ function botsEnter(aid: string) {
     const usdN = stake * pxForRound(aid, rn.state.round, FIELD[myTok] as Field);
     if (!(usdN > 0)) { a[FIELD[myTok]] += stake; continue; }   // no price -> undo the debit, sit out
     flow(aid, rn.state.round, FIELD[myTok] as Field).out += stake;
-    a.dep += stake; treasury[mode] += usdN * FEE; totalDeployed[mode] += usdN;
-    stat(aid).deployed += usdN; stat(aid).take += usdN * FEE; depSide[mode][a.side] += usdN;
+    // The house does NOT charge itself. Bot money IS the float, so skimming 0.2% of every bot
+    // stake into the treasury counter was the house farming its own bankroll ~9 rounds a minute -
+    // measured as the books sliding 1520 -> ~700 UWU in half an hour with zero real players.
+    // The fee tokens go straight back to the pool; treasury only ever grows on real-player fees.
+    const feeTok = stake * FEE;
+    returnBank(FIELD[myTok] as Field, feeTok);
+    flow(aid, rn.state.round, FIELD[myTok] as Field).in += feeTok;
+    a.dep += stake; totalDeployed[mode] += usdN;
+    stat(aid).deployed += usdN; depSide[mode][a.side] += usdN;
     // Enter in USD, not token counts. Handing the sim 49.7 UWU for one side and 1.6 USD for the
     // other made army size depend on a token's unit price: the cheaper coin fielded a ~30x larger
     // force and won every round. CAP and MIN_ENTRY were already dollar amounts, so USD is the unit
@@ -761,6 +769,7 @@ wss.on("connection", (ws, req) => {
         if (stakeUsd < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: `Minimum entry is $${MIN_ENTRY}.` }));
         a[FIELD[myTok]] -= stake;                                      // debit the arena token
         flow(aid, rn.state.round, FIELD[myTok] as Field).out += stake;
+        flow(aid, rn.state.round, FIELD[myTok] as Field).fee += stake * FEE;   // real revenue, kept
         a.dep += stake; a.side = m.side;
         if (m.ref && !a.refBy && m.ref !== m.wallet) a.refBy = String(m.ref).slice(0, 64);
         const fee = stake * FEE;
