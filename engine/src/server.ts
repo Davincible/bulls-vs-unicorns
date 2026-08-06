@@ -36,6 +36,8 @@ const NARENAS: Record<string, { teams: number; toks: Tok[]; eco: Mode }> = {
   "3w-normal":      { teams: 3, toks: ["ansem", "uwu", "sol"], eco: "normal" },
   "3w-extraction":  { teams: 3, toks: ["ansem", "uwu", "sol"], eco: "extraction" },
   "ffa-extraction": { teams: 0, toks: ["ansem"],               eco: "extraction" },
+  // FFA Mayhem is measurably harsher on small stakes (see ARENAS.md) but Max wants it playable.
+  "ffa-normal":     { teams: 0, toks: ["ansem"],               eco: "normal" },
 };
 const NARENA_IDS = Object.keys(NARENAS);
 const FEE = 0.002, CAP = 100, CONVERT_FEE = 0.003, MIN_ENTRY = 0.01;   // 0.2% deploy fee (locked by Max)   // convert = PumpSwap pool fee (0.30%), swap executed on-chain at mainnet
@@ -278,10 +280,11 @@ setInterval(async () => {
   for (const aid of ARENA_IDS) {
     const mode = arenaEco(aid);
     const rn = runners[aid];
-    if (rn.state.phase === "lobby" && lastPhase[aid] !== "lobby") botsEnter(aid);
+    if (rn.state.phase === "lobby" && lastPhase[aid] !== "lobby") botsEnter(aid);   // fires the instant the lobby opens
     const was = rn.state.phase;
     lastPhase[aid] = rn.state.phase;
-    await rn.tick();
+    const settled = await rn.tick();
+    if (settled && rn.state.phase === "lobby") { botsEnter(aid); lastPhase[aid] = "lobby"; }
     if (was === "lobby" && rn.state.phase === "battle" && rn.state.result) {
       const s = rn.state;
       broadcast({ t: "roundStart", arena: aid, mode, round: s.round, multiplier: s.multiplier,
@@ -302,7 +305,8 @@ setInterval(async () => {
     if (rn.state.phase === "lobby" && lastPhaseN[aid] !== "lobby") botsEnterN(aid);
     const was = rn.state.phase;
     lastPhaseN[aid] = rn.state.phase;
-    await rn.tick();
+    const settledN = await rn.tick();
+    if (settledN && rn.state.phase === "lobby") { botsEnterN(aid); lastPhaseN[aid] = "lobby"; }
     if (was === "lobby" && rn.state.phase === "battle" && rn.state.result) {
       const st = rn.state, def = NARENAS[aid];
       broadcast({ t: "roundStartN", arena: aid, teams: def.teams, toks: def.toks,
