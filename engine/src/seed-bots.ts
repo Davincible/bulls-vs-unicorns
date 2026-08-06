@@ -22,6 +22,14 @@ const N = Number(process.env.BOT_WALLETS || 20);
 const SOL_EACH = Number(process.env.SOL_EACH || 0.05);
 const TOK_EACH = Number(process.env.TOK_EACH || 200);
 const DEPOSIT_EACH = Number(process.env.DEPOSIT_EACH || 150);
+// ANSEM and UWU differ ~6x in price, so an equal TOKEN count is a wildly unequal DOLLAR amount.
+// Per-token overrides let each side of the book be funded to the same value.
+const TOK_BULL = Number(process.env.TOK_BULL || TOK_EACH);
+const TOK_UWU = Number(process.env.TOK_UWU || TOK_EACH);
+const DEP_BULL = Number(process.env.DEP_BULL || DEPOSIT_EACH);
+const DEP_UWU = Number(process.env.DEP_UWU || DEPOSIT_EACH);
+const tokFor = (side: "bull" | "uwu") => (side === "bull" ? TOK_BULL : TOK_UWU);
+const depFor = (side: "bull" | "uwu") => (side === "bull" ? DEP_BULL : DEP_UWU);
 // Native SOL deposited as GAME balance (not fees). Arenas with a SOL side need this or that
 // army can never deploy. Ledger `sol` is USD units, so 0.1 SOL ~ $7 at current prices.
 const SOL_DEPOSIT = Number(process.env.SOL_DEPOSIT || 0);
@@ -88,6 +96,12 @@ async function main() {
   console.log(`funder holds ${vaultSol.toFixed(4)} SOL; seeding ${N} wallets needs ~${needSol.toFixed(2)} SOL`);
   if (vaultSol < needSol + 0.05) { console.error("funder SOL too low - top it up first"); process.exit(1); }
 
+  console.log(`\nplan per bot: ${DEP_BULL} BULL, ${DEP_UWU} UWU` +
+              (SOL_DEPOSIT > 0 ? `, ${SOL_DEPOSIT} SOL game balance` : "") +
+              `, ${SOL_EACH} SOL fees`);
+  console.log(`total across ${N} bots: ${(DEP_BULL*N).toFixed(2)} BULL, ${(DEP_UWU*N).toFixed(2)} UWU, ` +
+              `${((SOL_DEPOSIT+SOL_EACH)*N).toFixed(3)} SOL\n`);
+
   const rows = ensureBotWallets(N);
   const ws = new WebSocket(ENGINE_WS);
   await new Promise<void>((res, rej) => {
@@ -112,7 +126,7 @@ async function main() {
       const bal = await ask(ws, { t: "getBalance", wallet: w }, ["balance"], 15000);
       // Skip only when EVERY leg this run is meant to fund is already there. Checking tokens alone
       // meant a top-up that added SOL float silently skipped every wallet that still held tokens.
-      const tokensDone = bal && bal.bull >= DEPOSIT_EACH * 0.9;
+      const tokensDone = bal && bal.bull >= DEP_BULL * 0.9 && bal.uwu >= DEP_UWU * 0.9;
       const solDone = SOL_DEPOSIT <= 0 || (bal && bal.sol > 0);
       if (tokensDone && solDone) { console.log(`${tag} already funded (bull ${bal.bull.toFixed(1)}, sol ${(bal.sol||0).toFixed(1)}) - skip`); skipped++; continue; }
 
@@ -127,10 +141,10 @@ async function main() {
       //    ANSEM/UWU have NO mint authority (fixed supply), so the float must be tokens we actually
       //    bought and now transfer out of the vault.
       const give = seedKp
-        ? (side: "bull" | "uwu") => transferTokensFrom(seedKp, w, side, TOK_EACH)   // operator float
+        ? (side: "bull" | "uwu") => transferTokensFrom(seedKp, w, side, tokFor(side))  // operator float
         : IS_TEST_CHAIN
-          ? (side: "bull" | "uwu") => faucet(w, side, TOK_EACH)                     // devnet: mint
-          : (side: "bull" | "uwu") => transferFromVault(w, side, TOK_EACH);         // legacy fallback
+          ? (side: "bull" | "uwu") => faucet(w, side, tokFor(side))                    // devnet: mint
+          : (side: "bull" | "uwu") => transferFromVault(w, side, tokFor(side));        // legacy fallback
       await step("fund bull", () => give("bull")); await sleep(800);
       await step("fund uwu",  () => give("uwu"));  await sleep(800);
 
@@ -156,7 +170,7 @@ async function main() {
 
       // 3. real deposits, through the same path a player uses
       for (const side of ["bull", "uwu"] as const) {
-        const built = await ask(ws, { t: "buildDeposit", wallet: w, side, amount: DEPOSIT_EACH }, ["depositTx", "error"], 30000);
+        const built = await ask(ws, { t: "buildDeposit", wallet: w, side, amount: depFor(side) }, ["depositTx", "error"], 30000);
         if (built?.t !== "depositTx") { console.log(`${tag} ${side} build failed: ${built?.msg || "no reply"}`); failed++; continue; }
         const tx = Transaction.from(Buffer.from(built.txB64, "base64"));
         tx.partialSign(kp);
