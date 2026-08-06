@@ -1,3 +1,6 @@
 .vault-keypair.json
 node_modules/
 data/
+ledger.db
+ledger.db-*
+ledger.json.imported
