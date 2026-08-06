@@ -1531,6 +1531,35 @@
         return; }
       if(m.t==="roundStart"){ if(m.arena&&m.arena!==PAIRING+"-"+m.mode)return; startEngineRound(m.mode,m); if(m.mode===activeMode)syncDOM(); }
       else if(m.t==="state"){
+        // The engine only ships arenas that are switched ON (ENABLED_ARENAS). Anyone whose saved
+        // lobby has since been disabled would otherwise sit on a permanently empty screen with no
+        // explanation, so fall back to an arena that is actually running.
+        // hide lobby buttons for arenas the engine isn't running, so nobody can click into a dead one
+        if(m.arenas&&!window.__pairsSynced){
+          window.__pairsSynced=true;
+          const live=new Set(Object.keys(m.arenas).map(a=>a.split("-")[0]));
+          document.querySelectorAll("#pairSel button").forEach(b=>{
+            b.style.display=live.has(b.dataset.pair)?"":"none";
+          });
+        }
+        if(m.arenas&&!Object.keys(m.arenas).some(a=>a.startsWith(PAIRING+"-"))){
+          const first=Object.keys(m.arenas)[0];
+          if(first){
+            const pr=first.split("-")[0], md=first.split("-")[1];
+            if(pr&&pr!==PAIRING){
+              PAIRING=pr; localStorage.setItem("bvu_arena",PAIRING);
+              if(md&&md!==activeMode){ activeMode=md;
+                document.querySelectorAll(".modes button").forEach(x=>x.classList.toggle("on",x.dataset.mode===md)); }
+              document.querySelectorAll("#pairSel button").forEach(x=>x.classList.toggle("on",x.dataset.pair===PAIRING));
+              for(const k in worlds){ const w=worlds[k];
+                w.players.length=0; w.userCircles.length=0; w.byId=new Map();
+                w.sim=null; w.simN=null; w.isN=false; w.nTeams=0; w.toks=null; w.phase="lobby"; }
+              { const nb=$("#nBar"); if(nb){ nb.innerHTML=""; nb.style.display="none"; } }
+              applyArenaSkin(); syncDOM();
+              if(window.__sendEngine)window.__sendEngine({t:"resync",arenas:[first]});
+            }
+          }
+        }
         if(!window.__onlineUI){ window.__onlineUI=true;      // real balances only — no play-money buttons
           ONLINE=true; WALLET.bull=0; WALLET.uwu=0; INVESTED=0; loadWallet();   // switch to the ONLINE wallet slot (offline demo save stays intact)
           const af=$("#addFunds"); if(af){af.style.display="none";}
