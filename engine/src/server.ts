@@ -10,6 +10,7 @@ import type { Mode, Side } from "./game.ts";
 import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildDepositTx, walletTokenBalance, airdropSol, solBalance } from "./chain-ops.ts";
 import { RPC } from "./chain.ts";
 import { loadSnapshot, saveSnapshot, flushSnapshot } from "./store.ts";
+import { RoundRunnerN, cfgN } from "./roundN.ts";
 
 const PORT = Number(process.env.PORT || 8090);
 
@@ -22,6 +23,14 @@ const PAIRINGS: Record<string, [Tok, Tok]> = { au: ["ansem", "uwu"], as: ["ansem
 const ARENA_IDS = Object.keys(PAIRINGS).flatMap(p => ["normal", "extraction"].map(e => `${p}-${e}`));
 const arenaTokens = (aid: string): [Tok, Tok] => PAIRINGS[aid.split("-")[0]];
 const arenaEco = (aid: string): Mode => aid.split("-")[1] as Mode;
+
+// ---- N-team arenas: 3-WAY (ansem/uwu/sol) and BULLS FFA (Extraction only, see gameN.ts) ----
+const NARENAS: Record<string, { teams: number; toks: Tok[]; eco: Mode }> = {
+  "3w-normal":      { teams: 3, toks: ["ansem", "uwu", "sol"], eco: "normal" },
+  "3w-extraction":  { teams: 3, toks: ["ansem", "uwu", "sol"], eco: "extraction" },
+  "ffa-extraction": { teams: 0, toks: ["ansem"],               eco: "extraction" },
+};
+const NARENA_IDS = Object.keys(NARENAS);
 const FEE = 0.002, CAP = 100, CONVERT_FEE = 0.003, MIN_ENTRY = 0.01;   // 0.2% deploy fee (locked by Max)   // convert = PumpSwap pool fee (0.30%), swap executed on-chain at mainnet
 
 // ---- ledger: real players (by wallet) + persistent bot accounts ----
@@ -153,11 +162,75 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   persist();
 }
 
+// settle an N-team round: entry ids are "wallet|team", payouts land in that team's token
+async function onSettleN(aid: string, r: any, s: any) {
+  const def = NARENAS[aid]; const touched = new Set<string>();
+  for (const [key, amount] of Object.entries(r.settlement as Record<string, number>)) {
+    const [wallet, teamStr] = key.split("|");
+    const a = ledger.get(wallet); if (!a) continue;
+    const teamIdx = Number(teamStr) || 0;
+    const tok = def.teams === 0 ? def.toks[0] : def.toks[teamIdx] || def.toks[0];
+    a[FIELD[tok]] += amount as number; a.games++; a.ret += amount as number;
+    if (!a.isBot) touched.add(wallet);
+  }
+  const realPlaying = s.entries.filter((e: any) => !String(e.id).includes(":bot:")).length;
+  let busted = 0;
+  const BUST = Number(process.env.BOT_BUST || Math.min(5, BOT_BANK_MIN * 0.4));
+  for (const a of botsFor(aid)) if (a.bull + a.uwu + a.sol < BUST) { ledger.delete(a.id); busted++; }
+  roundsByArena[aid] = (roundsByArena[aid] || 0) + 1;
+  { const st = stat(aid); st.matches++; if (r.winnerTeam === 0) st.winsA++; else st.winsB++; }
+  const popCap = Math.min(POP_MAX, POP_START + Math.floor((roundsByArena[aid] || 0) * POP_GROWTH));
+  const target = Math.max(Number(process.env.POP_MIN || 12), popCap - realPlaying * 2);
+  let joined = 0;
+  while (botsFor(aid).length < target) { newBotN(aid); joined++; }
+  broadcast({ t: "roundStartN", phase: "settled", arena: aid, round: s.round, winnerTeam: r.winnerTeam,
+              winnerId: r.winnerId, seed: s.seed, seedHash: s.seedHashPublished, teamTotals: r.teamTotals });
+  for (const w of touched) pushBalance(w);
+  persist();
+}
+// bots for N arenas: pick a team slot, bank in that team's token
+function newBotN(aid: string): Account {
+  const def = NARENAS[aid];
+  const id = `${aid}:bot:${++seq}`;
+  const name = Math.random() < 0.34 ? walletish() : NAMES[(Math.random()*NAMES.length)|0] + "_" + seq;
+  const bank = BOT_BANK_MIN + Math.random() * (BOT_BANK_MAX - BOT_BANK_MIN);
+  const team = def.teams === 0 ? 0 : Math.floor(Math.random() * def.teams);
+  const a: Account = { id, name, side: team === 1 ? "uwu" : "bull", bull: 0, uwu: 0, sol: 0,
+                       isBot: true, dep: 0, ret: 0, games: 0, wins: 0 };
+  (a as any).nteam = team;
+  a[FIELD[def.toks[def.teams === 0 ? 0 : team]]] = bank;
+  ledger.set(id, a); return a;
+}
+function botsEnterN(aid: string) {
+  const rn = runnersN[aid]; if (rn.state.phase !== "lobby") return;
+  const def = NARENAS[aid];
+  let pool = botsFor(aid);
+  if (PLAY_MAX > 0) pool = pool.sort(() => Math.random() - 0.5).slice(0, PLAY_MIN + Math.floor(Math.random() * Math.max(1, PLAY_MAX - PLAY_MIN + 1)));
+  for (const a of pool) {
+    if (PLAY_MAX === 0 && Math.random() < 0.25) continue;
+    const team = (a as any).nteam ?? 0;
+    const tok = def.toks[def.teams === 0 ? 0 : team] || def.toks[0];
+    const bankroll = a[FIELD[tok]];
+    const stake = BOT_STAKE_MAX > 0
+      ? Math.min(BOT_STAKE_MIN + Math.random() * (BOT_STAKE_MAX - BOT_STAKE_MIN), bankroll)
+      : Math.min(Math.max(BOT_STAKE_MIN, bankroll * (0.18 + Math.random() * 0.37)), CAP, bankroll);
+    if (stake < BOT_STAKE_MIN) continue;
+    a[FIELD[tok]] -= stake;
+    const eco = NARENAS[aid].eco;
+    a.dep += stake; treasury[eco] += stake * FEE; totalDeployed[eco] += stake;
+    stat(aid).deployed += stake; stat(aid).take += stake * FEE;
+    rn.enter(`${a.id}|${def.teams === 0 ? 0 : team}`, def.teams === 0 ? 0 : team, stake * (1 - FEE));
+  }
+}
+
 const runners: Record<string, RoundRunner> = {};
 for (const aid of ARENA_IDS) runners[aid] = new RoundRunner(arenaEco(aid), (r, s) => onSettle(aid, r, s));
+const runnersN: Record<string, RoundRunnerN> = {};
+for (const aid of NARENA_IDS) runnersN[aid] = new RoundRunnerN(NARENAS[aid].eco, NARENAS[aid].teams, (r, s) => onSettleN(aid, r as any, s as any));
 restore();
 const SEED = Number(process.env.SEED_BOTS || 18);
 for (const aid of ARENA_IDS) if (botsFor(aid).length === 0) seedBots(aid, SEED);
+for (const aid of NARENA_IDS) { let guard = 0; while (botsFor(aid).length < SEED && guard++ < 500) newBotN(aid); }
 
 // bots auto-enter each lobby (a fraction, with a fee taken on deploy)
 function botsEnter(aid: string) {
@@ -214,6 +287,29 @@ setInterval(async () => {
   }
 }, 500);
 
+// N-team arenas tick on the same cadence
+const lastPhaseN: Record<string, string> = {};
+setInterval(async () => {
+  for (const aid of NARENA_IDS) {
+    const rn = runnersN[aid];
+    if (rn.state.phase === "lobby" && lastPhaseN[aid] !== "lobby") botsEnterN(aid);
+    const was = rn.state.phase;
+    lastPhaseN[aid] = rn.state.phase;
+    await rn.tick();
+    if (was === "lobby" && rn.state.phase === "battle" && rn.state.result) {
+      const st = rn.state, def = NARENAS[aid];
+      broadcast({ t: "roundStartN", arena: aid, teams: def.teams, toks: def.toks,
+        round: st.round, multiplier: st.multiplier, seed: st.seed, seedHash: st.seedHashPublished,
+        entries: st.entries.map(e => ({ id: e.id, wallet: String(e.id).split("|")[0], team: e.team,
+          stake: e.stake, name: nameFor(String(e.id).split("|")[0]) })),
+        cfg: cfgN(def.eco, def.teams, st.multiplier),
+        hitCount: st.result.hits.length, winnerTeam: st.result.winnerTeam, winnerId: st.result.winnerId,
+        settlement: st.result.settlement, teamTotals: st.result.teamTotals,
+        startedAt: Date.now(), battleMs: st.battleMs });
+    }
+  }
+}, 500);
+
 // broadcast a light state snapshot for the UI
 setInterval(() => {
   const snap = (aid: string) => { const mode = arenaEco(aid); const s = runners[aid].state; return { arena: aid, tokens: arenaTokens(aid), round: s.round, phase: s.phase, multiplier: s.multiplier, entries: s.entries.length, seedHash: s.seedHashPublished, closesInMs: Math.max(0, s.closesAt - Date.now()),
@@ -229,6 +325,11 @@ setInterval(() => {
              created: created[mode], busted: bustedCount[mode] } }; };
   const arenas: Record<string, unknown> = {};
   for (const aid of ARENA_IDS) arenas[aid] = snap(aid);
+  for (const aid of NARENA_IDS) { const rn = runnersN[aid]; const st = rn.state;
+    arenas[aid] = { arena: aid, teams: NARENAS[aid].teams, toks: NARENAS[aid].toks, round: st.round,
+      phase: st.phase, multiplier: st.multiplier, entries: st.entries.length,
+      seedHash: st.seedHashPublished, closesInMs: Math.max(0, st.closesAt - Date.now()),
+      stats: stat(aid), accounts: botsFor(aid).length }; }
   broadcast({ t: "state", arenas, normal: snap("au-normal"), extraction: snap("au-extraction") });
 }, 1000);
 
@@ -313,6 +414,25 @@ wss.on("connection", (ws) => {
               startedAt: st.closesAt - (st.battleMs || cfg.battleMs), battleMs: st.battleMs || cfg.battleMs, resumed: true }));
           }
         }
+      } else if (m.t === "enterN") {     // { wallet, arena, team, stake }
+        const aid = String(m.arena || ""); const rn = runnersN[aid];
+        if (!rn) return ws.send(JSON.stringify({ t: "error", msg: "unknown arena" }));
+        if (rn.state.phase !== "lobby") return ws.send(JSON.stringify({ t: "error", msg: "Deploys closed — next lobby soon." }));
+        const def = NARENAS[aid];
+        const team = def.teams === 0 ? 0 : Math.max(0, Math.min(def.teams - 1, Number(m.team) || 0));
+        const tok = def.toks[def.teams === 0 ? 0 : team] || def.toks[0];
+        const a = acct(m.wallet, "bull");
+        const bank = a[FIELD[tok]];
+        const already = rn.state.entries.filter(e => e.id === `${m.wallet}|${team}`).reduce((n, e) => n + e.stake / (1 - FEE), 0);
+        const stake = Math.min(Number(m.stake) || 0, bank, Math.max(0, CAP - already));
+        if (stake < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: "Insufficient balance for that arena's token." }));
+        a[FIELD[tok]] -= stake; a.dep += stake;
+        const eco = def.eco;
+        treasury[eco] += stake * FEE; totalDeployed[eco] += stake;
+        stat(aid).deployed += stake; stat(aid).take += stake * FEE;
+        rn.enter(`${m.wallet}|${team}`, team, stake * (1 - FEE));
+        ws.send(JSON.stringify({ t: "enteredN", arena: aid, team, stake }));
+        pushBalance(m.wallet); persist();
       } else if (m.t === "faucet") {                          // { t:'faucet', wallet, side }
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
         const sig = await faucet(m.wallet, m.side, 500);

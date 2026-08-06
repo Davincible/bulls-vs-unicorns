@@ -61,3 +61,18 @@ Fairness (120 rounds each):
 
 Remaining: arena registry + ws protocol (arena ids), per-community bots, client picker +
 per-arena skins (incl. 3-panel layout + FFA roster), USD-unit deposits via prices.ts.
+
+## Step 2 DONE (2026-08-06) — nine arenas live in one engine
+
+`roundN.ts` (commit-reveal orchestrator for N-team arenas) + registry wiring: the engine now
+runs **9 arenas concurrently** — au/as/us x mayhem/extraction, plus `3w-normal`,
+`3w-extraction`, `ffa-extraction`. Each has its own bot community banked in that arena's
+tokens; N-arena entries are keyed `wallet|team` and settle into the team's token field.
+
+Verified live: 3w rounds conserve value exactly and independently recompute from the seed
+(454 and 2014 hits reproduced), team totals broadcast per round, winner by highest ring+banked.
+Client: arena cards mark 3-WAY and BULLS FFA live and open a live status panel (round, phase,
+fighters, per-team totals with win highlight). Players can enter via `enterN` (wallet|team).
+
+Remaining for these two: full canvas replay (client-side N-team sim port, mirroring what
+game.ts/simulateRoundJS does for 2-team) so 3-way/FFA render as battles rather than status.

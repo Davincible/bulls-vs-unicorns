@@ -1155,6 +1155,7 @@
       ws.onmessage=ev=>{ let m;try{m=JSON.parse(ev.data);}catch(e){return;} onMsg(m); };
     }
     function onMsg(m){
+      if(m.t==="roundStartN"){ (window.__NROUND=window.__NROUND||{})[m.arena]=m; return; }
       if(m.t==="roundStart"){ if(m.arena&&m.arena!==PAIRING+"-"+m.mode)return; startEngineRound(m.mode,m); if(m.mode===activeMode)syncDOM(); }
       else if(m.t==="state"){
         if(!window.__onlineUI){ window.__onlineUI=true;      // real balances only — no play-money buttons
@@ -1163,6 +1164,7 @@
           // convert stays: you raid the enemy's coin, so you need to swap back to deploy your side
           const wn=$("#walletNote"); if(wn)wn.textContent="Balance is your on-chain deposit, held by the engine. Faucet → Deposit → Deploy.";
         }
+        window.__ST=m;                                   // latest state (arena picker + dashboard read this)
         for(const mode of ["normal","extraction"]){ const w=worlds[mode], s=(m.arenas&&m.arenas[PAIRING+"-"+mode])||m[mode]; if(!w||!s)continue;
           goOnline(w); w.lobbyLeft=s.closesInMs; w.seedHash=s.seedHash;
           if(s.phase==="lobby"&&w.phase!=="lobby"&&w.phase!=="over"){ w.phase="lobby"; w.roundNo=s.round; w.multiplier=s.multiplier; }
@@ -1455,8 +1457,8 @@
     {id:"ansem-uwu",name:"ANSEM vs UWU",icons:"🐂⚔🦄",live:true,tokens:["ansem","uwu"]},
     {id:"ansem-sol",name:"ANSEM vs SOL",icons:"🐂⚔◎",live:true,tokens:["ansem","sol"]},
     {id:"uwu-sol",name:"UWU vs SOL",icons:"🦄⚔◎",live:true,tokens:["uwu","sol"]},
-    {id:"3way",name:"3-WAY",icons:"🐂🦄◎",live:false,tokens:["ansem","uwu","sol"]},
-    {id:"ffa-bull",name:"BULLS FFA",icons:"🐂🐂🐂",live:false,tokens:["ansem"],note:"free-for-all · biggest bag wins"},
+    {id:"3way",name:"3-WAY",icons:"🐂🦄◎",live:true,tokens:["ansem","uwu","sol"],note:"three armies, one map"},
+    {id:"ffa-bull",name:"BULLS FFA",icons:"🐂🐂🐂",live:true,tokens:["ansem"],note:"free-for-all · biggest bag wins · Extraction"},
   ];
   const PXMINTS={ansem:"9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump",uwu:"UWUy7J86LUiBv5SjAUZ53LMGhtnqvbQ7QNSSkyupump",sol:"So11111111111111111111111111111111111111112"};
   const PX={};
@@ -1484,13 +1486,43 @@
       if(!c)return;
       const map={"ansem-uwu":"au","ansem-sol":"as","uwu-sol":"us"};
       const pr=map[c.dataset.arena];
-      if(!pr){alert("3-WAY and FFA need the N-team runner - wiring next.");return;}
+      if(!pr){ showNArena(c.dataset.arena==="3way"?"3w":"ffa"); return; }
       PAIRING=pr; localStorage.setItem("bvu_arena",PAIRING);
       if(window.__sendEngine)window.__sendEngine({t:"resync",arenas:[PAIRING+"-normal",PAIRING+"-extraction"]});
       for(const md of ["normal","extraction"]){const w=worlds[md];
         w.players.length=0;w.userCircles.length=0;w.byId=new Map();w.sim=null;w.phase="lobby";}
       applyArenaSkin();
       document.querySelector('.nav button[data-view=arena]').click(); syncDOM();});}
+
+  // ---- 3-WAY / FFA live status (engine-authoritative, full canvas replay is next) ----
+  let NWATCH=null;
+  function showNArena(kind){
+    NWATCH=kind;
+    const host=$("#arenaCards");
+    if(host)host.insertAdjacentHTML("afterbegin",'<div id="nLive" style="grid-column:1/-1"></div>');
+    renderNLive();
+  }
+  function renderNLive(){
+    const el=$("#nLive"), st=window.__ST; if(!el||!st||!st.arenas||!NWATCH)return;
+    const ids=NWATCH==="3w"?["3w-normal","3w-extraction"]:["ffa-extraction"];
+    const TEAMC=["var(--bull)","var(--uni)","var(--gold)"];
+    el.innerHTML=ids.map(id=>{
+      const a=st.arenas[id]; if(!a)return "";
+      const last=(window.__NROUND||{})[id];
+      const tt=last&&last.teamTotals?last.teamTotals:[];
+      const bars=tt.length?`<div style="display:flex;gap:4px;margin-top:8px">${tt.map((v,i)=>{
+        const tot=tt.reduce((x,y)=>x+y,0)||1;
+        return `<div style="flex:${Math.max(4,v/tot*100)};background:${TEAMC[i]};height:16px;border-radius:4px;opacity:${last.winnerTeam===i?1:.45}"></div>`;}).join("")}</div>`:"";
+      const names=a.toks?a.toks.map((t,i)=>`<span style="color:${TEAMC[i]}">${TOKMETA[t]?TOKMETA[t].label:t}${tt[i]!==undefined?" "+fmt(tt[i]):""}</span>`).join(" · "):"";
+      return `<div class="card" style="background:var(--panel);border:1px solid var(--gold);border-radius:14px;padding:14px;margin-bottom:10px">
+        <b>${id.toUpperCase()}</b> <span class="youtag" style="background:var(--bull);color:#000">LIVE</span>
+        <div style="font-family:var(--mono);font-size:12px;color:var(--ink-soft);margin-top:6px">
+          round ${a.round} · ${a.phase}${a.phase==="lobby"?" · closes in "+Math.ceil(a.closesInMs/1000)+"s":""} · ${a.entries} fighters · ${a.accounts} wallets</div>
+        <div style="font-family:var(--mono);font-size:12px;margin-top:6px">${names}</div>${bars}
+        ${last?`<div class="note" style="margin-top:6px">last round winner: <b style="color:${TEAMC[last.winnerTeam]||"var(--ink)"}">${a.toks&&a.toks[last.winnerTeam]?(TOKMETA[a.toks[last.winnerTeam]]||{label:"?"}).label:"#"+last.winnerTeam}</b>${last.hitCount?" · "+last.hitCount+" hits":""}</div>`:""}
+      </div>`;}).join("");
+  }
+  setInterval(renderNLive,1000);
 
   let tx=0;(function scroll(){const t=$("#tickerTrack");
     const fits=t.scrollWidth<=(t.parentElement?t.parentElement.clientWidth-90:0);   // 90px ≈ the label block
