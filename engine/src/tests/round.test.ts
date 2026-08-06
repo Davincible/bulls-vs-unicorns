@@ -5,7 +5,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { RoundRunner } from "../round.ts";
+import { RoundRunnerN } from "../roundN.ts";
 import { seedHash } from "../game.ts";
+import { seedHashN } from "../gameN.ts";
 
 const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
 const FUTURE = () => Date.now() + 10_000_000;   // force any pending phase deadline to have passed
@@ -69,4 +71,28 @@ test("entering after the lobby closes is refused", async () => {
   const r = new RoundRunner("normal", async () => {});
   await r.tick(FUTURE());                                   // now in battle
   assert.equal(r.enter("late", "bull", 10), false, "no entries once betting is locked");
+});
+
+// ---- N-team runner (3-way + FFA) — same commit-reveal contract ----
+test("N-team 3-way: commit-reveal holds and settlement conserves", async () => {
+  const r = new RoundRunnerN("normal", 3, async () => {});
+  const committed = r.state.seedHashPublished;
+  assert.equal(r.state.seed, undefined, "seed hidden in lobby");
+  const stakes = [10, 8, 6, 12, 4, 9];
+  stakes.forEach((s, i) => r.enter("t" + i, i % 3, s));     // spread across 3 teams
+  await r.tick(FUTURE());
+  assert.equal(seedHashN(r.state.seed!), committed, "revealed seed matches N-team commitment");
+  const paid = sum(Object.values(r.state.result!.settlement));
+  assert.ok(Math.abs(paid - sum(stakes)) < 1e-3, `3-way paid ${paid} vs staked ${sum(stakes)}`);
+});
+
+test("N-team FFA (teams=0): commit-reveal holds and settlement conserves", async () => {
+  const r = new RoundRunnerN("extraction", 0, async () => {});
+  const committed = r.state.seedHashPublished;
+  const stakes = [5, 5, 20, 1, 8];
+  stakes.forEach((s, i) => r.enter("f" + i, 0, s));         // FFA: team ignored, each solo
+  await r.tick(FUTURE());
+  assert.equal(seedHashN(r.state.seed!), committed, "revealed seed matches FFA commitment");
+  const paid = sum(Object.values(r.state.result!.settlement));
+  assert.ok(Math.abs(paid - sum(stakes)) < 1e-3, `FFA paid ${paid} vs staked ${sum(stakes)}`);
 });
