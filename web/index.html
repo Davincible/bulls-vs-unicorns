@@ -1443,12 +1443,13 @@
     const banner=t=>{const b=$("#devnetBanner");if(b){b.style.display="block";b.innerHTML=t;}};
     const send=o=>{try{if(ws&&ws.readyState===1)ws.send(JSON.stringify(o));}catch(e){}};
     window.__sendEngine=send;                      // used by deposit() to enter rounds
+    import("https://esm.sh/tweetnacl@1.0.3").then(n=>window.nacl=n.default||n).catch(()=>{});
     window.__REF=new URLSearchParams(location.search).get("ref")||null;
     const amt=()=>Math.max(1,Math.min(100000,+($("#chainAmt")||{}).value||50));
 
     function connectWS(){
       try{ws=new WebSocket(ENGINE);}catch(e){banner("⚠ Engine URL invalid: "+ENGINE);return;}
-      ws.onopen=()=>{ if(PK){send({t:"chainBalance",wallet:PK});} };
+      ws.onopen=async()=>{ if(PK){ AUTHED=false; await authenticate(); send({t:"chainBalance",wallet:PK}); } };
       ws.onclose=()=>{ banner("🔴 Engine disconnected — reconnecting… (rounds are paused; nothing is simulated locally)"); setTimeout(connectWS,3000); };
       ws.onerror=()=>{};
       ws.onmessage=ev=>{ let m;try{m=JSON.parse(ev.data);}catch(e){return;} onMsg(m); };
@@ -1585,6 +1586,30 @@
         note("⚠ "+msg); }
     }
     const rpcConn=()=>new window.solanaWeb3.Connection((CHAIN&&CHAIN.rpc)||"http://127.0.0.1:8899","confirmed");
+    // AUTHENTICATION: prove wallet ownership before the engine will touch this wallet's money.
+    let AUTHED=false;
+    async function authenticate(){
+      return new Promise((resolve)=>{
+        let done=false; const fin=(v)=>{ if(!done){done=true;resolve(v);} };
+        const onMsg=async ev=>{ let m; try{m=JSON.parse(ev.data);}catch(e){return;}
+          if(m.t==="authChallenge"&&m.nonce){
+            try{
+              const msg=new TextEncoder().encode(m.nonce); let sig;
+              if(DEVKP){ sig=window.nacl?window.nacl.sign.detached(msg,DEVKP.secretKey):
+                (await import("https://esm.sh/tweetnacl@1.0.3")).sign.detached(msg,DEVKP.secretKey); }
+              else { const r=await window.solana.signMessage(msg,"utf8"); sig=r.signature||r; }
+              const b64=btoa(String.fromCharCode(...sig));
+              send({t:"authVerify",wallet:PK,signature:b64});
+            }catch(e){ note("Sign-in cancelled."); ws.removeEventListener("message",onMsg); fin(false); }
+          } else if(m.t==="authResult"){ ws.removeEventListener("message",onMsg); AUTHED=!!m.ok;
+            if(!m.ok)note("Sign-in failed."+(m.msg?" "+m.msg:"")); fin(!!m.ok); }
+        };
+        ws.addEventListener("message",onMsg);
+        send({t:"authChallenge",wallet:PK});
+        setTimeout(()=>{ ws.removeEventListener("message",onMsg); fin(AUTHED); },20000);
+      });
+    }
+    window.__auth=authenticate;
 
     async function signAndSendSol(m){                 // native SOL: system transfer, same signing path
       try{
@@ -1650,8 +1675,11 @@
       $("#chainAddr").textContent=PK.slice(0,4)+"…"+PK.slice(-4)+"  ·  dev wallet (local)";
       if($("#refLink"))$("#refLink").textContent=location.origin+location.pathname+"?ref="+PK;
       connectedOnce=true;
+      note("Signing in…");
+      const okA=await authenticate();
+      if(!okA){ note("Sign-in required to play."); return; }
       send({t:"chainBalance",wallet:PK}); send({t:"getBalance",wallet:PK}); send({t:"solBalance",wallet:PK});
-      note("Dev wallet ready. Getting test SOL + tokens…");
+      note("Signed in. Getting test SOL + tokens…");
       send({t:"fundMe",wallet:PK,amount:window.__DEMO?100:500});
       if(window.__DEMO){ for(const md of ["normal","extraction"]){worlds[md].autoPct=0.05;worlds[md].autoSide="bull";}
         setTimeout(()=>{ send({t:"buildDeposit",wallet:PK,side:"bull",amount:100}); },2500);   // auto-deposit so auto-deploy has balance
@@ -1667,8 +1695,12 @@
         $("#chainAddr").textContent=PK.slice(0,4)+"…"+PK.slice(-4)+"  ·  devnet";
         if($("#refLink"))$("#refLink").textContent=location.origin+location.pathname+"?ref="+PK;
         localStorage.setItem("bvu_wmeth","phantom");
-        connectedOnce=true; MYWALLET=PK; send({t:"chainBalance",wallet:PK}); send({t:"getBalance",wallet:PK}); send({t:"solBalance",wallet:PK});
-        note("Connected. Faucet some test tokens, then Deposit.");
+        connectedOnce=true; MYWALLET=PK;
+        note("Sign the login message in Phantom…");
+        const okA=await authenticate();
+        if(!okA){ note("Sign-in required to play."); return; }
+        send({t:"chainBalance",wallet:PK}); send({t:"getBalance",wallet:PK}); send({t:"solBalance",wallet:PK});
+        note("Signed in. Faucet some test tokens, then Deposit.");
       }catch(e){ note("Connection rejected."); }
     }
     function guard(){ if(!PK){note("Click \"Use dev wallet\" or Connect Phantom first.");return false;} if(!CHAIN||!CHAIN.ready){note("Devnet vault not funded yet — one moment.");return false;} return true; }

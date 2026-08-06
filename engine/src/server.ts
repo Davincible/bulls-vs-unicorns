@@ -11,6 +11,8 @@ import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildD
          buildSolDepositTx, verifySolDeposit, withdrawSol } from "./chain-ops.ts";
 import { priceUSD, startPriceLoop, allPrices } from "./prices.ts";
 import { RPC } from "./chain.ts";
+import { PublicKey } from "@solana/web3.js";
+import nacl from "tweetnacl";
 import { loadSnapshot, saveSnapshot, flushSnapshot } from "./store.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
 
@@ -130,6 +132,11 @@ function acct(wallet: string, side: Side): Account {
 // ---- clients ----
 const clients = new Set<WebSocket>();
 const walletOf = new Map<WebSocket, string>();          // ws -> wallet (for targeted balance pushes)
+// AUTH: a socket must prove control of a wallet (sign a nonce) before any money operation on it.
+const authed = new Map<WebSocket, Set<string>>();      // ws -> wallets it has proven ownership of
+const nonces = new Map<WebSocket, string>();
+const newNonce = () => "Bulls vs Unicorns login " + Date.now() + " " + Math.random().toString(36).slice(2);
+function isAuthed(ws: WebSocket, wallet: string) { return authed.get(ws)?.has(wallet) === true; }
 function broadcast(msg: unknown) { const s = JSON.stringify(msg); for (const c of clients) if (c.readyState === WebSocket.OPEN) c.send(s); }
 function balPayload(wallet: string) { const a = ledger.get(wallet);
   return { t: "balance", wallet, bull: a?.bull||0, uwu: a?.uwu||0, sol: a?.sol||0,
@@ -417,13 +424,18 @@ wss.on("connection", (ws) => {
       startedAt: s.closesAt - (s.battleMs || newRoundConfig(mode, s.multiplier).battleMs),   // true start, so a joiner syncs mid-battle
       battleMs: s.battleMs || newRoundConfig(mode, s.multiplier).battleMs, resumed: true }));
   }
-  const cleanup = () => { clients.delete(ws); walletOf.delete(ws); };
+  const cleanup = () => { clients.delete(ws); walletOf.delete(ws); authed.delete(ws); nonces.delete(ws); };
   ws.on("error", cleanup);
   ws.on("close", cleanup);
   ws.on("message", async (raw) => {
     let m: any; try { m = JSON.parse(raw.toString()); } catch { return; }
     try {
       if (m.wallet) walletOf.set(ws, m.wallet);
+      // gate every wallet-scoped, side-effectful message behind proof of ownership
+      const GUARDED = new Set(["enter","enterN","withdraw","withdrawSol","convert","buildDeposit","buildSolDeposit","deposit","depositSol","setName","fundMe"]);
+      if (GUARDED.has(m.t) && !isAuthed(ws, m.wallet)) {
+        return ws.send(JSON.stringify({ t: "authRequired", msg: "Sign in with your wallet first." }));
+      }
       if (m.t === "enter") {          // { t:'enter', wallet, arena?|mode, side (slot A/B), stake }
         const aid = m.arena && runners[m.arena] ? m.arena : ("au-" + m.mode);
         const rn = runners[aid]; if (!rn) return;
@@ -585,7 +597,21 @@ wss.on("connection", (ws) => {
         a.name = String(m.name || "").slice(0, 24) || a.name;
         if (m.avatar) a.avatar = String(m.avatar).slice(0, 200);
         ws.send(JSON.stringify({ t: "named", name: a.name }));
+      } else if (m.t === "authChallenge") {          // { wallet } -> a nonce to sign
+        const nonce = newNonce(); nonces.set(ws, nonce);
+        ws.send(JSON.stringify({ t: "authChallenge", nonce }));
+      } else if (m.t === "authVerify") {             // { wallet, signature (base64) }
+        try {
+          const nonce = nonces.get(ws);
+          if (!nonce) return ws.send(JSON.stringify({ t: "authResult", ok: false, msg: "no challenge" }));
+          const pk = new PublicKey(m.wallet).toBytes();
+          const sig = Uint8Array.from(Buffer.from(String(m.signature), "base64"));
+          const ok = sig.length === 64 && nacl.sign.detached.verify(new TextEncoder().encode(nonce), sig, pk);
+          if (ok) { (authed.get(ws) ?? authed.set(ws, new Set()).get(ws)!).add(m.wallet); nonces.delete(ws); }
+          ws.send(JSON.stringify({ t: "authResult", ok, wallet: m.wallet }));
+        } catch (e) { ws.send(JSON.stringify({ t: "authResult", ok: false, msg: (e as Error).message })); }
       } else if (m.t === "getBalance") {
+        if (!isAuthed(ws, m.wallet)) return;         // balances are private; only the owner may read
         ws.send(JSON.stringify(balPayload(m.wallet)));
       }
     } catch (e) { ws.send(JSON.stringify({ t: "error", msg: (e as Error).message })); }

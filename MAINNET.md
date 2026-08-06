@@ -35,6 +35,17 @@ The Anchor deploy cost is rent on the program binary — it is NOT required on d
    the ~2-5 SOL rent is covered by the first days of fees. Build small (opt-level="z",
    strip) — a lean vault can land ~1-1.5 SOL.
 
+## Wallet authentication (added after pen test)
+The engine trusted whatever wallet address a client sent, so ANY connection could withdraw,
+convert or rename ANY wallet by id, and read anyone's private balance. Now every wallet-scoped
+money message (enter/enterN/withdraw/withdrawSol/convert/buildDeposit/buildSolDeposit/deposit/
+depositSol/setName/fundMe) and getBalance requires proof of ownership: the client requests a
+nonce, signs it with the wallet key (dev wallet locally, Phantom signMessage), and the engine
+verifies the ed25519 signature (tweetnacl) before granting the socket access to that wallet.
+Auth is per-connection and re-runs on reconnect. Verified 9/9: all prior exploits refused,
+forged signatures rejected, valid signatures accepted, and an authed session still cannot act
+on a different wallet.
+
 ## Cutover checklist
 1. Anchor vault built + deployed, settlement authority = engine key, admin = cold key.
 2. Engine env: `SOLANA_RPC=<helius mainnet url>`, cluster=mainnet, faucet gated off.
