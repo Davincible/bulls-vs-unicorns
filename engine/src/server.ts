@@ -19,6 +19,7 @@ import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, fo
 import { isAllowed as walletAllowed } from "./allowlist.ts";
 import { start as startReconcile, isFrozen, latest as reconLatest } from "./reconcile.ts";
 import { allowMessage, connectionAllowed, releaseConnection, LIMITS } from "./limits.ts";
+import { initBotBank, drawBank, returnBank, poolBalance, botBankReady, type Field } from "./bot-bank.ts";
 import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, totalDeployed, depSide,
          created, bustedCount, getConvFees, addConvFees, persist, restore, flush,
          acct, balPayload, leadersFor, cleanDisplayName, cleanAvatarUrl } from "./ledger.ts";
@@ -59,6 +60,19 @@ const NAMES = ["degenDan","sol_sniper","0xViper","moonboy","apeQueen","gm_gary",
 // community growth: the arena starts small and fills up over time
 const POP_START = Number(process.env.POP_START || 22), POP_GROWTH = Number(process.env.POP_GROWTH || 0.7), POP_MAX = Number(process.env.POP_MAX || 90);
 const BOT_BANK_MIN = Number(process.env.BOT_BANK_MIN || 60), BOT_BANK_MAX = Number(process.env.BOT_BANK_MAX || 240), BOT_STAKE_MIN = Number(process.env.BOT_STAKE_MIN || 6);
+// Bots draw their bank from REAL deposited money (bot-bank.ts). Inventing it made every bot
+// payout to a real player an unbacked liability. BOT_FAKE_BANK=1 restores the old behaviour for
+// local testing only - it is refused on a live chain.
+const FAKE_BANK_OK = process.env.BOT_FAKE_BANK === "1" && IS_TEST_CHAIN;
+let poolWarned = false;
+function bankFor(field: Field, want: number): number {
+  if (botBankReady()) {
+    const got = drawBank(field, want);
+    if (got < want * 0.5 && !poolWarned) { poolWarned = true; console.warn(`bot-bank: ${field} pool running low - seed more wallets (npm run seed:bots)`); }
+    return got;
+  }
+  return FAKE_BANK_OK ? want : 0;   // no real backing available -> bot simply cannot deploy
+}
 // how many bots actually enter a round, per side (keeps a huge population from flooding one lobby)
 const PLAY_MIN = Number(process.env.PLAY_MIN || 0), PLAY_MAX = Number(process.env.PLAY_MAX || 0);
 const BOT_STAKE_MAX = Number(process.env.BOT_STAKE_MAX || 0);
@@ -69,11 +83,12 @@ function newBot(aid: string, side: Side): Account {
   const id = `${aid}:bot:${++seq}`;
   // a third of newcomers show up as raw addresses — fresh wallets, no handle yet
   const name = Math.random() < 0.34 ? walletish() : NAMES[(Math.random()*NAMES.length)|0] + "_" + seq;
-  const bank = BOT_BANK_MIN + Math.random() * (BOT_BANK_MAX - BOT_BANK_MIN);
+  const want = BOT_BANK_MIN + Math.random() * (BOT_BANK_MAX - BOT_BANK_MIN);
   const a: Account = { id, name, side, bull: 0, uwu: 0, sol: 0, isBot: true, dep: 0, ret: 0, games: 0, wins: 0 };
-  // bank in the arena's token for this bot's slot
+  // bank in the arena's token for this bot's slot, drawn from real deposited money
   const toks = arenaTokens(aid) || (["ansem", "uwu"] as [Tok, Tok]);
-  a[FIELD[toks[side === "bull" ? 0 : 1]]] = bank;
+  const field = FIELD[toks[side === "bull" ? 0 : 1]] as Field;
+  a[field] = bankFor(field, want);
   ledger.set(id, a); created[arenaEco(aid)]++; return a;
 }
 function seedBots(aid: string, n: number) { for (let i=0;i<n;i++) newBot(aid, i%2 ? "uwu":"bull"); }
@@ -155,12 +170,13 @@ function newBotN(aid: string): Account {
   const def = NARENAS[aid];
   const id = `${aid}:bot:${++seq}`;
   const name = Math.random() < 0.34 ? walletish() : NAMES[(Math.random()*NAMES.length)|0] + "_" + seq;
-  const bank = BOT_BANK_MIN + Math.random() * (BOT_BANK_MAX - BOT_BANK_MIN);
+  const want = BOT_BANK_MIN + Math.random() * (BOT_BANK_MAX - BOT_BANK_MIN);
   const team = def.teams === 0 ? 0 : Math.floor(Math.random() * def.teams);
   const a: Account = { id, name, side: team === 1 ? "uwu" : "bull", bull: 0, uwu: 0, sol: 0,
                        isBot: true, dep: 0, ret: 0, games: 0, wins: 0 };
   (a as any).nteam = team;
-  a[FIELD[def.toks[def.teams === 0 ? 0 : team]]] = bank;
+  const fieldN = FIELD[def.toks[def.teams === 0 ? 0 : team]] as Field;
+  a[fieldN] = bankFor(fieldN, want);
   ledger.set(id, a); return a;
 }
 function botsEnterN(aid: string) {
@@ -201,6 +217,12 @@ for (const aid of ARENA_IDS) runners[aid] = new RoundRunner(arenaEco(aid), (r, s
 const runnersN: Record<string, RoundRunnerN> = {};
 for (const aid of NARENA_IDS) runnersN[aid] = new RoundRunnerN(NARENAS[aid].eco, NARENAS[aid].teams, (r, s) => onSettleN(aid, r as any, s as any));
 restore();
+// Adopt the seeded bot wallets as house accounts — their real deposits become the bots' bankroll.
+{
+  const p = initBotBank();
+  if (p.wallets > 0) console.log(`bot-bank: ${p.wallets} funded wallet(s) — bull ${p.bull.toFixed(1)}, uwu ${p.uwu.toFixed(1)}, sol ${p.sol.toFixed(1)}`);
+  else if (!FAKE_BANK_OK) console.warn(`bot-bank: NO funded wallets — bots cannot deploy. Run: npm run seed:bots`);
+}
 // SOLVENCY: what real players could withdraw, per asset. Bots are internal credit (never paid to
 // a real wallet) so they are NOT a liability. bull/uwu are whole tokens; sol is USD units.
 function ledgerLiabilities() {

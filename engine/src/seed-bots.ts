@@ -13,7 +13,7 @@ import { Connection, Transaction, PublicKey, LAMPORTS_PER_SOL } from "@solana/we
 import nacl from "tweetnacl";
 import { RPC } from "./chain.ts";
 import { faucet, withdrawSol, solBalance, chainReady, vaultPubkey } from "./chain-ops.ts";
-import { ensureBotWallets, keypairOf } from "./bot-wallets.ts";
+import { ensureBotWallets, keypairOf, writeBotPool } from "./bot-wallets.ts";
 
 const N = Number(process.env.BOT_WALLETS || 20);
 const SOL_EACH = Number(process.env.SOL_EACH || 0.05);
@@ -122,7 +122,12 @@ async function main() {
   }
 
   console.log(`\nseeded: ${funded} funded, ${skipped} already done, ${failed} failed`);
-  console.log(`bot wallets live in LEDGER_DIR/bot-wallets.json - these are SECRETS, never commit them`);
+  // Publish the ADDRESS list for the engine. It never needs the private keys - keeping them off
+  // the production server means a compromised engine cannot move bot funds.
+  writeBotPool(rows.map(r => r.pubkey));
+  console.log("\nbot-wallets.json holds the SECRET keys - keep it on this machine only.");
+  console.log("Give the engine only the ADDRESSES:\n");
+  console.log(`  fly secrets set BOT_POOL="${rows.map(r => r.pubkey).join(",")}" --app bulls-arena-engine\n`);
   ws.close();
   process.exit(failed && !funded ? 1 : 0);
 }

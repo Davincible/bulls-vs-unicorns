@@ -54,5 +54,25 @@ export function keypairOf(row: BotWalletRecord): Keypair {
   return Keypair.fromSecretKey(Uint8Array.from(row.secret));
 }
 
-/** Public addresses only — safe to log or expose. */
+/** Public addresses only — safe to log, ship, or set as an env var. */
 export function botPubkeys(): string[] { return loadBotWallets().map(r => r.pubkey); }
+
+// The ENGINE only needs to know WHICH accounts form the bot pool — it never signs for them, so it
+// must never hold their private keys. Addresses come from BOT_POOL (env) or a plain pubkey list;
+// the secret keyfile stays on the seeding machine.
+const POOL_FILE = join(DIR, "bot-pool.json");
+
+export function writeBotPool(pubkeys: string[]) {
+  ensureDir();
+  writeFileSync(POOL_FILE, JSON.stringify({ pubkeys, updated: Date.now() }, null, 2));
+}
+
+/** Pool addresses for the engine: BOT_POOL env, then bot-pool.json, then (dev only) the keyfile. */
+export function poolPubkeys(): string[] {
+  const env = (process.env.BOT_POOL || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (env.length) return env;
+  if (existsSync(POOL_FILE)) {
+    try { return JSON.parse(readFileSync(POOL_FILE, "utf8")).pubkeys || []; } catch { /* fall through */ }
+  }
+  return botPubkeys();   // local dev, where the keyfile is present anyway
+}
