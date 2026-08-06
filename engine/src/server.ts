@@ -426,8 +426,16 @@ const httpServer = createServer((req, res) => {
                  ".ico": "image/x-icon", ".webp": "image/webp" };
   readFile(file, (err, data) => {
     if (err) { res.writeHead(404, cors); return res.end('{"error":"not found"}'); }
-    res.writeHead(200, { "content-type": MIME[extname(file)] || "application/octet-stream",
-                         "x-content-type-options": "nosniff", "referrer-policy": "strict-origin-when-cross-origin" });
+    const ext = extname(file);
+    // The app is ONE html file with everything inlined, so a cached copy means the player keeps
+    // running an old build after every deploy — which looked exactly like "you changed nothing".
+    // Never cache html; let genuinely static assets cache normally.
+    const cache = ext === ".html"
+      ? "no-cache, no-store, must-revalidate"
+      : "public, max-age=3600";
+    res.writeHead(200, { "content-type": MIME[ext] || "application/octet-stream",
+                         "cache-control": cache, "x-content-type-options": "nosniff",
+                         "referrer-policy": "strict-origin-when-cross-origin" });
     res.end(data);
   });
 });

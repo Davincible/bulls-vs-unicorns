@@ -19,6 +19,9 @@ const N = Number(process.env.BOT_WALLETS || 20);
 const SOL_EACH = Number(process.env.SOL_EACH || 0.05);
 const TOK_EACH = Number(process.env.TOK_EACH || 200);
 const DEPOSIT_EACH = Number(process.env.DEPOSIT_EACH || 150);
+// Native SOL deposited as GAME balance (not fees). Arenas with a SOL side need this or that
+// army can never deploy. Ledger `sol` is USD units, so 0.1 SOL ~ $7 at current prices.
+const SOL_DEPOSIT = Number(process.env.SOL_DEPOSIT || 0);
 const ENGINE_WS = process.env.ENGINE_WS || "wss://bulls-arena-engine.fly.dev";
 const IS_TEST_CHAIN = /localhost|127\.0\.0\.1|devnet|testnet/i.test(RPC);
 
@@ -102,6 +105,25 @@ async function main() {
         : (side: "bull" | "uwu") => transferFromVault(w, side, TOK_EACH);
       await step("fund bull", () => give("bull")); await sleep(800);
       await step("fund uwu",  () => give("uwu"));  await sleep(800);
+
+      // 2b. SOL game balance. Arenas with a SOL side (as-*, us-*, 3-way) draw from the `sol`
+      //     ledger field, which is USD units and only moves on a REAL native-SOL deposit. Without
+      //     this the SOL army can never deploy, every round is one-sided, and the whole arena busts.
+      if (SOL_DEPOSIT > 0) {
+        try {
+          await step("sol float", () => withdrawSol(w, SOL_DEPOSIT + 0.01));   // +fee headroom
+          await sleep(900);
+          const built = await ask(ws, { t: "buildSolDeposit", wallet: w, sol: SOL_DEPOSIT }, ["solDepositTx", "error"], 30000);
+          if (built?.t === "solDepositTx") {
+            const stx = Transaction.from(Buffer.from(built.txB64, "base64"));
+            stx.partialSign(kp);
+            const ssig = await conn.sendRawTransaction(stx.serialize());
+            await conn.confirmTransaction(ssig, "confirmed");
+            await ask(ws, { t: "depositSol", wallet: w, sig: ssig }, ["depositSolDone", "error"], 30000);
+            await sleep(300);
+          } else console.log(`${tag} sol deposit unavailable: ${built?.msg || "no reply"}`);
+        } catch (e) { console.log(`${tag} sol float failed: ${(e as Error).message.slice(0, 70)}`); }
+      }
 
       // 3. real deposits, through the same path a player uses
       for (const side of ["bull", "uwu"] as const) {
