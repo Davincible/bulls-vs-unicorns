@@ -25,8 +25,44 @@ export interface DevnetConfig {
   decimals: number;
 }
 
+// A single public RPC throttles hard: reading 20 wallets was enough to trigger 429s, and under real
+// player load that would stall deposits and withdrawals. SOLANA_RPC_FALLBACK takes a comma-separated
+// list tried in order, and one shared Connection is reused rather than built per call.
+const FALLBACKS = (process.env.SOLANA_RPC_FALLBACK || "").split(",").map(s => s.trim()).filter(Boolean);
+export const RPC_LIST = [RPC, ...FALLBACKS];
+let rpcIdx = 0;
+let _conn: Connection | null = null;
+
 export function connection(): Connection {
-  return new Connection(RPC, "confirmed");
+  if (!_conn) _conn = new Connection(RPC_LIST[rpcIdx], "confirmed");
+  return _conn;
+}
+
+/** Rotate to the next endpoint after a rate-limit/outage. Returns the one now in use. */
+export function rotateRpc(): string {
+  if (RPC_LIST.length < 2) return RPC_LIST[0];
+  rpcIdx = (rpcIdx + 1) % RPC_LIST.length;
+  _conn = new Connection(RPC_LIST[rpcIdx], "confirmed");
+  const shown = RPC_LIST[rpcIdx].replace(/([?&](api-key|key|token)=)[^&]+/i, "$1***");
+  console.warn(`rpc: rotated to ${shown}`);
+  return RPC_LIST[rpcIdx];
+}
+
+/** Run an RPC call with backoff, rotating endpoints when one starts refusing us. */
+export async function withRpcRetry<T>(fn: () => Promise<T>, tries = 4): Promise<T> {
+  let last: unknown;
+  for (let i = 0; i < tries; i++) {
+    try { return await fn(); }
+    catch (e) {
+      last = e;
+      const msg = String((e as Error)?.message || e);
+      const throttled = /429|Too Many Requests|rate/i.test(msg);
+      if (i === tries - 1) break;
+      if (throttled) rotateRpc();
+      await new Promise(r => setTimeout(r, 400 * Math.pow(2, i)));
+    }
+  }
+  throw last;
 }
 
 export function loadVaultKeypair(): Keypair {

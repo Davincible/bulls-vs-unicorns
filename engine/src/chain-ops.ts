@@ -5,7 +5,7 @@ import {
   getOrCreateAssociatedTokenAccount, getAssociatedTokenAddress, mintTo, transfer,
   createAssociatedTokenAccountInstruction, createTransferCheckedInstruction, getAccount,
 } from "@solana/spl-token";
-import { connection, loadVaultKeypair, loadConfig, mintFor, DECIMALS } from "./chain.ts";
+import { connection, loadVaultKeypair, loadConfig, mintFor, DECIMALS, withRpcRetry } from "./chain.ts";
 
 const UNIT = 10 ** DECIMALS;
 const toBase = (whole: number) => BigInt(Math.round(whole * UNIT));
@@ -103,7 +103,7 @@ export async function airdropSol(walletB58: string, sol = 2): Promise<string> {
 }
 
 export async function solBalance(walletB58: string): Promise<number> {
-  try { return (await connection().getBalance(new PublicKey(walletB58))) / 1_000_000_000; }
+  try { return (await withRpcRetry(() => connection().getBalance(new PublicKey(walletB58)))) / 1_000_000_000; }
   catch { return 0; }
 }
 
@@ -201,9 +201,9 @@ export async function transferFromVault(walletB58: string, side: "bull" | "uwu",
 
 export async function vaultTokenBalance(side: "bull" | "uwu"): Promise<number> {
   if (!cfg) return 0;
-  const conn = connection();
   const mint = mintFor(cfg, side);
   const ata = await getAssociatedTokenAddress(mint, vault.publicKey);
-  try { const b = await conn.getTokenAccountBalance(ata); return toWhole(BigInt(b.value.amount)); }
+  // the reconciliation daemon calls this every 15s - it must survive a throttled endpoint
+  try { const b = await withRpcRetry(() => connection().getTokenAccountBalance(ata)); return toWhole(BigInt(b.value.amount)); }
   catch { return 0; }
 }

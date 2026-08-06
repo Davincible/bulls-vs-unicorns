@@ -10,7 +10,8 @@
     "test:sim": "tsx src/test-sim.ts",
     "study": "tsx src/study.ts",
     "strategy": "tsx src/strategy.ts",
-    "seed:bots": "tsx src/seed-bots.ts"
+    "seed:bots": "tsx src/seed-bots.ts",
+    "recover:float": "tsx src/recover-float.ts"
   },
   "engines": {
     "node": ">=18"
