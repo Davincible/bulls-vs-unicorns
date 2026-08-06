@@ -381,7 +381,7 @@
   }
   document.addEventListener("click",e=>{const h=e.target.closest(".arHead");if(!h)return;
     const body=h.nextElementSibling; if(body)body.style.display=body.style.display==="none"?"block":"none";});
-  const esc=v=String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const fmt=n=>{n=Math.max(0,n);return "$"+(n>=1000?n.toLocaleString("en-US",{maximumFractionDigits:0}):n.toLocaleString("en-US",{maximumFractionDigits:n<10?2:0}));};
   const NAMES=["degenDan","sol_sniper","0xViper","moonboy","rugproof","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","vibecheck","noReentry","gigaGwei","turboTina","elayne","copetrader","sendit","wenLambo","paperhandz","diamondD","fomoFrank","sizzle","nakamotto","zkZoe","based_bri","yeetard","hodlorbe","greenwick","stampede","hornsUp","glitter","prancer","charge","maxbid","alphaleak","serSlippy","tendieTom","voidwalker"];
   const EDGE=0.002, START=100, DUST=1.2, PER_SIDE=12, CAP=100, LOBBY_MS=7000, BATTLE_MS=32000, IMB=90, FEE=0.01;
@@ -1598,6 +1598,17 @@
             b.title=on?"":"Not running yet";
           });
         }
+        // The mode can be wrong even when the pairing is right: a saved PAIRING of "us" skipped the
+        // whole auto-switch below, leaving activeMode on "normal" (Mayhem) while only extraction
+        // runs - a mode whose button is disabled and whose rounds never arrive. Check it on its own.
+        if(m.arenas&&Object.keys(m.arenas).length){
+          const modesOn=new Set(Object.keys(m.arenas).map(a=>a.split("-")[1]));
+          if(!modesOn.has(activeMode)){
+            const md=Object.keys(m.arenas).find(a=>a.startsWith(PAIRING+"-"))?.split("-")[1]||[...modesOn][0];
+            if(md&&md!==activeMode){ activeMode=md;
+              document.querySelectorAll(".modes button").forEach(x=>{if(!x.closest("#pairSel"))x.classList.toggle("on",x.dataset.mode===md);});
+              applyArenaSkin&&applyArenaSkin(); syncDOM&&syncDOM();
+              if(window.__sendEngine)window.__sendEngine({t:"resync",arenas:[PAIRING+"-"+md]}); } } }
         if(m.arenas&&!Object.keys(m.arenas).some(a=>a.startsWith(PAIRING+"-"))){
           const first=Object.keys(m.arenas)[0];
           if(first){
