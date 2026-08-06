@@ -19,6 +19,21 @@ verified). But the structure is a prototype, not production:
 None of this is a rewrite-from-scratch situation — the engine and sim are correct and reusable.
 It's a restructure: pull the proven logic into clean services behind interfaces.
 
+## Progress (2026-08-06)
+- [x] **Ledger → SQLite (WAL)** — `store.ts`, atomic per-save transactions, legacy JSON auto-import.
+- [x] **Committed test suite** — `npm test`, 21 tests: sim determinism/conservation/no-friendly-fire
+      (2-team, 3-way, FFA), ledger crash-safety, allowlist gate, reconciliation solvency core.
+- [~] **Service split** — `auth.ts` extracted (nonce/verify/GUARDED). Still in `server.ts`:
+      ledger, chain, arenas, gateway.
+- [x] **Reconciliation daemon** — `reconcile.ts`: per-asset liabilities ≤ vault holdings every 15s,
+      FREEZES withdrawals on breach (live-chain only; test chains report but don't freeze).
+      Public `solvency` ws query for a proof-of-reserves page.
+- [x] **Closed-beta gate** — `allowlist.ts`: on a live chain, only whitelisted (WHITELIST env /
+      `data/whitelist.txt`) wallets can authenticate. Matches Max's "whitelisted pre-funded wallets only".
+- [ ] **Secrets + hosting** — DEFERRED by Max ("decide later"); pick Fly/Railway/VPS at deploy time.
+- [ ] **Mainnet cutover** — gated by BOTH a written checklist AND a $2 canary (Solscan links) with
+      Max's explicit go. Closed to the whitelist. Faucets already hard-off on non-test chains.
+
 ## Phase A — custodial launch (our wallet), production-grade
 The model you asked for: runs on OUR wallet, no smart contract yet, but done properly.
 
