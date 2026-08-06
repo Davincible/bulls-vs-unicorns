@@ -128,9 +128,7 @@
               <code id="rpcUrl" style="flex:1;font-family:var(--mono);font-size:11px;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">http://127.0.0.1:8899</code>
               <button class="abtn ghost" id="copyRpc" style="padding:6px 10px;font-size:11px">Copy</button>
             </div>
-            <button class="abtn jb" id="btnDevWallet" style="width:100%;margin-top:8px">⚡ Use dev wallet (works on localnet)</button>
-            <div class="note" style="margin-top:6px;font-size:11px;color:var(--ink-faint)">A burner keypair kept in this browser. Phantom simulates transactions on its own servers, which can't reach a local validator — so it blocks every localnet tx. The dev wallet signs locally and just works. Use Phantom once we're on public devnet.</div>
-            <button class="abtn ghost" id="btnConnect" style="width:100%;margin-top:8px">🦊 Connect Phantom instead</button>
+            <button class="abtn ghost" id="btnConnect" style="width:100%;margin-top:8px">🦊 Connect Phantom</button>
           </div>
           <div id="chainOn" style="display:none">
             <div class="note" id="chainAddr" style="font-family:var(--mono)"></div>
@@ -1465,12 +1463,11 @@
     // files, so the deployed app needs no ?engine= query string. ?engine= still overrides.
     const SAME_ORIGIN_WS=(location.protocol==="https:"?"wss://":"ws://")+location.host;
     const ENGINE=params.get("engine")||window.ENGINE_URL||(LOCAL?"ws://localhost:8090":SAME_ORIGIN_WS);
-    let ws=null, PK=null, CHAIN=null, lastWd=null, connectedOnce=false, DEVKP=null;
+    let ws=null, PK=null, CHAIN=null, lastWd=null, connectedOnce=false;
     const note=t=>{const n=$("#chainNote");if(n)n.textContent=t;};
     const banner=t=>{const b=$("#devnetBanner");if(b){b.style.display="block";b.innerHTML=t;}};
     const send=o=>{try{if(ws&&ws.readyState===1)ws.send(JSON.stringify(o));}catch(e){}};
     window.__sendEngine=send;                      // used by deposit() to enter rounds
-    import("https://esm.sh/tweetnacl@1.0.3").then(n=>window.nacl=n.default||n).catch(()=>{});
     window.__REF=new URLSearchParams(location.search).get("ref")||null;
     const amt=()=>Math.max(1,Math.min(100000,+($("#chainAmt")||{}).value||50));
 
@@ -1621,10 +1618,8 @@
         const onMsg=async ev=>{ let m; try{m=JSON.parse(ev.data);}catch(e){return;}
           if(m.t==="authChallenge"&&m.nonce){
             try{
-              const msg=new TextEncoder().encode(m.nonce); let sig;
-              if(DEVKP){ sig=window.nacl?window.nacl.sign.detached(msg,DEVKP.secretKey):
-                (await import("https://esm.sh/tweetnacl@1.0.3")).sign.detached(msg,DEVKP.secretKey); }
-              else { const r=await window.solana.signMessage(msg,"utf8"); sig=r.signature||r; }
+              const msg=new TextEncoder().encode(m.nonce);
+              const r=await window.solana.signMessage(msg,"utf8"); const sig=r.signature||r;
               const b64=btoa(String.fromCharCode(...sig));
               send({t:"authVerify",wallet:PK,signature:b64});
             }catch(e){ note("Sign-in cancelled."); ws.removeEventListener("message",onMsg); fin(false); }
@@ -1643,13 +1638,13 @@
         if(!window.solanaWeb3){ note("⚠ Solana lib not loaded."); return; }
         const raw=Uint8Array.from(atob(m.txB64),c=>c.charCodeAt(0));
         const tx=window.solanaWeb3.Transaction.from(raw);
-        let sig;
-        if(DEVKP){ note("Signing SOL deposit…"); tx.sign(DEVKP); sig=await rpcConn().sendRawTransaction(tx.serialize()); }
-        else { note("Approve the SOL deposit in Phantom…"); const signed=await window.solana.signTransaction(tx);
-               sig=await rpcConn().sendRawTransaction(signed.serialize()); }
+        note("Approve the SOL deposit in Phantom…");
+        const signed=await window.solana.signTransaction(tx);
+        const sig=await rpcConn().sendRawTransaction(signed.serialize());
         await rpcConn().confirmTransaction(sig,"confirmed");
         note("SOL deposit confirmed, crediting…");
         send({t:"depositSol",wallet:PK,sig});
+        refreshBalances();                     // pull the new balance instead of waiting for a push
       }catch(e){ note("⚠ SOL deposit failed: "+String(e.message||e).slice(0,80)); }
     }
     async function signAndSend(m){
@@ -1657,61 +1652,30 @@
         if(!window.solanaWeb3){ note("⚠ Solana lib not loaded (check connection)."); return; }
         const raw=Uint8Array.from(atob(m.txB64),c=>c.charCodeAt(0));
         const tx=window.solanaWeb3.Transaction.from(raw);
-        let sig;
-        if(DEVKP){                                   // dev wallet: sign locally, submit ourselves
-          note("Signing with dev wallet…");
-          tx.sign(DEVKP);
-          sig=await rpcConn().sendRawTransaction(tx.serialize());
-        }else{
-          // Phantom: sign only, then WE submit to the game's RPC. Phantom's own send path
-          // simulates on its servers, which can't see a local validator.
-          note("Approve the deposit in Phantom…");
-          const signed=await window.solana.signTransaction(tx);
-          note("Submitting to the chain…");
-          sig=await rpcConn().sendRawTransaction(signed.serialize());
-        }
+        // Phantom signs; WE submit to the game's RPC so the tx lands on the chain the engine watches.
+        note("Approve the deposit in Phantom…");
+        const signed=await window.solana.signTransaction(tx);
+        note("Submitting to the chain…");
+        const sig=await rpcConn().sendRawTransaction(signed.serialize());
         await rpcConn().confirmTransaction(sig,"confirmed");
         note("Deposit confirmed, crediting…");
         send({t:"deposit",wallet:PK,side:m.side,sig});
+        refreshBalances();                     // pull the new balance instead of waiting for a push
       }catch(e){
         const msg=String(e.message||e);
         if(/simulat|unsafe|blocked/i.test(msg)){
-          note("⚠ Phantom blocked it — it simulates on its own servers and can't reach a local validator. Click \"Use dev wallet\" instead (top of this panel); it signs locally and works.");
+          note("⚠ Phantom blocked the transaction. Make sure Phantom is set to Devnet (Settings → Developer Settings → Testnet Mode) and try again.");
         } else if(/insufficient|not enough|0x1\b/i.test(msg)){
           note("⚠ Not enough balance/SOL on "+((CHAIN&&CHAIN.rpc)||"the game's RPC")+". Hit \"🎁 Get test SOL + tokens\" first.");
         } else note("⚠ Deposit failed: "+msg);
       }
     }
 
-    // ---- dev wallet: a burner keypair in this browser (no extension, signs locally) ----
-    const DEVKEY_LS="bvu_devwallet";
-    function loadOrCreateDevKP(){
-      const W3=window.solanaWeb3;
-      try{ const s=localStorage.getItem(DEVKEY_LS);
-        if(s)return W3.Keypair.fromSecretKey(Uint8Array.from(JSON.parse(s))); }catch(e){}
-      const kp=W3.Keypair.generate();
-      try{ localStorage.setItem(DEVKEY_LS,JSON.stringify(Array.from(kp.secretKey))); }catch(e){}
-      return kp;
-    }
-    async function useDevWallet(){
-      if(!window.solanaWeb3){ note("⚠ Solana lib not loaded — check your connection and reload."); return; }
-      localStorage.setItem("bvu_wmeth","dev");
-      DEVKP=loadOrCreateDevKP();
-      PK=DEVKP.publicKey.toString(); MYWALLET=PK;
-      $("#chainOff").style.display="none"; $("#chainOn").style.display="block";
-      $("#chainAddr").textContent=PK.slice(0,4)+"…"+PK.slice(-4)+"  ·  dev wallet (local)";
-      if($("#refLink"))$("#refLink").textContent=location.origin+location.pathname+"?ref="+PK;
-      connectedOnce=true;
-      note("Signing in…");
-      const okA=await authenticate();
-      if(!okA){ note("Sign-in required to play."); return; }
-      send({t:"chainBalance",wallet:PK}); send({t:"getBalance",wallet:PK}); send({t:"solBalance",wallet:PK});
-      note("Signed in. Getting test SOL + tokens…");
-      send({t:"fundMe",wallet:PK,amount:window.__DEMO?100:500});
-      if(window.__DEMO){ for(const md of ["normal","extraction"]){worlds[md].autoPct=0.05;worlds[md].autoSide="bull";}
-        setTimeout(()=>{ send({t:"buildDeposit",wallet:PK,side:"bull",amount:100}); },2500);   // auto-deposit so auto-deploy has balance
-        setTimeout(()=>{ send({t:"buildDeposit",wallet:PK,side:"uwu",amount:100}); },4000);
-      }
+    // Wallet is Phantom-only. The old in-browser burner keypair ("dev wallet") signed locally,
+    // which meant Phantom never opened and its balances took a different path - removed.
+    function refreshBalances(){
+      if(!PK||!ws||ws.readyState!==1)return;
+      send({t:"getBalance",wallet:PK}); send({t:"chainBalance",wallet:PK}); send({t:"solBalance",wallet:PK});
     }
     async function connect(){
       if(!window.solana||!window.solana.isPhantom){ note("Phantom not found — install the Phantom extension, set it to Devnet."); banner("🦊 Phantom wallet not detected. Install it and switch it to <b>Devnet</b>."); return; }
@@ -1726,14 +1690,13 @@
         note("Sign the login message in Phantom…");
         const okA=await authenticate();
         if(!okA){ note("Sign-in required to play."); return; }
-        send({t:"chainBalance",wallet:PK}); send({t:"getBalance",wallet:PK}); send({t:"solBalance",wallet:PK});
+        refreshBalances();
         note("Signed in. Faucet some test tokens, then Deposit.");
       }catch(e){ note("Connection rejected."); }
     }
-    function guard(){ if(!PK){note("Click \"Use dev wallet\" or Connect Phantom first.");return false;} if(!CHAIN||!CHAIN.ready){note("Devnet vault not funded yet — one moment.");return false;} return true; }
+    function guard(){ if(!PK){note("Connect Phantom first.");return false;} if(!CHAIN||!CHAIN.ready){note("Devnet vault not funded yet — one moment.");return false;} return true; }
 
     // wire buttons
-    $("#btnDevWallet").onclick=useDevWallet;
     $("#btnConnect").onclick=connect;
     const PRIVY_APP="cmsgbjr5q005l0cl4jeg4wizn";
     async function privyClient(){
@@ -1835,10 +1798,10 @@
     window.__DEMO=new URLSearchParams(location.search).get("demo")==="1";
     // demo mode keeps its wallet and history across reloads — it just tops the balance up
     // auto-reconnect the wallet you used last time
-    setTimeout(()=>{ const m2=localStorage.getItem("bvu_wmeth");
-      if(window.__DEMO&&!PK)useDevWallet();
-      else if(m2==="dev"&&localStorage.getItem("bvu_devwallet")&&!PK)useDevWallet();
-      else if(m2==="phantom"&&window.solana&&!PK)window.solana.connect({onlyIfTrusted:true}).then(()=>connect()).catch(()=>{});
+    setTimeout(()=>{ let m2=localStorage.getItem("bvu_wmeth");
+      // anyone still flagged for the removed burner wallet gets reset to Phantom
+      if(m2==="dev"){ try{localStorage.removeItem("bvu_wmeth");localStorage.removeItem("bvu_devwallet");}catch(e){} m2=null; }
+      if(m2==="phantom"&&window.solana&&!PK)window.solana.connect({onlyIfTrusted:true}).then(()=>connect()).catch(()=>{});
       // re-apply X identity after connect
       setTimeout(()=>{try{const x=JSON.parse(localStorage.getItem("bvu_x")||"null");
         if(x&&PK)send({t:"setName",wallet:PK,name:"@"+x.h,avatar:x.av});}catch(e){}},2500);
