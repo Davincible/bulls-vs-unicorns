@@ -13,6 +13,7 @@ import { priceUSD, startPriceLoop, allPrices } from "./prices.ts";
 import { RPC } from "./chain.ts";
 import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, forget as authForget } from "./auth.ts";
 import { isAllowed as walletAllowed } from "./allowlist.ts";
+import { start as startReconcile, isFrozen, latest as reconLatest } from "./reconcile.ts";
 import { loadSnapshot, saveSnapshot, flushSnapshot } from "./store.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
 
@@ -272,6 +273,14 @@ for (const aid of ARENA_IDS) runners[aid] = new RoundRunner(arenaEco(aid), (r, s
 const runnersN: Record<string, RoundRunnerN> = {};
 for (const aid of NARENA_IDS) runnersN[aid] = new RoundRunnerN(NARENAS[aid].eco, NARENAS[aid].teams, (r, s) => onSettleN(aid, r as any, s as any));
 restore();
+// SOLVENCY: what real players could withdraw, per asset. Bots are internal credit (never paid to
+// a real wallet) so they are NOT a liability. bull/uwu are whole tokens; sol is USD units.
+function ledgerLiabilities() {
+  let bull = 0, uwu = 0, solUsd = 0;
+  for (const a of ledger.values()) { if (a.isBot) continue; bull += Math.max(0, a.bull); uwu += Math.max(0, a.uwu); solUsd += Math.max(0, a.sol); }
+  return { bull, uwu, solUsd };
+}
+startReconcile(ledgerLiabilities, solUsd, Number(process.env.RECONCILE_MS || 15_000));
 // prune bots whose arena no longer exists (ids from before the arena registry) so they stop
 // bloating the ledger and the persisted snapshot
 {
@@ -536,6 +545,7 @@ wss.on("connection", (ws) => {
         ws.send(JSON.stringify({ t: "depositSolDone", sol, priceUsd: px, credited: sol * px }));
         pushBalance(m.wallet);
       } else if (m.t === "withdrawSol") {       // { wallet, units } -> pay out native SOL
+        if (isFrozen()) return ws.send(JSON.stringify({ t: "error", msg: "Withdrawals are temporarily paused (solvency check). Try again shortly." }));
         const px = solUsd();
         if (!px) return ws.send(JSON.stringify({ t: "error", msg: "SOL price unavailable — withdrawal paused." }));
         const a = acct(m.wallet, "bull");
@@ -549,6 +559,8 @@ wss.on("connection", (ws) => {
               ws.send(JSON.stringify({ t: "error", msg: "SOL withdraw failed: " + (e as Error).message })); }
       } else if (m.t === "prices") {
         ws.send(JSON.stringify({ t: "prices", prices: allPrices(), solUsd: solUsd() }));
+      } else if (m.t === "solvency") {          // public proof-of-reserves: last reconciliation report
+        ws.send(JSON.stringify({ t: "solvency", frozen: isFrozen(), report: reconLatest() }));
       } else if (m.t === "buildDeposit") {                  // → unsigned tx for Phantom to sign
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
         const txB64 = await buildDepositTx(m.wallet, m.side, m.amount);
@@ -560,6 +572,7 @@ wss.on("connection", (ws) => {
         ws.send(JSON.stringify({ t: "depositDone", side: m.side, credited, sig: m.sig }));
         pushBalance(m.wallet); persist();
       } else if (m.t === "withdraw") {                        // { t:'withdraw', wallet, side, amount }
+        if (isFrozen()) return ws.send(JSON.stringify({ t: "error", msg: "Withdrawals are temporarily paused (solvency check). Try again shortly." }));
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
         const a = acct(m.wallet, m.side);
         const bank = m.side === "bull" ? a.bull : a.uwu;
