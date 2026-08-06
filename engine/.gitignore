@@ -5,3 +5,5 @@ ledger.db
 ledger.db-*
 ledger.json.imported
 bot-wallets.json
+bot-wallets-mainnet.json
+bot-wallets*.json

@@ -30,3 +30,4 @@ engine/e2e-money.mjs
 engine/_*.mjs
 engine/costs.ps1
 **/bot-wallets.json
+**/bot-wallets*.json

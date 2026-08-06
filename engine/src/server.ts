@@ -150,7 +150,8 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   // real players fill the arena, so bots never crowd out humans.
   const realPlaying = s.entries.filter(e => !e.id.includes(":bot:")).length;
   let busted = 0;
-  const BUST_USD = Number(process.env.BOT_BUST_USD || 0.4);
+  // busted = can no longer afford the minimum stake, so it can never deploy again
+  const BUST_USD = Number(process.env.BOT_BUST_USD || BOT_STAKE_USD_MIN * 0.8);
   for (const a of botsFor(aid)) if (accountUsd(a) < BUST_USD) { ledger.delete(a.id); busted++; bustedCount[mode]++; }
   rounds[mode]++; roundsByArena[aid] = (roundsByArena[aid] || 0) + 1;
   { const st = stat(aid); st.matches++; if (r.winner === "bull") st.winsA++; else st.winsB++; }
@@ -181,7 +182,7 @@ async function onSettleN(aid: string, r: any, s: any) {
   }
   const realPlaying = s.entries.filter((e: any) => !String(e.id).includes(":bot:")).length;
   let busted = 0;
-  const BUST_USD_N = Number(process.env.BOT_BUST_USD || 0.4);
+  const BUST_USD_N = Number(process.env.BOT_BUST_USD || BOT_STAKE_USD_MIN * 0.8);
   for (const a of botsFor(aid)) if (accountUsd(a) < BUST_USD_N) { ledger.delete(a.id); busted++; }
   roundsByArena[aid] = (roundsByArena[aid] || 0) + 1;
   { const st = stat(aid); st.matches++; if (r.winnerTeam === 0) st.winsA++; else st.winsB++; }

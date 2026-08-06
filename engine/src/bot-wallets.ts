@@ -20,7 +20,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DIR = process.env.LEDGER_DIR || join(dirname(fileURLToPath(import.meta.url)), "..", "data");
-const FILE = join(DIR, "bot-wallets.json");
+// Keep mainnet keys in their own file. Solana keypairs work on any cluster, so the devnet set would
+// function on mainnet too — but reusing them means a key leaked in a devnet context (a log, a
+// screenshot, a shared machine) would put REAL money at risk. One file per environment.
+const WALLET_FILE = process.env.BOT_WALLETS_FILE || "bot-wallets.json";
+const FILE = join(DIR, WALLET_FILE);
 
 export interface BotWalletRecord { pubkey: string; secret: number[]; created: number; }
 
@@ -60,7 +64,7 @@ export function botPubkeys(): string[] { return loadBotWallets().map(r => r.pubk
 // The ENGINE only needs to know WHICH accounts form the bot pool — it never signs for them, so it
 // must never hold their private keys. Addresses come from BOT_POOL (env) or a plain pubkey list;
 // the secret keyfile stays on the seeding machine.
-const POOL_FILE = join(DIR, "bot-pool.json");
+const POOL_FILE = join(DIR, WALLET_FILE.replace(/\.json$/, "") + "-pool.json");
 
 export function writeBotPool(pubkeys: string[]) {
   ensureDir();
