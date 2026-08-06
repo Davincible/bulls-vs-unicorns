@@ -12,7 +12,7 @@ export interface StateN {
   multiplier: number; openedAt: number; closesAt: number; battleMs?: number;
 }
 
-const LOBBY_MS = Number(process.env.LOBBY_MS || 12_000);
+const LOBBY_MS = Number(process.env.LOBBY_MS || 8_000);
 const BATTLE_MS = 60_000;
 
 export function cfgN(mode: "normal" | "extraction", teams: number, multiplier: number): CfgN {
@@ -53,7 +53,7 @@ export class RoundRunnerN {
       s.phase = "battle"; s.seed = this.seed;
       const cfg = cfgN(this.mode, this.teams, s.multiplier);
       s.result = simulateN(this.seed, s.entries, cfg);
-      s.battleMs = Math.min(BATTLE_MS, (s.result.endTick + 2) * cfg.tickMs + 1200);
+      s.battleMs = Math.min(BATTLE_MS, (s.result.endTick + 2) * cfg.tickMs + 900);   // tail: let the last hits + banner land
       s.closesAt = now + s.battleMs;
       return false;
     }

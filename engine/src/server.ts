@@ -276,7 +276,7 @@ setInterval(async () => {
         startedAt: Date.now(), battleMs: s.battleMs || newRoundConfig(mode, s.multiplier).battleMs });
     }
   }
-}, 500);
+}, 250);
 
 // N-team arenas tick on the same cadence
 const lastPhaseN: Record<string, string> = {};
@@ -300,7 +300,7 @@ setInterval(async () => {
         startedAt: Date.now(), battleMs: st.battleMs });
     }
   }
-}, 500);
+}, 250);
 
 // broadcast a light state snapshot for the UI
 setInterval(() => {

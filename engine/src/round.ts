@@ -18,7 +18,7 @@ export interface RoundState {
   battleMs?: number;              // actual battle length (may be < BATTLE_MS if a side is wiped)
 }
 
-const LOBBY_MS = Number(process.env.LOBBY_MS || 12_000);   // deploy window between rounds
+const LOBBY_MS = Number(process.env.LOBBY_MS || 8_000);   // deploy window between rounds (shorter = less dead air)
 const BATTLE_MS = 60_000;
 
 export function newRoundConfig(mode: Mode, multiplier: number): RoundConfig {
@@ -73,7 +73,7 @@ export class RoundRunner {
       s.result = simulateRound(this.seed, s.entries, cfg);
       // the fight can be decided long before the clock runs out (a side gets wiped) — end it then,
       // plus a short tail so the last hits and the win banner land on screen
-      s.battleMs = Math.min(BATTLE_MS, (s.result.endTick + 2) * cfg.tickMs + 1200);
+      s.battleMs = Math.min(BATTLE_MS, (s.result.endTick + 2) * cfg.tickMs + 900);   // tail: let the last hits + banner land
       s.closesAt = now + s.battleMs;
       return false;
     }
