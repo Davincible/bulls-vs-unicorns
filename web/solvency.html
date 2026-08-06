@@ -61,10 +61,11 @@
 </div>
 
 <script>
-  // Mirror index.html's engine-URL convention (?engine=ws…), converted to the HTTP origin for /solvency.
+  // The engine serves this page in production, so /solvency lives on the SAME origin by default.
+  // ?engine= or ?api= still override for pointing at a different engine.
   const params = new URLSearchParams(location.search);
   const LOCAL = ["localhost","127.0.0.1",""].includes(location.hostname);
-  const wsUrl = params.get("engine") || window.ENGINE_URL || (LOCAL ? "ws://localhost:8090" : "wss://bulls-vs-unicorn-production.up.railway.app");
+  const wsUrl = params.get("engine") || window.ENGINE_URL || (LOCAL ? "ws://localhost:8090" : location.origin);
   const API = (params.get("api") || wsUrl).replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/+$/, "");
 
   const $ = (id) => document.getElementById(id);

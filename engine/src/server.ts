@@ -520,9 +520,16 @@ wss.on("connection", (ws, req) => {
         const amt = Math.min(Math.max(Number(m.amount) || 500, 1), 1000);
         const steps: string[] = [];
         const sol = await solBalance(m.wallet);
-        if (sol < 0.5) {
-          try { await airdropSol(m.wallet, 2); steps.push("2 SOL"); }
-          catch { steps.push("SOL airdrop unavailable (faucet limited) — you need a little SOL for fees"); }
+        if (sol < 0.05) {
+          // Try the public devnet faucet first; it's almost always rate-limited/dry, so fall back
+          // to sending a little gas FROM THE VAULT. On a test chain the vault SOL is disposable and
+          // this makes the faucet actually usable without depending on Solana's broken faucet.
+          let funded = false;
+          try { await airdropSol(m.wallet, 1); steps.push("1 SOL (airdrop)"); funded = true; } catch { /* faucet dry */ }
+          if (!funded) {
+            try { await withdrawSol(m.wallet, 0.03); steps.push("0.03 SOL (gas, from vault)"); }
+            catch (e) { steps.push("SOL unavailable for fees: " + (e as Error).message); }
+          }
         } else steps.push(`${sol.toFixed(2)} SOL already`);
         try { await faucet(m.wallet, "bull", amt); steps.push(amt + " BULL"); } catch (e) { steps.push("BULL failed: " + (e as Error).message); }
         try { await faucet(m.wallet, "uwu", amt); steps.push(amt + " UWU"); } catch (e) { steps.push("UWU failed: " + (e as Error).message); }

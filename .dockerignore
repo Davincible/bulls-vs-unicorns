@@ -26,4 +26,6 @@ bulls-arena-UPLOAD/
 **/*.md
 engine/src/tests/
 engine/pentest*.mjs
+engine/e2e-money.mjs
+engine/_*.mjs
 engine/costs.ps1
