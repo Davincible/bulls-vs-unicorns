@@ -320,6 +320,10 @@
 (function(){
   "use strict";
   const $=s=>document.querySelector(s), rand=(a,b)=>a+Math.random()*(b-a), pick=a=>a[(Math.random()*a.length)|0], clamp=(v,a,b)=>v<a?a:v>b?b:v;
+  // Defence in depth: the engine already sanitises player-supplied names/avatars, but every
+  // render below builds HTML strings, so escape on OUTPUT too. Any future user-controlled
+  // field then cannot become markup just because someone forgot to clean it server-side.
+  const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const fmt=n=>{n=Math.max(0,n);return "$"+(n>=1000?n.toLocaleString("en-US",{maximumFractionDigits:0}):n.toLocaleString("en-US",{maximumFractionDigits:n<10?2:0}));};
   const NAMES=["degenDan","sol_sniper","0xViper","moonboy","rugproof","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","vibecheck","noReentry","gigaGwei","turboTina","elayne","copetrader","sendit","wenLambo","paperhandz","diamondD","fomoFrank","sizzle","nakamotto","zkZoe","based_bri","yeetard","hodlorbe","greenwick","stampede","hornsUp","glitter","prancer","charge","maxbid","alphaleak","serSlippy","tendieTom","voidwalker"];
   const EDGE=0.002, START=100, DUST=1.2, PER_SIDE=12, CAP=100, LOBBY_MS=7000, BATTLE_MS=32000, IMB=90, FEE=0.01;
@@ -581,7 +585,7 @@
       hud.textContent="▼ YOU · "+w.userCircles.map(x=>fmt(ring(x))+(x.side==="bull"?"🐂":"🦄")).join(" + ")+bank;
     }else hud.style.display="none";
     const hp=w.players.find(p=>p.id===w.hoverId&&alive(p)),tip=$("#tip");
-    if(hp){const bk=safeV(hp), pl=tot(hp)-hp.deposited;tip.innerHTML=`<div class="nm"><span class="dot ${hp.side==="bull"?"bull":"uni"}"></span>${hp.isUser?'<span class="youtag">YOU</span> ':''}${hp.name}</div><div class="r"><span>Ring size</span><b>${fmt(ring(hp))}</b></div><div class="r"><span>🐂 BULL held</span><b>${bullTot(hp).toFixed(1)}</b></div><div class="r"><span>🦄 UWU held</span><b>${uwuTot(hp).toFixed(1)}</b></div>${bk>0?`<div class="r"><span>banked (safe)</span><b style="color:var(--gold)">${fmt(hp.sBull||0)}🐂 + ${fmt(hp.sUwu||0)}🦄</b></div>`:''}<div class="r"><span>Raided</span><b>${fmt(hp.raided)}</b></div><div class="r"><span>Won/lost</span><b class="${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}</b></div><div class="r" style="color:var(--ink-faint);margin-top:3px">click for full profile</div>`;
+    if(hp){const bk=safeV(hp), pl=tot(hp)-hp.deposited;tip.innerHTML=`<div class="nm"><span class="dot ${hp.side==="bull"?"bull":"uni"}"></span>${hp.isUser?'<span class="youtag">YOU</span> ':''}${esc(hp.name)}</div><div class="r"><span>Ring size</span><b>${fmt(ring(hp))}</b></div><div class="r"><span>🐂 BULL held</span><b>${bullTot(hp).toFixed(1)}</b></div><div class="r"><span>🦄 UWU held</span><b>${uwuTot(hp).toFixed(1)}</b></div>${bk>0?`<div class="r"><span>banked (safe)</span><b style="color:var(--gold)">${fmt(hp.sBull||0)}🐂 + ${fmt(hp.sUwu||0)}🦄</b></div>`:''}<div class="r"><span>Raided</span><b>${fmt(hp.raided)}</b></div><div class="r"><span>Won/lost</span><b class="${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}</b></div><div class="r" style="color:var(--ink-faint);margin-top:3px">click for full profile</div>`;
       const r=canvas.getBoundingClientRect();tip.style.opacity=1;let tx=hp.x*(r.width/W2)+18,ty=hp.y*(r.height/H2)-10;if(tx+180>r.width)tx=hp.x*(r.width/W2)-190;if(ty<44)ty=44;tip.style.left=tx+"px";tip.style.top=ty+"px";}else tip.style.opacity=0;
     requestAnimationFrame(render);
   }
@@ -597,7 +601,7 @@
     const pid=String(p.id||"").split("|")[0];
     const r=(w.accounts&&((w.online&&w.accounts.find(a=>a.id!==undefined&&String(a.id)===pid))||w.accounts.find(a=>a.name===p.name)))||{dep:0,ret:0,games:0,wins:0,raided:0,best:0,bankroll:0}; const side=p.side, bk=safeV(p), pl=tot(p)-p.deposited, av=side==="bull"?"🐂":"🦄";
     const atPnl=(r.pnl!==undefined)?r.pnl:(r.ret||0)-(r.dep||0);
-    $("#pcard").innerHTML=`<div class="top"><div class="av ${side==="bull"?'bull':'uni'}">${av}</div><div><h3>${p.isUser?'You':p.name}</h3><div class="sub">${side==="bull"?"Bull":"Unicorn"} · ${alive(p)?'alive':'💀 out'}</div></div><button class="close" id="pClose">✕</button></div>
+    $("#pcard").innerHTML=`<div class="top"><div class="av ${side==="bull"?'bull':'uni'}">${av}</div><div><h3>${p.isUser?'You':esc(p.name)}</h3><div class="sub">${side==="bull"?"Bull":"Unicorn"} · ${alive(p)?'alive':'💀 out'}</div></div><button class="close" id="pClose">✕</button></div>
       <div class="sec">This round</div>
       <div class="pg"><div class="pstat"><div class="v">${fmt(tot(p))}</div><div class="n">Bag size</div></div>
         <div class="pstat"><div class="v ${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}</div><div class="n">Won / loss</div></div>
@@ -629,7 +633,7 @@
       const maxV=Math.max(1,...L.map(l=>l.outAmt||0));
       $("#lbRows").innerHTML=L.length?L.map((l,i)=>{
         const pnl=(l.outAmt||0)-(l.inAmt||0);
-        return `<div class="lbRow" data-name="${l.name}"><span class="rk">${i+1}</span><span class="who"><span class="dot ${l.side==="bull"?"bull":"uni"}"></span><span class="nmx">${l.name}</span><div class="pct" style="color:var(--ink-faint)">round ${l.round} · ${l.mode||""}</div></span>${compBar(l.side==="bull"?(l.outAmt||0):0,l.side==="bull"?0:(l.outAmt||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}${fmt(Math.abs(pnl))}<div class="pct">${fmt(l.inAmt)} → ${fmt(l.outAmt)}</div></span><span class="rd" style="color:var(--gold)">${(l.roi*100).toFixed(0)}%</span><button class="abtn ghost" style="padding:2px 8px;font-size:10px" onclick="event.stopPropagation();window.__shareLegend&&__shareLegend(${i})">𝕏</button></div>`;
+        return `<div class="lbRow" data-name="${esc(l.name)}"><span class="rk">${i+1}</span><span class="who"><span class="dot ${l.side==="bull"?"bull":"uni"}"></span><span class="nmx">${esc(l.name)}</span><div class="pct" style="color:var(--ink-faint)">round ${l.round} · ${l.mode||""}</div></span>${compBar(l.side==="bull"?(l.outAmt||0):0,l.side==="bull"?0:(l.outAmt||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}${fmt(Math.abs(pnl))}<div class="pct">${fmt(l.inAmt)} → ${fmt(l.outAmt)}</div></span><span class="rd" style="color:var(--gold)">${(l.roi*100).toFixed(0)}%</span><button class="abtn ghost" style="padding:2px 8px;font-size:10px" onclick="event.stopPropagation();window.__shareLegend&&__shareLegend(${i})">𝕏</button></div>`;
       }).join(""):'<div class="note">Best single-round returns will show here once rounds settle.</div>';
       return;}
     if(lbTab==="alltime"){$("#rnav").style.visibility="hidden";$("#lbColBar").textContent="Wallet now (size)";$("#lbColRd").textContent="Raided (all-time)";
@@ -638,7 +642,7 @@
       const rows=w.accounts.slice().sort((a,b)=>atPnl(b)-atPnl(a)).slice(0,40);
       const maxV=Math.max(1,...rows.map(a=>a.bankroll||0));
       $("#lbRows").innerHTML=rows.length?rows.map((a,i)=>{const pnl=atPnl(a),pct=a.dep>0?pnl/a.dep*100:0;
-        return `<div class="lbRow ${a.you?'you':''}" data-name="${a.name}"><span class="rk">${i+1}</span><span class="who"><span class="dot ${a.side==="bull"?"bull":"uni"}"></span>${a.you?'<span class="youtag">YOU</span> ':''}<span class="nmx">${a.name}</span></span>${compBar(a.side==="bull"?(a.bankroll||0):0,a.side==="bull"?0:(a.bankroll||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}${fmt(Math.abs(pnl))}<div class="pct">${pct>=0?'+':''}${pct.toFixed(0)}% · ${a.wins}W/${a.games}g</div></span><span class="rd">${fmt(a.raided||0)}</span></div>`;}).join(""):'<div class="note">Accounts populate as rounds run.</div>';
+        return `<div class="lbRow ${a.you?'you':''}" data-name="${esc(a.name)}"><span class="rk">${i+1}</span><span class="who"><span class="dot ${a.side==="bull"?"bull":"uni"}"></span>${a.you?'<span class="youtag">YOU</span> ':''}<span class="nmx">${esc(a.name)}</span></span>${compBar(a.side==="bull"?(a.bankroll||0):0,a.side==="bull"?0:(a.bankroll||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}${fmt(Math.abs(pnl))}<div class="pct">${pct>=0?'+':''}${pct.toFixed(0)}% · ${a.wins}W/${a.games}g</div></span><span class="rd">${fmt(a.raided||0)}</span></div>`;}).join(""):'<div class="note">Accounts populate as rounds run.</div>';
       return;}
     $("#lbColBar").textContent="Wallet size (🐂/🦄 split)";$("#lbColRd").textContent="Raided";
     $("#rnav").style.visibility="visible";
@@ -648,7 +652,7 @@
     const rows=snap.rows.slice();const maxV=Math.max(CAP,...rows.map(r=>r.bull+r.uwu));
     rows.sort((a,b)=>((b.bull+b.uwu)-b.dep)-((a.bull+a.uwu)-a.dep));
     $("#lbRows").innerHTML=rows.map((r,i)=>{const size=r.bull+r.uwu,pl=size-r.dep,pct=r.dep>0?pl/r.dep*100:0;
-      return `<div class="lbRow ${r.dead?'dead':''} ${r.you?'you':''}" data-name="${r.name}"><span class="rk">${i+1}</span><span class="who">${r.dead?'💀':'<span class="aliveDot"></span>'} <span class="dot ${r.side==="bull"?"bull":"uni"}"></span>${r.you?'<span class="youtag">YOU</span> ':''}<span class="nmx">${r.name}</span></span>${compBar(r.bull,r.uwu,maxV)}<span class="wl ${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}<div class="pct">${pct>=0?'+':''}${pct.toFixed(0)}%</div></span><span class="rd">${fmt(r.raided)}</span></div>`;}).join("")||'<div class="note">No fighters.</div>';
+      return `<div class="lbRow ${r.dead?'dead':''} ${r.you?'you':''}" data-name="${esc(r.name)}"><span class="rk">${i+1}</span><span class="who">${r.dead?'💀':'<span class="aliveDot"></span>'} <span class="dot ${r.side==="bull"?"bull":"uni"}"></span>${r.you?'<span class="youtag">YOU</span> ':''}<span class="nmx">${esc(r.name)}</span></span>${compBar(r.bull,r.uwu,maxV)}<span class="wl ${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}<div class="pct">${pct>=0?'+':''}${pct.toFixed(0)}%</div></span><span class="rd">${fmt(r.raided)}</span></div>`;}).join("")||'<div class="note">No fighters.</div>';
   }
   $("#lbRows").addEventListener("click",e=>{const row=e.target.closest(".lbRow");if(!row)return;const w=W();const nm=row.dataset.name;
     let p=w.players.find(x=>x.name===nm&&alive(x)); if(!p){const a=w.accounts.find(x=>x.name===nm)||{side:"bull"};p={name:nm,side:a.side,bull:0,uwu:0,sBull:0,sUwu:0,deposited:0,raided:0,dmgDealt:0,dmgTaken:0,dead:true,isUser:false};}
@@ -660,7 +664,7 @@
   // cashed-out loot says nothing about who's still standing.
   function agg(w,side){let v=0,n=0,bk=0;for(const p of w.players){if(p.side!==side)continue;if(alive(p)){v+=ring(p);n++;}bk+=safeV(p);}return{v,n,bk};}
   function sideListHTML(w,side){const list=w.players.filter(p=>alive(p)&&p.side===side).sort((a,b)=>ring(b)-ring(a));const mx=Math.max(CAP,...list.map(ring));
-    return list.slice(0,20).map(p=>`<div class="fRow ${p.isUser?'you':''}" data-name="${p.name}"><span class="fn">${p.isUser?'YOU':p.name}</span><span class="hbar"><i style="width:${clamp(ring(p)/mx*100,6,100)}%"></i></span><span class="fv">${fmt(ring(p))}</span></div>`).join("")||'<div class="note" style="margin:2px 0">—</div>';}
+    return list.slice(0,20).map(p=>`<div class="fRow ${p.isUser?'you':''}" data-name="${esc(p.name)}"><span class="fn">${p.isUser?'YOU':esc(p.name)}</span><span class="hbar"><i style="width:${clamp(ring(p)/mx*100,6,100)}%"></i></span><span class="fv">${fmt(ring(p))}</span></div>`).join("")||'<div class="note" style="margin:2px 0">—</div>';}
   function applyArenaSkin(){
     document.querySelectorAll("#pairSel button").forEach(b=>b.classList.toggle("on",b.dataset.pair===PAIRING));
     if(isNArena()){
@@ -687,7 +691,7 @@
   }
   // the Big Wins ticker belongs to every arena, not just the two-team path
   function renderTicker(w){
-    $("#tickerTrack").innerHTML=(w.wins.length?w.wins:[{name:"first blood soon…",side:"bull",amt:0,mult:1}]).map(x=>`<span class="win"><span class="dot ${x.side==="bull"?"bull":"uni"}"></span>${x.you?'<span class="youtag">YOU</span> ':''}${x.name} raided <b>${fmt(x.amt)}</b>${x.mult>=1.8?' <span class="mult">'+x.mult.toFixed(1)+'×</span>':''}</span>`).join("");
+    $("#tickerTrack").innerHTML=(w.wins.length?w.wins:[{name:"first blood soon…",side:"bull",amt:0,mult:1}]).map(x=>`<span class="win"><span class="dot ${x.side==="bull"?"bull":"uni"}"></span>${x.you?'<span class="youtag">YOU</span> ':''}${esc(x.name)} raided <b>${fmt(x.amt)}</b>${x.mult>=1.8?' <span class="mult">'+x.mult.toFixed(1)+'×</span>':''}</span>`).join("");
   }
   function syncArena(){
     const w=W();
@@ -728,7 +732,7 @@
     $("#toasts").innerHTML=w.events.filter(e=>e.life>0).slice(-5).map(e=>`<div class="toast ${e.kind}">${e.txt}</div>`).join("");
     const list=w.players.filter(p=>p.deposited>0||p.dmgDealt>0).slice().sort((a,b)=>(alive(b)-alive(a))||tot(b)-tot(a));
     $("#miniCap").textContent=(w.phase==="lobby"?"lobby · deposits open":w.phase==="battle"?"live":"round over")+" · "+list.filter(alive).length+" alive / "+list.filter(p=>!alive(p)).length+" dead";
-    $("#miniGrid").innerHTML=list.slice(0,26).map((p,i)=>`<div class="fRow ${alive(p)?'':'dead'} ${p.isUser?'you':''}" data-name="${p.name}" style="opacity:${alive(p)?1:.42}"><span style="color:var(--ink-faint);width:18px;text-align:right">${i+1}</span><span class="aliveDot ${alive(p)?'':'dead'}"></span><span class="dot ${p.side==="bull"?"bull":"uni"}"></span><span class="fn">${p.isUser?'YOU':p.name}${alive(p)?'':' 💀'}</span><span class="fv">${fmt(tot(p)+(p.isUser?(p.banked||0):0))}</span></div>`).join("");
+    $("#miniGrid").innerHTML=list.slice(0,26).map((p,i)=>`<div class="fRow ${alive(p)?'':'dead'} ${p.isUser?'you':''}" data-name="${esc(p.name)}" style="opacity:${alive(p)?1:.42}"><span style="color:var(--ink-faint);width:18px;text-align:right">${i+1}</span><span class="aliveDot ${alive(p)?'':'dead'}"></span><span class="dot ${p.side==="bull"?"bull":"uni"}"></span><span class="fn">${p.isUser?'YOU':esc(p.name)}${alive(p)?'':' 💀'}</span><span class="fv">${fmt(tot(p)+(p.isUser?(p.banked||0):0))}</span></div>`).join("");
     const allRounds=[].concat(...Object.keys(worlds).map(md=>(worlds[md].userRounds||[]).map(r=>({...r,mode:r.mode||md}))))
       .sort((a,b)=>(b.at||0)-(a.at||0));
     $("#prRows").innerHTML=allRounds.slice(0,14).map((r,i)=>{
@@ -752,7 +756,7 @@
         tDep+=x.deployed;tTake+=x.take;tMatch+=x.matches;
         const [ta,tb]=a.tokens||["ansem","uwu"];
         return `<div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px">
-          <b style="font-size:12px">${pname}</b>
+          <b style="font-size:12px">${esc(pname)}</b>
           <div style="font-family:var(--mono);font-size:11px;color:var(--ink-soft);margin-top:6px;line-height:1.7">
             deployed <b style="color:var(--ink)">${fmt(x.deployed)}</b><br>
             house take (0.2%) <b style="color:var(--gold)">${fmt(x.take)}</b><br>
@@ -841,7 +845,7 @@
     $("#dAcct").textContent=w.online?(w.engAccounts||0):w.accounts.length;$("#dCreated").textContent=w.acctCreated;$("#dBusted").textContent=w.acctBusted;
     $("#dTotDep").textContent=fmt(td);$("#dTotRet").textContent=fmt(tr);$("#dAcctBull").textContent=ab;$("#dAcctUni").textContent=au;
     const net=tr-td,ne=$("#dNetPnl");ne.textContent=(net>=0?"+":"−")+"$"+Math.abs(net).toFixed(0);ne.className="v "+(net>=0?"pos":"neg");
-    $("#legends").innerHTML=w.legends.length?w.legends.slice(0,10).map((l,i)=>`<div class="li"><span style="color:var(--ink-faint);width:16px">${i+1}</span><span class="dot ${l.side==="bull"?"bull":"uni"}"></span><span class="nm">${l.name}<div class="sub">${fmt(l.inAmt)} → ${fmt(l.outAmt)} · R${l.round}</div></span><span class="pct">${(l.roi*100).toFixed(0)}%</span></div>`).join(""):'<div class="note">Best plays show here.</div>';
+    $("#legends").innerHTML=w.legends.length?w.legends.slice(0,10).map((l,i)=>`<div class="li"><span style="color:var(--ink-faint);width:16px">${i+1}</span><span class="dot ${l.side==="bull"?"bull":"uni"}"></span><span class="nm">${esc(l.name)}<div class="sub">${fmt(l.inAmt)} → ${fmt(l.outAmt)} · R${l.round}</div></span><span class="pct">${(l.roi*100).toFixed(0)}%</span></div>`).join(""):'<div class="note">Best plays show here.</div>';
     $("#hof").innerHTML="";
     $("#matchHist").innerHTML=w.matches.length?w.matches.map(m=>`<div class="li"><span class="dot ${m.winner==="bull"?"bull":"uni"}"></span><span class="nm">Round ${m.round}</span><span class="sub">${m.mult}×</span><span class="v">${m.winner==="bull"?"🐂 Bulls":"🦄 Unicorns"}</span></div>`).join(""):'<div class="note">No finished rounds yet.</div>';
   }
@@ -1852,7 +1856,7 @@
     el.innerHTML=ARENA_DEFS.map(a=>{
       const px=a.tokens.map(t=>PX[t]!==undefined?`<span style="color:var(--ink-soft)">${t.toUpperCase()} $${PX[t]<1?PX[t].toFixed(4):PX[t].toFixed(2)}</span>`:"").filter(Boolean).join(" · ");
       return `<div class="card" data-arena="${a.id}" style="background:var(--panel);border:1px solid ${a.live?"var(--gold)":"var(--line)"};border-radius:14px;padding:14px;cursor:${a.live?"pointer":"default"};opacity:${a.live?1:.72}">
-        <div style="font-size:22px">${a.icons}</div><b>${a.name}</b>
+        <div style="font-size:22px">${a.icons}</div><b>${esc(a.name)}</b>
         <div class="note" style="font-size:11px;margin-top:4px">${a.note||"Mayhem + Extraction"}</div>
         <div style="font-family:var(--mono);font-size:10.5px;margin-top:6px">${px||"prices loading…"}</div>
         <div style="margin-top:8px">${a.live?'<span class="youtag" style="background:var(--bull);color:#000">LIVE — enter</span>':'<span class="youtag">OPENING SOON</span>'}</div>
