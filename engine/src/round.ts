@@ -18,7 +18,7 @@ export interface RoundState {
   battleMs?: number;              // actual battle length (may be < BATTLE_MS if a side is wiped)
 }
 
-const LOBBY_MS = 20_000;   // real players need time to join
+const LOBBY_MS = Number(process.env.LOBBY_MS || 12_000);   // deploy window between rounds
 const BATTLE_MS = 60_000;
 
 export function newRoundConfig(mode: Mode, multiplier: number): RoundConfig {

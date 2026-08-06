@@ -94,9 +94,10 @@
     <header>
       <div class="brand"><h1><span class="b">🐂</span><span class="vs">⚔</span><span class="u">🦄</span> ARENA</h1></div>
       <div class="hstats">
-        <div class="pill" title="House take (0.1% of deploys + 0.3% converts)"><b class="g" id="treasury">$0</b><span class="brk" id="treasuryBrk">🐂$0 · 🦄$0</span><span>House take</span></div>
+        <div class="pill" title="House take (0.2% of deploys + 0.3% converts)"><b class="g" id="treasury">$0</b><span class="brk" id="treasuryBrk">🐂$0 · 🦄$0</span><span>House take</span></div>
         <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button><button data-view="referrals">Referrals</button><button data-view="arenas">Arenas</button></div>
         <div class="modes"><button data-mode="normal" class="on">Mayhem</button><button data-mode="extraction">💰 Extraction</button></div>
+        <div class="modes" id="pairSel"><button data-pair="au" class="on">🐂⚔🦄</button><button data-pair="as">🐂⚔◎</button><button data-pair="us">🦄⚔◎</button></div>
         <button class="ficon" id="infoBtn" title="How the game works">ⓘ</button>
         <div class="pill"><b class="g" id="arenaTag">BULL vs UWU</b><span>arena</span></div>
         <div class="pill" id="fairPill" style="cursor:pointer" title="Provably fair: the engine publishes sha256(seed) before the lobby opens, then reveals the seed. Your browser recomputes the whole round from it — no trust required. Click to verify the last round."><b class="g">✓</b><span>fair</span></div>
@@ -166,7 +167,7 @@
             <div class="note" style="font-size:11px;margin-top:4px">Every raid is <b>banked instantly</b> to your balance. Your fighter can die — the loot is already safe.</div>
           </div>
         </div>
-        <div class="note" style="font-size:12px;margin-top:12px">🔐 <b>Provably fair</b> — every round's outcome is committed before betting closes; your browser can re-verify any result (✓ pill up top). House fee: 0.1% on deploys. Only what both sides can match is at risk — the excess is refunded.</div>
+        <div class="note" style="font-size:12px;margin-top:12px">🔐 <b>Provably fair</b> — every round's outcome is committed before betting closes; your browser can re-verify any result (✓ pill up top). House fee: 0.2% on deploys. Only what both sides can match is at risk — the excess is refunded.</div>
         <button class="abtn jb" id="introClose" style="width:100%;margin-top:16px">Let's go</button>
       </div>
     </div>
@@ -202,12 +203,19 @@
         <div class="panelC">
           <h3>My wallet <span class="youtag">SHARED</span></h3>
           <div class="wcells">
-            <div class="cell b"><div class="v" id="wBull">$100</div><div class="n">🐂 BULL wallet</div></div>
-            <div class="cell u"><div class="v" id="wUwu">$100</div><div class="n">🦄 UWU wallet</div></div>
+            <div class="cell b"><div class="v" id="wBull">$0</div><div class="n">🐂 ANSEM</div></div>
+            <div class="cell u"><div class="v" id="wUwu">$0</div><div class="n">🦄 UWU</div></div><div class="cell"><div class="v" id="wSol">$0</div><div class="n">◎ SOL</div></div>
           </div>
           <div class="row2"><button class="abtn ghost" id="convBull">🦄→🐂 to BULL</button><button class="abtn ghost2" id="convUwu">🐂→🦄 to UWU</button></div>
           <button class="abtn ghost2" id="addFunds" style="margin-top:8px;width:100%">+ Add $100 BULL &amp; $100 UWU</button>
           <div class="wcells" style="margin-top:10px"><div class="cell"><div class="v" id="myStake">$0</div><div class="n">In-ring size</div></div><div class="cell"><div class="v pos" id="myPnl">$0</div><div class="n">All-time P/L</div></div></div>
+        </div>
+        <div class="panelC" id="fairPanel">
+          <h3>Provably fair <span class="youtag" style="background:var(--gold);color:#000">VERIFY</span></h3>
+          <div class="note">sha256(seed) is published before deploys open; the seed is revealed at fight start. Your browser can recompute the whole round.</div>
+          <div id="fairHash" style="margin-top:8px;font-family:var(--mono);font-size:10px;color:var(--ink-faint);word-break:break-all">commit: —</div>
+          <button class="abtn ghost" id="btnVerify2" style="width:100%;margin-top:8px">🔐 Verify last round</button>
+          <div class="note" id="fairOut" style="margin-top:8px">Waiting for a round to finish…</div>
         </div>
         <div class="panelC">
           <h3>Deploy this round <span class="youtag" id="depMode">NORMAL</span></h3>
@@ -263,10 +271,12 @@
             <div style="display:flex;gap:6px;margin-top:6px">
               <code id="refLink" style="flex:1;font-family:var(--mono);font-size:10px;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">connect a wallet first</code>
               <button class="abtn ghost" id="refCopy" style="padding:6px 10px;font-size:11px">Copy</button>
+              <button class="abtn jb" id="refShare" style="padding:6px 10px;font-size:11px">𝕏 Share</button>
             </div>
             <div class="note" style="margin-top:6px">Earned so far: <b id="refEarned" style="color:var(--gold)">$0</b></div>
 </div></div>
     <div class="view" id="viewDashboard">
+      <div id="dashArenas" style="max-width:1200px;margin:0 auto 14px"></div>
       <div class="card"><h2>Dashboard <span style="font-family:var(--mono);font-size:12px;color:var(--ink-faint)" id="dashMode"></span></h2>
         <div class="dgrid" style="margin-top:8px">
           <div class="stat b"><div class="v" id="dDepBull">$0</div><div class="n">Total deployed · Bulls</div></div>
@@ -277,7 +287,7 @@
         <div class="dgrid" style="margin-top:12px">
           <div class="stat b"><div class="v" id="dDmgBull">$0</div><div class="n">Total damage · Bulls</div></div>
           <div class="stat u"><div class="v" id="dDmgUni">$0</div><div class="n">Total damage · Unicorns</div></div>
-          <div class="stat"><div class="v" id="dHouse" style="color:var(--gold)">$0</div><div class="n">House take · 0.1% of deploys</div></div>
+          <div class="stat"><div class="v" id="dHouse" style="color:var(--gold)">$0</div><div class="n">House take · 0.2% of deploys</div></div>
           <div class="stat"><div class="v" id="dHousePct">0%</div><div class="n">House take ÷ deployed</div></div>
         </div>
       </div>
@@ -324,14 +334,14 @@
   const TOKMETA={ansem:{label:"BULL",team:"Bulls",emoji:"\ud83d\udc02"},
                  uwu:{label:"UWU",team:"Unicorns",emoji:"\ud83e\udd84"},
                  sol:{label:"SOL",team:"Solana",emoji:"\u25ce"}};
-  let PAIRING="au";
+  let PAIRING=localStorage.getItem("bvu_arena")||"au";
   const PAIRTOK={au:["ansem","uwu"],as:["ansem","sol"],us:["uwu","sol"]};
   const metaA=()=>TOKMETA[PAIRTOK[PAIRING][0]], metaB=()=>TOKMETA[PAIRTOK[PAIRING][1]];
   // ---- shared wallet (same across both modes) ----
   // ONLINE flips once the engine speaks. Online state persists to SEPARATE localStorage slots
   // ("...on") so the engine-driven session never clobbers the offline demo save, and vice versa.
   let ONLINE=false;
-  const WALLET={bull:START,uwu:START}; let INVESTED=START*2;
+  const WALLET={bull:START,uwu:START,sol:0}; let INVESTED=START*2;
   const walletKey=()=>ONLINE?"bvu13_wallet_on":"bvu13_wallet";
   function loadWallet(){try{const s=JSON.parse(localStorage.getItem(walletKey()));if(s){WALLET.bull=+s.bull||0;WALLET.uwu=+s.uwu||0;INVESTED=+s.invested||0;}}catch(e){}}
   function saveWallet(){try{localStorage.setItem(walletKey(),JSON.stringify({bull:WALLET.bull,uwu:WALLET.uwu,invested:INVESTED}));}catch(e){}}
@@ -426,7 +436,7 @@
   const aliveN=(w,side)=>{let n=0;for(const p of w.players)if(alive(p)&&p.side===side)n++;return n;};
   // ring of the living + banked of everyone: matches how the engine decides the winner,
   // so an extraction side that banked everything no longer shows $0 while winning.
-  const aggV=(w,side)=>{let v=0;for(const p of w.players){if(p.side!==side)continue;if(alive(p))v+=ring(p);v+=safeV(p);}return v;};
+  const aggV=(w,side)=>{let v=0;for(const p of w.players){if(p.side!==side)continue;if(alive(p))v+=ring(p);}return v;};
 
   function snapshot(w,win){return {round:w.roundNo,winner:win,mult:w.multiplier,rows:w.players.filter(p=>p.deposited>0||p.dmgDealt>0).map(p=>({name:p.name,side:p.side,bull:(p.side==="bull"?(p.unmatched||0):0)+bullTot(p)+(p.isUser?(p.side==="bull"?(p.banked||0):0):0),uwu:(p.side==="unicorn"?(p.unmatched||0):0)+uwuTot(p)+(p.isUser?(p.side==="unicorn"?(p.banked||0):0):0),dep:p.deposited,raided:p.raided,dmg:p.dmgDealt,dead:p.dead,you:p.isUser}))};}
   function endRound(w,winSide){
@@ -467,8 +477,8 @@
     if(w.online){                                    // online: the ENGINE holds your balance and the round
       if(w.phase!=="lobby"){$("#walletNote").textContent="⛔ Deposits closed — fight's on. Next lobby soon.";return;}
       if(!MYWALLET){$("#walletNote").textContent="Connect Phantom first (Devnet wallet panel).";return;}
-      const tk=side==="bull"?"bull":"uwu";
-      if(WALLET[tk]<0.01){$("#walletNote").textContent="No "+tk.toUpperCase()+" in your game wallet — use Faucet then Deposit.";return;}
+      const meta=side==="bull"?metaA():metaB(), tk=({ANSEM:"bull",UWU:"uwu",SOL:"sol"})[meta.label];
+      if(WALLET[tk]<0.01){$("#walletNote").textContent="No "+meta.label+" in your game wallet — use Faucet (or fundMe) first.";return;}
       const stake=Math.min(amt,WALLET[tk],CAP);
       w.lastSide=side; (w.playedSides=w.playedSides||{})[side]=true;
       if(window.__sendEngine)window.__sendEngine({t:"enter",wallet:MYWALLET,arena:PAIRING+"-"+w.mode,mode:w.mode,side:cSide(side),stake,ref:window.__REF||undefined});
@@ -598,8 +608,8 @@
       return;}
     if(lbTab==="alltime"){$("#rnav").style.visibility="hidden";$("#lbColBar").textContent="Wallet now (size)";$("#lbColRd").textContent="Raided (all-time)";
       const atPnl=a=>(a.pnl!==undefined?a.pnl:(a.ret||0)-(a.dep||0));   // engine sends true P&L for real players (counts withdrawals)
-      // rank by wallet SIZE — that's what the # and the bar imply; P/L stays a column
-      const rows=w.accounts.slice().sort((a,b)=>(b.bankroll||0)-(a.bankroll||0)).slice(0,40);
+      // rank by TOTAL P&L (highest first) — the bar still shows wallet size
+      const rows=w.accounts.slice().sort((a,b)=>atPnl(b)-atPnl(a)).slice(0,40);
       const maxV=Math.max(1,...rows.map(a=>a.bankroll||0));
       $("#lbRows").innerHTML=rows.length?rows.map((a,i)=>{const pnl=atPnl(a),pct=a.dep>0?pnl/a.dep*100:0;
         return `<div class="lbRow ${a.you?'you':''}" data-name="${a.name}"><span class="rk">${i+1}</span><span class="who"><span class="dot ${a.side==="bull"?"bull":"uni"}"></span>${a.you?'<span class="youtag">YOU</span> ':''}<span class="nmx">${a.name}</span></span>${compBar(a.side==="bull"?(a.bankroll||0):0,a.side==="bull"?0:(a.bankroll||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}${fmt(Math.abs(pnl))}<div class="pct">${pct>=0?'+':''}${pct.toFixed(0)}% · ${a.wins}W/${a.games}g</div></span><span class="rd">${fmt(a.raided||0)}</span></div>`;}).join(""):'<div class="note">Accounts populate as rounds run.</div>';
@@ -620,10 +630,13 @@
 
   // v counts ring of the living PLUS banked of everyone on the side (the winner is decided
   // on ring+banked, so an extraction side that banked its stack must not display $0)
-  function agg(w,side){let v=0,n=0;for(const p of w.players){if(p.side!==side)continue;if(alive(p)){v+=ring(p);n++;}v+=safeV(p);}return{v,n};}
+  // board strength = value still IN THE RING. Banked (extraction) is reported separately —
+  // cashed-out loot says nothing about who's still standing.
+  function agg(w,side){let v=0,n=0,bk=0;for(const p of w.players){if(p.side!==side)continue;if(alive(p)){v+=ring(p);n++;}bk+=safeV(p);}return{v,n,bk};}
   function sideListHTML(w,side){const list=w.players.filter(p=>alive(p)&&p.side===side).sort((a,b)=>ring(b)-ring(a));const mx=Math.max(CAP,...list.map(ring));
     return list.slice(0,20).map(p=>`<div class="fRow ${p.isUser?'you':''}" data-name="${p.name}"><span class="fn">${p.isUser?'YOU':p.name}</span><span class="hbar"><i style="width:${clamp(ring(p)/mx*100,6,100)}%"></i></span><span class="fv">${fmt(ring(p))}</span></div>`).join("")||'<div class="note" style="margin:2px 0">—</div>';}
   function applyArenaSkin(){
+    document.querySelectorAll("#pairSel button").forEach(b=>b.classList.toggle("on",b.dataset.pair===PAIRING));
     const A=metaA(), B=metaB();
     const set=(sel,txt)=>{const e=document.querySelector(sel);if(e)e.textContent=txt;};
     set(".team.bull h2",A.emoji+" "+A.team); set(".team.uni h2",B.emoji+" "+B.team);
@@ -642,7 +655,10 @@
   function syncArena(){
     const w=W(),B=agg(w,"bull"),U=agg(w,"unicorn"),totv=B.v+U.v||1;
     applyArenaSkin();
-    $("#bullPool").textContent=fmt(B.v);$("#uniPool").textContent=fmt(U.v);$("#bullCount").textContent=B.n;$("#uniCount").textContent=U.n;
+    const xtr=MODE[w.mode].extract;
+    $("#bullPool").innerHTML=fmt(B.v)+(xtr&&B.bk>0.5?' <span style="font-size:.55em;color:var(--gold)">+'+fmt(B.bk)+'💰</span>':"");
+    $("#uniPool").innerHTML=fmt(U.v)+(xtr&&U.bk>0.5?' <span style="font-size:.55em;color:var(--gold)">+'+fmt(U.bk)+'💰</span>':"");
+    $("#bullCount").textContent=B.n;$("#uniCount").textContent=U.n;
     $("#bullList").innerHTML=sideListHTML(w,"bull");$("#uniList").innerHTML=sideListHTML(w,"unicorn");
     $("#strBull").style.width=(B.v/totv*100)+"%";$("#strUni").style.width=(U.v/totv*100)+"%";$("#strBull").textContent="🐂 "+fmt(B.v);$("#strUni").textContent=fmt(U.v)+" 🦄";
     // online the two treasury buckets are deploy-take and convert-fees, not per-token splits
@@ -658,7 +674,7 @@
     $("#miniGrid").innerHTML=list.slice(0,26).map((p,i)=>`<div class="fRow ${alive(p)?'':'dead'} ${p.isUser?'you':''}" data-name="${p.name}" style="opacity:${alive(p)?1:.42}"><span style="color:var(--ink-faint);width:18px;text-align:right">${i+1}</span><span class="aliveDot ${alive(p)?'':'dead'}"></span><span class="dot ${p.side==="bull"?"bull":"uni"}"></span><span class="fn">${p.isUser?'YOU':p.name}${alive(p)?'':' 💀'}</span><span class="fv">${fmt(tot(p)+(p.isUser?(p.banked||0):0))}</span></div>`).join("");
     $("#prRows").innerHTML=w.userRounds.slice(0,12).map((r,i)=>{
       const hits=(r.hits||[]),log=hits.length?hits.slice().reverse().map(h=>{const te=h.tk==="bull"?"🐂":"🦄";return h.dir==="out"?`<div style="color:var(--bull)">→ raided ${fmt(h.amt)} ${te} off ${h.who}</div>`:`<div style="color:var(--danger)">← ${h.who} took ${fmt(h.amt)} ${te}</div>`;}).join(""):'<div style="color:var(--ink-faint)">no hits logged</div>';
-      return `<div class="prRow" style="cursor:pointer"><span>#${r.round} ▸</span><span><span class="dot ${r.side==="bull"?"bull":"uni"}"></span> ${r.side==="bull"?"Bull":"Uni"}</span><span>${fmt(r.dep)}</span><span>${r.outB!==undefined?`<span style="color:var(--bull)">${fmt(r.outB)}🐂</span> <span style="color:var(--uni)">+ ${fmt(r.outU)}🦄</span>`:fmt(r.out)}</span><span class="pnl ${r.pnl>=0?'pos':'neg'}">${r.pnl>=0?'+':'−'}${fmt(Math.abs(r.pnl))}</span></div><div class="hitlog" style="display:none;font-family:var(--mono);font-size:10.5px;padding:4px 0 8px 46px;border-bottom:1px solid var(--line)">${log}</div>`;
+      return `<div class="prRow" style="cursor:pointer"><span>#${r.round} <span style="color:var(--ink-faint);font-size:.8em">${(r.arena||"au").toUpperCase()}</span> ▸</span><span><span class="dot ${r.side==="bull"?"bull":"uni"}"></span> ${r.side==="bull"?"Bull":"Uni"}</span><span>${fmt(r.dep)}</span><span>${r.outB!==undefined?`<span style="color:var(--bull)">${fmt(r.outB)}🐂</span> <span style="color:var(--uni)">+ ${fmt(r.outU)}🦄</span>`:fmt(r.out)}</span><span class="pnl ${r.pnl>=0?'pos':'neg'}">${r.pnl>=0?'+':'−'}${fmt(Math.abs(r.pnl))}</span></div><div class="hitlog" style="display:none;font-family:var(--mono);font-size:10.5px;padding:4px 0 8px 46px;border-bottom:1px solid var(--line)">${log}</div>`;
     }).join("")||'';
     const nP=worlds.normal.userRounds.reduce((s,r)=>s+r.pnl,0), xP=worlds.extraction.userRounds.reduce((s,r)=>s+r.pnl,0);
     $("#prNote").innerHTML=`Realized P/L — <span style="color:var(--bull)">Mayhem ${nP>=0?'+':'−'}$${Math.abs(nP).toFixed(0)}</span> · <span style="color:var(--gold)">Extraction ${xP>=0?'+':'−'}$${Math.abs(xP).toFixed(0)}</span>. Both sides show as separate lines; click a round to see every hit.`;
@@ -666,7 +682,31 @@
   $("#miniGrid").addEventListener("click",e=>{const row=e.target.closest(".fRow");if(!row)return;const w=W();const p=w.players.find(x=>x.name===row.dataset.name);if(p)openProfile(w,p);});
   $("#prRows").addEventListener("click",e=>{const row=e.target.closest(".prRow");if(!row)return;const log=row.nextElementSibling;if(log&&log.classList.contains("hitlog"))log.style.display=log.style.display==="none"?"block":"none";});
   document.addEventListener("click",e=>{const row=e.target.closest(".sideList .fRow");if(!row)return;const w=W();const p=w.players.find(x=>x.name===row.dataset.name&&alive(x));if(p)openProfile(w,p);});
-  function syncDashboard(){const w=W();$("#dashMode").textContent="· "+MODE[w.mode].cap;
+  function renderDashArenas(){
+    const el=$("#dashArenas"), st=window.__ST; if(!el||!st||!st.arenas)return;
+    const pairs=[["au","🐂⚔🦄 ANSEM/UWU"],["as","🐂⚔◎ ANSEM/SOL"],["us","🦄⚔◎ UWU/SOL"]];
+    let tDep=0,tTake=0,tMatch=0;
+    const eco=(id,label)=>{
+      const cards=pairs.map(([pid,pname])=>{
+        const a=st.arenas[pid+"-"+id]; if(!a)return "";
+        const x=a.stats||{deployed:0,take:0,matches:0,winsA:0,winsB:0};
+        tDep+=x.deployed;tTake+=x.take;tMatch+=x.matches;
+        const [ta,tb]=a.tokens||["ansem","uwu"];
+        return `<div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px">
+          <b style="font-size:12px">${pname}</b>
+          <div style="font-family:var(--mono);font-size:11px;color:var(--ink-soft);margin-top:6px;line-height:1.7">
+            deployed <b style="color:var(--ink)">${fmt(x.deployed)}</b><br>
+            house take (0.2%) <b style="color:var(--gold)">${fmt(x.take)}</b><br>
+            matches <b style="color:var(--ink)">${x.matches}</b> · wins ${TOK_META[ta].emoji}${x.winsA} / ${TOK_META[tb].emoji}${x.winsB}</div></div>`;
+      }).join("");
+      return `<div style="margin-top:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--gold)">${label}</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:6px">${cards}</div></div>`;
+    };
+    const normal=eco("normal","MAYHEM"), extr=eco("extraction","EXTRACTION");
+    el.innerHTML=`<div style="background:var(--panel2);border:1px solid var(--line2);border-radius:12px;padding:10px 14px;font-family:var(--mono);font-size:12px">
+      <b>ALL ARENAS</b> · deployed <b>${fmt(tDep)}</b> · total fees <b style="color:var(--gold)">${fmt(tTake)}</b> · matches <b>${tMatch}</b></div>`+normal+extr;
+  }
+  function syncDashboard(){renderDashArenas();const w=W();$("#dashMode").textContent="· "+MODE[w.mode].cap;
     $("#dDepBull").textContent=fmt(w.online?(w.engDepBull||0):w.dep.bull);$("#dDepUni").textContent=fmt(w.online?(w.engDepUwu||0):w.dep.unicorn);$("#dWinBull").textContent=w.matchWins.bull;$("#dWinUni").textContent=w.matchWins.unicorn;
     $("#dDmgBull").textContent=fmt(w.dmgBull);$("#dDmgUni").textContent=fmt(w.dmgUni);
     const house=treasTotal(w),deployed=w.online?(w.engDeployed||0):(w.dep.bull+w.dep.unicorn);
@@ -745,12 +785,19 @@
       $("#walletNote").textContent="Converting "+from.toUpperCase()+" → "+to.toUpperCase()+" (0.3% fee)…"; return; }const c=WALLET[from]*(1-FEE);W().treasury[from]+=WALLET[from]*FEE;WALLET[to]+=c;WALLET[from]=0;$("#walletNote").textContent="Converted wallet "+from.toUpperCase()+" → "+to.toUpperCase()+" (0.3% fee).";saveWallet();syncDOM();}
   $("#convBull").onclick=()=>convertWallet("bull"); $("#convUwu").onclick=()=>convertWallet("uwu");
   $("#fairPill").onclick=verifyLastRound;
+  if($("#btnVerify2"))$("#btnVerify2").onclick=verifyLastRound;
   $("#profBtn").onclick=()=>{$("#profDrop").classList.toggle("on");if(window.drawOverview)drawOverview();};
   $("#addFunds").onclick=()=>{WALLET.bull+=100;WALLET.uwu+=100;INVESTED+=200;$("#walletNote").textContent="Added $100 BULL + $100 UWU.";saveWallet();syncDOM();};
-  document.querySelectorAll(".modes button").forEach(b=>b.onclick=()=>{activeMode=b.dataset.mode;document.querySelectorAll(".modes button").forEach(x=>x.classList.toggle("on",x===b));
+  document.querySelectorAll("#pairSel button").forEach(b=>b.onclick=()=>{
+    if(b.dataset.pair===PAIRING)return;
+    PAIRING=b.dataset.pair; localStorage.setItem("bvu_arena",PAIRING);
+    for(const md in worlds){const w=worlds[md];w.players.length=0;w.userCircles.length=0;w.floaters.length=0;w.particles.length=0;w.byId=new Map();w.phase="lobby";w.sim=null;w.autoRound=-1;}
+    applyArenaSkin(); syncDOM();
+  });
+  document.querySelectorAll(".modes button").forEach(b=>{if(b.closest("#pairSel"))return;b.onclick=()=>{activeMode=b.dataset.mode;document.querySelectorAll(".modes button").forEach(x=>x.classList.toggle("on",x===b));
     W().floaters.length=0;W().particles.length=0;W().shake=0;   // start the newly-shown mode clean (no flood)
     $("#autoConv").classList.toggle("on",!!W().autoConvOn);document.querySelectorAll("#autobuy button").forEach(x=>x.classList.toggle("on",+x.dataset.pct===(W().autoPct||0)));document.querySelectorAll("#autoside button").forEach(x=>x.classList.toggle("on",x.dataset.side===W().autoSide));
-    $("#helpbar").textContent=activeMode==="extraction"?"💰 EXTRACTION — raids bank to your SHARED wallet in real time (survive death with winnings). Separate saved game.":"MAYHEM — raids compound in your at-risk ring (circle grows & changes colour). Separate saved game.";syncDOM();});
+    $("#helpbar").textContent=activeMode==="extraction"?"💰 EXTRACTION — raids bank to your SHARED wallet in real time (survive death with winnings). Separate saved game.":"MAYHEM — raids compound in your at-risk ring (circle grows & changes colour). Separate saved game.";syncDOM();};});
   document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>{activeView=b.dataset.view;document.querySelectorAll(".nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll(".view").forEach(v=>v.classList.remove("on"));$("#view"+activeView[0].toUpperCase()+activeView.slice(1)).classList.add("on");syncDOM();});
   document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{lbTab=b.dataset.tab;document.querySelectorAll(".tabs button").forEach(x=>x.classList.toggle("on",x===b));renderLB();});
   $("#rPrev").onclick=()=>{lbIdx=Math.min(lbIdx+1,W().history.length);renderLB();};
@@ -979,7 +1026,7 @@
     for(const c of w.userCircles){ const dep=c.deposited, out=ring(c)+safeV(c)+(c.unmatched||0);
       const outB=c.bull+(c.sBull||0)+(c.side==="bull"?(c.unmatched||0):0);
       const outU=c.uwu+(c.sUwu||0)+(c.side==="unicorn"?(c.unmatched||0):0);
-      w.userRounds.unshift({round:w.roundNo,side:c.side,dep,out,outB,outU,pnl:out-dep,win:c.side===win,mode:w.mode,hits:(c.hits||[]).slice(-30)});
+      w.userRounds.unshift({round:w.roundNo,arena:PAIRING,side:c.side,dep,out,outB,outU,pnl:out-dep,win:c.side===win,mode:w.mode,hits:(c.hits||[]).slice(-30)});
       if(w.userRounds.length>60)w.userRounds.pop(); }
     // Hall of Fame: best single-round returns, from the authoritative settlement
     for(const p of w.players){
@@ -1014,7 +1061,7 @@
     shareX(variants[(Math.random()*3)|0]);};
   async function verifyLastRound(){
     const w=W();
-    const out={set innerHTML(v){const b=$("#devnetBanner");if(b){b.style.display="block";b.innerHTML=v;}},set textContent(v){this.innerHTML=v;}};
+    const out={set innerHTML(v){const fo=$("#fairOut");if(fo)fo.innerHTML=v;else{const b=$("#devnetBanner");if(b){b.style.display="block";b.innerHTML=v;}}},set textContent(v){this.innerHTML=v;}};
     const R=w.lastRound;
     if(!R){ out.innerHTML="No completed round yet — wait for this one to finish."; return; }
     out.innerHTML="Recomputing "+R.hits.length+" hits from the seed…";
@@ -1175,7 +1222,7 @@
           if(m.community){ w.community=m.community;
             if(m.community.joined>0)ev(w,"🆕 "+m.community.joined+" new wallet"+(m.community.joined>1?"s":"")+" joined — "+m.community.total+" in the arena","round");
             if(m.community.busted>0)ev(w,"💀 "+m.community.busted+" wallet"+(m.community.busted>1?"s":"")+" busted out","bust"); } } }
-      else if(m.t==="balance"){ WALLET.bull=m.bull; WALLET.uwu=m.uwu;
+      else if(m.t==="balance"){ WALLET.bull=m.bull; WALLET.uwu=m.uwu; WALLET.sol=m.sol||0; if($("#wSol"))$("#wSol").textContent=fmt(WALLET.sol);
         if(m.refEarned!==undefined&&$("#refEarned"))$("#refEarned").textContent=fmt(m.refEarned);
         recordBal(m.bull,m.uwu);
         const aw=W();
@@ -1363,6 +1410,8 @@
       })().catch(e=>note("X verify failed: "+String(e.message||e).slice(0,80)));
     })();
     applyX();
+    if($("#refShare"))$("#refShare").onclick=()=>{const u=$("#refLink").textContent.trim();
+      if(u.startsWith("http"))shareX("Two memecoin armies. Real battles. Provably fair. Come fight me in Bulls vs Unicorns ⚔ "+u);};
     if($("#refCopy"))$("#refCopy").onclick=()=>{const u=$("#refLink").textContent.trim();
       if(u.startsWith("http"))navigator.clipboard&&navigator.clipboard.writeText(u).then(()=>{$("#refCopy").textContent="Copied";setTimeout(()=>$("#refCopy").textContent="Copy",1400);});};
     $("#copyRpc").onclick=()=>{ const u=$("#rpcUrl").textContent.trim();
@@ -1430,7 +1479,7 @@
       const map={"ansem-uwu":"au","ansem-sol":"as","uwu-sol":"us"};
       const pr=map[c.dataset.arena];
       if(!pr){alert("3-WAY and FFA need the N-team runner - wiring next.");return;}
-      PAIRING=pr;
+      PAIRING=pr; localStorage.setItem("bvu_arena",PAIRING);
       for(const md of ["normal","extraction"]){const w=worlds[md];
         w.players.length=0;w.userCircles.length=0;w.byId=new Map();w.sim=null;w.phase="lobby";}
       applyArenaSkin();
@@ -1441,6 +1490,7 @@
     if(fits)tx=0; else {tx-=0.5;if(-tx>t.scrollWidth/2)tx=0;}
     t.style.transform="translateX("+tx+"px)";requestAnimationFrame(scroll);})();
   document.querySelectorAll("#autobuy button").forEach(x=>x.classList.toggle("on",+x.dataset.pct===0));
+  applyArenaSkin();
   syncDOM();
 })();
 </script>

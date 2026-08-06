@@ -22,7 +22,7 @@ const PAIRINGS: Record<string, [Tok, Tok]> = { au: ["ansem", "uwu"], as: ["ansem
 const ARENA_IDS = Object.keys(PAIRINGS).flatMap(p => ["normal", "extraction"].map(e => `${p}-${e}`));
 const arenaTokens = (aid: string): [Tok, Tok] => PAIRINGS[aid.split("-")[0]];
 const arenaEco = (aid: string): Mode => aid.split("-")[1] as Mode;
-const FEE = 0.001, CAP = 100, CONVERT_FEE = 0.003, MIN_ENTRY = 0.01;   // convert = PumpSwap pool fee (0.30%), swap executed on-chain at mainnet
+const FEE = 0.002, CAP = 100, CONVERT_FEE = 0.003, MIN_ENTRY = 0.01;   // 0.2% deploy fee (locked by Max)   // convert = PumpSwap pool fee (0.30%), swap executed on-chain at mainnet
 
 // ---- ledger: real players (by wallet) + persistent bot accounts ----
 interface Account { id: string; name: string; side: Side; bull: number; uwu: number; sol: number; isBot: boolean; dep: number; ret: number; games: number; wins: number;
@@ -34,13 +34,16 @@ const NAMES = ["degenDan","sol_sniper","0xViper","moonboy","apeQueen","gm_gary",
 const POP_START = Number(process.env.POP_START || 22), POP_GROWTH = Number(process.env.POP_GROWTH || 0.7), POP_MAX = Number(process.env.POP_MAX || 90);
 const rounds: Record<Mode, number> = { normal: 0, extraction: 0 };
 const roundsByArena: Record<string, number> = {};
+// per-arena economics for the dashboard: deployed, house take, matches, slot wins
+const statsA: Record<string, { deployed: number; take: number; matches: number; winsA: number; winsB: number }> = {};
+const stat = (aid: string) => (statsA[aid] ||= { deployed: 0, take: 0, matches: 0, winsA: 0, winsB: 0 });
 // house take: the 0.2% skimmed on every deploy, tracked per mode
 const treasury: Record<Mode, number> = { normal: 0, extraction: 0 };
 let convFees = 0;   // 1% taken when players swap raided enemy coin back to their own side
 
 function persist() {
   saveSnapshot({ accounts: [...ledger.values()], treasury, totalDeployed, depSide, created,
-                 busted: bustedCount, convFees, rounds });
+                 busted: bustedCount, convFees, rounds, statsA } as any);
 }
 function restore() {
   const snap = loadSnapshot(); if (!snap) return;
@@ -52,6 +55,7 @@ function restore() {
   Object.assign(bustedCount, snap.busted || {});
   Object.assign(rounds, snap.rounds || {});
   convFees = snap.convFees || 0;
+  Object.assign(statsA, (snap as any).statsA || {});
   const players = [...ledger.values()].filter(a => !a.isBot);
   console.log(`restored ledger: ${ledger.size} accounts (${players.length} real) from disk`);
 }
@@ -60,6 +64,9 @@ const depSide: Record<Mode, { bull: number; uwu: number }> = { normal: { bull: 0
 const created: Record<Mode, number> = { normal: 0, extraction: 0 };
 const bustedCount: Record<Mode, number> = { normal: 0, extraction: 0 };
 const BOT_BANK_MIN = Number(process.env.BOT_BANK_MIN || 60), BOT_BANK_MAX = Number(process.env.BOT_BANK_MAX || 240), BOT_STAKE_MIN = Number(process.env.BOT_STAKE_MIN || 6);
+// how many bots actually enter a round, per side (keeps a huge population from flooding one lobby)
+const PLAY_MIN = Number(process.env.PLAY_MIN || 0), PLAY_MAX = Number(process.env.PLAY_MAX || 0);
+const BOT_STAKE_MAX = Number(process.env.BOT_STAKE_MAX || 0);
 const B58 = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ123456789";
 const walletish = () => { let s=""; for(let i=0;i<4;i++) s += B58[(Math.random()*B58.length)|0]; return s + "…" + B58[(Math.random()*B58.length)|0] + B58[(Math.random()*B58.length)|0] + B58[(Math.random()*B58.length)|0]; };
 let seq = 0;
@@ -98,8 +105,8 @@ function leadersFor(aid: string) {
       games: a.games, wins: a.wins, isBot: a.isBot,
       dep: a.dep, ret: a.ret, raided: a.raided||0, best: a.best||0,
       pnl: a.isBot ? a.ret - a.dep : (a.bull + a.uwu + a.sol) + (a.wOut||0) - (a.depIn||0) }))
-    .sort((x, y) => y.value - x.value);
-  const top = rows.slice(0, 12).map((r, i) => ({ ...r, rank: i + 1 }));
+    .sort((x, y) => y.pnl - x.pnl);          // board ranks by total P&L
+  const top = rows.slice(0, 40).map((r, i) => ({ ...r, rank: i + 1 }));
   // real players always appear, even when they're not in the top 12 — otherwise you can play a
   // round and never see yourself on the board
   for (let i = 0; i < rows.length; i++) {
@@ -131,6 +138,7 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   const BUST = Number(process.env.BOT_BUST || Math.min(5, BOT_BANK_MIN * 0.4));
   for (const a of botsFor(aid)) if (a.bull + a.uwu + a.sol < BUST) { ledger.delete(a.id); busted++; bustedCount[mode]++; }
   rounds[mode]++; roundsByArena[aid] = (roundsByArena[aid] || 0) + 1;
+  { const st = stat(aid); st.matches++; if (r.winner === "bull") st.winsA++; else st.winsB++; }
   const popCap = Math.min(POP_MAX, POP_START + Math.floor((roundsByArena[aid] || 0) * POP_GROWTH));
   const target = Math.max(Number(process.env.POP_MIN || 12), popCap - realPlaying * 2);
   let joined = 0;
@@ -155,15 +163,27 @@ for (const aid of ARENA_IDS) if (botsFor(aid).length === 0) seedBots(aid, SEED);
 function botsEnter(aid: string) {
   const rn = runners[aid]; if (rn.state.phase !== "lobby") return;
   const [tokA, tokB] = arenaTokens(aid);
-  for (const a of botsFor(aid)) {
-    if (Math.random() < 0.25) continue;                     // most wallets play each round
+  let pool = botsFor(aid);
+  if (PLAY_MAX > 0) {   // cap entrants per side: pick a random slice of the community each round
+    const want = () => PLAY_MIN + Math.floor(Math.random() * Math.max(1, PLAY_MAX - PLAY_MIN + 1));
+    const pick = (side: Side) => {
+      const arr = pool.filter(b => b.side === side).sort(() => Math.random() - 0.5);
+      return arr.slice(0, want());
+    };
+    pool = [...pick("bull"), ...pick("uwu")];
+  }
+  for (const a of pool) {
+    if (PLAY_MAX === 0 && Math.random() < 0.25) continue;   // legacy behaviour when uncapped
     const myTok = a.side === "bull" ? tokA : tokB;
     const bankroll = a[FIELD[myTok]];
-    const stake = Math.min(Math.max(BOT_STAKE_MIN, bankroll * (0.18 + Math.random()*0.37)), CAP, bankroll);
+    const stake = BOT_STAKE_MAX > 0
+      ? Math.min(BOT_STAKE_MIN + Math.random() * (BOT_STAKE_MAX - BOT_STAKE_MIN), bankroll)
+      : Math.min(Math.max(BOT_STAKE_MIN, bankroll * (0.18 + Math.random()*0.37)), CAP, bankroll);
     if (stake < BOT_STAKE_MIN) continue;
     a[FIELD[myTok]] -= stake;
     const mode = arenaEco(aid);
-    a.dep += stake; treasury[mode] += stake * FEE; totalDeployed[mode] += stake; depSide[mode][a.side] += stake;
+    a.dep += stake; treasury[mode] += stake * FEE; totalDeployed[mode] += stake;
+    stat(aid).deployed += stake; stat(aid).take += stake * FEE; depSide[mode][a.side] += stake;
     rn.enter(`${a.id}|${a.side}`, a.side, stake * (1 - FEE));   // net of deploy fee
   }
 }
@@ -200,6 +220,7 @@ setInterval(() => {
     // who's already in the lobby, so the arena shows fighters gathering instead of sitting empty
     list: s.phase === "lobby" ? s.entries.slice(0, 40).map(e => ({ id: e.id, name: nameFor(e.id), side: e.side, stake: e.stake })) : [],
     leaders: leadersFor(aid),
+    stats: stat(aid),
     house: { take: treasury[mode], conv: convFees, deployed: totalDeployed[mode],
              depBull: depSide[mode].bull, depUwu: depSide[mode].uwu,
              accounts: botsFor(aid).length,
@@ -273,6 +294,7 @@ wss.on("connection", (ws) => {
         }
         const eco = arenaEco(aid);
         treasury[eco] += fee - refCut; totalDeployed[eco] += stake; depSide[eco][m.side as Side] += stake;
+        stat(aid).deployed += stake; stat(aid).take += fee;
         rn.enter(`${m.wallet}|${m.side}`, m.side, stake * (1 - FEE));
         ws.send(JSON.stringify({ t: "entered", arena: aid, mode: arenaEco(aid), side: m.side, stake }));
         pushBalance(m.wallet); persist();
