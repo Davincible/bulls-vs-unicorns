@@ -917,12 +917,17 @@ wss.on("connection", (ws, req) => {
         try { const sig = await withdraw(m.wallet, m.side, amt); a.wOut = (a.wOut||0) + amt; persist(); ws.send(JSON.stringify({ t: "withdrawDone", side: m.side, amount: amt, sig })); }
         catch (e) { if (m.side === "bull") a.bull += amt; else a.uwu += amt; pushBalance(m.wallet);
                     ws.send(JSON.stringify({ t: "error", msg: "Withdraw failed: " + (e as Error).message })); }
-      } else if (m.t === "convert") {          // { wallet, to:'bull'|'uwu', amount? }
-        // You raid the ENEMY's coin, so your own side's token drains while theirs piles up.
-        // Without this you eventually cannot deploy on your own side at all.
-        const to: Side = m.to === "bull" ? "bull" : "uwu";
-        const a = acct(m.wallet, to);
-        const avail = to === "bull" ? a.uwu : a.bull;
+      } else if (m.t === "convert") {          // { wallet, to:'bull'|'uwu'|'sol', from?, amount? }
+        // You raid the ENEMY's coin, so your own side's token drains while theirs piles up. Convert
+        // swaps a raided coin back so you can keep deploying. Token-GENERAL now: the old handler only
+        // knew bull<->uwu, so on the live UWU/SOL arena a player holding raided SOL had no way back
+        // and the button did nothing. `from` may be explicit; else we take the largest other balance.
+        const CFIELDS = ["bull", "uwu", "sol"] as const;
+        const to = (CFIELDS.includes(m.to) ? m.to : "uwu") as Field;
+        const a = acct(m.wallet, (to === "sol" ? "uwu" : to) as Side);
+        let from = (CFIELDS.includes(m.from) && m.from !== to ? m.from : null) as Field | null;
+        if (!from) from = CFIELDS.filter(f => f !== to).sort((x, y) => (a[y] || 0) - (a[x] || 0))[0] as Field;
+        const avail = a[from] || 0;
         const amt = Math.min(Number(m.amount) > 0 ? Number(m.amount) : avail, avail);
         if (amt < 0.01) return ws.send(JSON.stringify({ t: "error", msg: "Nothing to convert." }));
         // ONE conversion per round. Each one is a real on-chain swap costing gas and crossing a
@@ -936,18 +941,21 @@ wss.on("connection", (ws, req) => {
         lastConvertAt.set(m.wallet, Date.now());
 
         // Debit first so the balance can't be spent twice while the swap is in flight.
-        if (to === "bull") a.uwu -= amt; else a.bull -= amt;
+        a[from] -= amt;
         pushBalance(m.wallet);
 
+        // map a ledger field to its on-chain mint + price token. `sol` is native, swapped as wSOL.
         const mi = mints();
-        const fromMint = to === "bull" ? mi?.uwu : mi?.bull;
-        const toMint   = to === "bull" ? mi?.bull : mi?.uwu;
-        const oracle = to === "bull" ? { from: "uwu" as const, to: "ansem" as const }
-                                     : { from: "ansem" as const, to: "uwu" as const };
+        const WSOL = "So11111111111111111111111111111111111111112";
+        const mintOf = (f: Field) => f === "bull" ? mi?.bull : f === "uwu" ? mi?.uwu : WSOL;
+        const priceTokOf = (f: Field) => (f === "bull" ? "ansem" : f) as "ansem" | "uwu" | "sol";
+        const decOf = (f: Field) => f === "sol" ? 9 : (mi?.decimals ?? 6);   // wSOL 9 dp, our tokens 6
+        const fromMint = mintOf(from), toMint = mintOf(to);
         let res: Awaited<ReturnType<typeof swapExact>>;
         try {
           res = (fromMint && toMint)
-            ? await swapExact(vaultKeypair(), fromMint, toMint, amt, mi!.decimals, oracle)
+            ? await swapExact(vaultKeypair(), fromMint, toMint, amt, decOf(from),
+                              { from: priceTokOf(from), to: priceTokOf(to) })
             : { ok: false, outAmount: 0, priceImpactPct: 0, simulated: false, error: "mints not configured" };
         } catch (e) {
           res = { ok: false, outAmount: 0, priceImpactPct: 0, simulated: false, error: (e as Error).message };
@@ -955,7 +963,7 @@ wss.on("connection", (ws, req) => {
 
         if (!res.ok) {
           // put it straight back — the player must never lose money to a failed swap
-          if (to === "bull") a.uwu += amt; else a.bull += amt;
+          a[from] += amt;
           lastConvertAt.delete(m.wallet);          // a failed attempt shouldn't burn their turn
           pushBalance(m.wallet); persist();
           return ws.send(JSON.stringify({ t: "error", msg: "Convert failed: " + (res.error || "swap unavailable") }));
@@ -965,9 +973,9 @@ wss.on("connection", (ws, req) => {
         // their amount rather than the vault's. Our house cut is taken on top of that.
         const fee = res.outAmount * CONVERT_FEE;
         const credited = Math.max(0, res.outAmount - fee);
-        if (to === "bull") a.bull += credited; else a.uwu += credited;
-        addConvFees(fee * usdPerUnit((to === "bull" ? "bull" : "uwu") as Field));
-        ws.send(JSON.stringify({ t: "converted", to, amount: amt, got: credited, fee,
+        a[to] += credited;
+        addConvFees(fee * usdPerUnit(to));
+        ws.send(JSON.stringify({ t: "converted", to, from, amount: amt, got: credited, fee,
                                  priceImpact: res.priceImpactPct, simulated: res.simulated, sig: res.sig }));
         pushBalance(m.wallet); persist();
       } else if (m.t === "chainBalance") {                    // on-chain (Phantom) balances

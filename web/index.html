@@ -979,11 +979,19 @@
   $("#joinUni").onclick=$("#joinUni2").onclick=()=>deploySide("unicorn");
   $("#joinBull").ondblclick=$("#joinBull2").ondblclick=()=>unselSide("bull");
   $("#joinUni").ondblclick=$("#joinUni2").ondblclick=()=>unselSide("unicorn");
-  function convertWallet(to){const from=to==="bull"?"uwu":"bull";if(WALLET[from]<=0.01){$("#walletNote").textContent="No "+from.toUpperCase()+" to convert.";return;}
+  // ledger field ("bull"/"uwu"/"sol") <-> price-token ("ansem"/"uwu"/"sol"). The two convert buttons
+  // are "to side A" and "to side B" of whatever arena you are in, so on UWU/SOL they swap SOL<->UWU,
+  // not the old hardcoded ANSEM<->UWU that did nothing here.
+  const TOK2FIELD={ansem:"bull",uwu:"uwu",sol:"sol"};
+  function arenaFields(){const pt=PAIRTOK[PAIRING]||PAIRTOK.au;return [TOK2FIELD[pt[0]],TOK2FIELD[pt[1]]];}
+  function convertWallet(toSlot){                 // toSlot: 0 = side A, 1 = side B
+    const [fa,fb]=arenaFields(); const to=toSlot===0?fa:fb, from=toSlot===0?fb:fa;
+    if(WALLET[from]<=0.01){$("#walletNote").textContent="No "+from.toUpperCase()+" to convert.";return;}
     if(W().online){ if(!MYWALLET){$("#walletNote").textContent="Connect a wallet first.";return;}
-      if(window.__sendEngine)window.__sendEngine({t:"convert",wallet:MYWALLET,to});
-      $("#walletNote").textContent="Converting "+from.toUpperCase()+" → "+to.toUpperCase()+" (0.3% fee)…"; return; }const c=WALLET[from]*(1-FEE);W().treasury[from]+=WALLET[from]*FEE;WALLET[to]+=c;WALLET[from]=0;$("#walletNote").textContent="Converted wallet "+from.toUpperCase()+" → "+to.toUpperCase()+" (0.3% fee).";saveWallet();syncDOM();}
-  $("#convBull").onclick=()=>convertWallet("bull"); $("#convUwu").onclick=()=>convertWallet("uwu");
+      if(window.__sendEngine)window.__sendEngine({t:"convert",wallet:MYWALLET,to,from});
+      $("#walletNote").textContent="Converting "+from.toUpperCase()+" → "+to.toUpperCase()+" (0.3% fee)…"; return; }
+    const c=WALLET[from]*(1-FEE);W().treasury[from]=(W().treasury[from]||0)+WALLET[from]*FEE;WALLET[to]+=c;WALLET[from]=0;$("#walletNote").textContent="Converted wallet "+from.toUpperCase()+" → "+to.toUpperCase()+" (0.3% fee).";saveWallet();syncDOM();}
+  $("#convBull").onclick=()=>convertWallet(0); $("#convUwu").onclick=()=>convertWallet(1);
   $("#fairPill").onclick=verifyLastRound;
   if($("#btnVerify2"))$("#btnVerify2").onclick=verifyLastRound;
   $("#profBtn").onclick=()=>{$("#profDrop").classList.toggle("on");if(window.drawOverview)drawOverview();};
@@ -1722,9 +1730,12 @@
           const played=aw.playedSides||{};
           const both=played.bull&&played.unicorn;
           const mySide=!both?(aw.lastSide||((aw.autoSide&&aw.autoSide!=="both")?aw.autoSide:null)):null;
-          if(mySide){const tk2=mySide==="bull"?"bull":"uwu", off=tk2==="bull"?"uwu":"bull";
+          if(mySide){
+            // arena-token aware: side "bull"/"unicorn" is slot A/B, mapped to THIS arena's tokens,
+            // so on UWU/SOL it auto-swaps raided SOL back to UWU rather than a token not in play
+            const [fa,fb]=arenaFields(); const tk2=mySide==="bull"?fa:fb, off=mySide==="bull"?fb:fa;
             if(WALLET[off]>1&&!window.__convBusy){window.__convBusy=true;setTimeout(()=>window.__convBusy=false,5000);
-              send({t:"convert",wallet:PK,to:tk2});}}
+              send({t:"convert",wallet:PK,to:tk2,from:off});}}
         }
         INVESTED=(m.depIn||0)-(m.wOut||0);          // real cost basis: deposited minus withdrawn
         saveWallet(); syncDOM(); }
