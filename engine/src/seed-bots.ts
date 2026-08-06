@@ -12,7 +12,10 @@
 import { Connection, Transaction, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { RPC } from "./chain.ts";
-import { faucet, withdrawSol, solBalance, chainReady, vaultPubkey, transferFromVault } from "./chain-ops.ts";
+import { faucet, withdrawSol, solBalance, chainReady, vaultPubkey, transferFromVault,
+         sendSolFrom, transferTokensFrom, tokenBalanceOf } from "./chain-ops.ts";
+import { Keypair } from "@solana/web3.js";
+import { readFileSync as _read, existsSync as _exists } from "node:fs";
 import { ensureBotWallets, keypairOf, writeBotPool } from "./bot-wallets.ts";
 
 const N = Number(process.env.BOT_WALLETS || 20);
@@ -22,6 +25,13 @@ const DEPOSIT_EACH = Number(process.env.DEPOSIT_EACH || 150);
 // Native SOL deposited as GAME balance (not fees). Arenas with a SOL side need this or that
 // army can never deploy. Ledger `sol` is USD units, so 0.1 SOL ~ $7 at current prices.
 const SOL_DEPOSIT = Number(process.env.SOL_DEPOSIT || 0);
+// SEED WALLET: a keypair the OPERATOR holds, used to fund the bots. Without it the float has to sit
+// in the VAULT first - and the vault key lives on the server, so a server compromise would reach the
+// entire float instead of only what players have actually deposited.
+const SEED_KEYPAIR = process.env.SEED_KEYPAIR || "";
+const seedKp: Keypair | null = SEED_KEYPAIR && _exists(SEED_KEYPAIR)
+  ? Keypair.fromSecretKey(Uint8Array.from(JSON.parse(_read(SEED_KEYPAIR, "utf8"))))
+  : null;
 const ENGINE_WS = process.env.ENGINE_WS || "wss://bulls-arena-engine.fly.dev";
 const IS_TEST_CHAIN = /localhost|127\.0\.0\.1|devnet|testnet/i.test(RPC);
 
@@ -64,10 +74,19 @@ async function main() {
   // confusing TokenAccountNotFoundError. Set CHAIN_CONFIG=./devnet-public.json for public devnet.
   console.log(`chain config: ${process.env.CHAIN_CONFIG || "devnet.json (default)"}  rpc: ${RPC.replace(/([?&](api-key|key|token)=)[^&]+/i, "$1***")}`);
 
-  const vaultSol = await solBalance(vaultPubkey());
+  // report on whichever wallet is actually paying
+  const funder = seedKp ? seedKp.publicKey.toBase58() : vaultPubkey();
+  if (seedKp) {
+    console.log(`funding from SEED wallet ${funder}`);
+    console.log(`  (the vault stays clean - it only ever receives player/bot deposits)`);
+    for (const side of ["bull", "uwu"] as const) {
+      console.log(`  seed holds ${(await tokenBalanceOf(funder, side)).toFixed(2)} ${side}`);
+    }
+  }
+  const vaultSol = await solBalance(funder);
   const needSol = N * SOL_EACH;
-  console.log(`vault ${vaultPubkey()} holds ${vaultSol.toFixed(4)} SOL; seeding ${N} wallets needs ~${needSol.toFixed(2)} SOL`);
-  if (vaultSol < needSol + 0.1) { console.error("vault SOL too low - top it up first"); process.exit(1); }
+  console.log(`funder holds ${vaultSol.toFixed(4)} SOL; seeding ${N} wallets needs ~${needSol.toFixed(2)} SOL`);
+  if (vaultSol < needSol + 0.05) { console.error("funder SOL too low - top it up first"); process.exit(1); }
 
   const rows = ensureBotWallets(N);
   const ws = new WebSocket(ENGINE_WS);
@@ -99,14 +118,19 @@ async function main() {
 
       // 1. SOL for its own transaction fees
       const haveSol = await solBalance(w);
-      if (haveSol < SOL_EACH * 0.5) { await step("sol", () => withdrawSol(w, SOL_EACH)); await sleep(800); }
+      if (haveSol < SOL_EACH * 0.5) {
+        await step("sol", () => seedKp ? sendSolFrom(seedKp, w, SOL_EACH) : withdrawSol(w, SOL_EACH));
+        await sleep(800);
+      }
 
       // 2. tokens. On a test chain the vault holds mint authority so we can mint. On mainnet
       //    ANSEM/UWU have NO mint authority (fixed supply), so the float must be tokens we actually
       //    bought and now transfer out of the vault.
-      const give = IS_TEST_CHAIN
-        ? (side: "bull" | "uwu") => faucet(w, side, TOK_EACH)
-        : (side: "bull" | "uwu") => transferFromVault(w, side, TOK_EACH);
+      const give = seedKp
+        ? (side: "bull" | "uwu") => transferTokensFrom(seedKp, w, side, TOK_EACH)   // operator float
+        : IS_TEST_CHAIN
+          ? (side: "bull" | "uwu") => faucet(w, side, TOK_EACH)                     // devnet: mint
+          : (side: "bull" | "uwu") => transferFromVault(w, side, TOK_EACH);         // legacy fallback
       await step("fund bull", () => give("bull")); await sleep(800);
       await step("fund uwu",  () => give("uwu"));  await sleep(800);
 
@@ -115,7 +139,8 @@ async function main() {
       //     this the SOL army can never deploy, every round is one-sided, and the whole arena busts.
       if (SOL_DEPOSIT > 0) {
         try {
-          await step("sol float", () => withdrawSol(w, SOL_DEPOSIT + 0.01));   // +fee headroom
+          await step("sol float", () => seedKp ? sendSolFrom(seedKp, w, SOL_DEPOSIT + 0.01)
+                                              : withdrawSol(w, SOL_DEPOSIT + 0.01));
           await sleep(900);
           const built = await ask(ws, { t: "buildSolDeposit", wallet: w, sol: SOL_DEPOSIT }, ["solDepositTx", "error"], 30000);
           if (built?.t === "solDepositTx") {

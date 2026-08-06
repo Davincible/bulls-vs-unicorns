@@ -1,6 +1,6 @@
 // On-chain operations for the custodial devnet vault: faucet, deposit-verify, withdraw.
 // All amounts at this API are WHOLE TOKENS (numbers); base-unit conversion is internal.
-import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, Keypair } from "@solana/web3.js";
 import {
   getOrCreateAssociatedTokenAccount, getAssociatedTokenAddress, mintTo, transfer,
   createAssociatedTokenAccountInstruction, createTransferCheckedInstruction, getAccount,
@@ -147,6 +147,41 @@ export async function withdraw(walletB58: string, side: "bull" | "uwu", amount: 
   const vaultAta = await getOrCreateAssociatedTokenAccount(conn, vault, mint, vault.publicKey);
   const sig = await transfer(conn, vault, vaultAta.address, userAta.address, vault, toBase(amount));
   return sig;
+}
+
+// ---- funding from a wallet WE control that is NOT the vault -------------------------------
+// The vault key lives on the server, so anything it holds is exposed to server compromise. Funding
+// bots straight from a seed wallet the operator holds means the float never sits under the server's
+// key: the vault only ever receives money that has been formally deposited.
+export async function sendSolFrom(payer: Keypair, toB58: string, sol: number): Promise<string> {
+  const conn = connection();
+  const tx = new Transaction().add(SystemProgram.transfer({
+    fromPubkey: payer.publicKey, toPubkey: new PublicKey(toB58),
+    lamports: Math.round(sol * LAMPORTS_PER_SOL) }));
+  tx.feePayer = payer.publicKey;
+  tx.recentBlockhash = (await conn.getLatestBlockhash("confirmed")).blockhash;
+  tx.sign(payer);
+  const sig = await conn.sendRawTransaction(tx.serialize());
+  await conn.confirmTransaction(sig, "confirmed");
+  return sig;
+}
+
+export async function transferTokensFrom(payer: Keypair, toB58: string, side: "bull" | "uwu", amount: number): Promise<string> {
+  if (!cfg) throw new Error("chain not configured");
+  const conn = connection();
+  const mint = mintFor(cfg, side);
+  const from = await getOrCreateAssociatedTokenAccount(conn, payer, mint, payer.publicKey);
+  const to = await getOrCreateAssociatedTokenAccount(conn, payer, mint, new PublicKey(toB58));  // payer covers rent
+  const have = toWhole(BigInt(from.amount.toString()));
+  if (have < amount) throw new Error(`seed wallet holds ${have.toFixed(4)} ${side}, needs ${amount}`);
+  return transfer(conn, payer, from.address, to.address, payer, toBase(amount));
+}
+
+export async function tokenBalanceOf(ownerB58: string, side: "bull" | "uwu"): Promise<number> {
+  if (!cfg) return 0;
+  const ata = await getAssociatedTokenAddress(mintFor(cfg, side), new PublicKey(ownerB58));
+  try { const b = await connection().getTokenAccountBalance(ata); return Number(b.value.amount) / UNIT; }
+  catch { return 0; }
 }
 
 // Send tokens the VAULT ALREADY HOLDS to a wallet. This is how bots get funded on mainnet: ANSEM

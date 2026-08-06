@@ -217,10 +217,11 @@ function botsEnterN(aid: string) {
     if (PLAY_MAX === 0 && Math.random() < 0.25) continue;
     const team = (a as any).nteam ?? 0;
     const tok = def.toks[def.teams === 0 ? 0 : team] || def.toks[0];
-    if (a[FIELD[tok]] < BOT_STAKE_MIN) {            // swap raided enemy coin back to our army's token
+    const topUpN = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(FIELD[tok] as Field, BOT_STAKE_USD_MIN);
+    if (a[FIELD[tok]] < topUpN) {                   // swap raided enemy coin back to our army's token
       for (const other of def.toks) {
         if (other === tok) continue;
-        if (a[FIELD[other]] > BOT_STAKE_MIN) {
+        if (a[FIELD[other]] > topUpN) {
           const swap = a[FIELD[other]] * (0.5 + Math.random() * 0.5);
           const fee = swap * CONVERT_FEE;
           a[FIELD[other]] -= swap; a[FIELD[tok]] += swap - fee; addConvFees(fee * usdPerUnit(FIELD[tok] as Field));
@@ -229,13 +230,14 @@ function botsEnterN(aid: string) {
       }
     }
     const bankroll = a[FIELD[tok]];
+    const minStakeN = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(FIELD[tok] as Field, BOT_STAKE_USD_MIN);
     const stake = BOT_STAKE_MAX > 0
-      ? Math.min(BOT_STAKE_MIN + Math.random() * (BOT_STAKE_MAX - BOT_STAKE_MIN), bankroll)
-      : Math.min(Math.max(BOT_STAKE_MIN, bankroll * (0.18 + Math.random() * 0.37)), CAP, bankroll);
-    if (stake < BOT_STAKE_MIN) continue;
+      ? Math.min(minStakeN + Math.random() * (BOT_STAKE_MAX - minStakeN), bankroll)
+      : Math.min(Math.max(minStakeN, bankroll * (0.18 + Math.random() * 0.37)), CAP, bankroll);
+    if (!(minStakeN > 0) || stake < minStakeN) continue;
     a[FIELD[tok]] -= stake;
     const eco = NARENAS[aid].eco;
-    const usdA = stake * usdPerUnit(FIELD[myTok] as Field);
+    const usdA = stake * usdPerUnit(FIELD[tok] as Field);
     a.dep += stake; treasury[eco] += usdA * FEE; totalDeployed[eco] += usdA;
     stat(aid).deployed += usdA; stat(aid).take += usdA * FEE;
     rn.enter(`${a.id}|${def.teams === 0 ? 0 : team}`, def.teams === 0 ? 0 : team, stake * (1 - FEE));
