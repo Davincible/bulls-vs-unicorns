@@ -42,11 +42,21 @@ export function poolBalance(field: Field): number {
   return poolAccounts().reduce((n, a) => n + (a[field] || 0), 0);
 }
 
-/** Take up to `want` of `field` out of the pool. Returns what was actually granted (may be less,
- *  or 0, when the pool is exhausted - bots then simply play smaller or sit out). */
+// A single bot must never be able to swallow the whole float. Without this the first ~20 bots took
+// everything (3000 -> 0 in 16 minutes) and every later bot got a zero bank, which emptied the
+// 2-team arenas completely. Capping each draw at a share of what's left makes the float spread
+// across the population and degrade smoothly: a thin pool means many small bots, not a few rich
+// ones and a dead arena.
+const SPREAD = Number(process.env.BOT_BANK_SPREAD || 40);   // ~how many bots the float should cover
+
+/** Take up to `want` of `field` out of the pool, never more than a fair share of what remains.
+ *  Returns what was actually granted (may be less, or 0 when truly exhausted). */
 export function drawBank(field: Field, want: number): number {
   if (!(want > 0)) return 0;
-  let left = want;
+  const share = poolBalance(field) / Math.max(1, SPREAD);
+  const target = Math.min(want, share);      // what we'll try to grant
+  if (!(target > 0)) return 0;
+  let left = target;
   for (const a of poolAccounts()) {
     if (left <= 0) break;
     const take = Math.min(a[field] || 0, left);
@@ -54,7 +64,7 @@ export function drawBank(field: Field, want: number): number {
     a[field] -= take;
     left -= take;
   }
-  return want - left;
+  return target - left;                      // granted = target minus whatever we couldn't source
 }
 
 /** Give money back to the pool (a bot being pruned, or handing back an unused bank). */
