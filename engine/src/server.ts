@@ -4,6 +4,7 @@
 // and can independently recompute the round from the revealed seed.
 // On-chain: real SPL deposits credit the ledger; withdrawals are paid out of the vault.
 import { WebSocketServer, WebSocket } from "ws";
+import { createServer } from "node:http";
 import { RoundRunner, newRoundConfig } from "./round.ts";
 import type { RoundResult, RoundState } from "./round.ts";
 import type { Mode, Side } from "./game.ts";
@@ -318,9 +319,29 @@ setInterval(() => {
   broadcast({ t: "state", arenas, normal: snap("au-normal"), extraction: snap("au-extraction") });
 }, 1000);
 
-// ---- websocket ----
-const wss = new WebSocketServer({ port: PORT });
-wss.on("error", (e) => {
+// ---- http + websocket on one port ----
+// The engine speaks ws for the game, but hosts (Fly/Railway/VPS) need a plain HTTP liveness probe,
+// and the solvency report should be publicly readable (proof-of-reserves). So we own an http.Server
+// for GET /health and GET /solvency and attach the ws server to it.
+const bootAt = Date.now();
+const httpServer = createServer((req, res) => {
+  const cors = { "access-control-allow-origin": "*", "content-type": "application/json" };
+  const url = (req.url || "/").split("?")[0];
+  if (req.method !== "GET") { res.writeHead(405, cors); return res.end('{"error":"GET only"}'); }
+  if (url === "/health" || url === "/") {
+    // 200 only when solvent — a frozen book is unhealthy so a host can page on it
+    const body = { ok: !isFrozen(), chain: chainReady(), vault: chainReady() ? vaultPubkey() : null,
+                   arenas: ARENA_IDS.length + NARENA_IDS.length, frozen: isFrozen(),
+                   uptimeSec: Math.floor((Date.now() - bootAt) / 1000) };
+    res.writeHead(isFrozen() ? 503 : 200, cors); return res.end(JSON.stringify(body));
+  }
+  if (url === "/solvency") {
+    res.writeHead(200, cors);
+    return res.end(JSON.stringify({ frozen: isFrozen(), vault: chainReady() ? vaultPubkey() : null, report: reconLatest() }));
+  }
+  res.writeHead(404, cors); res.end('{"error":"not found"}');
+});
+httpServer.on("error", (e) => {
   const err = e as NodeJS.ErrnoException;
   // Never limp along on a taken port: a second engine writing the same ledger file would
   // clobber real balances. Die loudly instead.
@@ -328,8 +349,11 @@ wss.on("error", (e) => {
     console.error(`FATAL: port ${PORT} is already in use — another engine is running. Exiting so the ledger stays consistent.`);
     process.exit(1);
   }
-  console.error("wss error:", err.message);
+  console.error("http error:", err.message);
 });
+const wss = new WebSocketServer({ server: httpServer });
+wss.on("error", (e) => console.error("wss error:", (e as Error).message));
+httpServer.listen(PORT);
 wss.on("connection", (ws) => {
   clients.add(ws);
   ws.send(JSON.stringify({ t: "chain", ready: chainReady(), vault: chainReady() ? vaultPubkey() : null, mints: mints(), rpc: RPC }));
