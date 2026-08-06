@@ -236,20 +236,15 @@
             <input id="stakeRange" type="range" min="0.01" max="100" step="0.01" value="5" style="flex:1;accent-color:var(--gold)">
             <button class="abtn ghost" id="stakeMax" style="padding:6px 10px;font-size:11px">Max</button>
           </div>
-          <label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px;color:var(--ink-soft);cursor:pointer"><input type="checkbox" id="autoTick" style="accent-color:var(--gold)"> Auto-deploy this amount to my selected side(s) each lobby</label>
+          <label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px;color:var(--ink-soft);cursor:pointer"><input type="checkbox" id="autoTick" style="accent-color:var(--gold)"> <b>Repeat every round</b> — redeploy this amount to the same side(s) each lobby</label>
+          <div class="seg" id="autobuy" style="margin-top:6px"><button data-pct="0" class="on">Fixed $</button><button data-pct="0.05">5% of wallet</button><button data-pct="0.1">10%</button><button data-pct="0.25">25%</button></div>
+          <div id="autoside" style="display:none"><button data-side="both" class="on"></button></div>
+          <div class="toggle" id="autoConv"><span class="sw"></span><span>Auto-convert my raids → my team's coin</span></div>
+          <div class="note" style="font-size:10px">Turns coins you steal into your own side's coin each raid (−0.3% fee).</div>
+
           <div class="row2" id="deploy2" style="margin-top:8px"><button class="abtn jb" id="joinBull">Deploy BULL 🐂</button><button class="abtn ju" id="joinUni">Deploy UWU 🦄</button></div>
           <div id="deployN" style="display:none;margin-top:8px"></div>
           <div class="note" id="walletNote">Deploy on BOTH sides at once if you like. Deposits open only in the lobby.</div>
-        </div>
-        <div class="panelC">
-          <h3>Auto-deploy</h3>
-          <span class="wlabel" style="margin-top:0">Each lobby, deploy % of wallet…</span>
-          <div class="seg" id="autobuy"><button data-pct="0" class="on">Off</button><button data-pct="0.05">5%</button><button data-pct="0.1">10%</button><button data-pct="0.25">25%</button></div>
-          <span class="wlabel">…to which side</span>
-          <div class="seg" id="autoside"><button data-side="bull">🐂 Bulls</button><button data-side="unicorn">🦄 Unicorns</button><button data-side="both" class="on">Both</button></div>
-          <div class="toggle" id="autoConv"><span class="sw"></span><span>Auto-convert my raids → my team's coin</span></div>
-          <div class="note">Auto-convert turns coins you steal into your own side's coin each raid (−0.3% fee).</div>
-
         </div>
       </div>
 
@@ -892,8 +887,8 @@
     setStake(Math.min(STAKE_MAX,avail||0.01));
   };
   setStake(5);
-  $("#autobuy").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;W().autoPct=+b.dataset.pct;document.querySelectorAll("#autobuy button").forEach(x=>x.classList.toggle("on",x===b));$("#walletNote").textContent=+b.dataset.pct>0?("Auto-deploy ("+MODE[activeMode].cap+") on: "+(+b.dataset.pct*100)+"% each round."):"Auto-deploy off for "+MODE[activeMode].cap+".";});
-  $("#autoside").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;W().autoSide=b.dataset.side;document.querySelectorAll("#autoside button").forEach(x=>x.classList.toggle("on",x===b));});
+  $("#autobuy").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;W().autoPct=+b.dataset.pct;document.querySelectorAll("#autobuy button").forEach(x=>x.classList.toggle("on",x===b));$("#walletNote").textContent=+b.dataset.pct>0?("Repeat will use "+(+b.dataset.pct*100)+"% of your wallet each round."):"Repeat will use the fixed amount above.";});
+  // side selection now comes from the deploy buttons themselves (SEL), so there is no separate picker
   $("#autoConv").classList.toggle("on",!!W().autoConvOn);
   if($("#autoConv"))$("#autoConv").classList.toggle("on",!!W().autoConvOn);
   $("#autoConv").addEventListener("click",()=>{const w=W();w.autoConvOn=!w.autoConvOn;w.userCircles.forEach(c=>c.autoConv=w.autoConvOn);$("#autoConv").classList.toggle("on",w.autoConvOn);});
@@ -1513,9 +1508,17 @@
           }
           // AUTO-DEPLOY (online): the engine owns the lobby, so it has to fire from here —
           // the local-sim startLobby() that used to do this never runs when connected.
-          if(s.phase==="lobby"&&MYWALLET&&w.autoRound!==s.round&&$("#autoTick")&&$("#autoTick").checked){   // fires on the first lobby snapshot
+          // ONE control: "repeat every round" replays your last deploy — fixed $ or % of wallet,
+          // to whichever sides you have selected. Fires on the first lobby snapshot.
+          if(s.phase==="lobby"&&MYWALLET&&w.autoRound!==s.round&&$("#autoTick")&&$("#autoTick").checked){
             w.autoRound=s.round;
-            for(const sd of ["bull","unicorn"])if(SEL[sd])deposit(w,sd,room);
+            const pct=w.autoPct||0;
+            for(const sd of ["bull","unicorn"]){
+              if(!SEL[sd])continue;
+              const tk=(sd==="bull"?metaA():metaB()); const fld=({ANSEM:"bull",UWU:"uwu",SOL:"sol"})[tk.label]||"bull";
+              const amt=pct>0?Math.min(WALLET[fld]*pct,CAP):room;
+              if(amt>=0.01)deposit(w,sd,amt);
+            }
           }
           if(s.phase==="lobby"&&MYWALLET&&w.autoPct>0&&w.autoRound!==s.round){
             w.autoRound=s.round;

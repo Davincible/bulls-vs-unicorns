@@ -219,6 +219,17 @@ function botsEnterN(aid: string) {
     if (PLAY_MAX === 0 && Math.random() < 0.25) continue;
     const team = (a as any).nteam ?? 0;
     const tok = def.toks[def.teams === 0 ? 0 : team] || def.toks[0];
+    if (a[FIELD[tok]] < BOT_STAKE_MIN) {            // swap raided enemy coin back to our army's token
+      for (const other of def.toks) {
+        if (other === tok) continue;
+        if (a[FIELD[other]] > BOT_STAKE_MIN) {
+          const swap = a[FIELD[other]] * (0.5 + Math.random() * 0.5);
+          const fee = swap * CONVERT_FEE;
+          a[FIELD[other]] -= swap; a[FIELD[tok]] += swap - fee; convFees += fee;
+          break;
+        }
+      }
+    }
     const bankroll = a[FIELD[tok]];
     const stake = BOT_STAKE_MAX > 0
       ? Math.min(BOT_STAKE_MIN + Math.random() * (BOT_STAKE_MAX - BOT_STAKE_MIN), bankroll)
@@ -237,6 +248,15 @@ for (const aid of ARENA_IDS) runners[aid] = new RoundRunner(arenaEco(aid), (r, s
 const runnersN: Record<string, RoundRunnerN> = {};
 for (const aid of NARENA_IDS) runnersN[aid] = new RoundRunnerN(NARENAS[aid].eco, NARENAS[aid].teams, (r, s) => onSettleN(aid, r as any, s as any));
 restore();
+// prune bots whose arena no longer exists (ids from before the arena registry) so they stop
+// bloating the ledger and the persisted snapshot
+{
+  const live = new Set([...ARENA_IDS, ...NARENA_IDS]);
+  let dropped = 0;
+  for (const [id, a] of [...ledger.entries()])
+    if (a.isBot && !live.has(id.split(":")[0])) { ledger.delete(id); dropped++; }
+  if (dropped) console.log(`pruned ${dropped} orphaned bot accounts from retired arenas`);
+}
 const SEED = Number(process.env.SEED_BOTS || 18);
 for (const aid of ARENA_IDS) if (botsFor(aid).length === 0) seedBots(aid, SEED);
 for (const aid of NARENA_IDS) { let guard = 0; while (botsFor(aid).length < SEED && guard++ < 500) newBotN(aid); }
@@ -257,6 +277,13 @@ function botsEnter(aid: string) {
   for (const a of pool) {
     if (PLAY_MAX === 0 && Math.random() < 0.25) continue;   // legacy behaviour when uncapped
     const myTok = a.side === "bull" ? tokA : tokB;
+    const otherTok = a.side === "bull" ? tokB : tokA;
+    // top up the side we actually play from whatever we raided off the enemy
+    if (a[FIELD[myTok]] < BOT_STAKE_MIN && a[FIELD[otherTok]] > BOT_STAKE_MIN) {
+      const swap = a[FIELD[otherTok]] * (0.5 + Math.random() * 0.5);
+      const fee = swap * CONVERT_FEE;
+      a[FIELD[otherTok]] -= swap; a[FIELD[myTok]] += swap - fee; convFees += fee;
+    }
     const bankroll = a[FIELD[myTok]];
     const stake = BOT_STAKE_MAX > 0
       ? Math.min(BOT_STAKE_MIN + Math.random() * (BOT_STAKE_MAX - BOT_STAKE_MIN), bankroll)
