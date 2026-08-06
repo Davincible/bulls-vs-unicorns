@@ -37,6 +37,26 @@ let convFees = 0;   // 1% taken when players swap raided enemy coin back to thei
 export const getConvFees = () => convFees;
 export const addConvFees = (n: number) => { convFees += n; };
 
+// Player-supplied display strings are broadcast to every client and interpolated into the DOM.
+// Sanitise at THIS boundary (the engine is authoritative) so no render site can be tricked into
+// executing markup — a name like `<img src=x onerror=…>` would otherwise run in every player's
+// browser on a wallet-connected page.
+export function cleanDisplayName(raw: unknown, max = 24): string {
+  return String(raw ?? "")
+    .replace(/[<>&"'`\\]/g, "")                 // markup + attribute breakers
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")   // control chars
+    .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")  // bidi overrides (name spoofing)
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+}
+
+/** Avatars are rendered as image URLs — allow only plain http(s), never javascript:/data:. */
+export function cleanAvatarUrl(raw: unknown, max = 200): string {
+  const s = String(raw ?? "").replace(/[<>"'`\\\s]/g, "").slice(0, max);
+  return /^https?:\/\/[^\s]+$/i.test(s) ? s : "";
+}
+
 /** Get-or-create an account for a wallet. */
 export function acct(wallet: string, side: Side): Account {
   let a = ledger.get(wallet);
@@ -52,9 +72,18 @@ export function balPayload(wallet: string) {
            games: a?.games || 0, wins: a?.wins || 0 };
 }
 
+/** Has this account ever touched money? Anyone can authenticate a freshly generated keypair for
+ *  free, so accounts with no activity are treated as ephemeral: they are never persisted and never
+ *  enter the leaderboard walk. Without this, junk accounts cost real CPU (leadersFor runs ~8x/sec)
+ *  and inflate every broadcast — a remote DoS that needs no funds. */
+export function hasActivity(a: Account): boolean {
+  return a.isBot || a.bull > 0 || a.uwu > 0 || a.sol > 0 || a.dep > 0 || a.ret > 0 ||
+         a.games > 0 || (a.depIn || 0) > 0 || (a.wOut || 0) > 0 || (a.refEarned || 0) > 0;
+}
+
 // Leaderboard the engine owns, so real players actually appear on it (bots are scoped to the arena).
 export function leadersFor(aid: string) {
-  const list = [...ledger.values()].filter(a => (a.isBot ? a.id.startsWith(aid + ":") : true));
+  const list = [...ledger.values()].filter(a => (a.isBot ? a.id.startsWith(aid + ":") : hasActivity(a)));
   const rows = list.map(a => ({ id: a.id, name: a.name, avatar: a.avatar, side: a.side, value: a.bull + a.uwu + a.sol,
       games: a.games, wins: a.wins, isBot: a.isBot,
       dep: a.dep, ret: a.ret, raided: a.raided || 0, best: a.best || 0,
@@ -71,14 +100,22 @@ export function leadersFor(aid: string) {
 
 /** Queue a durable snapshot of the whole money state (debounced in store.ts). */
 export function persist() {
-  saveSnapshot({ accounts: [...ledger.values()], treasury, totalDeployed, depSide, created,
+  // Only accounts that hold or have moved money are written. A zero-activity account is identical
+  // to one acct() would recreate on demand, so dropping it is lossless for balances (it only forgets
+  // a cosmetic display name) — and it stops free account creation from bloating the ledger forever.
+  saveSnapshot({ accounts: [...ledger.values()].filter(hasActivity), treasury, totalDeployed, depSide, created,
                  busted: bustedCount, convFees, rounds, statsA } as any);
 }
 
 /** Load the last snapshot on boot, then write off any SOL liability not backed by a real deposit. */
 export function restore() {
   const snap = loadSnapshot(); if (!snap) return;
-  for (const a of snap.accounts || []) ledger.set(a.id, a);
+  for (const a of snap.accounts || []) {
+    // re-sanitise on load: a ledger written before names were sanitised could carry stored markup
+    a.name = cleanDisplayName(a.name) || String(a.id).slice(0, 6);
+    if (a.avatar) a.avatar = cleanAvatarUrl(a.avatar);
+    ledger.set(a.id, a);
+  }
   Object.assign(treasury, snap.treasury || {});
   Object.assign(totalDeployed, snap.totalDeployed || {});
   Object.assign(depSide, (snap as any).depSide || {});

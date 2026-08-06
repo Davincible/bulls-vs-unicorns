@@ -17,7 +17,7 @@ import { isAllowed as walletAllowed } from "./allowlist.ts";
 import { start as startReconcile, isFrozen, latest as reconLatest } from "./reconcile.ts";
 import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, totalDeployed, depSide,
          created, bustedCount, getConvFees, addConvFees, persist, restore, flush,
-         acct, balPayload, leadersFor } from "./ledger.ts";
+         acct, balPayload, leadersFor, cleanDisplayName, cleanAvatarUrl } from "./ledger.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
 import { type Tok, FIELD, PAIRINGS, ARENA_IDS, arenaTokens, arenaEco, NARENAS, NARENA_IDS,
          FEE, CAP, CONVERT_FEE, MIN_ENTRY } from "./arenas.ts";
@@ -543,8 +543,10 @@ wss.on("connection", (ws) => {
         ws.send(JSON.stringify({ t: "chainBalance", bull, uwu }));
       } else if (m.t === "setName") {          // { wallet, name, avatar } — X identity
         const a = acct(m.wallet, "bull");
-        a.name = String(m.name || "").slice(0, 24) || a.name;
-        if (m.avatar) a.avatar = String(m.avatar).slice(0, 200);
+        // sanitised here (not at render): names/avatars are broadcast to every client and
+        // interpolated into the DOM — see cleanDisplayName/cleanAvatarUrl in ledger.ts
+        a.name = cleanDisplayName(m.name) || a.name;
+        if (m.avatar) a.avatar = cleanAvatarUrl(m.avatar);
         ws.send(JSON.stringify({ t: "named", name: a.name }));
       } else if (m.t === "authChallenge") {          // { wallet } -> a nonce to sign
         ws.send(JSON.stringify({ t: "authChallenge", nonce: authChallenge(ws) }));
