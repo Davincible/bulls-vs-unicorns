@@ -81,3 +81,23 @@ test("pool wallets survive the orphan-bot prune (they are flagged isBot but are 
   assert.equal(ledger.get("retired-arena:bot:9"), undefined, "a retired arena's bot is still pruned");
   assert.equal(poolBalance("bull"), 1500, "the float is intact");
 });
+
+test("a busted bot's remaining money returns to the pool instead of vanishing", () => {
+  seedPool(1000);
+  const before = poolBalance("uwu");
+  // a bot draws a bank, loses most of it, then busts with a remainder
+  const bank = drawBank("uwu", 100);
+  assert.ok(bank > 0);
+  const afterDraw = poolBalance("uwu");
+  assert.ok(Math.abs((before - afterDraw) - bank) < 1e-9, "draw leaves the pool by exactly the bank");
+
+  const remainder = bank * 0.3;              // what it still holds when it busts
+  returnBank("uwu", remainder);              // retireBot() does this before deleting
+
+  const recovered = poolBalance("uwu");
+  assert.ok(Math.abs(recovered - (afterDraw + remainder)) < 1e-9, "the remainder comes back");
+  // the only real loss is what it LOST IN PLAY, which went to other fighters - not destroyed
+  const destroyed = before - recovered - (bank - remainder);
+  assert.ok(Math.abs(destroyed) < 1e-9,
+    `no money may be destroyed by a bust; ${destroyed} went missing`);
+});

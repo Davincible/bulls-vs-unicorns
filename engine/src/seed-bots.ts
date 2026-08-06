@@ -126,7 +126,7 @@ async function main() {
       const bal = await ask(ws, { t: "getBalance", wallet: w }, ["balance"], 15000);
       // Skip only when EVERY leg this run is meant to fund is already there. Checking tokens alone
       // meant a top-up that added SOL float silently skipped every wallet that still held tokens.
-      const tokensDone = bal && bal.bull >= DEP_BULL * 0.9 && bal.uwu >= DEP_UWU * 0.9;
+      const tokensDone = bal && (DEP_BULL <= 0 || bal.bull >= DEP_BULL * 0.9) && (DEP_UWU <= 0 || bal.uwu >= DEP_UWU * 0.9);
       const solDone = SOL_DEPOSIT <= 0 || (bal && bal.sol > 0);
       if (tokensDone && solDone) { console.log(`${tag} already funded (bull ${bal.bull.toFixed(1)}, sol ${(bal.sol||0).toFixed(1)}) - skip`); skipped++; continue; }
 
@@ -145,8 +145,8 @@ async function main() {
         : IS_TEST_CHAIN
           ? (side: "bull" | "uwu") => faucet(w, side, tokFor(side))                    // devnet: mint
           : (side: "bull" | "uwu") => transferFromVault(w, side, tokFor(side));        // legacy fallback
-      await step("fund bull", () => give("bull")); await sleep(800);
-      await step("fund uwu",  () => give("uwu"));  await sleep(800);
+      if (tokFor("bull") > 0) { await step("fund bull", () => give("bull")); await sleep(800); }
+      if (tokFor("uwu")  > 0) { await step("fund uwu",  () => give("uwu"));  await sleep(800); }
 
       // 2b. SOL game balance. Arenas with a SOL side (as-*, us-*, 3-way) draw from the `sol`
       //     ledger field, which is USD units and only moves on a REAL native-SOL deposit. Without
@@ -170,6 +170,8 @@ async function main() {
 
       // 3. real deposits, through the same path a player uses
       for (const side of ["bull", "uwu"] as const) {
+        // amount 0 = this token is not part of the launch (e.g. a UWU/SOL-only room needs no ANSEM)
+        if (!(depFor(side) > 0)) continue;
         const built = await ask(ws, { t: "buildDeposit", wallet: w, side, amount: depFor(side) }, ["depositTx", "error"], 30000);
         if (built?.t !== "depositTx") { console.log(`${tag} ${side} build failed: ${built?.msg || "no reply"}`); failed++; continue; }
         const tx = Transaction.from(Buffer.from(built.txB64, "base64"));

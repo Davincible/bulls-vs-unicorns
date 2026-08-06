@@ -101,6 +101,17 @@ const BOT_STAKE_MAX = Number(process.env.BOT_STAKE_MAX || 0);
 const B58 = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ123456789";
 /** What an account's holdings are actually WORTH, in dollars. Summing bull+uwu+sol raw compares
  *  unlike units: 1 ANSEM is ~6x a UWU, and `sol` is already USD. */
+/** Retire a busted bot, returning whatever it still holds to the pool.
+ *  Deleting the account outright DESTROYED that money: it was drawn from real deposits, so every
+ *  bust silently shrank the float while the vault still held the tokens. Recycle instead. */
+function retireBot(a: Account): void {
+  for (const f of ["bull", "uwu", "sol"] as const) {
+    const left = a[f] || 0;
+    if (left > 0) { returnBank(f, left); a[f] = 0; }
+  }
+  ledger.delete(a.id);
+}
+
 function accountUsd(a: Account): number {
   return (a.bull || 0) * usdPerUnit("bull") + (a.uwu || 0) * usdPerUnit("uwu") + (a.sol || 0);
 }
@@ -152,7 +163,7 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   let busted = 0;
   // busted = can no longer afford the minimum stake, so it can never deploy again
   const BUST_USD = Number(process.env.BOT_BUST_USD || BOT_STAKE_USD_MIN * 0.8);
-  for (const a of botsFor(aid)) if (accountUsd(a) < BUST_USD) { ledger.delete(a.id); busted++; bustedCount[mode]++; }
+  for (const a of botsFor(aid)) if (accountUsd(a) < BUST_USD) { retireBot(a); busted++; bustedCount[mode]++; }
   rounds[mode]++; roundsByArena[aid] = (roundsByArena[aid] || 0) + 1;
   { const st = stat(aid); st.matches++; if (r.winner === "bull") st.winsA++; else st.winsB++; }
   const popCap = Math.min(POP_MAX, POP_START + Math.floor((roundsByArena[aid] || 0) * POP_GROWTH));
@@ -183,7 +194,7 @@ async function onSettleN(aid: string, r: any, s: any) {
   const realPlaying = s.entries.filter((e: any) => !String(e.id).includes(":bot:")).length;
   let busted = 0;
   const BUST_USD_N = Number(process.env.BOT_BUST_USD || BOT_STAKE_USD_MIN * 0.8);
-  for (const a of botsFor(aid)) if (accountUsd(a) < BUST_USD_N) { ledger.delete(a.id); busted++; }
+  for (const a of botsFor(aid)) if (accountUsd(a) < BUST_USD_N) { retireBot(a); busted++; }
   roundsByArena[aid] = (roundsByArena[aid] || 0) + 1;
   { const st = stat(aid); st.matches++; if (r.winnerTeam === 0) st.winsA++; else st.winsB++; }
   const popCap = Math.min(POP_MAX, POP_START + Math.floor((roundsByArena[aid] || 0) * POP_GROWTH));
@@ -277,7 +288,7 @@ startReconcile(ledgerLiabilities, solUsd, Number(process.env.RECONCILE_MS || 15_
     // boot, seconds after initBotBank logged their balance, wiping the float and emptying the
     // arenas (and losing the ledger record of real deposited money).
     if (!a.isBot || !id.includes(":bot:")) continue;
-    if (!live.has(id.split(":")[0])) { ledger.delete(id); dropped++; }
+    if (!live.has(id.split(":")[0])) { retireBot(a); dropped++; }
   }
   if (dropped) console.log(`pruned ${dropped} orphaned bot accounts from retired arenas`);
 }
