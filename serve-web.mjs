@@ -19,6 +19,8 @@ http.createServer((req, res) => {
   if (f !== ROOT && !f.startsWith(ROOT + path.sep)) { res.writeHead(403); res.end("403"); return; }
   fs.readFile(f, (e, d) => {
     if (e) { res.writeHead(404); res.end("404"); return; }
-    res.writeHead(200, { "content-type": types[path.extname(f)] || "application/octet-stream" }); res.end(d);
+    // no-store: this is the dev server, and a cached index.html silently hides edits you just made
+    res.writeHead(200, { "content-type": types[path.extname(f)] || "application/octet-stream",
+                         "cache-control": "no-store, no-cache, must-revalidate" }); res.end(d);
   });
 }).listen(PORT, () => console.log(`\n  ▶  Open  http://localhost:${PORT}/?engine=ws://localhost:8090\n     (start the engine first:  cd engine && npm start)\n`));

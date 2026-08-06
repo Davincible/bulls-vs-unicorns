@@ -30,10 +30,19 @@
   .team h2{margin:0;font-size:15px;font-weight:800;display:flex;align-items:center;gap:7px} .team.bull h2{color:var(--bull)} .team.uni h2{color:var(--uni)}
   .team .big{font-family:var(--mono);font-size:20px;font-weight:700} .team .kv{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10.5px;color:var(--ink-faint)} .team .kv b{color:var(--ink-soft)}
   .sideList{display:flex;flex-direction:column;gap:2px;max-height:300px;overflow:auto;margin:4px -4px}
+  /* native scrollbars render as a bright white bar on dark panels - theme them everywhere */
+  *::-webkit-scrollbar{width:7px;height:7px}
+  *::-webkit-scrollbar-track{background:transparent}
+  *::-webkit-scrollbar-thumb{background:var(--line2);border-radius:8px}
+  *::-webkit-scrollbar-thumb:hover{background:var(--ink-faint)}
+  *{scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
   .fRow{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10.5px;padding:3px 4px;border-radius:5px;cursor:pointer} .fRow:hover{background:var(--panel2)} .fRow.you{background:rgba(255,192,72,.08)}
   .fRow .fn{flex:1;font-family:var(--sans);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px} .fRow.you .fn{color:var(--gold)}
   .hbar{width:44px;height:5px;border-radius:3px;background:#0c0c14;overflow:hidden;flex:none} .hbar>i{display:block;height:100%;border-radius:3px}
-  .team.bull .hbar>i{background:var(--bull)} .team.uni .hbar>i{background:var(--uni)} .fRow .fv{color:var(--gold);width:38px;text-align:right}
+  .team.bull .hbar>i{background:var(--bull)} .team.uni .hbar>i{background:var(--uni)} .fRow .fv{width:auto;min-width:92px;text-align:right;display:flex;align-items:center;gap:3px;justify-content:flex-end;white-space:nowrap}
+  .fRow .fv .st{color:var(--ink-faint);opacity:.8;font-size:9.5px}
+  .fRow .fv .ar{color:var(--ink-faint);font-style:normal;font-size:9px}
+  .fRow .fv .up{color:var(--bull)} .fRow .fv .dn{color:var(--danger)} .fRow .fv .fl{color:var(--gold)}
   .joinbtn{font-family:var(--sans);font-weight:700;font-size:13px;border:none;border-radius:10px;padding:10px;cursor:pointer;color:#0a0a10;margin-top:6px} .team.bull .joinbtn{background:var(--bull)} .team.uni .joinbtn{background:var(--uni);color:#150425} .joinbtn:hover{filter:brightness(1.08)}
   .stage{background:radial-gradient(130% 130% at 50% 0%,#141430,#090912 72%);border:1px solid var(--line);border-radius:14px;position:relative;overflow:hidden;min-height:560px}
   .stage:fullscreen{border-radius:0;min-height:100vh} canvas{display:block;width:100%;height:100%;cursor:crosshair}
@@ -323,6 +332,14 @@
   // Defence in depth: the engine already sanitises player-supplied names/avatars, but every
   // render below builds HTML strings, so escape on OUTPUT too. Any future user-controlled
   // field then cannot become markup just because someone forgot to clean it server-side.
+  // Standings show where a fighter STARTED vs where they are now, so you can read at a glance
+  // who is up or down. The current number carries the colour; the start is muted context.
+  const stand=(start,now)=>{
+    const a=Number(start)||0, b=Number(now)||0;
+    if(a<=0) return '<b class="fl">'+fmt(b)+'</b>';
+    const cls = b>a+1e-9 ? "up" : (b<a-1e-9 ? "dn" : "fl");
+    return '<s class="st">'+fmt(a)+'</s><i class="ar">\u2192</i><b class="'+cls+'">'+fmt(b)+'</b>';
+  };
   const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const fmt=n=>{n=Math.max(0,n);return "$"+(n>=1000?n.toLocaleString("en-US",{maximumFractionDigits:0}):n.toLocaleString("en-US",{maximumFractionDigits:n<10?2:0}));};
   const NAMES=["degenDan","sol_sniper","0xViper","moonboy","rugproof","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","vibecheck","noReentry","gigaGwei","turboTina","elayne","copetrader","sendit","wenLambo","paperhandz","diamondD","fomoFrank","sizzle","nakamotto","zkZoe","based_bri","yeetard","hodlorbe","greenwick","stampede","hornsUp","glitter","prancer","charge","maxbid","alphaleak","serSlippy","tendieTom","voidwalker"];
@@ -732,7 +749,7 @@
     $("#toasts").innerHTML=w.events.filter(e=>e.life>0).slice(-5).map(e=>`<div class="toast ${e.kind}">${e.txt}</div>`).join("");
     const list=w.players.filter(p=>p.deposited>0||p.dmgDealt>0).slice().sort((a,b)=>(alive(b)-alive(a))||tot(b)-tot(a));
     $("#miniCap").textContent=(w.phase==="lobby"?"lobby · deposits open":w.phase==="battle"?"live":"round over")+" · "+list.filter(alive).length+" alive / "+list.filter(p=>!alive(p)).length+" dead";
-    $("#miniGrid").innerHTML=list.slice(0,26).map((p,i)=>`<div class="fRow ${alive(p)?'':'dead'} ${p.isUser?'you':''}" data-name="${esc(p.name)}" style="opacity:${alive(p)?1:.42}"><span style="color:var(--ink-faint);width:18px;text-align:right">${i+1}</span><span class="aliveDot ${alive(p)?'':'dead'}"></span><span class="dot ${p.side==="bull"?"bull":"uni"}"></span><span class="fn">${p.isUser?'YOU':esc(p.name)}${alive(p)?'':' 💀'}</span><span class="fv">${fmt(tot(p)+(p.isUser?(p.banked||0):0))}</span></div>`).join("");
+    $("#miniGrid").innerHTML=list.slice(0,26).map((p,i)=>`<div class="fRow ${alive(p)?'':'dead'} ${p.isUser?'you':''}" data-name="${esc(p.name)}" style="opacity:${alive(p)?1:.42}"><span style="color:var(--ink-faint);width:18px;text-align:right">${i+1}</span><span class="aliveDot ${alive(p)?'':'dead'}"></span><span class="dot ${p.side==="bull"?"bull":"uni"}"></span><span class="fn">${p.isUser?'YOU':esc(p.name)}${alive(p)?'':' 💀'}</span><span class="fv">${stand(p.deposited, tot(p)+(p.isUser?(p.banked||0):0))}</span></div>`).join("");
     const allRounds=[].concat(...Object.keys(worlds).map(md=>(worlds[md].userRounds||[]).map(r=>({...r,mode:r.mode||md}))))
       .sort((a,b)=>(b.at||0)-(a.at||0));
     $("#prRows").innerHTML=allRounds.slice(0,14).map((r,i)=>{
@@ -804,11 +821,11 @@
     $("#uniPool").textContent=fmt(Math.max(...tt,0));
     $("#uniCount").textContent=w.players.filter(p=>!p.dead).length;
     $("#uniList").innerHTML=w.players.slice().sort((a,b)=>((b.nring||0)+(b.nbank||0))-((a.nring||0)+(a.nbank||0))).slice(0,20)
-      .map((p,i)=>'<div class="fRow '+(p.isUser?'you':'')+'" style="opacity:'+(p.dead?.45:1)+'"><span style="color:var(--ink-faint);width:16px">'+(i+1)+'</span><span class="fn" style="color:'+TEAMCOL[isFFA?0:(p.teamIdx||0)]+'">'+(p.isUser?'YOU':p.name)+(p.dead?' \ud83d\udc80':'')+'</span><span class="fv">'+fmt((p.nring||0)+(p.nbank||0))+'</span></div>').join("")||'<div class="note">\u2014</div>';
+      .map((p,i)=>'<div class="fRow '+(p.isUser?'you':'')+'" style="opacity:'+(p.dead?.45:1)+'"><span style="color:var(--ink-faint);width:16px">'+(i+1)+'</span><span class="fn" style="color:'+TEAMCOL[isFFA?0:(p.teamIdx||0)]+'">'+(p.isUser?'YOU':p.name)+(p.dead?' \ud83d\udc80':'')+'</span><span class="fv">'+stand(p.deposited,(p.nring||0)+(p.nbank||0))+'</span></div>').join("")||'<div class="note">\u2014</div>';
     $("#arenaTag").textContent=isFFA?"BULLS FFA":"3-WAY";
     $("#modeTag").textContent=MODE[w.mode].cap;
     $("#miniGrid").innerHTML=w.players.slice().sort((a,b)=>((b.nring||0)+(b.nbank||0))-((a.nring||0)+(a.nbank||0))).slice(0,26)
-      .map((p,i)=>'<div class="fRow '+(p.dead?'dead':'')+' '+(p.isUser?'you':'')+'" style="opacity:'+(p.dead?.42:1)+'"><span style="color:var(--ink-faint);width:18px;text-align:right">'+(i+1)+'</span><span class="dot" style="background:'+TEAMCOL[isFFA?0:(p.teamIdx||0)]+'"></span><span class="fn">'+(p.isUser?'YOU':p.name)+(p.dead?' \ud83d\udc80':'')+'</span><span class="fv">'+fmt((p.nring||0)+(p.nbank||0))+'</span></div>').join("");
+      .map((p,i)=>'<div class="fRow '+(p.dead?'dead':'')+' '+(p.isUser?'you':'')+'" style="opacity:'+(p.dead?.42:1)+'"><span style="color:var(--ink-faint);width:18px;text-align:right">'+(i+1)+'</span><span class="dot" style="background:'+TEAMCOL[isFFA?0:(p.teamIdx||0)]+'"></span><span class="fn">'+(p.isUser?'YOU':p.name)+(p.dead?' \ud83d\udc80':'')+'</span><span class="fv">'+stand(p.deposited,(p.nring||0)+(p.nbank||0))+'</span></div>').join("");
     renderNDeploy(w); renderTicker(w);
   }
   function renderNDeploy(w){
