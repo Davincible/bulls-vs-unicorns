@@ -337,8 +337,9 @@
                  uwu:{label:"UWU",team:"Unicorns",emoji:"\ud83e\udd84"},
                  sol:{label:"SOL",team:"Solana",emoji:"\u25ce"}};
   let PAIRING=localStorage.getItem("bvu_arena")||"au";
-  const PAIRTOK={au:["ansem","uwu"],as:["ansem","sol"],us:["uwu","sol"]};
-  const metaA=()=>TOKMETA[PAIRTOK[PAIRING][0]], metaB=()=>TOKMETA[PAIRTOK[PAIRING][1]];
+  const PAIRTOK={au:["ansem","uwu"],as:["ansem","sol"],us:["uwu","sol"],"3w":["ansem","uwu","sol"],ffa:["ansem","ansem"]};
+  const isNArena=()=>PAIRING==="3w"||PAIRING==="ffa";
+  const metaA=()=>TOKMETA[(PAIRTOK[PAIRING]||PAIRTOK.au)[0]], metaB=()=>TOKMETA[(PAIRTOK[PAIRING]||PAIRTOK.au)[1]];
   // ---- shared wallet (same across both modes) ----
   // ONLINE flips once the engine speaks. Online state persists to SEPARATE localStorage slots
   // ("...on") so the engine-driven session never clobbers the offline demo save, and vice versa.
@@ -639,6 +640,13 @@
     return list.slice(0,20).map(p=>`<div class="fRow ${p.isUser?'you':''}" data-name="${p.name}"><span class="fn">${p.isUser?'YOU':p.name}</span><span class="hbar"><i style="width:${clamp(ring(p)/mx*100,6,100)}%"></i></span><span class="fv">${fmt(ring(p))}</span></div>`).join("")||'<div class="note" style="margin:2px 0">—</div>';}
   function applyArenaSkin(){
     document.querySelectorAll("#pairSel button").forEach(b=>b.classList.toggle("on",b.dataset.pair===PAIRING));
+    if(isNArena()){
+      const t=$("#arenaTag"); if(t)t.textContent=PAIRING==="3w"?"3-WAY":"BULLS FFA";
+      const hb=$("#helpbar"); if(hb)hb.textContent=PAIRING==="3w"
+        ? "3-WAY \u2014 three armies on one map. Raids take the loser's coin; highest total at the horn wins."
+        : "FREE-FOR-ALL \u2014 every fighter for themselves. Biggest bag at the horn wins.";
+      return;
+    }
     const A=metaA(), B=metaB();
     const set=(sel,txt)=>{const e=document.querySelector(sel);if(e)e.textContent=txt;};
     set(".team.bull h2",A.emoji+" "+A.team); set(".team.uni h2",B.emoji+" "+B.team);
@@ -656,6 +664,21 @@
   }
   function syncArena(){
     const w=W();
+    if(isNArena()&&!w.isN){                       // N arena selected, first round not in yet
+      applyArenaSkin();
+      const key=PAIRING==="3w"?("3w-"+w.mode):"ffa-extraction";
+      const st=(window.__ST&&window.__ST.arenas)?window.__ST.arenas[key]:null;
+      $(".team.bull h2").textContent=PAIRING==="3w"?"\u2694 Teams":"\ud83c\udfc1 Free-for-all";
+      $(".team.uni h2").textContent="\ud83c\udfc6 Standings";
+      $("#bullList").innerHTML=(PAIRING==="ffa"&&w.mode!=="extraction")
+        ? '<div class="note">FFA runs in Extraction \u2014 switch mode above.</div>'
+        : '<div class="note">waiting for the next round\u2026</div>';
+      $("#uniList").innerHTML='<div class="note">\u2014</div>';
+      $("#bullPool").textContent="$0"; $("#uniPool").textContent="$0";
+      $("#bullCount").textContent="0"; $("#uniCount").textContent="0";
+      if(st)$("#rtime").textContent=st.phase==="lobby"?("\ud83d\udfe2 open "+Math.ceil(st.closesInMs/1000)+"s"):"\u2694 in battle";
+      return;
+    }
     if(w.isN){ syncArenaN(w); return; }
     const B=agg(w,"bull"),U=agg(w,"unicorn"),totv=B.v+U.v||1;
     applyArenaSkin();
