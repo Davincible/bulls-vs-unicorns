@@ -99,9 +99,9 @@
       <div class="brand"><h1><span class="b">🐂</span><span class="vs">⚔</span><span class="u">🦄</span> ARENA</h1></div>
       <div class="hstats">
         <div class="pill" title="House take (0.2% of deploys + 0.3% converts)"><b class="g" id="treasury">$0</b><span class="brk" id="treasuryBrk">🐂$0 · 🦄$0</span><span>House take</span></div>
-        <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button><button data-view="referrals">Referrals</button><button data-view="arenas">Arenas</button></div>
+        <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button><button data-view="referrals">Referrals</button></div>
         <div class="modes"><button data-mode="normal" class="on">Mayhem</button><button data-mode="extraction">💰 Extraction</button></div>
-        <div class="modes" id="pairSel"><button data-pair="au" class="on">🐂⚔🦄</button><button data-pair="as">🐂⚔◎</button><button data-pair="us">🦄⚔◎</button></div>
+        <div class="modes" id="pairSel"><button data-pair="au" class="on" title="ANSEM vs UWU">🐂⚔🦄</button><button data-pair="as" title="ANSEM vs SOL">🐂⚔◎</button><button data-pair="us" title="UWU vs SOL">🦄⚔◎</button><button data-pair="3w" title="3-WAY: all three armies">🐂🦄◎</button><button data-pair="ffa" title="BULLS FFA: every fighter for themselves">🐂🐂🐂</button></div>
         <button class="ficon" id="infoBtn" title="How the game works">ⓘ</button>
         <div class="pill"><b class="g" id="arenaTag">BULL vs UWU</b><span>arena</span></div>
         <div class="pill" id="fairPill" style="cursor:pointer" title="Provably fair: the engine publishes sha256(seed) before the lobby opens, then reveals the seed. Your browser recomputes the whole round from it — no trust required. Click to verify the last round."><b class="g">✓</b><span>fair</span></div>
@@ -268,13 +268,6 @@
       </div>
     </div>
 
-    <div class="view" id="viewArenas">
-      <div style="max-width:900px;margin:12px auto">
-        <h2 style="margin:6px 0">Arenas</h2>
-        <div class="note">Nine arenas run live. Pick a lobby — 3-WAY puts all three armies on one map, FFA is every fighter for themselves.</div>
-        <div id="arenaCards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:12px"></div>
-      </div>
-    </div>
     <div class="view" id="viewReferrals"><div class="card" style="max-width:560px;margin:12px auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px">            <h3 style="margin-top:12px">Referrals <span class="youtag" style="background:var(--gold);color:#000">10%</span></h3>
             <div class="note">Share your link — you earn 10% of the house fee on every round your signups play, forever.</div>
             <div style="display:flex;gap:6px;margin-top:6px">
@@ -401,7 +394,7 @@
   function userWorth(){let s=WALLET.bull+WALLET.uwu;for(const m in worlds)for(const c of worlds[m].userCircles)s+=tot(c);return s;}
   function rollMult(w){const u=Math.random();w.multiplier=u<0.7?1:u<0.85?2:u<0.93?4:u<0.97?6:u<0.99?8:10;}
   function ev(w,txt,kind){w.events.push({txt,kind,life:1.4});if(w.events.length>9)w.events.shift();}
-  function pushWin(w,atk,dmg,mult){if(mult<1.8&&dmg<4)return;w.wins.unshift({name:atk.name,side:atk.side,amt:dmg,mult,you:atk.isUser});if(w.wins.length>18)w.wins.pop();}
+  function pushWin(w,atk,dmg,mult){if(dmg<0.5)return;w.wins.unshift({name:atk.name,side:atk.side,amt:dmg,mult,you:atk.isUser});if(w.wins.length>18)w.wins.pop();}
   function burst(w,x,y){for(let i=0;i<22;i++)w.particles.push({x,y,vx:rand(-4,4),vy:rand(-5,2),life:1,c:Math.random()<.5?"#ffe14d":"#fff"});}
 
   function strike(w,atk,def,dmg){
@@ -670,6 +663,10 @@
       if(b.dataset.side==="unicorn")b.textContent=B.emoji+" "+B.team;});
     const t=$("#arenaTag"); if(t)t.textContent=A.label+" vs "+B.label;
   }
+  // the Big Wins ticker belongs to every arena, not just the two-team path
+  function renderTicker(w){
+    $("#tickerTrack").innerHTML=(w.wins.length?w.wins:[{name:"first blood soon…",side:"bull",amt:0,mult:1}]).map(x=>`<span class="win"><span class="dot ${x.side==="bull"?"bull":"uni"}"></span>${x.you?'<span class="youtag">YOU</span> ':''}${x.name} raided <b>${fmt(x.amt)}</b>${x.mult>=1.8?' <span class="mult">'+x.mult.toFixed(1)+'×</span>':''}</span>`).join("");
+  }
   function syncArena(){
     const w=W();
     if(isNArena()&&!w.isN){                       // N arena selected, first round not in yet
@@ -705,7 +702,7 @@
     $("#myStake").textContent=fmt(w.userCircles.reduce((s,c)=>s+ring(c),0));
     const ap=userWorth()-INVESTED,apE=$("#myPnl");apE.textContent=(ap>=0?"+":"−")+"$"+Math.abs(ap).toFixed(2);apE.className="v "+(ap>=0?"pos":"neg");
     const cap=MODE[w.mode].cap,clr=MODE[w.mode].color;$("#modeTag").textContent=cap;$("#modeTag").style.color=clr;$("#roundbar").style.color=clr;$("#depMode").textContent=cap;
-    $("#tickerTrack").innerHTML=(w.wins.length?w.wins:[{name:"first blood soon…",side:"bull",amt:0,mult:1}]).map(x=>`<span class="win"><span class="dot ${x.side==="bull"?"bull":"uni"}"></span>${x.you?'<span class="youtag">YOU</span> ':''}${x.name} raided <b>${fmt(x.amt)}</b>${x.mult>=1.8?' <span class="mult">'+x.mult.toFixed(1)+'×</span>':''}</span>`).join("");
+    renderTicker(w);
     $("#toasts").innerHTML=w.events.filter(e=>e.life>0).slice(-5).map(e=>`<div class="toast ${e.kind}">${e.txt}</div>`).join("");
     const list=w.players.filter(p=>p.deposited>0||p.dmgDealt>0).slice().sort((a,b)=>(alive(b)-alive(a))||tot(b)-tot(a));
     $("#miniCap").textContent=(w.phase==="lobby"?"lobby · deposits open":w.phase==="battle"?"live":"round over")+" · "+list.filter(alive).length+" alive / "+list.filter(p=>!alive(p)).length+" dead";
@@ -748,31 +745,35 @@
   }
   // N-arena panels: team totals on the left, roster on the right
   function nArmyLabel(w,i){
-    if(w.nTeams===0)return {label:"PIT",emoji:"\ud83c\udfc1"};
+    if(w.nTeams===0)return {label:"BULLS",emoji:"\ud83d\udc02"};
     const t=w.toks&&w.toks[i]; const m=t&&TOKMETA[t];
     return m?{label:m.label,emoji:m.emoji}:{label:"TEAM "+(i+1),emoji:""};
   }
   function syncArenaN(w){
     const isFFA=(w.nTeams||0)===0, nT=isFFA?1:(w.nTeams||3);
-    const tt=Array(nT).fill(0), aliveN=Array(nT).fill(0);
+    const jb=$("#joinBull2"), ju=$("#joinUni2");   // 2-team side buttons are meaningless here
+    if(jb)jb.style.display="none"; if(ju)ju.style.display="none";
+    // strength is value still IN THE RING for fighters still standing. Banked loot is already
+    // cashed out, so counting it left a wiped army showing a full bar.
+    const tt=Array(nT).fill(0), bkT=Array(nT).fill(0), aliveN=Array(nT).fill(0);
     for(const p of w.players){ const i=isFFA?0:(p.teamIdx||0);
-      if(!p.dead)aliveN[i]++; tt[i]+=(p.nring||0)+(p.nbank||0); }
+      if(!p.dead){ aliveN[i]++; tt[i]+=(p.nring||0); } bkT[i]+=(p.nbank||0); }
     const total=tt.reduce((a,b)=>a+b,0)||1;
     const bar=$("#nBar"), b2=$("#strength2");
     if(bar&&b2){ b2.style.display="none"; bar.style.display="flex";
       bar.innerHTML=isFFA
-        ? '<div class="s" style="width:100%;background:linear-gradient(90deg,#18e08a,#c46bff);color:#0a0a10">\ud83c\udfc1 '+w.players.filter(p=>!p.dead).length+' FIGHTERS \u00b7 '+fmt(total)+' IN THE PIT</div>'
+        ? '<div class="s" style="width:100%;background:#18e08a;color:#0a0a10">\ud83d\udc02 '+w.players.filter(p=>!p.dead).length+' BULLS FIGHTING \u00b7 '+fmt(total)+' AT STAKE</div>'
         : tt.map((v,i)=>{const L=nArmyLabel(w,i);
             return '<div class="s" style="width:'+Math.max(8,v/total*100)+'%;background:'+TEAMCOL[i]+';color:#0a0a10">'+L.emoji+' '+fmt(v)+'</div>';}).join("");
     }
-    $(".team.bull h2").innerHTML=isFFA?"\ud83c\udfc1 The Pit":"\u2694 Armies";
+    $(".team.bull h2").innerHTML=isFFA?"\ud83d\udc02 Bulls in the pit":"\u2694 Armies";
     $("#bullPool").textContent=fmt(total);
     $("#bullCount").textContent=aliveN.reduce((a,b)=>a+b,0);
     $("#bullList").innerHTML=isFFA
       ? w.players.filter(p=>!p.dead).sort((a,b)=>((b.nring||0)+(b.nbank||0))-((a.nring||0)+(a.nbank||0))).slice(0,20)
           .map(p=>'<div class="fRow '+(p.isUser?'you':'')+'"><span class="fn">'+(p.isUser?'YOU':p.name)+'</span><span class="hbar"><i style="width:'+clamp(((p.nring||0)+(p.nbank||0))/(total||1)*400,6,100)+'%"></i></span><span class="fv">'+fmt((p.nring||0)+(p.nbank||0))+'</span></div>').join("")||'<div class="note">\u2014</div>'
       : tt.map((v,i)=>{const L=nArmyLabel(w,i);
-          return '<div class="armyRow"><span class="nm" style="color:'+TEAMCOL[i]+'">'+L.emoji+' '+L.label+'</span><span class="hb"><i style="width:'+clamp(v/Math.max(...tt,1)*100,4,100)+'%;background:'+TEAMCOL[i]+'"></i></span><span class="vv">'+fmt(v)+'</span></div><div class="note" style="font-size:10px;margin:-2px 0 4px">'+aliveN[i]+' alive</div>';}).join("");
+          return '<div class="armyRow"><span class="nm" style="color:'+TEAMCOL[i]+'">'+L.emoji+' '+L.label+'</span><span class="hb"><i style="width:'+clamp(v/Math.max(...tt,1)*100,4,100)+'%;background:'+TEAMCOL[i]+'"></i></span><span class="vv">'+fmt(v)+'</span></div><div class="note" style="font-size:10px;margin:-2px 0 4px">'+aliveN[i]+' alive'+(bkT[i]>0.5?' &middot; <span style="color:var(--gold)">'+fmt(bkT[i])+' banked</span>':'')+'</div>';}).join("");
     $(".team.uni h2").innerHTML="\ud83c\udfc6 Standings";
     $("#uniPool").textContent=fmt(Math.max(...tt,0));
     $("#uniCount").textContent=w.players.filter(p=>!p.dead).length;
@@ -782,7 +783,7 @@
     $("#modeTag").textContent=MODE[w.mode].cap;
     $("#miniGrid").innerHTML=w.players.slice().sort((a,b)=>((b.nring||0)+(b.nbank||0))-((a.nring||0)+(a.nbank||0))).slice(0,26)
       .map((p,i)=>'<div class="fRow '+(p.dead?'dead':'')+' '+(p.isUser?'you':'')+'" style="opacity:'+(p.dead?.42:1)+'"><span style="color:var(--ink-faint);width:18px;text-align:right">'+(i+1)+'</span><span class="dot" style="background:'+TEAMCOL[isFFA?0:(p.teamIdx||0)]+'"></span><span class="fn">'+(p.isUser?'YOU':p.name)+(p.dead?' \ud83d\udc80':'')+'</span><span class="fv">'+fmt((p.nring||0)+(p.nbank||0))+'</span></div>').join("");
-    renderNDeploy(w);
+    renderNDeploy(w); renderTicker(w);
   }
   function renderNDeploy(w){
     const host=$("#deployN"), two=$("#deploy2");
@@ -889,7 +890,21 @@
   if($("#btnVerify2"))$("#btnVerify2").onclick=verifyLastRound;
   $("#profBtn").onclick=()=>{$("#profDrop").classList.toggle("on");if(window.drawOverview)drawOverview();};
   $("#addFunds").onclick=()=>{WALLET.bull+=100;WALLET.uwu+=100;INVESTED+=200;$("#walletNote").textContent="Added $100 BULL + $100 UWU.";saveWallet();syncDOM();};
-  document.querySelectorAll("#pairSel button").forEach(b=>b.onclick=()=>{
+  function switchLobby(pr){
+    if(pr===PAIRING)return;
+    PAIRING=pr; localStorage.setItem("bvu_arena",PAIRING);
+    if(PAIRING==="ffa"){                       // FFA only runs in Extraction
+      activeMode="extraction";
+      document.querySelectorAll(".modes button").forEach(x=>{ if(!x.closest("#pairSel")) x.classList.toggle("on",x.dataset.mode==="extraction"); });
+    }
+    for(const md in worlds){ const w=worlds[md];
+      w.players.length=0; w.userCircles.length=0; w.floaters.length=0; w.particles.length=0;
+      w.byId=new Map(); w.sim=null; w.simN=null; w.isN=false; w.phase="lobby"; w.autoRound=-1; }
+    applyArenaSkin(); syncDOM();
+    if(window.__sendEngine)window.__sendEngine({t:"resync",arenas:[PAIRING+"-normal",PAIRING+"-extraction"]});
+  }
+  document.querySelectorAll("#pairSel button").forEach(b=>b.onclick=()=>switchLobby(b.dataset.pair));
+  document.querySelectorAll("#__never").forEach(b=>b.onclick=()=>{
     if(b.dataset.pair===PAIRING)return;
     PAIRING=b.dataset.pair; localStorage.setItem("bvu_arena",PAIRING);
     for(const md in worlds){const w=worlds[md];w.players.length=0;w.userCircles.length=0;w.floaters.length=0;w.particles.length=0;w.byId=new Map();w.phase="lobby";w.sim=null;w.autoRound=-1;}
@@ -1438,6 +1453,9 @@
         window.__ST=m;                                   // latest state (arena picker + dashboard read this)
         for(const mode of ["normal","extraction"]){ const w=worlds[mode], s=(m.arenas&&m.arenas[PAIRING+"-"+mode])||m[mode]; if(!w||!s)continue;
           goOnline(w); w.lobbyLeft=s.closesInMs; w.seedHash=s.seedHash;
+          // N arenas: the local sim owns phase. Letting the snapshot drive it as well made the
+          // battle timer flip between lobby and battle on alternating ticks.
+          if(isNArena()){ if(!w.isN&&s.phase==="lobby"){ w.phase="lobby"; w.roundNo=s.round; } continue; }
           if(s.phase==="lobby"&&w.phase!=="lobby"&&w.phase!=="over"){ w.phase="lobby"; w.roundNo=s.round; w.multiplier=s.multiplier; }
           if(s.phase==="lobby"&&w.phase==="over"&&w.phaseT>2400){ w.phase="lobby"; w.players.length=0; w.userCircles.length=0; w.byId=new Map(); w.roundNo=s.round; w.multiplier=s.multiplier; ev(w,"🟢 Round "+s.round+" lobby — deposits OPEN!","round"); }
           w.lobbyEntries=s.entries;
