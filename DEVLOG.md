@@ -80,6 +80,13 @@ Supporting tooling that came out of it:
 partly sampling error — staked money is out of the accounts mid-round. Measure at a fixed phase
 (after settle) or trust the in-engine audit.
 
+**Bug #20 — the house charged itself.** 0.2% of every *bot* stake went to the treasury counter
+while the tokens left the accounts. Bots are house money and play ~9 rounds/min, so the house was
+farming its own bankroll: books slid 1520 → 362 UWU in ~40 minutes with zero real players, and the
+conservation audit blessed it because a fee is "expected shrinkage". Bot fees now return to the
+pool; treasury and house-take stats grow **only on real-player fees** — which also makes the
+dashboard revenue honest instead of self-dealing.
+
 ---
 
 ## 4. Blockers to opening the doors
