@@ -1,6 +1,6 @@
 // On-chain operations for the custodial devnet vault: faucet, deposit-verify, withdraw.
 // All amounts at this API are WHOLE TOKENS (numbers); base-unit conversion is internal.
-import { PublicKey, Transaction } from "@solana/web3.js";
+import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import {
   getOrCreateAssociatedTokenAccount, getAssociatedTokenAddress, mintTo, transfer,
   createAssociatedTokenAccountInstruction, createTransferCheckedInstruction, getAccount,
@@ -46,6 +46,50 @@ export async function buildDepositTx(walletB58: string, side: "bull" | "uwu", am
   tx.feePayer = owner;
   tx.recentBlockhash = (await conn.getLatestBlockhash("confirmed")).blockhash;
   return tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
+}
+
+// ---- NATIVE SOL: a system transfer, not a token transfer. Separate path end to end. ----
+// Deposits move lamports player -> vault; withdrawals move them back. Amounts crossing this
+// boundary are SOL, not USD units — the caller converts using the live price.
+export async function buildSolDepositTx(walletB58: string, sol: number): Promise<string> {
+  const conn = connection();
+  const owner = new PublicKey(walletB58);
+  const tx = new Transaction();
+  tx.add(SystemProgram.transfer({ fromPubkey: owner, toPubkey: vault.publicKey,
+                                  lamports: Math.round(sol * LAMPORTS_PER_SOL) }));
+  tx.feePayer = owner;
+  tx.recentBlockhash = (await conn.getLatestBlockhash("confirmed")).blockhash;
+  return tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
+}
+
+/** Verify a native-SOL deposit: confirm the VAULT's lamport balance actually rose. */
+export async function verifySolDeposit(sig: string): Promise<number> {
+  if (seenSigs.has(sig)) return 0;
+  const conn = connection();
+  const tx = await conn.getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+  if (!tx || tx.meta?.err) return 0;
+  const keys = tx.transaction.message.accountKeys.map(k => k.pubkey.toBase58());
+  const idx = keys.indexOf(vault.publicKey.toBase58());
+  if (idx < 0) return 0;
+  const before = tx.meta?.preBalances?.[idx] ?? 0, after = tx.meta?.postBalances?.[idx] ?? 0;
+  const delta = (after - before) / LAMPORTS_PER_SOL;
+  if (delta <= 0) return 0;
+  seenSigs.add(sig);
+  return delta;
+}
+
+/** Pay native SOL out of the vault to a player. */
+export async function withdrawSol(walletB58: string, sol: number): Promise<string> {
+  const conn = connection();
+  const owner = new PublicKey(walletB58);
+  const tx = new Transaction().add(SystemProgram.transfer({
+    fromPubkey: vault.publicKey, toPubkey: owner, lamports: Math.round(sol * LAMPORTS_PER_SOL) }));
+  tx.feePayer = vault.publicKey;
+  tx.recentBlockhash = (await conn.getLatestBlockhash("confirmed")).blockhash;
+  tx.sign(vault);
+  const sig = await conn.sendRawTransaction(tx.serialize());
+  await conn.confirmTransaction(sig, "confirmed");
+  return sig;
 }
 
 // Airdrop native SOL to a player so they can pay tx fees. Works on a local validator

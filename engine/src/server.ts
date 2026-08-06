@@ -7,12 +7,19 @@ import { WebSocketServer, WebSocket } from "ws";
 import { RoundRunner, newRoundConfig } from "./round.ts";
 import type { RoundResult, RoundState } from "./round.ts";
 import type { Mode, Side } from "./game.ts";
-import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildDepositTx, walletTokenBalance, airdropSol, solBalance } from "./chain-ops.ts";
+import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildDepositTx, walletTokenBalance, airdropSol, solBalance,
+         buildSolDepositTx, verifySolDeposit, withdrawSol } from "./chain-ops.ts";
+import { priceUSD, startPriceLoop, allPrices } from "./prices.ts";
 import { RPC } from "./chain.ts";
 import { loadSnapshot, saveSnapshot, flushSnapshot } from "./store.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
 
 const PORT = Number(process.env.PORT || 8090);
+// SOL arenas are denominated in USD units. On a test chain the price feed may be irrelevant, so
+// SOL_USD lets us pin a rate; otherwise we use the live price and REFUSE to quote when it's stale.
+const SOL_USD_FIXED = Number(process.env.SOL_USD || 0);
+const solUsd = () => SOL_USD_FIXED > 0 ? SOL_USD_FIXED : priceUSD("sol");
+startPriceLoop();
 
 // ---- arena registry: pairing × economy. Slot A/B map onto the 2-team sim's bull/uwu slots. ----
 // Token names: ansem (ledger field `bull`), uwu, sol. SOL arenas play from the `sol` balance
@@ -453,6 +460,33 @@ wss.on("connection", (ws) => {
       } else if (m.t === "solBalance") {
         if (!chainReady()) return;
         ws.send(JSON.stringify({ t: "solBalance", sol: await solBalance(m.wallet) }));
+      } else if (m.t === "buildSolDeposit") {   // { wallet, sol } -> unsigned system transfer
+        const px = solUsd();
+        if (!px) return ws.send(JSON.stringify({ t: "error", msg: "SOL price unavailable right now — try again in a moment." }));
+        const txB64 = await buildSolDepositTx(m.wallet, Number(m.sol) || 0);
+        ws.send(JSON.stringify({ t: "solDepositTx", sol: Number(m.sol) || 0, priceUsd: px, txB64 }));
+      } else if (m.t === "depositSol") {        // { wallet, sig } -> credit USD units at live price
+        const px = solUsd();
+        if (!px) return ws.send(JSON.stringify({ t: "error", msg: "SOL price unavailable — deposit not credited yet, retry shortly." }));
+        const sol = await verifySolDeposit(String(m.sig));
+        if (sol > 0) { const a = acct(m.wallet, "bull"); const units = sol * px;
+          a.sol += units; a.depIn = (a.depIn || 0) + units; persist(); }
+        ws.send(JSON.stringify({ t: "depositSolDone", sol, priceUsd: px, credited: sol * px }));
+        pushBalance(m.wallet);
+      } else if (m.t === "withdrawSol") {       // { wallet, units } -> pay out native SOL
+        const px = solUsd();
+        if (!px) return ws.send(JSON.stringify({ t: "error", msg: "SOL price unavailable — withdrawal paused." }));
+        const a = acct(m.wallet, "bull");
+        const units = Math.min(Number(m.units) || 0, a.sol);
+        if (units < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: "Nothing to withdraw." }));
+        const sol = units / px;
+        a.sol -= units; pushBalance(m.wallet);
+        try { const sig = await withdrawSol(m.wallet, sol); a.wOut = (a.wOut || 0) + units; persist();
+              ws.send(JSON.stringify({ t: "withdrawSolDone", units, sol, priceUsd: px, sig })); }
+        catch (e) { a.sol += units; pushBalance(m.wallet);
+              ws.send(JSON.stringify({ t: "error", msg: "SOL withdraw failed: " + (e as Error).message })); }
+      } else if (m.t === "prices") {
+        ws.send(JSON.stringify({ t: "prices", prices: allPrices(), solUsd: solUsd() }));
       } else if (m.t === "buildDeposit") {                  // → unsigned tx for Phantom to sign
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
         const txB64 = await buildDepositTx(m.wallet, m.side, m.amount);
