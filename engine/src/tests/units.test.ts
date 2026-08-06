@@ -61,3 +61,58 @@ test("a dead price feed must never convert a payout to zero or infinity", () => 
   const paid = 10 / px;
   assert.ok(Number.isFinite(paid) && paid > 0, "payout stays finite and positive");
 });
+
+// The bot top-up swap moved raw units 1:1 between the two sides' tokens. Because `sol` is already
+// dollars, swapping UWU into it multiplied the value by ~34x and drained one side's float into an
+// invented balance on the other — which is what turned every round one-sided.
+test("a 1:1 unit swap between differently-priced tokens mints money", () => {
+  const uwuUnits = 100;
+  const asDollars = toUsd("uwu", uwuUnits);
+  const oneToOne = toUsd("sol", uwuUnits);     // what the old code produced
+  assert.ok(oneToOne / asDollars > 30, `1:1 swap turned $${asDollars.toFixed(2)} into $${oneToOne.toFixed(2)}`);
+});
+
+test("a correctly priced swap conserves dollars", () => {
+  const uwuUnits = 100;
+  const usd = toUsd("uwu", uwuUnits);
+  const solUnits = fromUsd("sol", usd);
+  assert.equal(toUsd("sol", solUnits).toFixed(6), usd.toFixed(6));
+});
+
+// Even at the right rate a bot's swap is ledger-only: nothing moves on-chain, so the vault would
+// owe a token it never received. Retiring the bot and recycling its holdings keeps the float where
+// the chain actually put it.
+test("recycling through the pool conserves each token separately", () => {
+  const pool = { uwu: 1000, sol: 50 };
+  const bot = { uwu: 0, sol: 12 };            // a UWU-side bot holding only raided SOL
+  pool.uwu += bot.uwu; pool.sol += bot.sol;   // retire: everything goes back
+  bot.uwu = 0; bot.sol = 0;
+  assert.equal(pool.uwu, 1000, "UWU untouched");
+  assert.equal(pool.sol, 62, "SOL returns intact — no cross-token invention");
+});
+
+// A round converts a stake INTO usd at entry and a payout BACK OUT ~60s later. If the two ends use
+// different prices, the round mints or burns tokens purely on market movement. Measured live that
+// swung the book +10% in five rounds — 50x the 0.2% fee — so the float wandered in both directions
+// and no amount of reconciliation could settle it.
+test("one price per round makes a round token-neutral", () => {
+  const stakeUnits = 1000;
+  const pxIn = 0.02953;
+  const pxOut = 0.02650;               // a real 10% move inside one round
+
+  // drifting: enter at pxIn, settle at pxOut
+  const usd = stakeUnits * pxIn;
+  const driftOut = usd / pxOut;
+  assert.ok(driftOut - stakeUnits > 100, `drift minted ${(driftOut - stakeUnits).toFixed(0)} tokens from nothing`);
+
+  // frozen: both ends use the round's price
+  const frozenOut = usd / pxIn;
+  assert.ok(Math.abs(frozenOut - stakeUnits) < 1e-9, "frozen price returns exactly what went in");
+});
+
+test("freezing the price cuts both ways — it also stops the house pocketing a rise", () => {
+  const stakeUnits = 1000, pxIn = 0.02953, pxUp = 0.0325;
+  const usd = stakeUnits * pxIn;
+  assert.ok(usd / pxUp < stakeUnits, "a price rise would have burned player tokens");
+  assert.equal((usd / pxIn).toFixed(9), stakeUnits.toFixed(9));
+});

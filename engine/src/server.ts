@@ -21,7 +21,7 @@ import { isAllowed as walletAllowed } from "./allowlist.ts";
 import { start as startReconcile, isFrozen, latest as reconLatest } from "./reconcile.ts";
 import { allowMessage, connectionAllowed, releaseConnection, LIMITS } from "./limits.ts";
 import { initBotBank, drawBank, returnBank, poolBalance, botBankReady, type Field } from "./bot-bank.ts";
-import { recoverInPlace } from "./recover-float.ts";
+import { recoverInPlace, resyncPoolToChain } from "./recover-float.ts";
 import { getFloatRecoveredAt, markFloatRecovered } from "./ledger.ts";
 import { poolPubkeys } from "./bot-wallets.ts";
 import { vaultTokenBalance } from "./chain-ops.ts";
@@ -95,6 +95,30 @@ function usdPerUnitSafe(field: Field): number {
 }
 /** Convert a USD amount back into units of `field`. Used on the settlement boundary. */
 const unitsFromUsd = (field: Field, usd: number) => { const px = usdPerUnitSafe(field); return px > 0 ? usd / px : 0; };
+
+// A ROUND IS PRICED ONCE. The sim runs in USD, so a stake is converted in at entry and the payout
+// converted back out at settlement ~60s later. Using the live price at both ends let any move in
+// between mint or burn tokens: measured against the live arena that was worth +10% of the book in
+// five rounds, dwarfing the 0.2% fee and making the float wander in both directions. Freezing one
+// price per arena-round makes a round token-neutral - what goes in comes out, outcome aside - and
+// stops players being silently exposed to a 60-second price move they never opted into.
+const roundPx = new Map<string, Record<string, number>>();
+function pxForRound(aid: string, round: number, f: Field): number {
+  const k = `${aid}:${round}`;
+  let m = roundPx.get(k);
+  if (!m) {
+    m = {};
+    roundPx.set(k, m);
+    // keep this from growing forever; a handful of arenas x a few rounds is all we ever need
+    if (roundPx.size > 64) for (const old of [...roundPx.keys()].slice(0, 32)) roundPx.delete(old);
+  }
+  if (!(m[f] > 0)) m[f] = usdPerUnitSafe(f);
+  return m[f];
+}
+const unitsAtRound = (aid: string, round: number, f: Field, usd: number) => {
+  const px = pxForRound(aid, round, f);
+  return px > 0 ? usd / px : 0;
+};
 // legacy token-count knobs still respected if explicitly set
 const BOT_BANK_MIN = Number(process.env.BOT_BANK_MIN || 0), BOT_BANK_MAX = Number(process.env.BOT_BANK_MAX || 0), BOT_STAKE_MIN = Number(process.env.BOT_STAKE_MIN || 0);
 // Bots draw their bank from REAL deposited money (bot-bank.ts). Inventing it made every bot
@@ -188,9 +212,10 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   for (const [key, bal] of Object.entries(r.settlement)) {
     const id = key.split("|")[0];
     const a = ledger.get(id); if (!a) continue;
-    // the sim runs in USD (see the enter path); credit each side in ITS OWN token
-    const retA = unitsFromUsd(FIELD[tokA] as Field, bal.bull);
-    const retB = unitsFromUsd(FIELD[tokB] as Field, bal.uwu);
+    // the sim runs in USD (see the enter path); credit each side in ITS OWN token, at the SAME
+    // price the stake went in at, so the round cannot mint or burn tokens on a price move
+    const retA = unitsAtRound(aid, s.round, FIELD[tokA] as Field, bal.bull);
+    const retB = unitsAtRound(aid, s.round, FIELD[tokB] as Field, bal.uwu);
     a[FIELD[tokA]] += retA; a[FIELD[tokB]] += retB; a.games++; a.ret += retA + retB;
     if (a.side === r.winner) a.wins++;
     const f = r.fighters.find(x => x.id === key);
@@ -209,7 +234,13 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   // is exactly what emptied the arena (joined 50 / busted 49 / entries 0). Retire at the stake
   // minimum so unplayable money always returns to the pool.
   const BUST_USD = Number(process.env.BOT_BUST_USD || BOT_STAKE_USD_MIN);
-  for (const a of botsFor(aid)) if (accountUsd(a) < BUST_USD) { retireBot(a); busted++; bustedCount[mode]++; }
+  // Judge a bot on the token it actually plays. Total portfolio value would keep a bot alive on a
+  // pile of the ENEMY's coin it can never stake - a zombie holding float nobody can use.
+  const ownFieldOf = (b: Account) => FIELD[b.side === "bull" ? tokA : tokB] as Field;
+  for (const a of botsFor(aid)) {
+    const own = a[ownFieldOf(a)] * usdPerUnitSafe(ownFieldOf(a));
+    if (own < BUST_USD) { retireBot(a); busted++; bustedCount[mode]++; }
+  }
   rounds[mode]++; roundsByArena[aid] = (roundsByArena[aid] || 0) + 1;
   { const st = stat(aid); st.matches++; if (r.winner === "bull") st.winsA++; else st.winsB++; }
   const popCap = Math.min(POP_MAX, POP_START + Math.floor((roundsByArena[aid] || 0) * POP_GROWTH));
@@ -237,15 +268,19 @@ async function onSettleN(aid: string, r: any, s: any) {
     const a = ledger.get(wallet); if (!a) continue;
     const teamIdx = Number(teamStr) || 0;
     const tok = def.teams === 0 ? def.toks[0] : def.toks[teamIdx] || def.toks[0];
-    // the N sim runs in USD too - credit the team's own token
-    const ret = unitsFromUsd(FIELD[tok] as Field, amount as number);
+    // the N sim runs in USD too - credit the team's own token at the round's frozen price
+    const ret = unitsAtRound(aid, s.round, FIELD[tok] as Field, amount as number);
     a[FIELD[tok]] += ret; a.games++; a.ret += ret;
     if (!a.isBot) touched.add(wallet);
   }
   const realPlaying = s.entries.filter((e: any) => !String(e.id).includes(":bot:")).length;
   let busted = 0;
   const BUST_USD_N = Number(process.env.BOT_BUST_USD || BOT_STAKE_USD_MIN);   // same dead-band rule as the 2-team path
-  for (const a of botsFor(aid)) if (accountUsd(a) < BUST_USD_N) { retireBot(a); busted++; }
+  for (const a of botsFor(aid)) {
+    const t = def.toks[def.teams === 0 ? 0 : ((a as any).nteam ?? 0)] || def.toks[0];
+    const f = FIELD[t] as Field;
+    if (a[f] * usdPerUnitSafe(f) < BUST_USD_N) { retireBot(a); busted++; }   // own token, not portfolio
+  }
   roundsByArena[aid] = (roundsByArena[aid] || 0) + 1;
   { const st = stat(aid); st.matches++; if (r.winnerTeam === 0) st.winsA++; else st.winsB++; }
   const popCap = Math.min(POP_MAX, POP_START + Math.floor((roundsByArena[aid] || 0) * POP_GROWTH));
@@ -287,18 +322,7 @@ function botsEnterN(aid: string) {
     if (PLAY_MAX === 0 && Math.random() < 0.25) continue;
     const team = (a as any).nteam ?? 0;
     const tok = def.toks[def.teams === 0 ? 0 : team] || def.toks[0];
-    const topUpN = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(FIELD[tok] as Field, BOT_STAKE_USD_MIN);
-    if (a[FIELD[tok]] < topUpN) {                   // swap raided enemy coin back to our army's token
-      for (const other of def.toks) {
-        if (other === tok) continue;
-        if (a[FIELD[other]] > topUpN) {
-          const swap = a[FIELD[other]] * (0.5 + Math.random() * 0.5);
-          const fee = swap * CONVERT_FEE;
-          a[FIELD[other]] -= swap; a[FIELD[tok]] += swap - fee; addConvFees(fee * usdPerUnit(FIELD[tok] as Field));
-          break;
-        }
-      }
-    }
+    // no bot conversion here either - see the 2-team path for why it was both mispriced and unbacked
     const bankroll = a[FIELD[tok]];
     const minStakeN = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(FIELD[tok] as Field, BOT_STAKE_USD_MIN);
     const stake = BOT_STAKE_MAX > 0
@@ -307,7 +331,7 @@ function botsEnterN(aid: string) {
     if (!(minStakeN > 0) || stake < minStakeN) continue;
     a[FIELD[tok]] -= stake;
     const eco = NARENAS[aid].eco;
-    const usdA = stake * usdPerUnitSafe(FIELD[tok] as Field);
+    const usdA = stake * pxForRound(aid, rn.state.round, FIELD[tok] as Field);
     if (!(usdA > 0)) { a[FIELD[tok]] += stake; continue; }   // no price -> undo the debit, sit out
     a.dep += stake; treasury[eco] += usdA * FEE; totalDeployed[eco] += usdA;
     stat(aid).deployed += usdA; stat(aid).take += usdA * FEE;
@@ -323,6 +347,21 @@ restore();
 // One-off float repair, BEFORE the bot bank reads balances and before anything can persist over it.
 // Running the standalone CLI against a live engine loses the race: it writes the snapshot file and
 // the running process overwrites it from stale memory on the next save.
+// On-chain holdings, refreshed on a slow timer. /float reads this rather than hitting the RPC per
+// request - a public endpoint must not be a way to burn our rate limit.
+const lastChain = { uwu: 0, bull: 0, sol: 0, at: 0 };
+async function refreshChainHoldings() {
+  if (!chainReady()) return;
+  try {
+    lastChain.uwu = await vaultTokenBalance("uwu");
+    lastChain.bull = await vaultTokenBalance("bull");
+    lastChain.sol = await solBalance(vaultPubkey());
+    lastChain.at = Date.now();
+  } catch { /* leave the last good reading in place */ }
+}
+setInterval(refreshChainHoldings, 60_000).unref?.();
+refreshChainHoldings();
+
 if (process.env.RECOVER_FLOAT_ON_BOOT === "1") {
   await (async () => {
     try {
@@ -338,6 +377,28 @@ if (process.env.RECOVER_FLOAT_ON_BOOT === "1") {
         console.log(`float recovery: credited ${r.credited} wallet(s) — ${r.uwu.toFixed(2)} UWU, $${r.sol.toFixed(2)} SOL`);
       } else console.log(`float recovery: skipped — ${r.reason}`);
     } catch (e) { console.error("float recovery failed:", (e as Error).message); }
+  })();
+}
+
+// Re-anchor the house float to the vault's real contents. Safe to leave on: it only ever moves the
+// house UP TO what the chain backs, never past it, and refuses outright if the books already claim
+// more than the vault holds.
+if (process.env.RESYNC_POOL_ON_BOOT === "1") {
+  await (async () => {
+    try {
+      await refreshPrices().catch(() => {});
+      await refreshChainHoldings();
+      const pool = new Set(poolPubkeys());
+      const held: Record<string, number> = { uwu: lastChain.uwu, bull: lastChain.bull, sol: lastChain.sol * solUsd() };
+      let any = false;
+      for (const f of ["uwu", "bull", "sol"] as const) {
+        if (f === "sol" && !(solUsd() > 0)) { console.log("pool resync: sol skipped — no price"); continue; }
+        const r = resyncPoolToChain(ledger, pool, f, held[f]);
+        if (r.moved > 0.0001) { any = true; console.log(`pool resync: ${f} ${r.from.toFixed(4)} -> ${r.to.toFixed(4)} (+${r.moved.toFixed(4)})`); }
+        else console.log(`pool resync: ${f} unchanged — ${r.reason}`);
+      }
+      if (any) { persist(); flush(); }
+    } catch (e) { console.error("pool resync failed:", (e as Error).message); }
   })();
 }
 // Adopt the seeded bot wallets as house accounts — their real deposits become the bots' bankroll.
@@ -391,14 +452,13 @@ function botsEnter(aid: string) {
   for (const a of pool) {
     if (PLAY_MAX === 0 && Math.random() < 0.25) continue;   // legacy behaviour when uncapped
     const myTok = a.side === "bull" ? tokA : tokB;
-    const otherTok = a.side === "bull" ? tokB : tokA;
-    // top up the side we actually play from whatever we raided off the enemy
-    const topUpAt = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(FIELD[myTok] as Field, BOT_STAKE_USD_MIN);
-    if (a[FIELD[myTok]] < topUpAt && a[FIELD[otherTok]] > topUpAt) {
-      const swap = a[FIELD[otherTok]] * (0.5 + Math.random() * 0.5);
-      const fee = swap * CONVERT_FEE;
-      a[FIELD[otherTok]] -= swap; a[FIELD[myTok]] += swap - fee; addConvFees(fee * usdPerUnit(FIELD[myTok] as Field));
-    }
+    // Bots do NOT convert. This used to move raw units 1:1 between the two sides' tokens, so
+    // swapping 100 UWU ($2.95) produced 100 `sol` units ($100) - a ~34x mint that drained the UWU
+    // float into an invented SOL balance and left one side with no army at all. Pricing the swap
+    // correctly would still be wrong: a bot's convert is ledger-only, with no on-chain counterpart,
+    // so the vault would owe SOL it never received. Instead a bot that can no longer stake in its
+    // OWN token is retired and everything it holds returns to the pool, which hands it to bots on
+    // the side that can actually use it. Same circulation, fully backed, no swap.
     const bankroll = a[FIELD[myTok]];
     // minimum stake is a DOLLAR amount converted to this token, so every army can afford to play
     const minStake = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(FIELD[myTok] as Field, BOT_STAKE_USD_MIN);
@@ -408,7 +468,7 @@ function botsEnter(aid: string) {
     if (!(minStake > 0) || stake < minStake) continue;
     a[FIELD[myTok]] -= stake;
     const mode = arenaEco(aid);
-    const usdN = stake * usdPerUnitSafe(FIELD[myTok] as Field);
+    const usdN = stake * pxForRound(aid, rn.state.round, FIELD[myTok] as Field);
     if (!(usdN > 0)) { a[FIELD[myTok]] += stake; continue; }   // no price -> undo the debit, sit out
     a.dep += stake; treasury[mode] += usdN * FEE; totalDeployed[mode] += usdN;
     stat(aid).deployed += usdN; stat(aid).take += usdN * FEE; depSide[mode][a.side] += usdN;
@@ -528,6 +588,25 @@ const httpServer = createServer((req, res) => {
                    uptimeSec: Math.floor((Date.now() - bootAt) / 1000) };
     res.writeHead(isFrozen() ? 503 : 200, cors); return res.end(JSON.stringify(body));
   }
+  // FLOAT — where the bot bankroll actually sits, against what the vault really holds.
+  // /solvency deliberately ignores house accounts (bot money is ours, not a player liability), so
+  // it stayed green while a mispriced bot swap was inventing SOL out of UWU. This is the view that
+  // would have caught it: every token, ledger-side vs chain-side, with the gap named.
+  if (url === "/float") {
+    const per = (f: Field) => {
+      let pool = 0, bots = 0, real = 0;
+      const poolSet = new Set(poolPubkeys());
+      for (const a of ledger.values()) {
+        const v = a[f] || 0;
+        if (poolSet.has(a.id)) pool += v; else if (a.isBot) bots += v; else real += v;
+      }
+      return { pool, bots, real, total: pool + bots + real, usd: (pool + bots + real) * usdPerUnitSafe(f) };
+    };
+    const out = { at: Date.now(), price: { bull: usdPerUnitSafe("bull"), uwu: usdPerUnitSafe("uwu") },
+                  bull: per("bull"), uwu: per("uwu"), sol: per("sol"),
+                  chain: { uwu: lastChain.uwu, bull: lastChain.bull, sol: lastChain.sol } };
+    res.writeHead(200, cors); return res.end(JSON.stringify(out));
+  }
   if (url === "/solvency") {
     res.writeHead(200, cors);
     return res.end(JSON.stringify({ frozen: isFrozen(), vault: chainReady() ? vaultPubkey() : null, report: reconLatest() }));
@@ -641,7 +720,7 @@ wss.on("connection", (ws, req) => {
         if (rn.state.phase !== "lobby") return ws.send(JSON.stringify({ t: "error", msg: "Deposits closed — wait for the next lobby." }));
         // the CAP is per side per round, so topping up cannot push you past it
         // entries are USD, so the cap is genuinely $CAP per side rather than CAP-of-whatever-token
-        const usdP = usdPerUnitSafe(FIELD[myTok] as Field);
+        const usdP = pxForRound(aid, rn.state.round, FIELD[myTok] as Field);
         if (!(usdP > 0)) return ws.send(JSON.stringify({ t: "error", msg: "Price feed unavailable — try again in a moment." }));
         const already = rn.state.entries.filter(e => e.id === `${m.wallet}|${m.side}`)
                           .reduce((n, e) => n + e.stake / (1 - FEE), 0);
@@ -700,7 +779,7 @@ wss.on("connection", (ws, req) => {
         const tok = def.toks[def.teams === 0 ? 0 : team] || def.toks[0];
         const a = acct(m.wallet, "bull");
         const bank = a[FIELD[tok]];
-        const usdE1 = usdPerUnitSafe(FIELD[tok] as Field);
+        const usdE1 = pxForRound(aid, rn.state.round, FIELD[tok] as Field);
         if (!(usdE1 > 0)) return ws.send(JSON.stringify({ t: "error", msg: "Price feed unavailable — try again in a moment." }));
         const already = rn.state.entries.filter(e => e.id === `${m.wallet}|${team}`).reduce((n, e) => n + e.stake / (1 - FEE), 0);
         const stake = Math.min(Number(m.stake) || 0, bank, Math.max(0, CAP - already) / usdE1);

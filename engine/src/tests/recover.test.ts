@@ -91,3 +91,56 @@ test("a wiped wallet is still repaired (dust below 1% counts as wiped)", async (
   assert.equal(r.credited, 1);
   assert.equal(a.uwu, 100);
 });
+
+// ---- resyncPoolToChain: re-anchor the HOUSE float to the vault's real contents ----
+import { resyncPoolToChain } from "../recover-float.ts";
+
+test("credits the house up to what the chain actually holds", () => {
+  const p1 = acct("W1", { uwu: 100 }), p2 = acct("W2", { uwu: 100 });
+  const r = resyncPoolToChain(ledgerOf(p1, p2), new Set(["W1", "W2"]), "uwu", 500);
+  assert.equal(r.moved, 300);
+  assert.equal(p1.uwu + p2.uwu, 500, "house now matches the vault");
+});
+
+test("player balances are subtracted first and never touched", () => {
+  const pool = acct("W1", { uwu: 0 });
+  const player = acct("P1", { uwu: 200 });
+  const r = resyncPoolToChain(ledgerOf(pool, player), new Set(["W1"]), "uwu", 500);
+  assert.equal(r.moved, 300, "only the 300 left after the player's 200 is house money");
+  assert.equal(pool.uwu, 300);
+  assert.equal(player.uwu, 200, "player untouched");
+});
+
+// The critical one. Writing balances DOWN to match the chain would conceal a genuine shortfall,
+// so an over-claiming ledger must be reported, not silently corrected.
+test("refuses to write down an over-claiming ledger — that is insolvency, not drift", () => {
+  const pool = acct("W1", { uwu: 900 });
+  const r = resyncPoolToChain(ledgerOf(pool), new Set(["W1"]), "uwu", 500);
+  assert.equal(r.moved, 0);
+  assert.match(r.reason!, /INSOLVENT/);
+  assert.equal(pool.uwu, 900, "the shortfall stays visible");
+});
+
+test("refuses when players alone are owed more than the vault holds", () => {
+  const pool = acct("W1", { uwu: 0 });
+  const player = acct("P1", { uwu: 600 });
+  const r = resyncPoolToChain(ledgerOf(pool, player), new Set(["W1"]), "uwu", 500);
+  assert.equal(r.moved, 0);
+  assert.equal(pool.uwu, 0);
+});
+
+test("in-sync books are left exactly alone", () => {
+  const pool = acct("W1", { uwu: 500 });
+  const r = resyncPoolToChain(ledgerOf(pool), new Set(["W1"]), "uwu", 500);
+  assert.equal(r.moved, 0);
+  assert.equal(pool.uwu, 500);
+});
+
+test("bot holdings count as house money, so they are not double-credited", () => {
+  const pool = acct("W1", { uwu: 100 });
+  const bot: any = acct("us-extraction:bot:1", { uwu: 150 }); bot.isBot = true;
+  const r = resyncPoolToChain(ledgerOf(pool, bot), new Set(["W1"]), "uwu", 500);
+  assert.equal(r.moved, 250, "100 pool + 150 already in bots = 250 held; 250 to go");
+  assert.equal(pool.uwu, 350);
+  assert.equal(bot.uwu, 150, "money in play is not moved");
+});

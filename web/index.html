@@ -284,6 +284,10 @@
         <div class="prTable"><div class="prRow h"><span>Round</span><span>Side</span><span>Deposit</span><span>Got back</span><span class="pnl">P/L</span></div><div id="prRows"></div></div>
         <div class="note" id="prNote">Your finished rounds — deposit, total you got back (incl. extracted), and profit/loss. Shared across both modes.</div>
       </div>
+      <div class="card" style="margin-top:12px"><h2 style="font-size:15px">Every round — all players</h2>
+        <div id="allRounds"></div>
+        <div class="note">Every finished round in this lobby with everyone who deployed, what they staked and what they walked away with. Newest first — click a round to expand.</div>
+      </div>
     </div>
     <div class="view" id="viewReferrals"><div class="card" style="max-width:560px;margin:12px auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px">            <h3 style="margin-top:12px">Referrals <span class="youtag" style="background:var(--gold);color:#000">10%</span></h3>
             <div class="note">Share your link — you earn 10% of the house fee on every round your signups play, forever.</div>
@@ -350,7 +354,34 @@
     const cls = b>a+1e-9 ? "up" : (b<a-1e-9 ? "dn" : "fl");
     return '<s class="st">'+fmt(a)+'</s><i class="ar">\u2192</i><b class="'+cls+'">'+fmt(b)+'</b>';
   };
-  const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  // Full round log: who played, what they staked, what they got back. The settlement the engine
+  // broadcasts is keyed "id|side" and denominated in USD, same as the stakes on roundStart.
+  const PENDING_ROUND={}, ROUNDLOG=[];
+  function recordRound(m){
+    const pend=PENDING_ROUND[m.arena||m.mode]; if(!pend||pend.round!==m.round)return;
+    const settle=m.settlement||{};
+    const players=pend.entries.map(e=>{
+      const s=settle[e.id+"|"+e.side]||settle[e.id]||{};
+      const out=(s.bull||0)+(s.uwu||0);
+      return {name:e.name||e.wallet||"?",wallet:e.wallet,side:e.side,bot:!!e.bot,stake:e.stake||0,out,pnl:out-(e.stake||0)};
+    }).sort((a,b)=>b.pnl-a.pnl);
+    if(!players.length)return;
+    ROUNDLOG.unshift({at:Date.now(),round:m.round,arena:m.arena,mode:m.mode,winner:m.winner,players});
+    if(ROUNDLOG.length>30)ROUNDLOG.pop();
+    renderAllRounds();
+  }
+  function renderAllRounds(){
+    const el=document.getElementById("allRounds"); if(!el)return;
+    if(!ROUNDLOG.length){el.innerHTML='<div class="note">No finished rounds yet — the first one lands in about a minute.</div>';return;}
+    el.innerHTML=ROUNDLOG.map((r,i)=>{
+      const pot=r.players.reduce((s,p)=>s+p.stake,0);
+      const rows=r.players.map(p=>`<div class="prRow"><span class="fn">${p.bot?"":"⭐ "}${esc(p.name)}</span><span><span class="dot ${p.side==="bull"?"bull":"uni"}"></span> ${p.side==="bull"?"A":"B"}</span><span>$${p.stake.toFixed(2)}</span><span>$${p.out.toFixed(2)}</span><span class="pnl ${p.pnl>=0?'pos':'neg'}">${p.pnl>=0?'+':'−'}$${Math.abs(p.pnl).toFixed(2)}</span></div>`).join("");
+      return `<div class="prTable" style="margin-bottom:8px"><div class="prRow h arHead" data-i="${i}" style="cursor:pointer"><span>#${r.round} ▸</span><span>winner ${r.winner==="bull"?"A":"B"}</span><span>${r.players.length} played</span><span>pot $${pot.toFixed(2)}</span><span class="pnl"></span></div><div class="arBody" style="display:${i===0?"block":"none"}">${rows}</div></div>`;
+    }).join("");
+  }
+  document.addEventListener("click",e=>{const h=e.target.closest(".arHead");if(!h)return;
+    const body=h.nextElementSibling; if(body)body.style.display=body.style.display==="none"?"block":"none";});
+  const esc=v=String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const fmt=n=>{n=Math.max(0,n);return "$"+(n>=1000?n.toLocaleString("en-US",{maximumFractionDigits:0}):n.toLocaleString("en-US",{maximumFractionDigits:n<10?2:0}));};
   const NAMES=["degenDan","sol_sniper","0xViper","moonboy","rugproof","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","vibecheck","noReentry","gigaGwei","turboTina","elayne","copetrader","sendit","wenLambo","paperhandz","diamondD","fomoFrank","sizzle","nakamotto","zkZoe","based_bri","yeetard","hodlorbe","greenwick","stampede","hornsUp","glitter","prancer","charge","maxbid","alphaleak","serSlippy","tendieTom","voidwalker"];
   const EDGE=0.002, START=100, DUST=1.2, PER_SIDE=12, CAP=100, LOBBY_MS=7000, BATTLE_MS=32000, IMB=90, FEE=0.01;
@@ -1542,7 +1573,10 @@
       if(m.t==="roundStartN"){ (window.__NROUND=window.__NROUND||{})[m.arena]=m;
         if(m.entries&&(PAIRING==="3w"||PAIRING==="ffa")&&m.arena.startsWith(PAIRING+"-")){ startNRound(m); syncDOM(); }
         return; }
-      if(m.t==="roundStart"){ if(m.arena&&m.arena!==PAIRING+"-"+m.mode)return; startEngineRound(m.mode,m); if(m.mode===activeMode)syncDOM(); }
+      if(m.t==="roundStart"){ if(m.arena&&m.arena!==PAIRING+"-"+m.mode)return;
+        // stash the full entry list so the settled handler can show EVERY player, not just you
+        PENDING_ROUND[m.arena||m.mode]={round:m.round,arena:m.arena,mode:m.mode,entries:(m.entries||[]).slice()};
+        startEngineRound(m.mode,m); if(m.mode===activeMode)syncDOM(); }
       else if(m.t==="state"){
         // The engine only ships arenas that are switched ON (ENABLED_ARENAS). Anyone whose saved
         // lobby has since been disabled would otherwise sit on a permanently empty screen with no
@@ -1659,7 +1693,9 @@
           }
         }
       }
-      else if(m.t==="settled"){ if(m.arena&&m.arena!==PAIRING+"-"+m.mode)return; const w=worlds[m.mode];
+      else if(m.t==="settled"){ if(m.arena&&m.arena!==PAIRING+"-"+m.mode)return;
+        recordRound(m);
+        const w=worlds[m.mode];
         if(w){ w.lastSeed=m.seed; w.lastSeedHash=m.seedHash;
           if(m.community){ w.community=m.community;
             if(m.community.joined>0)ev(w,"🆕 "+m.community.joined+" new wallet"+(m.community.joined>1?"s":"")+" joined — "+m.community.total+" in the arena","round");

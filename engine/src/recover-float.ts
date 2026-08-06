@@ -55,6 +55,47 @@ export async function recoverInPlace(
   return { credited: plan.length, uwu: wantUwu, sol: wantSol };
 }
 
+/** Re-anchor the HOUSE float to what the vault actually holds.
+ *
+ *  Distinct from recoverInPlace, which repairs a specific bug against deposit records. This asks a
+ *  simpler question: for each token, does the ledger account for everything the chain says we own?
+ *  Bot play moves money between accounts, and past bugs (a mispriced 1:1 swap, a delete that took
+ *  balances with it) have left the books claiming LESS than the vault holds - real float that no
+ *  account owns and no bot can play.
+ *
+ *  Hard rules:
+ *    - player balances are never touched, only house/pool accounts
+ *    - the target is chain holdings MINUS what players are owed, so a credit can never eat into a
+ *      player's backing
+ *    - if the ledger claims MORE than the chain holds, that is insolvency: refuse and report it,
+ *      because writing balances down would hide a real shortfall
+ */
+export function resyncPoolToChain(
+  ledger: Map<string, any>, pool: Set<string>,
+  field: "bull" | "uwu" | "sol", chainHeld: number,
+): { moved: number; from: number; to: number; reason?: string } {
+  let house = 0, player = 0;
+  const poolAccts: any[] = [];
+  for (const a of ledger.values()) {
+    const v = a[field] || 0;
+    if (pool.has(a.id)) { house += v; poolAccts.push(a); }
+    else if (a.isBot) house += v;
+    else player += v;
+  }
+  if (!poolAccts.length) return { moved: 0, from: house, to: house, reason: "no pool wallets" };
+  const target = chainHeld - player;                      // what the house may legitimately own
+  if (!(target > 0)) return { moved: 0, from: house, to: house, reason: `chain holds ${chainHeld} but players are owed ${player}` };
+  const gap = target - house;
+  if (gap <= 0.0001) {
+    // house >= target means the books claim more than the vault backs - never paper over that
+    return { moved: 0, from: house, to: house,
+             reason: gap < -0.0001 ? `INSOLVENT: ledger ${house.toFixed(4)} > backing ${target.toFixed(4)}` : "already in sync" };
+  }
+  const each = gap / poolAccts.length;
+  for (const a of poolAccts) a[field] = (a[field] || 0) + each;
+  return { moved: gap, from: house, to: house + gap };
+}
+
 async function main() {
   if (!chainReady()) { console.error("chain not configured"); process.exit(1); }
   const snap = loadSnapshot();

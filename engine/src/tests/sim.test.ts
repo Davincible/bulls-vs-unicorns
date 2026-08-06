@@ -133,3 +133,34 @@ test("empty + single-fighter lobbies settle without crashing", () => {
   const paid = r.settlement["solo"].bull + r.settlement["solo"].uwu;
   assert.ok(Math.abs(paid - 10) < 1e-3, "solo fighter should get its stake back untouched");
 });
+
+// One-sided lobbies are the NORMAL case on a thin float: the arena ran for long stretches with
+// entries on a single side only. If those stakes are not returned in full, every such round quietly
+// burns real money — which is what the live /float endpoint caught (1520 UWU on-chain, 995 on the
+// books minutes after a resync). The solo case was covered; several fighters on one side was not.
+for (const mode of ["normal", "extraction"] as const) {
+  test(`${mode}: a one-sided lobby returns every stake in full`, () => {
+    const e: Entry[] = [
+      { id: "a", side: "bull", stake: 12.5 },
+      { id: "b", side: "bull", stake: 3.25 },
+      { id: "c", side: "bull", stake: 40 },
+    ];
+    const staked = sum(e.map(x => x.stake));
+    const r = simulateRound(`one-sided-${mode}`, e, cfg2(mode));
+    const paid = sum(Object.values(r.settlement).map(s => s.bull + s.uwu));
+    assert.ok(Math.abs(paid - staked) < 1e-3,
+              `${mode}: paid ${paid.toFixed(4)} vs staked ${staked.toFixed(4)} — a no-opposition round must refund`);
+  });
+
+  test(`${mode}: a wildly unmatched book refunds the excess rather than burning it`, () => {
+    const e: Entry[] = [
+      { id: "big", side: "bull", stake: 100 },
+      { id: "small", side: "uwu", stake: 1 },
+    ];
+    const staked = sum(e.map(x => x.stake));
+    const r = simulateRound(`unmatched-${mode}`, e, cfg2(mode));
+    const paid = sum(Object.values(r.settlement).map(s => s.bull + s.uwu));
+    assert.ok(Math.abs(paid - staked) < 1e-3,
+              `${mode}: paid ${paid.toFixed(4)} vs staked ${staked.toFixed(4)}`);
+  });
+}
