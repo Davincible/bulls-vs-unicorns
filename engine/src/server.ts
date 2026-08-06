@@ -166,6 +166,9 @@ function floatUsd(): number {
 // solvent enough to actually play.
 const BOT_MIN_RUNWAY = Number(process.env.BOT_MIN_RUNWAY || 3);   // stakes a new bot should afford
 function popAffordable(): number {
+  // fake banks (test chains only) have no pool to afford anything from - population is uncapped
+  // there, or dev arenas would seed once and never replace a busted bot
+  if (!botBankReady() && FAKE_BANK_OK) return Infinity;
   const perBot = Math.max(BOT_BANK_USD_MIN, BOT_STAKE_USD_MIN * BOT_MIN_RUNWAY);
   if (!(perBot > 0)) return 0;
   return Math.floor(floatUsd() / perBot);
