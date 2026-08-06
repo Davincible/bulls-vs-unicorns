@@ -223,7 +223,7 @@ function botsEnterN(aid: string) {
         if (a[FIELD[other]] > BOT_STAKE_MIN) {
           const swap = a[FIELD[other]] * (0.5 + Math.random() * 0.5);
           const fee = swap * CONVERT_FEE;
-          a[FIELD[other]] -= swap; a[FIELD[tok]] += swap - fee; addConvFees(fee);
+          a[FIELD[other]] -= swap; a[FIELD[tok]] += swap - fee; addConvFees(fee * usdPerUnit(FIELD[tok] as Field));
           break;
         }
       }
@@ -235,8 +235,9 @@ function botsEnterN(aid: string) {
     if (stake < BOT_STAKE_MIN) continue;
     a[FIELD[tok]] -= stake;
     const eco = NARENAS[aid].eco;
-    a.dep += stake; treasury[eco] += stake * FEE; totalDeployed[eco] += stake;
-    stat(aid).deployed += stake; stat(aid).take += stake * FEE;
+    const usdA = stake * usdPerUnit(FIELD[myTok] as Field);
+    a.dep += stake; treasury[eco] += usdA * FEE; totalDeployed[eco] += usdA;
+    stat(aid).deployed += usdA; stat(aid).take += usdA * FEE;
     rn.enter(`${a.id}|${def.teams === 0 ? 0 : team}`, def.teams === 0 ? 0 : team, stake * (1 - FEE));
   }
 }
@@ -303,7 +304,7 @@ function botsEnter(aid: string) {
     if (a[FIELD[myTok]] < topUpAt && a[FIELD[otherTok]] > topUpAt) {
       const swap = a[FIELD[otherTok]] * (0.5 + Math.random() * 0.5);
       const fee = swap * CONVERT_FEE;
-      a[FIELD[otherTok]] -= swap; a[FIELD[myTok]] += swap - fee; addConvFees(fee);
+      a[FIELD[otherTok]] -= swap; a[FIELD[myTok]] += swap - fee; addConvFees(fee * usdPerUnit(FIELD[myTok] as Field));
     }
     const bankroll = a[FIELD[myTok]];
     // minimum stake is a DOLLAR amount converted to this token, so every army can afford to play
@@ -314,8 +315,9 @@ function botsEnter(aid: string) {
     if (!(minStake > 0) || stake < minStake) continue;
     a[FIELD[myTok]] -= stake;
     const mode = arenaEco(aid);
-    a.dep += stake; treasury[mode] += stake * FEE; totalDeployed[mode] += stake;
-    stat(aid).deployed += stake; stat(aid).take += stake * FEE; depSide[mode][a.side] += stake;
+    const usdN = stake * usdPerUnit(FIELD[myTok] as Field);
+    a.dep += stake; treasury[mode] += usdN * FEE; totalDeployed[mode] += usdN;
+    stat(aid).deployed += usdN; stat(aid).take += usdN * FEE; depSide[mode][a.side] += usdN;
     rn.enter(`${a.id}|${a.side}`, a.side, stake * (1 - FEE));   // net of deploy fee
   }
 }
@@ -559,8 +561,10 @@ wss.on("connection", (ws, req) => {
           pushBalance(a.refBy);
         }
         const eco = arenaEco(aid);
-        treasury[eco] += fee - refCut; totalDeployed[eco] += stake; depSide[eco][m.side as Side] += stake;
-        stat(aid).deployed += stake; stat(aid).take += fee;
+        const usdP = usdPerUnit(FIELD[myTok] as Field);
+        treasury[eco] += (fee - refCut) * usdP; totalDeployed[eco] += stake * usdP;
+        depSide[eco][m.side as Side] += stake * usdP;
+        stat(aid).deployed += stake * usdP; stat(aid).take += fee * usdP;
         rn.enter(`${m.wallet}|${m.side}`, m.side, stake * (1 - FEE));
         ws.send(JSON.stringify({ t: "entered", arena: aid, mode: arenaEco(aid), side: m.side, stake }));
         pushBalance(m.wallet); persist();
@@ -600,8 +604,9 @@ wss.on("connection", (ws, req) => {
         if (stake < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: "Insufficient balance for that arena's token." }));
         a[FIELD[tok]] -= stake; a.dep += stake;
         const eco = def.eco;
-        treasury[eco] += stake * FEE; totalDeployed[eco] += stake;
-        stat(aid).deployed += stake; stat(aid).take += stake * FEE;
+        const usdE = stake * usdPerUnit(FIELD[tok] as Field);
+        treasury[eco] += usdE * FEE; totalDeployed[eco] += usdE;
+        stat(aid).deployed += usdE; stat(aid).take += usdE * FEE;
         rn.enter(`${m.wallet}|${team}`, team, stake * (1 - FEE));
         ws.send(JSON.stringify({ t: "enteredN", arena: aid, team, stake }));
         pushBalance(m.wallet); persist();
@@ -736,7 +741,7 @@ wss.on("connection", (ws, req) => {
         const fee = res.outAmount * CONVERT_FEE;
         const credited = Math.max(0, res.outAmount - fee);
         if (to === "bull") a.bull += credited; else a.uwu += credited;
-        addConvFees(fee);
+        addConvFees(fee * usdPerUnit((to === "bull" ? "bull" : "uwu") as Field));
         ws.send(JSON.stringify({ t: "converted", to, amount: amt, got: credited, fee,
                                  priceImpact: res.priceImpactPct, simulated: res.simulated, sig: res.sig }));
         pushBalance(m.wallet); persist();
