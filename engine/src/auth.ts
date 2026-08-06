@@ -1,0 +1,50 @@
+// auth — wallet-ownership proof. A socket must sign a server-issued nonce with the wallet's
+// ed25519 key before ANY money operation on that wallet is honoured. This is the layer that
+// closed the "engine trusted any wallet id" hole: without a proven signature, guarded ops are
+// refused. State is per-socket and dropped on disconnect.
+import { WebSocket } from "ws";
+import { PublicKey } from "@solana/web3.js";
+import nacl from "tweetnacl";
+
+const authed = new Map<WebSocket, Set<string>>();   // ws -> wallets it has proven ownership of
+const nonces = new Map<WebSocket, string>();         // ws -> the current challenge awaiting a signature
+
+// Operations that move or reveal money. Every one requires a proven wallet on the socket.
+export const GUARDED = new Set([
+  "enter", "enterN", "withdraw", "withdrawSol", "convert",
+  "buildDeposit", "buildSolDeposit", "deposit", "depositSol", "setName", "fundMe",
+]);
+
+/** Has this socket proven control of `wallet`? */
+export function isAuthed(ws: WebSocket, wallet: string): boolean {
+  return authed.get(ws)?.has(wallet) === true;
+}
+
+/** Issue a fresh nonce for this socket to sign. */
+export function challenge(ws: WebSocket): string {
+  const nonce = "Bulls vs Unicorns login " + Date.now() + " " + Math.random().toString(36).slice(2);
+  nonces.set(ws, nonce);
+  return nonce;
+}
+
+export interface VerifyResult { ok: boolean; wallet?: string; msg?: string; }
+
+/** Verify a base64 ed25519 signature over the socket's outstanding nonce. On success the wallet
+ *  becomes trusted for this socket and the nonce is consumed (single use). */
+export function verify(ws: WebSocket, wallet: string, signatureB64: string): VerifyResult {
+  try {
+    const nonce = nonces.get(ws);
+    if (!nonce) return { ok: false, msg: "no challenge" };
+    const pk = new PublicKey(wallet).toBytes();
+    const sig = Uint8Array.from(Buffer.from(String(signatureB64), "base64"));
+    const ok = sig.length === 64 && nacl.sign.detached.verify(new TextEncoder().encode(nonce), sig, pk);
+    if (ok) { (authed.get(ws) ?? authed.set(ws, new Set()).get(ws)!).add(wallet); nonces.delete(ws); }
+    return { ok, wallet };
+  } catch (e) { return { ok: false, msg: (e as Error).message }; }
+}
+
+/** Drop all auth state for a disconnected socket. */
+export function forget(ws: WebSocket): void {
+  authed.delete(ws);
+  nonces.delete(ws);
+}
