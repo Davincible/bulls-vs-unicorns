@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/server.ts",
+    "test": "tsx --test src/tests/*.test.ts",
     "setup:devnet": "tsx src/setup-devnet.ts",
     "test:sim": "tsx src/test-sim.ts",
     "study": "tsx src/study.ts",
