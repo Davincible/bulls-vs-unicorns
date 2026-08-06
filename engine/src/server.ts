@@ -192,7 +192,9 @@ restore();
 // a real wallet) so they are NOT a liability. bull/uwu are whole tokens; sol is USD units.
 function ledgerLiabilities() {
   let bull = 0, uwu = 0, solUsd = 0;
-  for (const a of ledger.values()) { if (a.isBot) continue; bull += Math.max(0, a.bull); uwu += Math.max(0, a.uwu); solUsd += Math.max(0, a.sol); }
+  // `|| 0` guards accounts that predate a field (e.g. older rows have no `sol`) — otherwise
+  // Math.max(0, undefined) is NaN and poisons the whole liability figure.
+  for (const a of ledger.values()) { if (a.isBot) continue; bull += Math.max(0, a.bull || 0); uwu += Math.max(0, a.uwu || 0); solUsd += Math.max(0, a.sol || 0); }
   return { bull, uwu, solUsd };
 }
 startReconcile(ledgerLiabilities, solUsd, Number(process.env.RECONCILE_MS || 15_000));

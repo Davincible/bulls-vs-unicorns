@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bulls ⚔ Unicorns — Proof of Reserves</title>
+<style>
+  :root{--bg:#0a0b0f;--panel:#141620;--panel2:#1c1f2b;--line:#242732;--line2:#31353f;--ink:#f2f4fa;--ink-soft:#969cb0;--ink-faint:#5a6072;
+    --bull:#18e08a;--uni:#c46bff;--gold:#ffc048;--danger:#ff4d6d;--radius:14px;--shadow:0 6px 24px rgba(0,0,0,.38);
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--mono:ui-monospace,"Cascadia Code","SF Mono",Menlo,Consolas,monospace;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:var(--sans);color:var(--ink);
+    background:radial-gradient(1200px 520px at 50% -12%,rgba(150,160,200,.05),transparent 65%),var(--bg);
+    min-height:100vh;padding:32px 18px;line-height:1.5}
+  .wrap{max-width:760px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 2px;letter-spacing:-.01em}
+  .sub{color:var(--ink-soft);font-size:13px;margin-bottom:22px}
+  .banner{border-radius:var(--radius);padding:16px 18px;margin-bottom:20px;border:1px solid var(--line);
+    background:var(--panel);box-shadow:var(--shadow);display:flex;align-items:center;gap:14px}
+  .banner .dot{width:12px;height:12px;border-radius:50%;flex:none}
+  .banner b{font-size:16px}
+  .banner .msg{color:var(--ink-soft);font-size:13px}
+  .ok{--c:var(--bull)} .bad{--c:var(--danger)} .warn{--c:var(--gold)} .unknown{--c:var(--ink-faint)}
+  .banner.ok,.banner.bad,.banner.warn,.banner.unknown{border-color:color-mix(in srgb,var(--c) 45%,var(--line))}
+  .banner .dot{background:var(--c);box-shadow:0 0 12px var(--c)}
+  .banner b{color:var(--c)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:15px 17px;
+    margin-bottom:12px;box-shadow:var(--shadow)}
+  .arow{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:10px}
+  .asset{font-weight:700;font-size:15px;text-transform:uppercase;letter-spacing:.03em}
+  .pill{font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;border:1px solid color-mix(in srgb,var(--c) 45%,transparent);color:var(--c);background:color-mix(in srgb,var(--c) 12%,transparent)}
+  .nums{display:flex;gap:26px;flex-wrap:wrap;font-size:13px;margin-bottom:10px}
+  .nums div span{color:var(--ink-faint);display:block;font-size:10px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:1px}
+  .nums div b{font-family:var(--mono);font-size:15px;font-weight:600}
+  .bar{height:8px;border-radius:6px;background:var(--panel2);overflow:hidden;border:1px solid var(--line)}
+  .bar>i{display:block;height:100%;background:var(--c);border-radius:6px;transition:width .5s}
+  .cover{font-size:11px;color:var(--ink-soft);margin-top:5px}
+  .foot{color:var(--ink-faint);font-size:12px;margin-top:22px;text-align:center;line-height:1.7}
+  .foot a{color:var(--ink-soft)}
+  .vault{font-family:var(--mono);font-size:12px;color:var(--ink-soft);word-break:break-all}
+  .refresh{color:var(--ink-faint);font-size:12px;margin-top:4px}
+  @media (prefers-color-scheme:light){
+    :root{--bg:#f4f5f8;--panel:#ffffff;--panel2:#eef0f5;--line:#e0e3ea;--ink:#12131a;--ink-soft:#5a6072;--ink-faint:#8b90a2;--shadow:0 6px 20px rgba(20,25,40,.08)}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Proof of Reserves</h1>
+  <div class="sub">Bulls ⚔ Unicorns — live, per-asset. What players can withdraw vs. what the vault holds on-chain.</div>
+
+  <div id="banner" class="banner unknown"><div class="dot"></div><div><b id="bTitle">Connecting…</b><div class="msg" id="bMsg">Reading the engine's reconciliation report.</div></div></div>
+
+  <div id="assets"></div>
+
+  <div class="foot">
+    <div>Vault: <span class="vault" id="vault">—</span></div>
+    <div class="refresh" id="stamp">—</div>
+    <div style="margin-top:8px">The engine re-checks solvency every 15s. If liabilities ever exceed holdings, withdrawals freeze automatically.</div>
+  </div>
+</div>
+
+<script>
+  // Mirror index.html's engine-URL convention (?engine=ws…), converted to the HTTP origin for /solvency.
+  const params = new URLSearchParams(location.search);
+  const LOCAL = ["localhost","127.0.0.1",""].includes(location.hostname);
+  const wsUrl = params.get("engine") || window.ENGINE_URL || (LOCAL ? "ws://localhost:8090" : "wss://bulls-vs-unicorn-production.up.railway.app");
+  const API = (params.get("api") || wsUrl).replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/+$/, "");
+
+  const $ = (id) => document.getElementById(id);
+  const fmt = (n) => (n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 4 }));
+  const ASSET_LABEL = { bull: "ANSEM", uwu: "UWU", sol: "SOL" };
+
+  function setBanner(cls, title, msg) {
+    const b = $("banner"); b.className = "banner " + cls;
+    $("bTitle").textContent = title; $("bMsg").textContent = msg;
+  }
+
+  function renderAssets(assets) {
+    if (!assets || !assets.length) { $("assets").innerHTML = '<div class="card"><div class="cover">No assets reported yet — the first reconciliation runs moments after boot.</div></div>'; return; }
+    $("assets").innerHTML = assets.map(a => {
+      const label = ASSET_LABEL[a.asset] || a.asset.toUpperCase();
+      const cover = a.liability > 0 ? Math.min(1, a.holdings / a.liability) : 1;
+      const pct = Math.round(cover * 100);
+      const cls = a.unpriced ? "warn" : a.ok ? "ok" : "bad";
+      const pill = a.unpriced ? "Price unavailable" : a.ok ? "Fully backed" : "Shortfall " + fmt(a.shortfall);
+      const note = a.unpriced ? "The price feed is momentarily unavailable, so this asset can't be priced right now. It is not counted as a shortfall."
+                 : a.ok ? "Every unit players could withdraw is backed on-chain."
+                 : "Vault holdings are below what players are owed for this asset.";
+      return `<div class="card ${cls}">
+        <div class="arow"><span class="asset">${label}</span><span class="pill">${pill}</span></div>
+        <div class="nums">
+          <div><span>Owed to players</span><b>${a.unpriced ? "—" : fmt(a.liability)}</b></div>
+          <div><span>Held in vault</span><b>${fmt(a.holdings)}</b></div>
+          <div><span>Coverage</span><b>${a.unpriced ? "—" : a.liability > 0 ? pct + "%" : "∞"}</b></div>
+        </div>
+        <div class="bar"><i style="width:${a.unpriced ? 100 : Math.max(2, pct)}%"></i></div>
+        <div class="cover">${note}</div>
+      </div>`;
+    }).join("");
+  }
+
+  async function load() {
+    try {
+      const r = await fetch(API + "/solvency", { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const d = await r.json();
+      $("vault").textContent = d.vault || "not on-chain (rounds only)";
+      const rep = d.report;
+      if (d.frozen) setBanner("warn", "Withdrawals frozen", "A solvency check failed — withdrawals are paused until reserves are restored.");
+      else if (!rep) setBanner("unknown", "Warming up", "Waiting for the first reconciliation report.");
+      else if (rep.ok) setBanner("ok", "Solvent", "Every asset is fully backed. Players can withdraw in full.");
+      else setBanner("bad", "Shortfall detected", "At least one asset is under-reserved. On a live chain this would freeze withdrawals.");
+      renderAssets(rep && rep.assets);
+      $("stamp").textContent = "Updated " + new Date().toLocaleTimeString() + " · engine " + API;
+    } catch (e) {
+      setBanner("unknown", "Engine unreachable", "Could not reach " + API + "/solvency (" + e.message + "). Add ?engine=wss://your-engine to point at it.");
+      $("stamp").textContent = "Retrying…";
+    }
+  }
+  load();
+  setInterval(load, 15000);
+</script>
+</body>
+</html>

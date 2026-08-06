@@ -35,3 +35,23 @@ test("exactly equal holdings are solvent (boundary)", () => {
   const r = evaluate([{ asset: "sol", liability: 12.5, holdings: 12.5 }]);
   assert.equal(r.ok, true);
 });
+
+test("an unpriced asset is indeterminate — never a breach, never null", () => {
+  // SOL owed but price feed down: must not read as insolvency, must not freeze, must not emit null
+  const r = evaluate([{ asset: "sol", liability: 900, holdings: 5, unpriced: true }]);
+  assert.equal(r.ok, true, "a price outage must not trip the freeze");
+  const sol = r.assets[0];
+  assert.equal(sol.unpriced, true);
+  assert.equal(sol.liability, 0);
+  assert.equal(sol.shortfall, 0);
+});
+
+test("non-finite liability/holdings are coerced to 0, not emitted as null", () => {
+  const r = evaluate([{ asset: "sol", liability: NaN, holdings: 5 }, { asset: "bull", liability: 10, holdings: undefined as any }]);
+  const sol = r.assets[0], bull = r.assets[1];
+  assert.equal(sol.liability, 0);        // NaN -> 0 (was surfacing as null in JSON)
+  assert.equal(sol.ok, true);
+  assert.equal(bull.holdings, 0);        // undefined -> 0
+  assert.equal(bull.ok, false);          // owe 10, hold 0 -> real shortfall still caught
+  assert.ok(Number.isFinite(bull.shortfall));
+});

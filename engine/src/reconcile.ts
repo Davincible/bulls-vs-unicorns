@@ -15,17 +15,26 @@ const ENFORCE =
   : process.env.RECONCILE_ENFORCE === "1" ? true
   : !IS_TEST_CHAIN;
 
-export interface AssetRecon { asset: string; liability: number; holdings: number; ok: boolean; shortfall: number; }
+export interface AssetRecon { asset: string; liability: number; holdings: number; ok: boolean; shortfall: number; unpriced?: boolean }
 export interface ReconReport { at: number; ok: boolean; assets: AssetRecon[]; skipped?: string }
 
 // A tiny tolerance absorbs float dust and rounding; a real breach is far larger than this.
 const EPS = 1e-4;
 
-/** Pure solvency comparison. Each entry is one asset's [liability, holdings] in the SAME unit. */
-export function evaluate(rows: Array<{ asset: string; liability: number; holdings: number }>, at = Date.now()): ReconReport {
+/** Pure solvency comparison. Each entry is one asset's [liability, holdings] in the SAME unit.
+ *  An `unpriced` row is INDETERMINATE (e.g. SOL owed but the price feed is down): it can't be
+ *  compared, so it never counts as a breach — a price outage must not read as insolvency. */
+export function evaluate(rows: Array<{ asset: string; liability: number; holdings: number; unpriced?: boolean }>, at = Date.now()): ReconReport {
   const assets: AssetRecon[] = rows.map(r => {
-    const shortfall = Math.max(0, r.liability - r.holdings);
-    return { asset: r.asset, liability: r.liability, holdings: r.holdings, ok: shortfall <= EPS, shortfall };
+    if (r.unpriced) {
+      const holdings = Number.isFinite(r.holdings) ? r.holdings : 0;
+      return { asset: r.asset, liability: 0, holdings, ok: true, shortfall: 0, unpriced: true };
+    }
+    // guard: never let a NaN/undefined slip through as a fake shortfall
+    const liability = Number.isFinite(r.liability) ? r.liability : 0;
+    const holdings = Number.isFinite(r.holdings) ? r.holdings : 0;
+    const shortfall = Math.max(0, liability - holdings);
+    return { asset: r.asset, liability, holdings, ok: shortfall <= EPS, shortfall };
   });
   return { at, ok: assets.every(a => a.ok), assets };
 }
@@ -44,11 +53,17 @@ export function latest(): ReconReport | null { return last; }
 export async function runOnce(getLiabilities: () => Liabilities, solPrice: () => number): Promise<ReconReport> {
   try {
     const L = getLiabilities();
-    const rows: Array<{ asset: string; liability: number; holdings: number }> = [];
-    // native SOL: ledger tracks USD units, the vault holds SOL — convert liability to SOL to compare
+    const rows: Array<{ asset: string; liability: number; holdings: number; unpriced?: boolean }> = [];
+    // native SOL: ledger tracks USD units, the vault holds SOL — convert liability to SOL to compare.
+    // If SOL is actually owed but the price feed is down, solvency is INDETERMINATE (mark unpriced)
+    // rather than faking 0 (false "solvent") or NaN (false "shortfall") — and never freeze on it.
     const px = solPrice();
     const solHoldings = await solBalance(vaultPubkey());
-    rows.push({ asset: "sol", liability: px > 0 ? L.solUsd / px : 0, holdings: solHoldings });
+    if (L.solUsd > 0 && !(px > 0)) {
+      rows.push({ asset: "sol", liability: L.solUsd, holdings: solHoldings, unpriced: true });
+    } else {
+      rows.push({ asset: "sol", liability: px > 0 ? L.solUsd / px : 0, holdings: solHoldings });
+    }
     if (chainReady()) {
       rows.push({ asset: "bull", liability: L.bull, holdings: await vaultTokenBalance("bull") });
       rows.push({ asset: "uwu", liability: L.uwu, holdings: await vaultTokenBalance("uwu") });
