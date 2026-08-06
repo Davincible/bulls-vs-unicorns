@@ -15,6 +15,7 @@ import { RPC } from "./chain.ts";
 import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, forget as authForget } from "./auth.ts";
 import { isAllowed as walletAllowed } from "./allowlist.ts";
 import { start as startReconcile, isFrozen, latest as reconLatest } from "./reconcile.ts";
+import { allowMessage, connectionAllowed, releaseConnection, LIMITS } from "./limits.ts";
 import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, totalDeployed, depSide,
          created, bustedCount, getConvFees, addConvFees, persist, restore, flush,
          acct, balPayload, leadersFor, cleanDisplayName, cleanAvatarUrl } from "./ledger.ts";
@@ -356,7 +357,14 @@ httpServer.on("error", (e) => {
 const wss = new WebSocketServer({ server: httpServer });
 wss.on("error", (e) => console.error("wss error:", (e as Error).message));
 httpServer.listen(PORT);
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  // Cap concurrent sockets per address before doing any work for this client. Behind a proxy this
+  // sees the proxy's address, so a hosted deploy should also rate-limit at the edge.
+  const ip = String(req?.socket?.remoteAddress || "unknown");
+  if (!connectionAllowed(ip)) {
+    ws.close(1013, "too many connections");   // 1013 = try again later
+    return;
+  }
   clients.add(ws);
   ws.send(JSON.stringify({ t: "chain", ready: chainReady(), vault: chainReady() ? vaultPubkey() : null, mints: mints(), rpc: RPC }));
   // send the in-flight round immediately so a joiner isn't staring at an empty arena
@@ -386,11 +394,13 @@ wss.on("connection", (ws) => {
       startedAt: st.closesAt - (st.battleMs || cfg.battleMs),   // true start, so a joiner syncs mid-battle
       battleMs: st.battleMs || cfg.battleMs, resumed: true }));
   }
-  const cleanup = () => { clients.delete(ws); walletOf.delete(ws); authForget(ws); };
+  const cleanup = () => { clients.delete(ws); walletOf.delete(ws); authForget(ws); releaseConnection(ws, ip); };
   ws.on("error", cleanup);
   ws.on("close", cleanup);
   ws.on("message", async (raw) => {
     let m: any; try { m = JSON.parse(raw.toString()); } catch { return; }
+    // Over-budget messages are dropped silently — answering would hand an attacker free amplification.
+    if (!allowMessage(ws, typeof m?.t === "string" ? m.t : undefined)) return;
     try {
       if (m.wallet) walletOf.set(ws, m.wallet);
       // gate every wallet-scoped, side-effectful message behind proof of ownership (see auth.ts)
