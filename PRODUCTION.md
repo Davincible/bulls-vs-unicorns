@@ -21,18 +21,26 @@ It's a restructure: pull the proven logic into clean services behind interfaces.
 
 ## Progress (2026-08-06)
 - [x] **Ledger → SQLite (WAL)** — `store.ts`, atomic per-save transactions, legacy JSON auto-import.
-- [x] **Committed test suite** — `npm test`, 21 tests: sim determinism/conservation/no-friendly-fire
-      (2-team, 3-way, FFA), ledger crash-safety, allowlist gate, reconciliation solvency core.
-- [~] **Service split** — `auth.ts` extracted (nonce/verify/GUARDED). Still in `server.ts`:
-      ledger, chain, arenas, gateway.
+- [x] **Committed test suite** — `npm test`, 27 tests: sim determinism/conservation/no-friendly-fire
+      (2-team, 3-way, FFA), ledger crash-safety, allowlist gate, reconciliation core, arena registry,
+      vault-key loading.
+- [~] **Service split** — extracted: `auth.ts`, `arenas.ts` (registry), `ledger.ts` (money state),
+      `reconcile.ts`, `allowlist.ts`. server.ts 623 → ~560 lines. Still inside: chain handlers +
+      round/bot orchestration + gateway (ws dispatch) — the ws-coupled remainder.
 - [x] **Reconciliation daemon** — `reconcile.ts`: per-asset liabilities ≤ vault holdings every 15s,
       FREEZES withdrawals on breach (live-chain only; test chains report but don't freeze).
-      Public `solvency` ws query for a proof-of-reserves page.
+      Public `solvency` ws query + `GET /solvency` for a proof-of-reserves page.
 - [x] **Closed-beta gate** — `allowlist.ts`: on a live chain, only whitelisted (WHITELIST env /
       `data/whitelist.txt`) wallets can authenticate. Matches Max's "whitelisted pre-funded wallets only".
+- [x] **HTTP health** — `GET /health` (200 solvent / 503 frozen) wraps the ws server so any host can
+      liveness-probe. ws upgrade verified on the shared port.
+- [x] **Deploy artifacts** — `engine/Dockerfile` (Node 24, ledger on /data volume, healthcheck),
+      `.dockerignore`, `.env.example` (all env vars), `GO-LIVE.md` runbook. Vault key hardened:
+      `VAULT_SECRET_KEY` from a secret manager; live chain refuses to auto-generate a new vault.
 - [ ] **Secrets + hosting** — DEFERRED by Max ("decide later"); pick Fly/Railway/VPS at deploy time.
+      (Image + env + runbook are ready when a host is chosen.)
 - [ ] **Mainnet cutover** — gated by BOTH a written checklist AND a $2 canary (Solscan links) with
-      Max's explicit go. Closed to the whitelist. Faucets already hard-off on non-test chains.
+      Max's explicit go. Closed to the whitelist. Faucets already hard-off on non-test chains. See GO-LIVE.md.
 
 ## Phase A — custodial launch (our wallet), production-grade
 The model you asked for: runs on OUR wallet, no smart contract yet, but done properly.
