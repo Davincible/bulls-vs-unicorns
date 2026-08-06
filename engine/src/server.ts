@@ -246,8 +246,14 @@ startReconcile(ledgerLiabilities, solUsd, Number(process.env.RECONCILE_MS || 15_
 {
   const live = new Set([...ARENA_IDS, ...NARENA_IDS]);
   let dropped = 0;
-  for (const [id, a] of [...ledger.entries()])
-    if (a.isBot && !live.has(id.split(":")[0])) { ledger.delete(id); dropped++; }
+  for (const [id, a] of [...ledger.entries()]) {
+    // ONLY arena bots ("<arena>:bot:<n>") are prunable. The funded bot-pool wallets are also
+    // flagged isBot, but their ids are plain pubkeys — this used to delete all 20 of them on every
+    // boot, seconds after initBotBank logged their balance, wiping the float and emptying the
+    // arenas (and losing the ledger record of real deposited money).
+    if (!a.isBot || !id.includes(":bot:")) continue;
+    if (!live.has(id.split(":")[0])) { ledger.delete(id); dropped++; }
+  }
   if (dropped) console.log(`pruned ${dropped} orphaned bot accounts from retired arenas`);
 }
 const SEED = Number(process.env.SEED_BOTS || 18);

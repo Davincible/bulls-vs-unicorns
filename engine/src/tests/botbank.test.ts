@@ -61,3 +61,23 @@ test("an empty pool grants nothing rather than inventing money", () => {
   assert.equal(drawBank("bull", 100), 0);
   assert.equal(botBankReady(), false, "no float means bots simply cannot deploy");
 });
+
+test("pool wallets survive the orphan-bot prune (they are flagged isBot but are NOT arena bots)", () => {
+  seedPool(500);
+  // reproduce the boot prune: it deletes bot accounts whose arena no longer exists
+  const live = new Set(["au-normal", "3w-normal"]);
+  ledger.set("au-normal:bot:1", { id: "au-normal:bot:1", name: "b", side: "bull", bull: 10, uwu: 0, sol: 0,
+    isBot: true, dep: 0, ret: 0, games: 0, wins: 0 } as any);
+  ledger.set("retired-arena:bot:9", { id: "retired-arena:bot:9", name: "b", side: "bull", bull: 10, uwu: 0, sol: 0,
+    isBot: true, dep: 0, ret: 0, games: 0, wins: 0 } as any);
+
+  for (const [id, a] of [...ledger.entries()]) {
+    if (!a.isBot || !id.includes(":bot:")) continue;          // the fix
+    if (!live.has(id.split(":")[0])) ledger.delete(id);
+  }
+
+  for (const id of POOL) assert.ok(ledger.get(id), `pool wallet ${id} must survive the prune`);
+  assert.ok(ledger.get("au-normal:bot:1"), "a live arena's bot survives");
+  assert.equal(ledger.get("retired-arena:bot:9"), undefined, "a retired arena's bot is still pruned");
+  assert.equal(poolBalance("bull"), 1500, "the float is intact");
+});
