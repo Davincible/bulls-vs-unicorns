@@ -17,6 +17,9 @@ Nothing here touches mainnet until every box is checked.
       `node pentest.mjs ws://<staging>` → 16/16, and `node pentest-dos.mjs ws://<staging>` survives.
       Covers auth bypass, cross-wallet access, signature forgery/replay, hostile amounts,
       prototype pollution, malformed input, stored XSS, HTTP surface and flooding.
+- [ ] **Rate limiting active** — `RATE_LIMIT_OFF` is NOT set. Confirm the boot config uses sane
+      RATE_PER_SEC / RATE_BURST / MAX_CONN_PER_IP, and rate-limit at the edge too (behind a proxy
+      the engine only sees the proxy's address).
 - [ ] **No static file server in front of secrets.** `serve-web.mjs` is dev tooling; the hosted
       frontend must serve `web/` only. Confirm `GET /..%2f<anything>` returns 4xx wherever it runs.
 - [ ] `SOLANA_RPC` points at **mainnet**; `CHAIN_CONFIG=./mainnet.json`.
