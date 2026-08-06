@@ -125,7 +125,8 @@
         <div class="panelC" id="chainPanel">
           <h3>Devnet wallet <span class="youtag" id="chainNet" style="background:#9945FF">SOLANA</span></h3>
           <div id="chainOff">
-            <div class="note">Real BULL/UWU tokens on Solana. Point Phantom at this network first:</div>
+            <div class="note"><b style="color:var(--gold)">Step 1 — put Phantom on Devnet.</b><br>Phantom → ⚙ Settings → Developer Settings → <b>Testnet Mode ON</b>, then pick <b>Solana Devnet</b>. If Phantom is on Mainnet, connecting appears to do nothing and balances read zero.</div>
+            <div class="note" style="margin-top:6px;font-size:10.5px;color:var(--ink-faint)">Advanced: the network this game uses (you do <i>not</i> need to paste this into Phantom)</div>
             <div style="margin-top:6px;display:flex;gap:6px;align-items:center">
               <code id="rpcUrl" style="flex:1;font-family:var(--mono);font-size:11px;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">http://127.0.0.1:8899</code>
               <button class="abtn ghost" id="copyRpc" style="padding:6px 10px;font-size:11px">Copy</button>
@@ -1715,6 +1716,16 @@
       if(!PK||!ws||ws.readyState!==1)return;
       send({t:"getBalance",wallet:PK}); send({t:"chainBalance",wallet:PK}); send({t:"solBalance",wallet:PK});
     }
+    // Warn when the connected wallet has no presence on the game's chain — almost always means
+    // Phantom is pointed at Mainnet while the game runs on Devnet.
+    async function checkWalletNetwork(pk){
+      try{
+        const bal=await rpcConn().getBalance(new window.solanaWeb3.PublicKey(pk));
+        if(bal===0){
+          banner("⚠ This wallet has <b>no SOL on the game's network</b>. If Phantom is on <b>Mainnet</b>, switch it: Settings → Developer Settings → Testnet Mode → <b>Solana Devnet</b>, then reconnect. Otherwise hit <b>🎁 Get test SOL + tokens</b>.");
+        }
+      }catch(e){ /* rpc hiccup - not worth alarming the user */ }
+    }
     async function connect(){
       if(!window.solana||!window.solana.isPhantom){ note("Phantom not found — install the Phantom extension, set it to Devnet."); banner("🦊 Phantom wallet not detected. Install it and switch it to <b>Devnet</b>."); return; }
       try{
@@ -1725,6 +1736,10 @@
         if($("#refLink"))$("#refLink").textContent=location.origin+location.pathname+"?ref="+PK;
         localStorage.setItem("bvu_wmeth","phantom");
         connectedOnce=true; MYWALLET=PK;
+        // Phantom on the wrong network is the #1 cause of "I connected but nothing works": the
+        // wallet connects fine, then every balance reads zero and deposits silently fail. Detect it
+        // by asking the game's chain whether this account exists there, and say so plainly.
+        checkWalletNetwork(PK);
         note("Sign the login message in Phantom…");
         const okA=await authenticate();
         if(!okA){ note("Sign-in required to play."); return; }

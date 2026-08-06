@@ -36,6 +36,15 @@ const SOL_USD_FIXED = Number(process.env.SOL_USD || 0);
 const IS_TEST_CHAIN = /localhost|127\.0\.0\.1|devnet|testnet/i.test(RPC);
 const FAUCET_ON = IS_TEST_CHAIN && process.env.DISABLE_FAUCET !== "1";
 if (!FAUCET_ON) console.log("faucets DISABLED (mainnet-safe): fundMe/faucet will be refused");
+// The browser submits its OWN signed transactions, so it needs an RPC endpoint — but it must never
+// be handed ours when ours carries an API key (a keyed URL in the `chain` message is published to
+// every visitor, and to the banner). Detect a keyed URL and substitute the public endpoint for that
+// cluster; PUBLIC_RPC overrides. The keyed URL stays server-side only.
+const RPC_HAS_SECRET = /[?&](api-key|apikey|key|token)=/i.test(RPC) || /\/v2\//i.test(RPC);
+const CLIENT_RPC = process.env.PUBLIC_RPC
+  || (RPC_HAS_SECRET ? (IS_TEST_CHAIN ? "https://api.devnet.solana.com" : "https://api.mainnet-beta.solana.com") : RPC);
+if (RPC_HAS_SECRET) console.log(`rpc: keyed endpoint kept server-side; clients get ${CLIENT_RPC}`);
+
 const solUsd = () => SOL_USD_FIXED > 0 ? SOL_USD_FIXED : priceUSD("sol");
 startPriceLoop();
 
@@ -401,7 +410,7 @@ wss.on("connection", (ws, req) => {
     return;
   }
   clients.add(ws);
-  ws.send(JSON.stringify({ t: "chain", ready: chainReady(), vault: chainReady() ? vaultPubkey() : null, mints: mints(), rpc: RPC }));
+  ws.send(JSON.stringify({ t: "chain", ready: chainReady(), vault: chainReady() ? vaultPubkey() : null, mints: mints(), rpc: CLIENT_RPC }));
   // send the in-flight round immediately so a joiner isn't staring at an empty arena
   for (const aid of ARENA_IDS) {
     const mode = arenaEco(aid);
