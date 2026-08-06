@@ -12,7 +12,7 @@ export interface StateN {
   multiplier: number; openedAt: number; closesAt: number; battleMs?: number;
 }
 
-const LOBBY_MS = Number(process.env.LOBBY_MS || 8_000);
+const LOBBY_MS = Number(process.env.LOBBY_MS || 5_000);
 const BATTLE_MS = 60_000;
 
 export function cfgN(mode: "normal" | "extraction", teams: number, multiplier: number): CfgN {
