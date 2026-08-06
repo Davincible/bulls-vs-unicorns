@@ -91,7 +91,11 @@ async function main() {
       if (!a?.ok) { console.log(`${tag} auth rejected`); failed++; continue; }
 
       const bal = await ask(ws, { t: "getBalance", wallet: w }, ["balance"], 15000);
-      if (bal && (bal.bull >= DEPOSIT_EACH * 0.9)) { console.log(`${tag} already funded (bull ${bal.bull.toFixed(1)}) - skip`); skipped++; continue; }
+      // Skip only when EVERY leg this run is meant to fund is already there. Checking tokens alone
+      // meant a top-up that added SOL float silently skipped every wallet that still held tokens.
+      const tokensDone = bal && bal.bull >= DEPOSIT_EACH * 0.9;
+      const solDone = SOL_DEPOSIT <= 0 || (bal && bal.sol > 0);
+      if (tokensDone && solDone) { console.log(`${tag} already funded (bull ${bal.bull.toFixed(1)}, sol ${(bal.sol||0).toFixed(1)}) - skip`); skipped++; continue; }
 
       // 1. SOL for its own transaction fees
       const haveSol = await solBalance(w);

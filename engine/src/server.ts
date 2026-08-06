@@ -67,7 +67,21 @@ startPriceLoop();
 const NAMES = ["degenDan","sol_sniper","0xViper","moonboy","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","gigaGwei","turboTina","sendit","wenLambo","diamondD","fomoFrank","nakamotto","zkZoe","based_bri","saylorsz","jitoJoe","rugproof","exitliq","ser_pump","mevMike","validatorV","anonape","solstice","tapedeck"];
 // community growth: the arena starts small and fills up over time
 const POP_START = Number(process.env.POP_START || 22), POP_GROWTH = Number(process.env.POP_GROWTH || 0.7), POP_MAX = Number(process.env.POP_MAX || 90);
-const BOT_BANK_MIN = Number(process.env.BOT_BANK_MIN || 60), BOT_BANK_MAX = Number(process.env.BOT_BANK_MAX || 240), BOT_STAKE_MIN = Number(process.env.BOT_STAKE_MIN || 6);
+// Bot sizing is expressed in USD, not token counts. A flat "6 units" meant $1.03 of ANSEM but
+// $0.18 of UWU and $6.00 of SOL - which is why SOL bots could never afford to deploy and that
+// arena sat one-sided until everyone busted. Convert USD -> token units at the live price.
+const BOT_BANK_USD_MIN = Number(process.env.BOT_BANK_USD_MIN || 8);
+const BOT_BANK_USD_MAX = Number(process.env.BOT_BANK_USD_MAX || 20);
+const BOT_STAKE_USD_MIN = Number(process.env.BOT_STAKE_USD_MIN || 0.5);
+/** USD value of ONE ledger unit of a field. `sol` is already denominated in USD. */
+function usdPerUnit(field: Field): number {
+  if (field === "sol") return 1;
+  const px = priceUSD(field === "bull" ? "ansem" : "uwu");
+  return px && px > 0 ? px : 0;
+}
+const unitsForUsd = (field: Field, usd: number) => { const px = usdPerUnit(field); return px > 0 ? usd / px : 0; };
+// legacy token-count knobs still respected if explicitly set
+const BOT_BANK_MIN = Number(process.env.BOT_BANK_MIN || 0), BOT_BANK_MAX = Number(process.env.BOT_BANK_MAX || 0), BOT_STAKE_MIN = Number(process.env.BOT_STAKE_MIN || 0);
 // Bots draw their bank from REAL deposited money (bot-bank.ts). Inventing it made every bot
 // payout to a real player an unbacked liability. BOT_FAKE_BANK=1 restores the old behaviour for
 // local testing only - it is refused on a live chain.
@@ -85,17 +99,24 @@ function bankFor(field: Field, want: number): number {
 const PLAY_MIN = Number(process.env.PLAY_MIN || 0), PLAY_MAX = Number(process.env.PLAY_MAX || 0);
 const BOT_STAKE_MAX = Number(process.env.BOT_STAKE_MAX || 0);
 const B58 = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ123456789";
+/** What an account's holdings are actually WORTH, in dollars. Summing bull+uwu+sol raw compares
+ *  unlike units: 1 ANSEM is ~6x a UWU, and `sol` is already USD. */
+function accountUsd(a: Account): number {
+  return (a.bull || 0) * usdPerUnit("bull") + (a.uwu || 0) * usdPerUnit("uwu") + (a.sol || 0);
+}
 const walletish = () => { let s=""; for(let i=0;i<4;i++) s += B58[(Math.random()*B58.length)|0]; return s + "…" + B58[(Math.random()*B58.length)|0] + B58[(Math.random()*B58.length)|0] + B58[(Math.random()*B58.length)|0]; };
 let seq = 0;
 function newBot(aid: string, side: Side): Account {
   const id = `${aid}:bot:${++seq}`;
   // a third of newcomers show up as raw addresses — fresh wallets, no handle yet
   const name = Math.random() < 0.34 ? walletish() : NAMES[(Math.random()*NAMES.length)|0] + "_" + seq;
-  const want = BOT_BANK_MIN + Math.random() * (BOT_BANK_MAX - BOT_BANK_MIN);
   const a: Account = { id, name, side, bull: 0, uwu: 0, sol: 0, isBot: true, dep: 0, ret: 0, games: 0, wins: 0 };
   // bank in the arena's token for this bot's slot, drawn from real deposited money
   const toks = arenaTokens(aid) || (["ansem", "uwu"] as [Tok, Tok]);
   const field = FIELD[toks[side === "bull" ? 0 : 1]] as Field;
+  const want = BOT_BANK_MIN > 0
+    ? BOT_BANK_MIN + Math.random() * (BOT_BANK_MAX - BOT_BANK_MIN)
+    : unitsForUsd(field, BOT_BANK_USD_MIN + Math.random() * (BOT_BANK_USD_MAX - BOT_BANK_USD_MIN));
   a[field] = bankFor(field, want);
   ledger.set(id, a); created[arenaEco(aid)]++; return a;
 }
@@ -129,8 +150,8 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   // real players fill the arena, so bots never crowd out humans.
   const realPlaying = s.entries.filter(e => !e.id.includes(":bot:")).length;
   let busted = 0;
-  const BUST = Number(process.env.BOT_BUST || Math.min(5, BOT_BANK_MIN * 0.4));
-  for (const a of botsFor(aid)) if (a.bull + a.uwu + a.sol < BUST) { ledger.delete(a.id); busted++; bustedCount[mode]++; }
+  const BUST_USD = Number(process.env.BOT_BUST_USD || 0.4);
+  for (const a of botsFor(aid)) if (accountUsd(a) < BUST_USD) { ledger.delete(a.id); busted++; bustedCount[mode]++; }
   rounds[mode]++; roundsByArena[aid] = (roundsByArena[aid] || 0) + 1;
   { const st = stat(aid); st.matches++; if (r.winner === "bull") st.winsA++; else st.winsB++; }
   const popCap = Math.min(POP_MAX, POP_START + Math.floor((roundsByArena[aid] || 0) * POP_GROWTH));
@@ -160,8 +181,8 @@ async function onSettleN(aid: string, r: any, s: any) {
   }
   const realPlaying = s.entries.filter((e: any) => !String(e.id).includes(":bot:")).length;
   let busted = 0;
-  const BUST = Number(process.env.BOT_BUST || Math.min(5, BOT_BANK_MIN * 0.4));
-  for (const a of botsFor(aid)) if (a.bull + a.uwu + a.sol < BUST) { ledger.delete(a.id); busted++; }
+  const BUST_USD_N = Number(process.env.BOT_BUST_USD || 0.4);
+  for (const a of botsFor(aid)) if (accountUsd(a) < BUST_USD_N) { ledger.delete(a.id); busted++; }
   roundsByArena[aid] = (roundsByArena[aid] || 0) + 1;
   { const st = stat(aid); st.matches++; if (r.winnerTeam === 0) st.winsA++; else st.winsB++; }
   const popCap = Math.min(POP_MAX, POP_START + Math.floor((roundsByArena[aid] || 0) * POP_GROWTH));
@@ -278,16 +299,19 @@ function botsEnter(aid: string) {
     const myTok = a.side === "bull" ? tokA : tokB;
     const otherTok = a.side === "bull" ? tokB : tokA;
     // top up the side we actually play from whatever we raided off the enemy
-    if (a[FIELD[myTok]] < BOT_STAKE_MIN && a[FIELD[otherTok]] > BOT_STAKE_MIN) {
+    const topUpAt = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(FIELD[myTok] as Field, BOT_STAKE_USD_MIN);
+    if (a[FIELD[myTok]] < topUpAt && a[FIELD[otherTok]] > topUpAt) {
       const swap = a[FIELD[otherTok]] * (0.5 + Math.random() * 0.5);
       const fee = swap * CONVERT_FEE;
       a[FIELD[otherTok]] -= swap; a[FIELD[myTok]] += swap - fee; addConvFees(fee);
     }
     const bankroll = a[FIELD[myTok]];
+    // minimum stake is a DOLLAR amount converted to this token, so every army can afford to play
+    const minStake = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(FIELD[myTok] as Field, BOT_STAKE_USD_MIN);
     const stake = BOT_STAKE_MAX > 0
-      ? Math.min(BOT_STAKE_MIN + Math.random() * (BOT_STAKE_MAX - BOT_STAKE_MIN), bankroll)
-      : Math.min(Math.max(BOT_STAKE_MIN, bankroll * (0.18 + Math.random()*0.37)), CAP, bankroll);
-    if (stake < BOT_STAKE_MIN) continue;
+      ? Math.min(minStake + Math.random() * (BOT_STAKE_MAX - minStake), bankroll)
+      : Math.min(Math.max(minStake, bankroll * (0.18 + Math.random()*0.37)), CAP, bankroll);
+    if (!(minStake > 0) || stake < minStake) continue;
     a[FIELD[myTok]] -= stake;
     const mode = arenaEco(aid);
     a.dep += stake; treasury[mode] += stake * FEE; totalDeployed[mode] += stake;
