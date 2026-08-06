@@ -1444,7 +1444,10 @@
   (function chain(){
     const params=new URLSearchParams(location.search);
     const LOCAL=location.hostname==="localhost"||location.hostname==="127.0.0.1"||location.protocol==="file:";
-    const ENGINE=params.get("engine")||window.ENGINE_URL||(LOCAL?"ws://localhost:8090":"wss://bulls-vs-unicorn-production.up.railway.app");
+    // Default to the SAME server that served this page — in production the engine hosts these
+    // files, so the deployed app needs no ?engine= query string. ?engine= still overrides.
+    const SAME_ORIGIN_WS=(location.protocol==="https:"?"wss://":"ws://")+location.host;
+    const ENGINE=params.get("engine")||window.ENGINE_URL||(LOCAL?"ws://localhost:8090":SAME_ORIGIN_WS);
     let ws=null, PK=null, CHAIN=null, lastWd=null, connectedOnce=false, DEVKP=null;
     const note=t=>{const n=$("#chainNote");if(n)n.textContent=t;};
     const banner=t=>{const b=$("#devnetBanner");if(b){b.style.display="block";b.innerHTML=t;}};

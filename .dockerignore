@@ -1,0 +1,29 @@
+# Build context is the repo root, so THIS file is what keeps secrets out of the image.
+# The vault private key must never be baked in — it is supplied at runtime via VAULT_SECRET_KEY.
+engine/.vault-keypair.json
+**/.vault-keypair.json
+.env
+.env.*
+!**/.env.example
+
+# local ledger / runtime state — the real one lives on the mounted volume
+engine/data/
+**/ledger.db
+**/ledger.db-*
+**/ledger.json*
+
+# not needed in the image
+node_modules/
+**/node_modules/
+.git/
+.github/
+*.log
+programs/
+target/
+.anchor/
+test-ledger/
+bulls-arena-UPLOAD/
+**/*.md
+engine/src/tests/
+engine/pentest*.mjs
+engine/costs.ps1

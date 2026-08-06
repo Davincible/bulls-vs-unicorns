@@ -1,20 +1,24 @@
 # Bulls ⚔ Unicorns engine — custodial launch image. Host-agnostic (Fly / Railway / VPS).
 # Node 24 is required: the ledger uses the built-in node:sqlite (stable from 22.5) and node:test.
-# Build context = this engine/ directory.
+# Build context = the REPO ROOT (not engine/), because the image also ships the player-facing
+# web/ files — the engine serves them so the game is one URL with no separate frontend host.
+#   fly deploy . --config engine/fly.toml --dockerfile engine/Dockerfile
 FROM node:24-slim
 
 WORKDIR /app
 
 # Install deps first so the layer caches across code changes. tsx + @solana are runtime deps,
 # so --omit=dev keeps them; there are no devDependencies to drop.
-COPY package.json package-lock.json* ./
+COPY engine/package.json engine/package-lock.json* ./
 RUN npm ci --omit=dev || npm install --omit=dev
 
-COPY . .
+COPY engine/ ./
+COPY web/ ./web/
 
 # The SQLite ledger MUST live on a persistent volume — mount one at /data on the host.
 ENV LEDGER_DIR=/data
 ENV PORT=8090
+ENV WEB_DIR=/app/web
 VOLUME ["/data"]
 EXPOSE 8090
 

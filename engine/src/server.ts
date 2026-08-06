@@ -5,6 +5,9 @@
 // On-chain: real SPL deposits credit the ledger; withdrawals are paid out of the vault.
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer } from "node:http";
+import { readFile } from "node:fs";
+import { resolve as pathResolve, join as pathJoin, extname, sep as pathSep, posix as pathPosix, dirname as pathDirname } from "node:path";
+import { fileURLToPath as toPath } from "node:url";
 import { RoundRunner, newRoundConfig } from "./round.ts";
 import type { RoundResult, RoundState } from "./round.ts";
 import type { Mode, Side } from "./game.ts";
@@ -327,6 +330,9 @@ setInterval(() => {
 // and the solvency report should be publicly readable (proof-of-reserves). So we own an http.Server
 // for GET /health and GET /solvency and attach the ws server to it.
 const bootAt = Date.now();
+// Where the player-facing files live. In the container the image puts them at /app/web (set via
+// WEB_DIR); locally they sit next to the engine folder.
+const WEB_DIR = pathResolve(process.env.WEB_DIR || pathJoin(pathDirname(toPath(import.meta.url)), "..", "..", "web"));
 const httpServer = createServer((req, res) => {
   const cors = { "access-control-allow-origin": "*", "content-type": "application/json" };
   const url = (req.url || "/").split("?")[0];
@@ -338,7 +344,8 @@ const httpServer = createServer((req, res) => {
     res.writeHead(200, cors);
     return res.end(JSON.stringify({ ok: true, uptimeSec: Math.floor((Date.now() - bootAt) / 1000) }));
   }
-  if (url === "/health" || url === "/") {
+  // NOTE: "/" is deliberately NOT handled here — it must fall through to the static game page.
+  if (url === "/health") {
     // 200 only when solvent — a frozen book is unhealthy so a host can page on it
     const body = { ok: !isFrozen(), chain: chainReady(), vault: chainReady() ? vaultPubkey() : null,
                    arenas: ARENA_IDS.length + NARENA_IDS.length, frozen: isFrozen(),
@@ -349,7 +356,28 @@ const httpServer = createServer((req, res) => {
     res.writeHead(200, cors);
     return res.end(JSON.stringify({ frozen: isFrozen(), vault: chainReady() ? vaultPubkey() : null, report: reconLatest() }));
   }
-  res.writeHead(404, cors); res.end('{"error":"not found"}');
+  // ---- static frontend ----------------------------------------------------------------
+  // Serves web/ so the game has a real page instead of only a JSON API. Hardened the same way
+  // serve-web.mjs had to be: decode FIRST, normalise, resolve, then refuse anything that escapes
+  // WEB_DIR. This process holds the vault key, so a traversal here would be catastrophic.
+  let rel;
+  try { rel = decodeURIComponent(url); } catch { res.writeHead(400, cors); return res.end('{"error":"bad path"}'); }
+  if (rel.includes("\0")) { res.writeHead(400, cors); return res.end('{"error":"bad path"}'); }
+  if (rel === "/") rel = "/index.html";
+  const file = pathResolve(WEB_DIR, "." + pathPosix.normalize(rel));
+  if (file !== WEB_DIR && !file.startsWith(WEB_DIR + pathSep)) {
+    res.writeHead(403, cors); return res.end('{"error":"forbidden"}');
+  }
+  const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+                 ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8",
+                 ".png": "image/png", ".jpg": "image/jpeg", ".svg": "image/svg+xml",
+                 ".ico": "image/x-icon", ".webp": "image/webp" };
+  readFile(file, (err, data) => {
+    if (err) { res.writeHead(404, cors); return res.end('{"error":"not found"}'); }
+    res.writeHead(200, { "content-type": MIME[extname(file)] || "application/octet-stream",
+                         "x-content-type-options": "nosniff", "referrer-policy": "strict-origin-when-cross-origin" });
+    res.end(data);
+  });
 });
 httpServer.on("error", (e) => {
   const err = e as NodeJS.ErrnoException;
