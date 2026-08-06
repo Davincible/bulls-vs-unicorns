@@ -10,7 +10,16 @@ export type Tok = "ansem" | "uwu" | "sol";
 export const FIELD: Record<Tok, "bull" | "uwu" | "sol"> = { ansem: "bull", uwu: "uwu", sol: "sol" };
 
 export const PAIRINGS: Record<string, [Tok, Tok]> = { au: ["ansem", "uwu"], as: ["ansem", "sol"], us: ["uwu", "sol"] };
-export const ARENA_IDS = Object.keys(PAIRINGS).flatMap(p => ["normal", "extraction"].map(e => `${p}-${e}`));
+
+// Which arenas actually run. The bot float is finite, so spreading it over all ten makes every
+// lobby sparse and every fighter tiny (a ring of ~1 renders at the minimum radius and reads as
+// invisible). Concentrating the same money into fewer arenas gives full lobbies and real stakes.
+// ENABLED_ARENAS is a comma-separated list of ids; unset = everything.
+const ENABLED = (process.env.ENABLED_ARENAS || "").split(",").map(s => s.trim()).filter(Boolean);
+const enabled = (id: string) => ENABLED.length === 0 || ENABLED.includes(id);
+
+const ALL_2TEAM = Object.keys(PAIRINGS).flatMap(p => ["normal", "extraction"].map(e => `${p}-${e}`));
+export const ARENA_IDS = ALL_2TEAM.filter(enabled);
 export const arenaTokens = (aid: string): [Tok, Tok] => PAIRINGS[aid.split("-")[0]];
 export const arenaEco = (aid: string): Mode => aid.split("-")[1] as Mode;
 
@@ -21,7 +30,10 @@ export const NARENAS: Record<string, { teams: number; toks: Tok[]; eco: Mode }> 
   // FFA Mayhem is measurably harsher on small stakes (see ARENAS.md) but Max wants it playable.
   "ffa-normal":     { teams: 0, toks: ["ansem"],               eco: "normal" },
 };
-export const NARENA_IDS = Object.keys(NARENAS);
+export const NARENA_IDS = Object.keys(NARENAS).filter(enabled);
+
+/** Every arena id that exists, whether or not it's currently switched on (for docs/tools). */
+export const ALL_ARENA_IDS = [...ALL_2TEAM, ...Object.keys(NARENAS)];
 
 // Economy constants (locked by Max): 0.2% deploy fee, $100 per-stake cap, 0.30% convert fee
 // (PumpSwap pool fee, swapped on-chain at mainnet), $0.01 minimum entry.
