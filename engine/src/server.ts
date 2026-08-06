@@ -115,6 +115,32 @@ function pxForRound(aid: string, round: number, f: Field): number {
   if (!(m[f] > 0)) m[f] = usdPerUnitSafe(f);
   return m[f];
 }
+// PER-ROUND CONSERVATION AUDIT. Reading the code could not explain why the float moved ~9% of
+// stake per round in BOTH tokens at once, so the engine now shows its own working: every token
+// debited at entry and credited at settlement is tallied per round and any gap is logged. A round
+// should only ever lose the deploy fee.
+const roundFlow = new Map<string, Record<string, { out: number; in: number }>>();
+function flow(aid: string, round: number, f: Field) {
+  const k = `${aid}:${round}`;
+  let m = roundFlow.get(k);
+  if (!m) { m = {}; roundFlow.set(k, m); if (roundFlow.size > 64) for (const o of [...roundFlow.keys()].slice(0, 32)) roundFlow.delete(o); }
+  return (m[f] ||= { out: 0, in: 0 });
+}
+function auditRound(aid: string, round: number): void {
+  const m = roundFlow.get(`${aid}:${round}`);
+  if (!m) return;
+  for (const [f, v] of Object.entries(m)) {
+    if (v.out < 1e-9 && v.in < 1e-9) continue;
+    const gap = v.in - v.out;                       // negative = burned, positive = minted
+    const expected = -v.out * FEE;                  // the deploy fee is the only allowed shrinkage
+    if (Math.abs(gap - expected) > Math.max(1e-6, v.out * 0.001)) {
+      console.warn(`CONSERVATION ${aid} r${round} ${f}: staked ${v.out.toFixed(6)} paid ${v.in.toFixed(6)} ` +
+                   `gap ${gap >= 0 ? "+" : ""}${gap.toFixed(6)} (expected ${expected.toFixed(6)})`);
+    }
+  }
+  roundFlow.delete(`${aid}:${round}`);
+}
+
 const unitsAtRound = (aid: string, round: number, f: Field, usd: number) => {
   const px = pxForRound(aid, round, f);
   return px > 0 ? usd / px : 0;
@@ -217,6 +243,8 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
     const retA = unitsAtRound(aid, s.round, FIELD[tokA] as Field, bal.bull);
     const retB = unitsAtRound(aid, s.round, FIELD[tokB] as Field, bal.uwu);
     a[FIELD[tokA]] += retA; a[FIELD[tokB]] += retB; a.games++; a.ret += retA + retB;
+    flow(aid, s.round, FIELD[tokA] as Field).in += retA;
+    flow(aid, s.round, FIELD[tokB] as Field).in += retB;
     if (a.side === r.winner) a.wins++;
     const f = r.fighters.find(x => x.id === key);
     if (f) { a.raided = (a.raided||0) + f.raided; if (f.bestHit > (a.best||0)) a.best = f.bestHit; }
@@ -225,6 +253,7 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   // Hybrid bots as a *community that grows*: broke wallets leave, new wallets arrive every
   // round, and the population target creeps up over time — while still throttling down as
   // real players fill the arena, so bots never crowd out humans.
+  auditRound(aid, s.round);
   const realPlaying = s.entries.filter(e => !e.id.includes(":bot:")).length;
   let busted = 0;
   // Busted = can no longer afford the minimum stake, so it can never deploy again.
@@ -470,6 +499,7 @@ function botsEnter(aid: string) {
     const mode = arenaEco(aid);
     const usdN = stake * pxForRound(aid, rn.state.round, FIELD[myTok] as Field);
     if (!(usdN > 0)) { a[FIELD[myTok]] += stake; continue; }   // no price -> undo the debit, sit out
+    flow(aid, rn.state.round, FIELD[myTok] as Field).out += stake;
     a.dep += stake; treasury[mode] += usdN * FEE; totalDeployed[mode] += usdN;
     stat(aid).deployed += usdN; stat(aid).take += usdN * FEE; depSide[mode][a.side] += usdN;
     // Enter in USD, not token counts. Handing the sim 49.7 UWU for one side and 1.6 USD for the
@@ -730,6 +760,7 @@ wss.on("connection", (ws, req) => {
         if (headroom < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: `You're at the $${CAP} cap on that side this round.` }));
         if (stakeUsd < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: `Minimum entry is $${MIN_ENTRY}.` }));
         a[FIELD[myTok]] -= stake;                                      // debit the arena token
+        flow(aid, rn.state.round, FIELD[myTok] as Field).out += stake;
         a.dep += stake; a.side = m.side;
         if (m.ref && !a.refBy && m.ref !== m.wallet) a.refBy = String(m.ref).slice(0, 64);
         const fee = stake * FEE;
