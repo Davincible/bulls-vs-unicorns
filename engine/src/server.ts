@@ -12,6 +12,7 @@ import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildD
 import { priceUSD, startPriceLoop, allPrices } from "./prices.ts";
 import { RPC } from "./chain.ts";
 import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, forget as authForget } from "./auth.ts";
+import { isAllowed as walletAllowed } from "./allowlist.ts";
 import { loadSnapshot, saveSnapshot, flushSnapshot } from "./store.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
 
@@ -595,6 +596,11 @@ wss.on("connection", (ws) => {
       } else if (m.t === "authChallenge") {          // { wallet } -> a nonce to sign
         ws.send(JSON.stringify({ t: "authChallenge", nonce: authChallenge(ws) }));
       } else if (m.t === "authVerify") {             // { wallet, signature (base64) }
+        // closed-beta gate: on a live chain, only whitelisted wallets may authenticate. Refuse
+        // BEFORE checking the signature so a valid non-listed wallet still can't get in.
+        if (!walletAllowed(m.wallet)) {
+          return ws.send(JSON.stringify({ t: "authResult", ok: false, wallet: m.wallet, msg: "This wallet isn't on the launch whitelist yet." }));
+        }
         const r = authVerify(ws, m.wallet, m.signature);
         ws.send(JSON.stringify({ t: "authResult", ...r }));
       } else if (m.t === "getBalance") {
