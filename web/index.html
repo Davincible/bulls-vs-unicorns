@@ -125,10 +125,12 @@
             <div class="cell" style="margin-top:6px"><div class="v" id="ocSol">0</div><div class="n">◎ SOL (for tx fees)</div></div>
             <button class="abtn jb" id="btnFundMe" style="width:100%;margin-top:8px">🎁 Get test SOL + 500 BULL + 500 UWU</button>
             <div class="row2" style="margin-top:6px"><button class="abtn ghost" id="fauBull">Faucet 🐂 500</button><button class="abtn ghost2" id="fauUwu">Faucet 🦄 500</button></div>
+            <button class="abtn ghost" id="fauSol" style="width:100%;margin-top:6px">◎ Get 500 SOL units (arena credit)</button>
             <span class="wlabel" style="margin-top:10px">Amount</span>
             <input id="chainAmt" type="number" value="50" min="1" step="1" style="width:100%;background:var(--panel2);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:8px;font-family:var(--mono);font-size:14px">
             <span class="wlabel" style="margin-top:8px">On-chain → game wallet</span>
             <div class="row2"><button class="abtn jb" id="depBull">Deposit 🐂 BULL</button><button class="abtn ju" id="depUwu">Deposit 🦄 UWU</button></div>
+            <div class="note" style="font-size:10px;margin-top:4px">◎ SOL arenas use credited SOL units on this test chain — native-SOL on-chain deposits arrive with the mainnet cutover.</div>
             <span class="wlabel" style="margin-top:8px">Game wallet → Phantom</span>
             <div class="row2"><button class="abtn ghost" id="wdBull">Withdraw 🐂</button><button class="abtn ghost2" id="wdUwu">Withdraw 🦄</button></div>
             <div class="note" id="chainNote" style="margin-top:8px">—</div>
@@ -672,12 +674,14 @@
     const list=w.players.filter(p=>p.deposited>0||p.dmgDealt>0).slice().sort((a,b)=>(alive(b)-alive(a))||tot(b)-tot(a));
     $("#miniCap").textContent=(w.phase==="lobby"?"lobby · deposits open":w.phase==="battle"?"live":"round over")+" · "+list.filter(alive).length+" alive / "+list.filter(p=>!alive(p)).length+" dead";
     $("#miniGrid").innerHTML=list.slice(0,26).map((p,i)=>`<div class="fRow ${alive(p)?'':'dead'} ${p.isUser?'you':''}" data-name="${p.name}" style="opacity:${alive(p)?1:.42}"><span style="color:var(--ink-faint);width:18px;text-align:right">${i+1}</span><span class="aliveDot ${alive(p)?'':'dead'}"></span><span class="dot ${p.side==="bull"?"bull":"uni"}"></span><span class="fn">${p.isUser?'YOU':p.name}${alive(p)?'':' 💀'}</span><span class="fv">${fmt(tot(p)+(p.isUser?(p.banked||0):0))}</span></div>`).join("");
-    $("#prRows").innerHTML=w.userRounds.slice(0,12).map((r,i)=>{
+    const allRounds=[].concat(...Object.keys(worlds).map(md=>(worlds[md].userRounds||[]).map(r=>({...r,mode:r.mode||md}))))
+      .sort((a,b)=>(b.at||0)-(a.at||0));
+    $("#prRows").innerHTML=allRounds.slice(0,14).map((r,i)=>{
       const hits=(r.hits||[]),log=hits.length?hits.slice().reverse().map(h=>{const te=h.tk==="bull"?"🐂":"🦄";return h.dir==="out"?`<div style="color:var(--bull)">→ raided ${fmt(h.amt)} ${te} off ${h.who}</div>`:`<div style="color:var(--danger)">← ${h.who} took ${fmt(h.amt)} ${te}</div>`;}).join(""):'<div style="color:var(--ink-faint)">no hits logged</div>';
-      return `<div class="prRow" style="cursor:pointer"><span>#${r.round} <span style="color:var(--ink-faint);font-size:.8em">${(r.arena||"au").toUpperCase()}</span> ▸</span><span><span class="dot ${r.side==="bull"?"bull":"uni"}"></span> ${r.side==="bull"?"Bull":"Uni"}</span><span>${fmt(r.dep)}</span><span>${r.outB!==undefined?`<span style="color:var(--bull)">${fmt(r.outB)}🐂</span> <span style="color:var(--uni)">+ ${fmt(r.outU)}🦄</span>`:fmt(r.out)}</span><span class="pnl ${r.pnl>=0?'pos':'neg'}">${r.pnl>=0?'+':'−'}${fmt(Math.abs(r.pnl))}</span></div><div class="hitlog" style="display:none;font-family:var(--mono);font-size:10.5px;padding:4px 0 8px 46px;border-bottom:1px solid var(--line)">${log}</div>`;
+      return `<div class="prRow" style="cursor:pointer"><span>#${r.round} <span style="color:var(--ink-faint);font-size:.75em">${(r.arena||"au").toUpperCase()}·${(r.mode||"normal")==="normal"?"MAY":"EXT"}</span> ▸</span><span><span class="dot ${r.side==="bull"?"bull":"uni"}"></span> ${r.side==="bull"?"Bull":"Uni"}</span><span>${fmt(r.dep)}</span><span>${r.outB!==undefined?`<span style="color:var(--bull)">${fmt(r.outB)}🐂</span> <span style="color:var(--uni)">+ ${fmt(r.outU)}🦄</span>`:fmt(r.out)}</span><span class="pnl ${r.pnl>=0?'pos':'neg'}">${r.pnl>=0?'+':'−'}${fmt(Math.abs(r.pnl))}</span></div><div class="hitlog" style="display:none;font-family:var(--mono);font-size:10.5px;padding:4px 0 8px 46px;border-bottom:1px solid var(--line)">${log}</div>`;
     }).join("")||'';
     const nP=worlds.normal.userRounds.reduce((s,r)=>s+r.pnl,0), xP=worlds.extraction.userRounds.reduce((s,r)=>s+r.pnl,0);
-    $("#prNote").innerHTML=`Realized P/L — <span style="color:var(--bull)">Mayhem ${nP>=0?'+':'−'}$${Math.abs(nP).toFixed(0)}</span> · <span style="color:var(--gold)">Extraction ${xP>=0?'+':'−'}$${Math.abs(xP).toFixed(0)}</span>. Both sides show as separate lines; click a round to see every hit.`;
+    $("#prNote").innerHTML=`Realized P/L — <span style="color:var(--bull)">Mayhem ${nP>=0?'+':'−'}$${Math.abs(nP).toFixed(0)}</span> · <span style="color:var(--gold)">Extraction ${xP>=0?'+':'−'}$${Math.abs(xP).toFixed(0)}</span>. All lobbies and both modes, newest first. Click a round to see every hit.`;
   }
   $("#miniGrid").addEventListener("click",e=>{const row=e.target.closest(".fRow");if(!row)return;const w=W();const p=w.players.find(x=>x.name===row.dataset.name);if(p)openProfile(w,p);});
   $("#prRows").addEventListener("click",e=>{const row=e.target.closest(".prRow");if(!row)return;const log=row.nextElementSibling;if(log&&log.classList.contains("hitlog"))log.style.display=log.style.display==="none"?"block":"none";});
@@ -793,6 +797,7 @@
     PAIRING=b.dataset.pair; localStorage.setItem("bvu_arena",PAIRING);
     for(const md in worlds){const w=worlds[md];w.players.length=0;w.userCircles.length=0;w.floaters.length=0;w.particles.length=0;w.byId=new Map();w.phase="lobby";w.sim=null;w.autoRound=-1;}
     applyArenaSkin(); syncDOM();
+    if(window.__sendEngine)window.__sendEngine({t:"resync",arenas:[PAIRING+"-normal",PAIRING+"-extraction"]});
   });
   document.querySelectorAll(".modes button").forEach(b=>{if(b.closest("#pairSel"))return;b.onclick=()=>{activeMode=b.dataset.mode;document.querySelectorAll(".modes button").forEach(x=>x.classList.toggle("on",x===b));
     W().floaters.length=0;W().particles.length=0;W().shake=0;   // start the newly-shown mode clean (no flood)
@@ -1026,7 +1031,7 @@
     for(const c of w.userCircles){ const dep=c.deposited, out=ring(c)+safeV(c)+(c.unmatched||0);
       const outB=c.bull+(c.sBull||0)+(c.side==="bull"?(c.unmatched||0):0);
       const outU=c.uwu+(c.sUwu||0)+(c.side==="unicorn"?(c.unmatched||0):0);
-      w.userRounds.unshift({round:w.roundNo,arena:PAIRING,side:c.side,dep,out,outB,outU,pnl:out-dep,win:c.side===win,mode:w.mode,hits:(c.hits||[]).slice(-30)});
+      w.userRounds.unshift({at:Date.now(),round:w.roundNo,arena:PAIRING,side:c.side,dep,out,outB,outU,pnl:out-dep,win:c.side===win,mode:w.mode,hits:(c.hits||[]).slice(-30)});
       if(w.userRounds.length>60)w.userRounds.pop(); }
     // Hall of Fame: best single-round returns, from the authoritative settlement
     for(const p of w.players){
@@ -1419,6 +1424,7 @@
     $("#btnFundMe").onclick=()=>{ if(guard()){ note("Requesting test SOL + tokens…"); send({t:"fundMe",wallet:PK}); } };
     $("#fauBull").onclick=()=>{ if(guard())send({t:"faucet",wallet:PK,side:"bull"}); };
     $("#fauUwu").onclick=()=>{ if(guard())send({t:"faucet",wallet:PK,side:"uwu"}); };
+    if($("#fauSol"))$("#fauSol").onclick=()=>{ if(guard()){ note("Crediting SOL units…"); send({t:"fundMe",wallet:PK,amount:500}); } };
     $("#depBull").onclick=()=>{ if(guard()){note("Building deposit…");send({t:"buildDeposit",wallet:PK,side:"bull",amount:amt()});} };
     $("#depUwu").onclick=()=>{ if(guard()){note("Building deposit…");send({t:"buildDeposit",wallet:PK,side:"uwu",amount:amt()});} };
     $("#wdBull").onclick=()=>doWithdraw("bull");
@@ -1480,6 +1486,7 @@
       const pr=map[c.dataset.arena];
       if(!pr){alert("3-WAY and FFA need the N-team runner - wiring next.");return;}
       PAIRING=pr; localStorage.setItem("bvu_arena",PAIRING);
+      if(window.__sendEngine)window.__sendEngine({t:"resync",arenas:[PAIRING+"-normal",PAIRING+"-extraction"]});
       for(const md of ["normal","extraction"]){const w=worlds[md];
         w.players.length=0;w.userCircles.length=0;w.byId=new Map();w.sim=null;w.phase="lobby";}
       applyArenaSkin();

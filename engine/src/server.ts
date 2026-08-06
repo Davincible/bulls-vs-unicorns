@@ -298,6 +298,21 @@ wss.on("connection", (ws) => {
         rn.enter(`${m.wallet}|${m.side}`, m.side, stake * (1 - FEE));
         ws.send(JSON.stringify({ t: "entered", arena: aid, mode: arenaEco(aid), side: m.side, stake }));
         pushBalance(m.wallet); persist();
+      } else if (m.t === "resync") {          // { arenas: ["au-normal", ...] } -> in-flight rounds
+        for (const aid of (m.arenas || ARENA_IDS)) {
+          const rn = runners[aid]; if (!rn) continue;
+          const st = rn.state;
+          if (st.phase === "battle" && st.result) {
+            const cfg = newRoundConfig(arenaEco(aid), st.multiplier);
+            ws.send(JSON.stringify({ t: "roundStart", arena: aid, mode: arenaEco(aid), round: st.round,
+              multiplier: st.multiplier, seed: st.seed, seedHash: st.seedHashPublished,
+              entries: st.entries.map(e => ({ id: e.id, wallet: e.id.split("|")[0], side: e.side,
+                stake: e.stake, name: nameFor(e.id), avatar: ledger.get(e.id.split("|")[0])?.avatar,
+                bot: e.id.includes(":bot:") })),
+              cfg, hitCount: st.result.hits.length, winner: st.result.winner, settlement: st.result.settlement,
+              startedAt: st.closesAt - (st.battleMs || cfg.battleMs), battleMs: st.battleMs || cfg.battleMs, resumed: true }));
+          }
+        }
       } else if (m.t === "faucet") {                          // { t:'faucet', wallet, side }
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
         const sig = await faucet(m.wallet, m.side, 500);
