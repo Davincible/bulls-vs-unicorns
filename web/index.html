@@ -36,6 +36,8 @@
   *::-webkit-scrollbar-thumb{background:var(--line2);border-radius:8px}
   *::-webkit-scrollbar-thumb:hover{background:var(--ink-faint)}
   *{scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
+  .fRow.king{background:rgba(255,192,72,.10);box-shadow:inset 2px 0 0 var(--gold)}
+  .fRow.king .fn{color:var(--gold);font-weight:700}
   .fRow{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10.5px;padding:3px 4px;border-radius:5px;cursor:pointer} .fRow:hover{background:var(--panel2)} .fRow.you{background:rgba(255,192,72,.08)}
   .fRow .fn{flex:1;font-family:var(--sans);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px} .fRow.you .fn{color:var(--gold)}
   .hbar{width:44px;height:5px;border-radius:3px;background:#0c0c14;overflow:hidden;flex:none} .hbar>i{display:block;height:100%;border-radius:3px}
@@ -735,6 +737,8 @@
     $("#bullPool").innerHTML=fmt(B.v)+(xtr&&B.bk>0.5?' <span style="font-size:.55em;color:var(--gold)">+'+fmt(B.bk)+'💰</span>':"");
     $("#uniPool").innerHTML=fmt(U.v)+(xtr&&U.bk>0.5?' <span style="font-size:.55em;color:var(--gold)">+'+fmt(U.bk)+'💰</span>':"");
     $("#bullCount").textContent=B.n;$("#uniCount").textContent=U.n;
+    panelLabels(".team.bull","Alive","Alive fighters (health)");
+    panelLabels(".team.uni","Alive","Alive fighters (health)");
     $("#bullList").innerHTML=sideListHTML(w,"bull");$("#uniList").innerHTML=sideListHTML(w,"unicorn");
     $("#strBull").style.width=(B.v/totv*100)+"%";$("#strUni").style.width=(U.v/totv*100)+"%";$("#strBull").textContent="🐂 "+fmt(B.v);$("#strUni").textContent=fmt(U.v)+" 🦄";
     // online the two treasury buckets are deploy-take and convert-fees, not per-token splits
@@ -808,6 +812,7 @@
             return '<div class="s" style="width:'+Math.max(8,v/total*100)+'%;background:'+TEAMCOL[i]+';color:#0a0a10">'+L.emoji+' '+fmt(v)+'</div>';}).join("");
     }
     $(".team.bull h2").innerHTML=isFFA?"\ud83d\udc02 Bulls in the pit":"\u2694 Armies";
+    panelLabels(".team.bull","Alive",isFFA?"Alive fighters (health)":"Armies (total staked)");
     $("#bullPool").textContent=fmt(total);
     $("#bullCount").textContent=aliveN.reduce((a,b)=>a+b,0);
     $("#bullList").innerHTML=isFFA
@@ -816,10 +821,17 @@
       : tt.map((v,i)=>{const L=nArmyLabel(w,i);
           return '<div class="armyRow"><span class="nm" style="color:'+TEAMCOL[i]+'">'+L.emoji+' '+L.label+'</span><span class="hb"><i style="width:'+clamp(v/Math.max(...tt,1)*100,4,100)+'%;background:'+TEAMCOL[i]+'"></i></span><span class="vv">'+fmt(v)+'</span></div><div class="note" style="font-size:10px;margin:-2px 0 4px">'+aliveN[i]+' alive'+(bkT[i]>0.5?' &middot; <span style="color:var(--gold)">'+fmt(bkT[i])+' banked</span>':'')+'</div>';}).join("");
     $(".team.uni h2").innerHTML="\ud83c\udfc6 Standings";
-    $("#uniPool").textContent=fmt(Math.max(...tt,0));
-    $("#uniCount").textContent=w.players.filter(p=>!p.dead).length;
-    $("#uniList").innerHTML=w.players.slice().sort((a,b)=>((b.nring||0)+(b.nbank||0))-((a.nring||0)+(a.nbank||0))).slice(0,20)
-      .map((p,i)=>'<div class="fRow '+(p.isUser?'you':'')+'" style="opacity:'+(p.dead?.45:1)+'"><span style="color:var(--ink-faint);width:16px">'+(i+1)+'</span><span class="fn" style="color:'+TEAMCOL[isFFA?0:(p.teamIdx||0)]+'">'+(p.isUser?'YOU':p.name)+(p.dead?' \ud83d\udc80':'')+'</span><span class="fv">'+stand(p.deposited,(p.nring||0)+(p.nbank||0))+'</span></div>').join("")||'<div class="note">\u2014</div>';
+    // This panel used to be the Unicorn side, so its headline was max(army totals) - which read as
+    // "$18" next to Armies "$48" and made no sense. Standings is about FIGHTERS, so lead with the
+    // current king of the hill.
+    const ranked=w.players.slice().sort((a,b)=>((b.nring||0)+(b.nbank||0))-((a.nring||0)+(a.nbank||0)));
+    const king=ranked.find(p=>!p.dead)||ranked[0];
+    const kingV=king?((king.nring||0)+(king.nbank||0)):0;
+    $("#uniPool").textContent=fmt(kingV);
+    $("#uniCount").textContent=king?(king.isUser?"YOU":king.name):"\u2014";
+    panelLabels(".team.uni","Leader","Top fighters");
+    $("#uniList").innerHTML=ranked.slice(0,20)
+      .map((p,i)=>'<div class="fRow '+(p.isUser?'you':'')+(i===0&&!p.dead?' king':'')+'" style="opacity:'+(p.dead?.45:1)+'"><span style="color:var(--ink-faint);width:16px">'+(i===0&&!p.dead?'\ud83d\udc51':(i+1))+'</span><span class="fn" style="color:'+TEAMCOL[isFFA?0:(p.teamIdx||0)]+'">'+(p.isUser?'YOU':esc(p.name))+(p.dead?' \ud83d\udc80':'')+'</span><span class="fv">'+stand(p.deposited,(p.nring||0)+(p.nbank||0))+'</span></div>').join("")||'<div class="note">\u2014</div>';
     $("#arenaTag").textContent=isFFA?"BULLS FFA":"3-WAY";
     $("#modeTag").textContent=MODE[w.mode].cap;
     $("#miniGrid").innerHTML=w.players.slice().sort((a,b)=>((b.nring||0)+(b.nbank||0))-((a.nring||0)+(a.nbank||0))).slice(0,26)
@@ -1334,6 +1346,13 @@
     const wt=w.eWinnerTeam;
     const tk=(typeof wt==="number"&&w.toks)?w.toks[wt]:null;
     return tk?((TOKMETA[tk]||{label:"TEAM"}).label+" WINS!"):"ROUND OVER";
+  }
+  // The two side panels are shared: in 2-team they are Bulls/Unicorns, in N arenas they become
+  // "Armies" and "Standings". The sub-labels have to be retitled too, or Standings keeps the old
+  // "Alive / Alive fighters (health)" wording that made its headline number look nonsensical.
+  function panelLabels(sel,kvLabel,listLabel){
+    const kv=document.querySelector(sel+" .kv span"); if(kv)kv.textContent=kvLabel;
+    const wl=document.querySelector(sel+" .wlabel"); if(wl)wl.textContent=listLabel;
   }
   function tickN(w,dt,now){
     w.elapsed=(w.elapsed||0)+dt*1000; w.roundT=w.elapsed;
