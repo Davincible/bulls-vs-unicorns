@@ -14,7 +14,9 @@ import { RPC } from "./chain.ts";
 import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, forget as authForget } from "./auth.ts";
 import { isAllowed as walletAllowed } from "./allowlist.ts";
 import { start as startReconcile, isFrozen, latest as reconLatest } from "./reconcile.ts";
-import { loadSnapshot, saveSnapshot, flushSnapshot } from "./store.ts";
+import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, totalDeployed, depSide,
+         created, bustedCount, getConvFees, addConvFees, persist, restore, flush,
+         acct, balPayload, leadersFor } from "./ledger.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
 import { type Tok, FIELD, PAIRINGS, ARENA_IDS, arenaTokens, arenaEco, NARENAS, NARENA_IDS,
          FEE, CAP, CONVERT_FEE, MIN_ENTRY } from "./arenas.ts";
@@ -36,59 +38,12 @@ startPriceLoop();
 // arenaEco for 2-team, NARENAS/NARENA_IDS for N-team, plus the FEE/CAP/CONVERT_FEE/MIN_ENTRY economy
 // constants). Slot A/B map onto the 2-team sim's bull/uwu slots; SOL arenas play from `sol`.
 
-// ---- ledger: real players (by wallet) + persistent bot accounts ----
-interface Account { id: string; name: string; side: Side; bull: number; uwu: number; sol: number; isBot: boolean; dep: number; ret: number; games: number; wins: number;
-  raided?: number; best?: number; depIn?: number; wOut?: number;
-  depInSol?: number; wOutSol?: number;   // native-SOL deposits/withdrawals, tracked separately
-  refBy?: string; refEarned?: number; avatar?: string; }   // referral: who brought them, and lifetime cut earned   // real on-chain money in / out — the basis for true P&L
-const ledger = new Map<string, Account>();
+// ---- ledger lives in ./ledger.ts (Account/ledger/treasury/statsA/rounds/totalDeployed/depSide/
+// created/bustedCount/persist/restore/flush/acct/balPayload/leadersFor + convFees accessors).
+// Bot generation and client bookkeeping stay here. ----
 const NAMES = ["degenDan","sol_sniper","0xViper","moonboy","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","gigaGwei","turboTina","sendit","wenLambo","diamondD","fomoFrank","nakamotto","zkZoe","based_bri","saylorsz","jitoJoe","rugproof","exitliq","ser_pump","mevMike","validatorV","anonape","solstice","tapedeck"];
 // community growth: the arena starts small and fills up over time
 const POP_START = Number(process.env.POP_START || 22), POP_GROWTH = Number(process.env.POP_GROWTH || 0.7), POP_MAX = Number(process.env.POP_MAX || 90);
-const rounds: Record<Mode, number> = { normal: 0, extraction: 0 };
-const roundsByArena: Record<string, number> = {};
-// per-arena economics for the dashboard: deployed, house take, matches, slot wins
-const statsA: Record<string, { deployed: number; take: number; matches: number; winsA: number; winsB: number }> = {};
-const stat = (aid: string) => (statsA[aid] ||= { deployed: 0, take: 0, matches: 0, winsA: 0, winsB: 0 });
-// house take: the 0.2% skimmed on every deploy, tracked per mode
-const treasury: Record<Mode, number> = { normal: 0, extraction: 0 };
-let convFees = 0;   // 1% taken when players swap raided enemy coin back to their own side
-
-function persist() {
-  saveSnapshot({ accounts: [...ledger.values()], treasury, totalDeployed, depSide, created,
-                 busted: bustedCount, convFees, rounds, statsA } as any);
-}
-function restore() {
-  const snap = loadSnapshot(); if (!snap) return;
-  for (const a of snap.accounts || []) ledger.set(a.id, a);
-  Object.assign(treasury, snap.treasury || {});
-  Object.assign(totalDeployed, snap.totalDeployed || {});
-  Object.assign(depSide, (snap as any).depSide || {});
-  Object.assign(created, snap.created || {});
-  Object.assign(bustedCount, snap.busted || {});
-  Object.assign(rounds, snap.rounds || {});
-  convFees = snap.convFees || 0;
-  Object.assign(statsA, (snap as any).statsA || {});
-  // RECONCILE: SOL units must be backed by real deposits. Test faucets used to credit the
-  // ledger directly, leaving liability the vault could not honour. Anything unbacked is written
-  // off here rather than carried into production.
-  let wroteOff = 0, touched = 0;
-  for (const a of ledger.values()) {
-    if (a.isBot) continue;
-    const backed = Math.max(0, (a.depInSol || 0) - (a.wOutSol || 0));
-    if ((a.sol || 0) > backed + 0.0001) { wroteOff += (a.sol || 0) - backed; a.sol = backed; touched++; }
-  }
-  if (wroteOff > 0.01) {
-    console.log(`reconciled ledger: wrote off ${wroteOff.toFixed(2)} unbacked SOL units across ${touched} account(s)`);
-    setTimeout(persist, 0);   // write the corrected ledger immediately, not on the next money event
-  }
-  const players = [...ledger.values()].filter(a => !a.isBot);
-  console.log(`restored ledger: ${ledger.size} accounts (${players.length} real) from disk`);
-}
-const totalDeployed: Record<Mode, number> = { normal: 0, extraction: 0 };
-const depSide: Record<Mode, { bull: number; uwu: number }> = { normal: { bull: 0, uwu: 0 }, extraction: { bull: 0, uwu: 0 } };
-const created: Record<Mode, number> = { normal: 0, extraction: 0 };
-const bustedCount: Record<Mode, number> = { normal: 0, extraction: 0 };
 const BOT_BANK_MIN = Number(process.env.BOT_BANK_MIN || 60), BOT_BANK_MAX = Number(process.env.BOT_BANK_MAX || 240), BOT_STAKE_MIN = Number(process.env.BOT_STAKE_MIN || 6);
 // how many bots actually enter a round, per side (keeps a huge population from flooding one lobby)
 const PLAY_MIN = Number(process.env.PLAY_MIN || 0), PLAY_MAX = Number(process.env.PLAY_MAX || 0);
@@ -109,11 +64,6 @@ function newBot(aid: string, side: Side): Account {
 }
 function seedBots(aid: string, n: number) { for (let i=0;i<n;i++) newBot(aid, i%2 ? "uwu":"bull"); }
 const botsFor = (aid: string) => [...ledger.values()].filter(a => a.isBot && a.id.startsWith(aid+":"));
-function acct(wallet: string, side: Side): Account {
-  let a = ledger.get(wallet);
-  if (!a) { a = { id: wallet, name: "You", side, bull: 0, uwu: 0, sol: 0, isBot: false, dep:0, ret:0, games:0, wins:0 }; ledger.set(wallet, a); }
-  return a;
-}
 
 // ---- clients ----
 const clients = new Set<WebSocket>();
@@ -121,28 +71,7 @@ const walletOf = new Map<WebSocket, string>();          // ws -> wallet (for tar
 // AUTH lives in ./auth.ts — a socket must prove control of a wallet (sign a nonce) before any
 // money operation on it. GUARDED / isAuthed / authChallenge / authVerify / authForget are imported.
 function broadcast(msg: unknown) { const s = JSON.stringify(msg); for (const c of clients) if (c.readyState === WebSocket.OPEN) c.send(s); }
-function balPayload(wallet: string) { const a = ledger.get(wallet);
-  return { t: "balance", wallet, bull: a?.bull||0, uwu: a?.uwu||0, sol: a?.sol||0,
-           depIn: a?.depIn||0, wOut: a?.wOut||0, refEarned: a?.refEarned||0,
-           games: a?.games||0, wins: a?.wins||0 }; }
-
-// Leaderboard the engine owns, so real players actually appear on it.
-function leadersFor(aid: string) {
-  const list = [...ledger.values()].filter(a => (a.isBot ? a.id.startsWith(aid + ":") : true));
-  const rows = list.map(a => ({ id: a.id, name: a.name, avatar: a.avatar, side: a.side, value: a.bull + a.uwu + a.sol,
-      games: a.games, wins: a.wins, isBot: a.isBot,
-      dep: a.dep, ret: a.ret, raided: a.raided||0, best: a.best||0,
-      pnl: a.isBot ? a.ret - a.dep : (a.bull + a.uwu + a.sol) + (a.wOut||0) - (a.depIn||0) }))
-    .sort((x, y) => y.pnl - x.pnl);          // board ranks by total P&L
-  const top = rows.slice(0, 40).map((r, i) => ({ ...r, rank: i + 1 }));
-  // real players always appear, even when they're not in the top 12 — otherwise you can play a
-  // round and never see yourself on the board
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i];
-    if (!r.isBot && !top.some(t => t.id === r.id)) top.push({ ...r, rank: i + 1 });
-  }
-  return top;
-}
+// balPayload + leadersFor now live in ./ledger.ts (imported). pushBalance stays — it needs `clients`.
 function pushBalance(wallet: string) { const s = JSON.stringify(balPayload(wallet)); for (const c of clients) if (c.readyState===WebSocket.OPEN && walletOf.get(c)===wallet) c.send(s); }
 
 async function onSettle(aid: string, r: RoundResult, s: RoundState) {
@@ -235,7 +164,7 @@ function botsEnterN(aid: string) {
         if (a[FIELD[other]] > BOT_STAKE_MIN) {
           const swap = a[FIELD[other]] * (0.5 + Math.random() * 0.5);
           const fee = swap * CONVERT_FEE;
-          a[FIELD[other]] -= swap; a[FIELD[tok]] += swap - fee; convFees += fee;
+          a[FIELD[other]] -= swap; a[FIELD[tok]] += swap - fee; addConvFees(fee);
           break;
         }
       }
@@ -300,7 +229,7 @@ function botsEnter(aid: string) {
     if (a[FIELD[myTok]] < BOT_STAKE_MIN && a[FIELD[otherTok]] > BOT_STAKE_MIN) {
       const swap = a[FIELD[otherTok]] * (0.5 + Math.random() * 0.5);
       const fee = swap * CONVERT_FEE;
-      a[FIELD[otherTok]] -= swap; a[FIELD[myTok]] += swap - fee; convFees += fee;
+      a[FIELD[otherTok]] -= swap; a[FIELD[myTok]] += swap - fee; addConvFees(fee);
     }
     const bankroll = a[FIELD[myTok]];
     const stake = BOT_STAKE_MAX > 0
@@ -373,7 +302,7 @@ setInterval(() => {
     list: s.phase === "lobby" ? s.entries.slice(0, 40).map(e => ({ id: e.id, name: nameFor(e.id), side: e.side, stake: e.stake })) : [],
     leaders: leadersFor(aid),
     stats: stat(aid),
-    house: { take: treasury[mode], conv: convFees, deployed: totalDeployed[mode],
+    house: { take: treasury[mode], conv: getConvFees(), deployed: totalDeployed[mode],
              depBull: depSide[mode].bull, depUwu: depSide[mode].uwu,
              accounts: botsFor(aid).length,
              bulls: botsFor(aid).filter(a => a.side === "bull").length,
@@ -579,7 +508,7 @@ wss.on("connection", (ws) => {
         const fee = amt * CONVERT_FEE;
         if (to === "bull") { a.uwu -= amt; a.bull += amt - fee; }
         else { a.bull -= amt; a.uwu += amt - fee; }
-        convFees += fee;
+        addConvFees(fee);
         ws.send(JSON.stringify({ t: "converted", to, amount: amt, fee }));
         pushBalance(m.wallet); persist();
       } else if (m.t === "chainBalance") {                    // on-chain (Phantom) balances
@@ -609,6 +538,6 @@ wss.on("connection", (ws) => {
   });
 });
 for (const sig of ["SIGINT", "SIGTERM"] as const)
-  process.on(sig, () => { flushSnapshot(); console.log("ledger flushed to disk"); process.exit(0); });
-process.on("exit", () => flushSnapshot());
+  process.on(sig, () => { flush(); console.log("ledger flushed to disk"); process.exit(0); });
+process.on("exit", () => flush());
 console.log(`⚔  engine live on ws://localhost:${PORT}  (authoritative rounds + hybrid bots) chain=${chainReady()}`);
