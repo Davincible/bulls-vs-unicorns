@@ -121,6 +121,33 @@ fly secrets set SOLANA_RPC="<mainnet-rpc>" CHAIN_CONFIG="./mainnet.json" VAULT_S
 Then wipe any devnet ledger off the volume so no test balances carry into production, redeploy,
 and work through `GO-LIVE.md`.
 
-## Costs (approximate)
-- Fly: ~$5/mo (shared-cpu-1x, 512MB, 1GB volume).
-- Vercel: free tier is fine for static hosting.
+## Costs — and how they're capped
+
+Fly has **no hard "stop at $X" switch**, so the cap here is *architectural*: the cost is fixed by
+config, and nothing can grow on its own.
+
+| Item | Config | ~USD/month |
+|---|---|---|
+| Machine | `shared-cpu-1x`, 512MB, always on | **$3.19** |
+| Volume | 1 GB (the ledger) | **$0.15** |
+| Bandwidth | light traffic | $0–1 |
+| **Total** | | **~$3.35/mo** |
+| Vercel | static frontend | **free** |
+
+What keeps it there:
+- **No autoscaling.** `min_machines_running = 1` and a fixed `[[vm]]` size — Fly will never add
+  machines or grow the box. Each extra machine would cost its full price again (and split the
+  SQLite ledger, which is why there must only ever be one).
+- **No scale-to-zero surprises.** Cost is flat and predictable rather than usage-spiky.
+- **Small fixed volume.** Storage can't creep.
+
+Check what's actually running and what it costs:
+```bash
+powershell -ExecutionPolicy Bypass -File engine/costs.ps1
+```
+It lists live machines/volumes, prints the expected bill, and warns if the machine count or size
+has drifted from the safe config. Live billing:
+https://fly.io/dashboard/mjcryptoofficial-gmail-com/billing
+
+**Hard cap option:** instead of leaving a card on file, buy **prepaid credit** on Fly. Spending then
+cannot exceed the credit you've loaded — the closest thing to a true ceiling.
