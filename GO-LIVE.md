@@ -13,6 +13,12 @@ Nothing here touches mainnet until every box is checked.
 
 ## 1. Pre-flight checklist (all must be green)
 - [ ] `cd engine && npm test` — all tests pass on the commit being shipped.
+- [ ] **Pen test passes on a staging copy** (never the live ledger):
+      `node pentest.mjs ws://<staging>` → 16/16, and `node pentest-dos.mjs ws://<staging>` survives.
+      Covers auth bypass, cross-wallet access, signature forgery/replay, hostile amounts,
+      prototype pollution, malformed input, stored XSS, HTTP surface and flooding.
+- [ ] **No static file server in front of secrets.** `serve-web.mjs` is dev tooling; the hosted
+      frontend must serve `web/` only. Confirm `GET /..%2f<anything>` returns 4xx wherever it runs.
 - [ ] `SOLANA_RPC` points at **mainnet**; `CHAIN_CONFIG=./mainnet.json`.
 - [ ] `VAULT_SECRET_KEY` set from the secret manager; engine boots and logs the **correct** vault
       pubkey (matches `mainnet.json`). A wrong/missing key now aborts boot by design.

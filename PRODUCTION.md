@@ -21,7 +21,12 @@ It's a restructure: pull the proven logic into clean services behind interfaces.
 
 ## Progress (2026-08-06)
 - [x] **Ledger → SQLite (WAL)** — `store.ts`, atomic per-save transactions, legacy JSON auto-import.
-- [x] **Committed test suite** — `npm test`, 44 tests (CI on push): sim determinism/conservation/
+- [x] **Adversarial testing** — `engine/pentest.mjs` (16 checks: auth bypass, cross-wallet, signature
+      forgery/replay, hostile amounts, prototype pollution, malformed input, stored XSS, HTTP surface)
+      and `engine/pentest-dos.mjs` (connection/message flooding, free account creation). Run against an
+      ISOLATED engine. Findings fixed: path traversal leaking the vault key via `serve-web.mjs`,
+      stored XSS through display names, and a no-funds DoS via free account creation.
+- [x] **Committed test suite** — `npm test`, 54 tests (CI on push): sim determinism/conservation/
       no-friendly-fire (2-team, 3-way, FFA); commit-reveal lifecycle for both round runners (seed
       hidden in lobby, revealed seed hashes to the commitment, settlement conserves); ledger
       crash-safety; allowlist gate; reconciliation core (+ NaN/unpriced edge cases); arena registry;
