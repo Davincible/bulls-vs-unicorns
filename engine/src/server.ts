@@ -14,7 +14,8 @@ import type { Mode, Side } from "./game.ts";
 import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildDepositTx, walletTokenBalance, airdropSol, solBalance,
          buildSolDepositTx, verifySolDeposit, withdrawSol } from "./chain-ops.ts";
 import { priceUSD, startPriceLoop, allPrices } from "./prices.ts";
-import { RPC } from "./chain.ts";
+import { RPC, loadVaultKeypair } from "./chain.ts";
+import { swapExact } from "./swap.ts";
 import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, forget as authForget } from "./auth.ts";
 import { isAllowed as walletAllowed } from "./allowlist.ts";
 import { start as startReconcile, isFrozen, latest as reconLatest } from "./reconcile.ts";
@@ -47,6 +48,13 @@ const CLIENT_RPC = process.env.PUBLIC_RPC
 if (RPC_HAS_SECRET) console.log(`rpc: keyed endpoint kept server-side; clients get ${CLIENT_RPC}`);
 
 const solUsd = () => SOL_USD_FIXED > 0 ? SOL_USD_FIXED : priceUSD("sol");
+// Convert is now a REAL on-chain swap (swap.ts), so it is rate limited to one per round per wallet:
+// each costs gas and crosses a spread. One lobby + one battle is the natural window.
+const CONVERT_COOLDOWN_MS = Number(process.env.CONVERT_COOLDOWN_MS || 65_000);
+const lastConvertAt = new Map<string, number>();
+// load once - the vault signs every swap
+let _vaultKp: ReturnType<typeof loadVaultKeypair> | null = null;
+const vaultKeypair = () => (_vaultKp ||= loadVaultKeypair());
 startPriceLoop();
 
 // ---- arena registry lives in ./arenas.ts (pure: Tok/FIELD/PAIRINGS/ARENA_IDS/arenaTokens/
@@ -642,11 +650,50 @@ wss.on("connection", (ws, req) => {
         const avail = to === "bull" ? a.uwu : a.bull;
         const amt = Math.min(Number(m.amount) > 0 ? Number(m.amount) : avail, avail);
         if (amt < 0.01) return ws.send(JSON.stringify({ t: "error", msg: "Nothing to convert." }));
-        const fee = amt * CONVERT_FEE;
-        if (to === "bull") { a.uwu -= amt; a.bull += amt - fee; }
-        else { a.bull -= amt; a.uwu += amt - fee; }
+        // ONE conversion per round. Each one is a real on-chain swap costing gas and crossing a
+        // spread, so unlimited converting would both drain the vault's SOL and let someone farm the
+        // route. The window matches a full lobby+battle cycle.
+        const sinceConv = Date.now() - (lastConvertAt.get(m.wallet) || 0);
+        if (sinceConv < CONVERT_COOLDOWN_MS) {
+          return ws.send(JSON.stringify({ t: "error",
+            msg: `One convert per round — try again in ${Math.ceil((CONVERT_COOLDOWN_MS - sinceConv) / 1000)}s.` }));
+        }
+        lastConvertAt.set(m.wallet, Date.now());
+
+        // Debit first so the balance can't be spent twice while the swap is in flight.
+        if (to === "bull") a.uwu -= amt; else a.bull -= amt;
+        pushBalance(m.wallet);
+
+        const mi = mints();
+        const fromMint = to === "bull" ? mi?.uwu : mi?.bull;
+        const toMint   = to === "bull" ? mi?.bull : mi?.uwu;
+        const oracle = to === "bull" ? { from: "uwu" as const, to: "ansem" as const }
+                                     : { from: "ansem" as const, to: "uwu" as const };
+        let res: Awaited<ReturnType<typeof swapExact>>;
+        try {
+          res = (fromMint && toMint)
+            ? await swapExact(vaultKeypair(), fromMint, toMint, amt, mi!.decimals, oracle)
+            : { ok: false, outAmount: 0, priceImpactPct: 0, simulated: false, error: "mints not configured" };
+        } catch (e) {
+          res = { ok: false, outAmount: 0, priceImpactPct: 0, simulated: false, error: (e as Error).message };
+        }
+
+        if (!res.ok) {
+          // put it straight back — the player must never lose money to a failed swap
+          if (to === "bull") a.uwu += amt; else a.bull += amt;
+          lastConvertAt.delete(m.wallet);          // a failed attempt shouldn't burn their turn
+          pushBalance(m.wallet); persist();
+          return ws.send(JSON.stringify({ t: "error", msg: "Convert failed: " + (res.error || "swap unavailable") }));
+        }
+
+        // The player receives what the swap ACTUALLY returned, so pool fees and slippage come out of
+        // their amount rather than the vault's. Our house cut is taken on top of that.
+        const fee = res.outAmount * CONVERT_FEE;
+        const credited = Math.max(0, res.outAmount - fee);
+        if (to === "bull") a.bull += credited; else a.uwu += credited;
         addConvFees(fee);
-        ws.send(JSON.stringify({ t: "converted", to, amount: amt, fee }));
+        ws.send(JSON.stringify({ t: "converted", to, amount: amt, got: credited, fee,
+                                 priceImpact: res.priceImpactPct, simulated: res.simulated, sig: res.sig }));
         pushBalance(m.wallet); persist();
       } else if (m.t === "chainBalance") {                    // on-chain (Phantom) balances
         if (!chainReady()) return;
