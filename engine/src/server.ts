@@ -18,6 +18,12 @@ const PORT = Number(process.env.PORT || 8090);
 // SOL arenas are denominated in USD units. On a test chain the price feed may be irrelevant, so
 // SOL_USD lets us pin a rate; otherwise we use the live price and REFUSE to quote when it's stale.
 const SOL_USD_FIXED = Number(process.env.SOL_USD || 0);
+// FAUCETS MINT UNBACKED CREDIT. They are test-chain only: fundMe/faucet hand out tokens and
+// SOL units with no deposit behind them, so on mainnet they would let anyone withdraw real
+// funds against invented balance. Hard-disabled unless the RPC is a test chain.
+const IS_TEST_CHAIN = /localhost|127\.0\.0\.1|devnet|testnet/i.test(RPC);
+const FAUCET_ON = IS_TEST_CHAIN && process.env.DISABLE_FAUCET !== "1";
+if (!FAUCET_ON) console.log("faucets DISABLED (mainnet-safe): fundMe/faucet will be refused");
 const solUsd = () => SOL_USD_FIXED > 0 ? SOL_USD_FIXED : priceUSD("sol");
 startPriceLoop();
 
@@ -472,10 +478,12 @@ wss.on("connection", (ws) => {
         ws.send(JSON.stringify({ t: "enteredN", arena: aid, team, stake }));
         pushBalance(m.wallet); persist();
       } else if (m.t === "faucet") {                          // { t:'faucet', wallet, side }
+        if (!FAUCET_ON) return ws.send(JSON.stringify({ t: "error", msg: "Faucet is disabled on this network — deposit real tokens instead." }));
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
         const sig = await faucet(m.wallet, m.side, 500);
         ws.send(JSON.stringify({ t: "faucetDone", side: m.side, sig, amount: 500 }));
-      } else if (m.t === "fundMe") {                          // one-click: SOL for fees + both tokens
+      } else if (m.t === "fundMe") {
+        if (!FAUCET_ON) return ws.send(JSON.stringify({ t: "error", msg: "Faucet is disabled on this network — deposit real tokens instead." }));                          // one-click: SOL for fees + both tokens
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
         const amt = Math.min(Math.max(Number(m.amount) || 500, 1), 1000);
         const steps: string[] = [];

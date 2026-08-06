@@ -13,7 +13,11 @@ program (`programs/vault/src/lib.rs`, already written): pooled vault PDAs, on-ch
 `sudo apt install -y build-essential` in WSL, then anchor-cli; deploy ≈ 2–5 SOL one-time.
 
 ## No faucet on mainnet — differences from the test build
-- `fundMe`/`faucet` messages must be disabled (engine: gate on cluster).
+- `fundMe`/`faucet` are now HARD-GATED to test chains (engine derives `IS_TEST_CHAIN` from the
+  RPC url; `DISABLE_FAUCET=1` forces off). This was a real solvency hole: fundMe credited SOL
+  units straight into the ledger with no on-chain deposit behind them, so on mainnet anyone
+  could have withdrawn real SOL against invented balance. Verified: pointing the engine at a
+  mainnet RPC logs "faucets DISABLED" and refuses both messages.
 - Deposits are users' real tokens; keep verifyDeposit sig-replay protection as is.
 - Ledger (`engine/data/ledger.json`) must live on a persistent volume; take the
   solvency endpoint (explorer :8140) public — it is the trust story.
