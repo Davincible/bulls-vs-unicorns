@@ -9,7 +9,8 @@
     "setup:devnet": "tsx src/setup-devnet.ts",
     "test:sim": "tsx src/test-sim.ts",
     "study": "tsx src/study.ts",
-    "strategy": "tsx src/strategy.ts"
+    "strategy": "tsx src/strategy.ts",
+    "seed:bots": "tsx src/seed-bots.ts"
   },
   "engines": {
     "node": ">=18"

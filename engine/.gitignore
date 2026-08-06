@@ -4,3 +4,4 @@ data/
 ledger.db
 ledger.db-*
 ledger.json.imported
+bot-wallets.json
