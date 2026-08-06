@@ -264,7 +264,7 @@
     <div class="view" id="viewArenas">
       <div style="max-width:900px;margin:12px auto">
         <h2 style="margin:6px 0">Arenas</h2>
-        <div class="note">Live token prices feed the USD arenas. ANSEM/UWU is live now; the rest come online with the engine's arena registry (next update).</div>
+        <div class="note">Nine arenas run live. Pick a lobby — 3-WAY puts all three armies on one map, FFA is every fighter for themselves.</div>
         <div id="arenaCards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:12px"></div>
       </div>
     </div>
@@ -655,7 +655,9 @@
     const t=$("#arenaTag"); if(t)t.textContent=A.label+" vs "+B.label;
   }
   function syncArena(){
-    const w=W(),B=agg(w,"bull"),U=agg(w,"unicorn"),totv=B.v+U.v||1;
+    const w=W();
+    if(w.isN){ syncArenaN(w); return; }
+    const B=agg(w,"bull"),U=agg(w,"unicorn"),totv=B.v+U.v||1;
     applyArenaSkin();
     const xtr=MODE[w.mode].extract;
     $("#bullPool").innerHTML=fmt(B.v)+(xtr&&B.bk>0.5?' <span style="font-size:.55em;color:var(--gold)">+'+fmt(B.bk)+'💰</span>':"");
@@ -710,6 +712,35 @@
     el.innerHTML=`<div style="background:var(--panel2);border:1px solid var(--line2);border-radius:12px;padding:10px 14px;font-family:var(--mono);font-size:12px">
       <b>ALL ARENAS</b> · deployed <b>${fmt(tDep)}</b> · total fees <b style="color:var(--gold)">${fmt(tTake)}</b> · matches <b>${tMatch}</b></div>`+normal+extr;
   }
+  // N-arena panels: team totals on the left, roster on the right
+  function syncArenaN(w){
+    const tt=[]; const nT=w.nTeams||3;
+    for(let i=0;i<(w.nTeams===0?1:nT);i++)tt.push(0);
+    let alive=0;
+    for(const p of w.players){ const idx=w.nTeams===0?0:(p.teamIdx||0);
+      if(!p.dead){tt[idx]=(tt[idx]||0)+(p.nring||0); alive++;} }
+    const lab=i=>w.toks&&w.toks[i]?(TOKMETA[w.toks[i]]||{label:"T"+i,emoji:""}):{label:"TEAM "+i,emoji:""};
+    const isFFA=w.nTeams===0;
+    $(".team.bull h2").innerHTML=isFFA?"\ud83c\udfc1 Free-for-all":"\u2694 Teams";
+    $("#bullPool").textContent=fmt(tt.reduce((a,b)=>a+b,0));
+    $("#bullCount").textContent=alive;
+    $("#bullList").innerHTML=isFFA
+      ? w.players.filter(p=>!p.dead).sort((a,b)=>(b.nring||0)-(a.nring||0)).slice(0,20)
+          .map(p=>`<div class="fRow ${p.isUser?'you':''}"><span class="fn">${p.isUser?'YOU':p.name}</span><span class="fv">${fmt(p.nring||0)}</span></div>`).join("")||'<div class="note">\u2014</div>'
+      : tt.map((v,i)=>`<div class="fRow"><span class="fn" style="color:${TEAMCOL[i]}">${lab(i).emoji} ${lab(i).label}</span><span class="hbar"><i style="width:${clamp(v/(Math.max(...tt)||1)*100,6,100)}%;background:${TEAMCOL[i]}"></i></span><span class="fv">${fmt(v)}</span></div>`).join("");
+    $(".team.uni h2").innerHTML="\ud83c\udfc6 Standings";
+    $("#uniPool").textContent=fmt(Math.max(...tt,0));
+    $("#uniCount").textContent=w.players.filter(p=>!p.dead).length;
+    $("#uniList").innerHTML=w.players.slice().sort((a,b)=>(b.nring||0)+(b.nbank||0)-((a.nring||0)+(a.nbank||0))).slice(0,20)
+      .map(p=>`<div class="fRow ${p.isUser?'you':''} ${p.dead?'dead':''}" style="opacity:${p.dead?.45:1}"><span class="fn" style="color:${TEAMCOL[p.teamIdx||0]}">${p.isUser?'YOU':p.name}</span><span class="fv">${fmt((p.nring||0)+(p.nbank||0))}</span></div>`).join("")||'<div class="note">\u2014</div>';
+    const totv=tt.reduce((a,b)=>a+b,0)||1;
+    $("#strBull").style.width=(tt[0]/totv*100)+"%"; $("#strBull").textContent=lab(0).emoji+" "+fmt(tt[0]||0);
+    $("#strUni").style.width=(100-tt[0]/totv*100)+"%"; $("#strUni").textContent=fmt(totv-(tt[0]||0));
+    $("#arenaTag").textContent=isFFA?"BULLS FFA":"3-WAY";
+    $("#modeTag").textContent=MODE[w.mode].cap;
+    $("#miniGrid").innerHTML=w.players.slice().sort((a,b)=>(b.nring||0)-(a.nring||0)).slice(0,26)
+      .map((p,i)=>`<div class="fRow ${p.dead?'dead':''} ${p.isUser?'you':''}" style="opacity:${p.dead?.42:1}"><span style="color:var(--ink-faint);width:18px;text-align:right">${i+1}</span><span class="dot" style="background:${TEAMCOL[p.teamIdx||0]}"></span><span class="fn">${p.isUser?'YOU':p.name}${p.dead?' \ud83d\udc80':''}</span><span class="fv">${fmt((p.nring||0)+(p.nbank||0))}</span></div>`).join("");
+  }
   function syncDashboard(){renderDashArenas();const w=W();$("#dashMode").textContent="· "+MODE[w.mode].cap;
     $("#dDepBull").textContent=fmt(w.online?(w.engDepBull||0):w.dep.bull);$("#dDepUni").textContent=fmt(w.online?(w.engDepUwu||0):w.dep.unicorn);$("#dWinBull").textContent=w.matchWins.bull;$("#dWinUni").textContent=w.matchWins.unicorn;
     $("#dDmgBull").textContent=fmt(w.dmgBull);$("#dDmgUni").textContent=fmt(w.dmgUni);
@@ -734,6 +765,7 @@
       if(w.floaters.length>50)w.floaters.splice(0,w.floaters.length-50); if(w.particles.length>150)w.particles.splice(0,w.particles.length-150);   // cap so the inactive mode can't flood the screen on switch
       if(w.online){                                   // ENGINE-DRIVEN: replay, never decide
         if(w.phase==="over"){w.phaseT+=dt*1000;w.bannerA=Math.max(0,1-w.phaseT/2400);}
+        else if(w.isN)tickN(w,dt,now);
         else tickOnline(w,dt,now);
         continue;
       }
@@ -947,6 +979,117 @@
     return {winner:bullV>=uwuV?"bull":"uwu",hits:s.hits,settlement};
   }
 
+  // ---- N-TEAM sim (3-WAY / FFA) — faithful port of engine/src/gameN.ts ----
+  const SCOMBAT_N={speed:112,accel:250,hitCd:430};
+  const NFIN=0.08, NEDGE=1.03, NSIZE=0.9, NDUST=0.03;
+  const nRing=f=>f.own+f.stolen.reduce((a,b)=>a+b,0);
+  const nDust=f=>Math.max(0.005,f.deposited*NDUST);
+  const nAlive=f=>!f.dead&&nRing(f)>nDust(f);
+  const nRadius=f=>clamp(7+1.7*Math.sqrt(nRing(f)),7,26);
+  function createSimN(seed,entries,cfg){
+    const rnd=rngFromSeed(seed), rr=(a,b)=>a+rnd()*(b-a);
+    const ffa=cfg.teams===0, nT=ffa?entries.length:cfg.teams;
+    const totals=Array(nT).fill(0);
+    entries.forEach((e,i)=>{totals[ffa?i:e.team]+=e.stake;});
+    let capPer=Infinity;
+    if(!ffa&&cfg.matchRule!=="none"&&nT>=2){
+      const sorted=totals.slice().sort((a,b)=>a-b);
+      capPer=cfg.matchRule==="min"?sorted[0]:sorted[Math.floor((sorted.length-1)/2)];
+      if(capPer<=0)capPer=sorted.find(v=>v>0)??0;
+    }
+    const frac=t=>(totals[t]>0?Math.min(1,capPer/totals[t]):1);
+    const F=entries.map((e,i)=>{
+      const team=ffa?i:e.team, inPlay=e.stake*frac(team);
+      const f={id:e.id,team,own:inPlay,stolen:Array(nT).fill(0),banked:0,unmatched:e.stake-inPlay,
+        deposited:e.stake,raided:0,dmgDealt:0,dmgTaken:0,bestHit:0,dead:false,x:0,y:0,vx:rr(-1,1),vy:rr(-1,1),r:12};
+      const ang=ffa?rr(0,Math.PI*2):(team/nT)*Math.PI*2+rr(-0.5,0.5);
+      const cx=ARENA.w/2, cy=ARENA.h/2, rad=ffa?rr(60,240):rr(150,250);
+      f.x=clamp(cx+Math.cos(ang)*rad,20,ARENA.w-20);
+      f.y=clamp(cy+Math.sin(ang)*rad*(ARENA.h/ARENA.w),20,ARENA.h-20);
+      f.r=nRadius(f); return f;
+    });
+    return {rnd,F,byId:new Map(F.map(f=>[f.id,f])),hits:[],t:0,steps:Math.floor(cfg.battleMs/cfg.tickMs),
+            cfg,pairCd:new Map(),endTick:Math.floor(cfg.battleMs/cfg.tickMs),done:false,nTeams:nT};
+  }
+  function stepSimN(s){
+    const cfg=s.cfg, rnd=s.rnd, rr=(a,b)=>a+rnd()*(b-a);
+    const roll=()=>{const u=rnd();return u<0.88?rr(0.2,1.5):u<0.97?rr(1.5,4):rr(4,13);};
+    const out=[]; if(s.done)return out;
+    const A=s.F.filter(nAlive);
+    if(new Set(A.map(f=>f.team)).size<2){s.endTick=s.t;s.done=true;return out;}
+    if(s.t>=s.steps){s.endTick=s.steps;s.done=true;return out;}
+    const dt=cfg.tickMs/1000, nowMs=s.t*cfg.tickMs, ramp=1+1.6*(s.t/s.steps);
+    for(const p of A){
+      p.r+=(nRadius(p)-p.r)*0.15;
+      let tgt=null,td=1e18; const rp=Math.max(0.01,nRing(p));
+      for(const q of A){ if(q.team===p.team)continue;
+        const dx=q.x-p.x,dy=q.y-p.y,d=Math.sqrt(dx*dx+dy*dy);
+        const rq=Math.max(0.01,nRing(q));
+        const ratio=Math.min(rp>rq?rp/rq:rq/rp,8);
+        const sc=d*(1+NSIZE*(ratio-1));
+        if(sc<td){td=sc;tgt=q;} }
+      if(tgt){const ax=tgt.x-p.x,ay=tgt.y-p.y,al=Math.hypot(ax,ay)||1;
+        p.vx+=(ax/al)*SCOMBAT_N.accel*ramp*dt; p.vy+=(ay/al)*SCOMBAT_N.accel*ramp*dt;}
+      p.vx+=rr(-8,8)*dt; p.vy+=rr(-8,8)*dt;
+      const sp=Math.hypot(p.vx,p.vy)||0.001, mx=SCOMBAT_N.speed*ramp*1.4;
+      if(sp>mx){p.vx*=mx/sp;p.vy*=mx/sp;}
+      p.x+=p.vx*dt; p.y+=p.vy*dt;
+      if(p.x<p.r){p.x=p.r;p.vx=Math.abs(p.vx);}
+      if(p.x>ARENA.w-p.r){p.x=ARENA.w-p.r;p.vx=-Math.abs(p.vx);}
+      if(p.y<p.r){p.y=p.r;p.vy=Math.abs(p.vy);}
+      if(p.y>ARENA.h-p.r){p.y=ARENA.h-p.r;p.vy=-Math.abs(p.vy);}
+    }
+    const takeFrom=(def,want)=>{
+      const plan=[]; let left=want;
+      const order=def.stolen.map((v,i)=>[i,v]).filter(([,v])=>v>0.001).sort((a,b)=>b[1]-a[1]);
+      for(const [i,v] of order){ if(left<=0)break; const take=Math.min(v,left); plan.push([i,take]); left-=take; }
+      if(left>0){const take=Math.min(def.own,left); if(take>0)plan.push(["own",take]);}
+      return plan;
+    };
+    for(let i=0;i<A.length;i++)for(let j=i+1;j<A.length;j++){
+      const a=A[i],b=A[j]; if(a.dead||b.dead)continue;
+      const dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy),m=a.r+b.r;
+      if(d>=m||d<=0)continue;
+      const nx=dx/d,ny=dy/d,ov=(m-d)/2;
+      a.x-=nx*ov;a.y-=ny*ov;b.x+=nx*ov;b.y+=ny*ov;
+      const va=a.vx*nx+a.vy*ny, vb=b.vx*nx+b.vy*ny, diff=vb-va;
+      a.vx+=nx*diff;a.vy+=ny*diff;b.vx-=nx*diff;b.vy-=ny*diff;
+      if(a.team===b.team)continue;
+      const key=a.id<b.id?a.id+"|"+b.id:b.id+"|"+a.id;
+      const last=s.pairCd.has(key)?s.pairCd.get(key):-1e9;
+      if(nowMs-last<SCOMBAT_N.hitCd/ramp)continue;
+      s.pairCd.set(key,nowMs);
+      const base=cfg.base*Math.min(cfg.multiplier,4)*(0.7+0.3*ramp);
+      const gm=Math.sqrt(nRing(a)*nRing(b))*base;
+      const small=Math.min(nRing(a),nRing(b));
+      const late=s.t>s.steps*0.5;
+      const capF=(def,atk)=>(late&&nRing(def)<nRing(atk)*NFIN)?nRing(def):small*cfg.hitCapFrac;
+      const eA=nRing(a)<nRing(b)?NEDGE:1, eB=nRing(b)<nRing(a)?NEDGE:1;
+      const dAB=Math.min(gm*roll()*eA,capF(b,a)), dBA=Math.min(gm*roll()*eB,capF(a,b));
+      const planB=takeFrom(b,dAB), planA=takeFrom(a,dBA);
+      const apply=(atk,def,plan)=>{
+        let got=0;
+        for(const [src,amt] of plan){
+          const avail=src==="own"?def.own:def.stolen[src];
+          const take=Math.min(amt,avail); if(take<=0.005)continue;
+          if(src==="own")def.own-=take; else def.stolen[src]-=take;
+          const asTeam=src==="own"?def.team:src;
+          if(cfg.mode==="extraction")atk.banked+=take;
+          else if(asTeam===atk.team)atk.own+=take; else atk.stolen[asTeam]+=take;
+          got+=take;
+        }
+        if(got<=0.005)return;
+        atk.raided+=got; atk.dmgDealt+=got; def.dmgTaken+=got;
+        if(got>atk.bestHit)atk.bestHit=got;
+        const h={t:s.t,atk:atk.id,def:def.id,amt:got}; s.hits.push(h); out.push(h);
+      };
+      apply(a,b,planB); apply(b,a,planA);
+      if(nRing(a)<=nDust(a))a.dead=true;
+      if(nRing(b)<=nDust(b))b.dead=true;
+    }
+    s.t++; if(s.t>=s.steps){s.endTick=s.steps;s.done=true;}
+    return out;
+  }
   // ---- run the round live in the browser ----
   function startEngineRound(mode,p){
     const w=worlds[mode]; if(!w)return;
@@ -1012,6 +1155,65 @@
     if(amt>=6){w.shake=Math.max(w.shake,14);burst(w,(atk.x+def.x)/2,(atk.y+def.y)/2);}
   }
 
+  const TEAMCOL=["#18e08a","#c46bff","#ffc048"];
+  function startNRound(p){
+    const w=W();                                  // N arenas use the active mode world as host
+    const md=p.arena.split("-")[1];
+    const wn=worlds[md]; if(!wn)return;
+    wn.online=true; wn.isN=true; wn.nTeams=p.teams; wn.toks=p.toks;
+    wn.players.length=0; wn.userCircles.length=0; wn.floaters.length=0; wn.particles.length=0;
+    wn.roundNo=p.round; wn.multiplier=p.multiplier; wn.phase="battle"; wn.roundT=0; wn.phaseT=0;
+    wn.seed=p.seed; wn.seedHash=p.seedHash; wn.eWinnerTeam=p.winnerTeam;
+    wn.battleMs=p.battleMs||60000; wn.tickMs=(p.cfg&&p.cfg.tickMs)||50;
+    wn.lastRound={round:p.round,seed:p.seed,seedHash:p.seedHash,entries:p.entries,cfg:p.cfg,hitCount:p.hitCount};
+    wn.simN=createSimN(p.seed,p.entries.map(e=>({id:e.id,team:e.team,stake:e.stake})),p.cfg);
+    wn.byId=new Map();
+    for(const e of p.entries){
+      const c={id:e.id,name:e.name||"anon",teamIdx:e.team,side:e.team===1?"unicorn":"bull",
+        bull:0,uwu:0,sBull:0,sUwu:0,banked:0,isUser:!!(MYWALLET&&(e.wallet||"")===MYWALLET),
+        x:0,y:0,vx:0,vy:0,r:12,dmgDealt:0,dmgTaken:0,rDmg:0,raided:0,bestHit:0,deposited:e.stake,flash:0,dead:false};
+      wn.players.push(c); wn.byId.set(e.id,c); if(c.isUser)wn.userCircles.push(c);
+    }
+    wn.elapsed=Math.max(0,Date.now()-(p.startedAt||Date.now()));
+    syncFromSimN(wn,true);
+    ev(wn,"\u2694 "+(p.teams===0?"FFA":"3-WAY")+" round "+wn.roundNo+" \u2014 FIGHT!","round");
+  }
+  function syncFromSimN(w,silent){
+    if(!w.simN)return;
+    let guard=0;
+    while(!w.simN.done&&w.simN.t*w.tickMs<=w.elapsed&&guard++<4000){
+      const hits=stepSimN(w.simN);
+      if(!silent)for(const h of hits){
+        const atk=w.byId.get(h.atk), def=w.byId.get(h.def); if(!atk||!def)continue;
+        atk.flash=def.flash=1;
+        w.floaters.push({x:def.x,y:def.y-def.r-6,txt:"-"+fmt(h.amt),life:1,col:"#ff90a5",big:h.amt>=6});
+        w.floaters.push({x:atk.x,y:atk.y-atk.r-6,txt:"+"+fmt(h.amt),life:1.1,col:h.amt>=6?"#ffe14d":"#ffc048",big:h.amt>=6});
+        pushWin(w,atk,h.amt,h.amt>=6?4:1);
+        if(h.amt>=6){w.shake=Math.max(w.shake,14);burst(w,(atk.x+def.x)/2,(atk.y+def.y)/2);}
+      }
+    }
+    const sx=W2/ARENA.w, sy=H2/ARENA.h, sr=Math.min(sx,sy);
+    for(const f of w.simN.F){
+      const c=w.byId.get(f.id); if(!c)continue;
+      c.x=f.x*sx; c.y=f.y*sy; c.r=f.r*sr;
+      c.nring=nRing(f); c.nbank=f.banked; c.nunmatched=f.unmatched;
+      c.raided=f.raided; c.dmgDealt=f.dmgDealt; c.dmgTaken=f.dmgTaken;
+      if(f.dead&&!c.dead){c.dead=true; if(!silent)burst(w,c.x,c.y);}
+    }
+  }
+  function tickN(w,dt,now){
+    w.elapsed=(w.elapsed||0)+dt*1000; w.roundT=w.elapsed;
+    if(w.phase==="battle"){
+      syncFromSimN(w,false);
+      for(const p of w.players)if(p.flash>0)p.flash-=dt*3;
+      if(w.elapsed>=w.battleMs||(w.simN&&w.simN.done)){
+        w.phase="over"; w.phaseT=0;
+        const wt=w.eWinnerTeam||0;
+        w.bannerTxt=(w.toks&&w.toks[wt]?(TOKMETA[w.toks[wt]]||{label:"TEAM"}).label:"TEAM "+wt)+" WINS!";
+        w.bannerA=1; save(w);
+      }
+    }
+  }
   function tickOnline(w,dt,now){
     w.elapsed=(w.elapsed||0)+dt*1000; w.roundT=w.elapsed;
     if(w.phase==="battle"){
@@ -1155,7 +1357,9 @@
       ws.onmessage=ev=>{ let m;try{m=JSON.parse(ev.data);}catch(e){return;} onMsg(m); };
     }
     function onMsg(m){
-      if(m.t==="roundStartN"){ (window.__NROUND=window.__NROUND||{})[m.arena]=m; return; }
+      if(m.t==="roundStartN"){ (window.__NROUND=window.__NROUND||{})[m.arena]=m;
+        if(m.entries&&(PAIRING==="3w"||PAIRING==="ffa")&&m.arena.startsWith(PAIRING+"-")){ startNRound(m); syncDOM(); }
+        return; }
       if(m.t==="roundStart"){ if(m.arena&&m.arena!==PAIRING+"-"+m.mode)return; startEngineRound(m.mode,m); if(m.mode===activeMode)syncDOM(); }
       else if(m.t==="state"){
         if(!window.__onlineUI){ window.__onlineUI=true;      // real balances only — no play-money buttons
@@ -1486,43 +1690,16 @@
       if(!c)return;
       const map={"ansem-uwu":"au","ansem-sol":"as","uwu-sol":"us"};
       const pr=map[c.dataset.arena];
-      if(!pr){ showNArena(c.dataset.arena==="3way"?"3w":"ffa"); return; }
+      if(!pr){ PAIRING=c.dataset.arena==="3way"?"3w":"ffa"; localStorage.setItem("bvu_arena",PAIRING);
+        for(const md in worlds){const w=worlds[md];w.players.length=0;w.userCircles.length=0;w.byId=new Map();w.sim=null;w.simN=null;w.phase="lobby";}
+        applyArenaSkin(); document.querySelector('.nav button[data-view=arena]').click(); syncDOM();
+        if(window.__sendEngine)window.__sendEngine({t:"resync",arenas:[]}); return; }
       PAIRING=pr; localStorage.setItem("bvu_arena",PAIRING);
       if(window.__sendEngine)window.__sendEngine({t:"resync",arenas:[PAIRING+"-normal",PAIRING+"-extraction"]});
       for(const md of ["normal","extraction"]){const w=worlds[md];
         w.players.length=0;w.userCircles.length=0;w.byId=new Map();w.sim=null;w.phase="lobby";}
       applyArenaSkin();
       document.querySelector('.nav button[data-view=arena]').click(); syncDOM();});}
-
-  // ---- 3-WAY / FFA live status (engine-authoritative, full canvas replay is next) ----
-  let NWATCH=null;
-  function showNArena(kind){
-    NWATCH=kind;
-    const host=$("#arenaCards");
-    if(host)host.insertAdjacentHTML("afterbegin",'<div id="nLive" style="grid-column:1/-1"></div>');
-    renderNLive();
-  }
-  function renderNLive(){
-    const el=$("#nLive"), st=window.__ST; if(!el||!st||!st.arenas||!NWATCH)return;
-    const ids=NWATCH==="3w"?["3w-normal","3w-extraction"]:["ffa-extraction"];
-    const TEAMC=["var(--bull)","var(--uni)","var(--gold)"];
-    el.innerHTML=ids.map(id=>{
-      const a=st.arenas[id]; if(!a)return "";
-      const last=(window.__NROUND||{})[id];
-      const tt=last&&last.teamTotals?last.teamTotals:[];
-      const bars=tt.length?`<div style="display:flex;gap:4px;margin-top:8px">${tt.map((v,i)=>{
-        const tot=tt.reduce((x,y)=>x+y,0)||1;
-        return `<div style="flex:${Math.max(4,v/tot*100)};background:${TEAMC[i]};height:16px;border-radius:4px;opacity:${last.winnerTeam===i?1:.45}"></div>`;}).join("")}</div>`:"";
-      const names=a.toks?a.toks.map((t,i)=>`<span style="color:${TEAMC[i]}">${TOKMETA[t]?TOKMETA[t].label:t}${tt[i]!==undefined?" "+fmt(tt[i]):""}</span>`).join(" · "):"";
-      return `<div class="card" style="background:var(--panel);border:1px solid var(--gold);border-radius:14px;padding:14px;margin-bottom:10px">
-        <b>${id.toUpperCase()}</b> <span class="youtag" style="background:var(--bull);color:#000">LIVE</span>
-        <div style="font-family:var(--mono);font-size:12px;color:var(--ink-soft);margin-top:6px">
-          round ${a.round} · ${a.phase}${a.phase==="lobby"?" · closes in "+Math.ceil(a.closesInMs/1000)+"s":""} · ${a.entries} fighters · ${a.accounts} wallets</div>
-        <div style="font-family:var(--mono);font-size:12px;margin-top:6px">${names}</div>${bars}
-        ${last?`<div class="note" style="margin-top:6px">last round winner: <b style="color:${TEAMC[last.winnerTeam]||"var(--ink)"}">${a.toks&&a.toks[last.winnerTeam]?(TOKMETA[a.toks[last.winnerTeam]]||{label:"?"}).label:"#"+last.winnerTeam}</b>${last.hitCount?" · "+last.hitCount+" hits":""}</div>`:""}
-      </div>`;}).join("");
-  }
-  setInterval(renderNLive,1000);
 
   let tx=0;(function scroll(){const t=$("#tickerTrack");
     const fits=t.scrollWidth<=(t.parentElement?t.parentElement.clientWidth-90:0);   // 90px ≈ the label block
