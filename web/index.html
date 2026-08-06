@@ -134,7 +134,8 @@
             <input id="chainAmt" type="number" value="50" min="1" step="1" style="width:100%;background:var(--panel2);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:8px;font-family:var(--mono);font-size:14px">
             <span class="wlabel" style="margin-top:8px">On-chain → game wallet</span>
             <div class="row2"><button class="abtn jb" id="depBull">Deposit 🐂 BULL</button><button class="abtn ju" id="depUwu">Deposit 🦄 UWU</button></div>
-            <div class="note" style="font-size:10px;margin-top:4px">◎ SOL arenas use credited SOL units on this test chain — native-SOL on-chain deposits arrive with the mainnet cutover.</div>
+            <div class="row2" style="margin-top:6px"><button class="abtn" id="depSol" style="background:#9945FF;color:#fff">◎ Deposit SOL</button><button class="abtn ghost" id="wdSol">Withdraw ◎</button></div>
+            <div class="note" style="font-size:10px;margin-top:4px" id="solNote">◎ deposits are a real native-SOL transfer, credited at the live SOL price.</div>
             <span class="wlabel" style="margin-top:8px">Game wallet → Phantom</span>
             <div class="row2"><button class="abtn ghost" id="wdBull">Withdraw 🐂</button><button class="abtn ghost2" id="wdUwu">Withdraw 🦄</button></div>
             <div class="note" id="chainNote" style="margin-top:8px">—</div>
@@ -1523,6 +1524,10 @@
         if(!m.ready) banner("🟡 Chain not configured — rounds are live, but deposits are off.");
         else banner("🟢 Live on-chain at <b>"+(m.rpc||"?")+"</b> — point Phantom at this RPC. Rounds are engine-authoritative &amp; seed-verifiable."); }
       else if(m.t==="depositTx"){ signAndSend(m); }
+      else if(m.t==="solDepositTx"){ signAndSendSol(m); }
+      else if(m.t==="depositSolDone"){ if(m.sol>0){note("✅ Deposited "+m.sol.toFixed(4)+" SOL @ $"+m.priceUsd.toFixed(2)+" = "+fmt(m.credited)+" units.");}
+        else note("SOL deposit not confirmed yet — try again in a moment."); }
+      else if(m.t==="withdrawSolDone"){ note("✅ Sent "+m.sol.toFixed(4)+" SOL to your wallet ("+fmt(m.units)+" units @ $"+m.priceUsd.toFixed(2)+")."); }
       else if(m.t==="depositDone"){ if(m.credited>0){ const tk=m.side==="bull"?"bull":"uwu"; WALLET[tk]+=m.credited; saveWallet(); syncDOM(); note("✅ Deposited "+m.credited.toFixed(2)+" "+tk.toUpperCase()+" into your game wallet."); } else note("Deposit not confirmed yet — try again in a moment."); if(PK)send({t:"chainBalance",wallet:PK}); }
       else if(m.t==="faucetDone"){ note("✅ Faucet sent "+(m.amount||500)+" "+m.side.toUpperCase()+" to your Phantom. Now Deposit it."); setTimeout(()=>{if(PK)send({t:"chainBalance",wallet:PK});},1500); }
       else if(m.t==="fundMeDone"){ note("🎁 Sent: "+m.steps.join(" · ")+". Now set an Amount and hit Deposit."); setTimeout(()=>{if(PK){send({t:"chainBalance",wallet:PK});send({t:"solBalance",wallet:PK});}},1800); }
@@ -1540,6 +1545,20 @@
     }
     const rpcConn=()=>new window.solanaWeb3.Connection((CHAIN&&CHAIN.rpc)||"http://127.0.0.1:8899","confirmed");
 
+    async function signAndSendSol(m){                 // native SOL: system transfer, same signing path
+      try{
+        if(!window.solanaWeb3){ note("⚠ Solana lib not loaded."); return; }
+        const raw=Uint8Array.from(atob(m.txB64),c=>c.charCodeAt(0));
+        const tx=window.solanaWeb3.Transaction.from(raw);
+        let sig;
+        if(DEVKP){ note("Signing SOL deposit…"); tx.sign(DEVKP); sig=await rpcConn().sendRawTransaction(tx.serialize()); }
+        else { note("Approve the SOL deposit in Phantom…"); const signed=await window.solana.signTransaction(tx);
+               sig=await rpcConn().sendRawTransaction(signed.serialize()); }
+        await rpcConn().confirmTransaction(sig,"confirmed");
+        note("SOL deposit confirmed, crediting…");
+        send({t:"depositSol",wallet:PK,sig});
+      }catch(e){ note("⚠ SOL deposit failed: "+String(e.message||e).slice(0,80)); }
+    }
     async function signAndSend(m){
       try{
         if(!window.solanaWeb3){ note("⚠ Solana lib not loaded (check connection)."); return; }
@@ -1699,6 +1718,13 @@
     if($("#fauSol"))$("#fauSol").onclick=()=>{ if(guard()){ note("Crediting SOL units…"); send({t:"fundMe",wallet:PK,amount:500}); } };
     $("#depBull").onclick=()=>{ if(guard()){note("Building deposit…");send({t:"buildDeposit",wallet:PK,side:"bull",amount:amt()});} };
     $("#depUwu").onclick=()=>{ if(guard()){note("Building deposit…");send({t:"buildDeposit",wallet:PK,side:"uwu",amount:amt()});} };
+    if($("#depSol"))$("#depSol").onclick=()=>{ if(!guard())return;
+      const sol=parseFloat(prompt("How much SOL to deposit?","0.1")||"0");
+      if(!(sol>0))return; note("Building SOL deposit…"); send({t:"buildSolDeposit",wallet:PK,sol}); };
+    if($("#wdSol"))$("#wdSol").onclick=()=>{ if(!guard())return;
+      const units=Math.min(amt(),WALLET.sol||0);
+      if(units<0.01){note("No SOL units to withdraw.");return;}
+      note("Withdrawing "+fmt(units)+" of SOL…"); send({t:"withdrawSol",wallet:PK,units}); };
     $("#wdBull").onclick=()=>doWithdraw("bull");
     $("#wdUwu").onclick=()=>doWithdraw("uwu");
     function doWithdraw(side){ if(!guard())return; const tk=side==="bull"?"bull":"uwu"; const a=Math.min(amt(),WALLET[tk]);
