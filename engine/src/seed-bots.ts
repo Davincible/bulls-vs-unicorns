@@ -12,7 +12,7 @@
 import { Connection, Transaction, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { RPC } from "./chain.ts";
-import { faucet, withdrawSol, solBalance, chainReady, vaultPubkey } from "./chain-ops.ts";
+import { faucet, withdrawSol, solBalance, chainReady, vaultPubkey, transferFromVault } from "./chain-ops.ts";
 import { ensureBotWallets, keypairOf, writeBotPool } from "./bot-wallets.ts";
 
 const N = Number(process.env.BOT_WALLETS || 20);
@@ -94,9 +94,14 @@ async function main() {
       const haveSol = await solBalance(w);
       if (haveSol < SOL_EACH * 0.5) { await step("sol", () => withdrawSol(w, SOL_EACH)); await sleep(800); }
 
-      // 2. tokens (devnet: the vault holds mint authority)
-      await step("mint bull", () => faucet(w, "bull", TOK_EACH)); await sleep(800);
-      await step("mint uwu",  () => faucet(w, "uwu",  TOK_EACH)); await sleep(800);
+      // 2. tokens. On a test chain the vault holds mint authority so we can mint. On mainnet
+      //    ANSEM/UWU have NO mint authority (fixed supply), so the float must be tokens we actually
+      //    bought and now transfer out of the vault.
+      const give = IS_TEST_CHAIN
+        ? (side: "bull" | "uwu") => faucet(w, side, TOK_EACH)
+        : (side: "bull" | "uwu") => transferFromVault(w, side, TOK_EACH);
+      await step("fund bull", () => give("bull")); await sleep(800);
+      await step("fund uwu",  () => give("uwu"));  await sleep(800);
 
       // 3. real deposits, through the same path a player uses
       for (const side of ["bull", "uwu"] as const) {

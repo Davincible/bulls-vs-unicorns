@@ -149,6 +149,21 @@ export async function withdraw(walletB58: string, side: "bull" | "uwu", amount: 
   return sig;
 }
 
+// Send tokens the VAULT ALREADY HOLDS to a wallet. This is how bots get funded on mainnet: ANSEM
+// and UWU have no mint authority (fixed supply), so `faucet` is impossible there — the float has to
+// be tokens we actually bought, transferred out of the vault.
+export async function transferFromVault(walletB58: string, side: "bull" | "uwu", amount: number): Promise<string> {
+  if (!cfg) throw new Error("chain not configured");
+  const conn = connection();
+  const owner = new PublicKey(walletB58);
+  const mint = mintFor(cfg, side);
+  const vaultAta = await getOrCreateAssociatedTokenAccount(conn, vault, mint, vault.publicKey);
+  const userAta = await getOrCreateAssociatedTokenAccount(conn, vault, mint, owner);   // vault pays rent
+  const have = toWhole(BigInt(vaultAta.amount.toString()));
+  if (have < amount) throw new Error(`vault holds ${have.toFixed(4)} ${side}, need ${amount} — buy more first`);
+  return transfer(conn, vault, vaultAta.address, userAta.address, vault, toBase(amount));
+}
+
 export async function vaultTokenBalance(side: "bull" | "uwu"): Promise<number> {
   if (!cfg) return 0;
   const conn = connection();
