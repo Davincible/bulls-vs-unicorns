@@ -6,6 +6,8 @@
 
 $fly = "$env:USERPROFILE\.fly\bin\fly.exe"
 $app = "bulls-arena-engine"
+# always resolve paths against THIS script's folder, so it works from any working directory
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # Fly published rates (USD/month). Update if their pricing changes.
 $RATE_256 = 1.94
@@ -35,12 +37,16 @@ Write-Output "  also split the SQLite ledger. There must only ever be ONE."
 
 Write-Output ""
 Write-Output "=== SAFETY CHECKS ==="
-$count = ($machines | Select-String -Pattern "^[0-9a-f]{10,}" ).Count
-if ($count -gt 1) { Write-Output "  !! $count machines running - EXPECTED 1. Run: fly scale count 1" }
-elseif ($count -eq 1) { Write-Output "  OK  exactly 1 machine" }
-else { Write-Output "  (no machines yet - not deployed)" }
+# fly prints "N machines have been retrieved from app ..." - read the count from that line
+$countLine = $machines | Select-String -Pattern "(\d+) machines? have been retrieved"
+if ($countLine) {
+  $count = [int]$countLine.Matches[0].Groups[1].Value
+  if ($count -gt 1) { Write-Output "  !! $count machines running - EXPECTED 1. Cost is multiplied AND the ledger splits. Run: fly scale count 1" }
+  elseif ($count -eq 1) { Write-Output "  OK  exactly 1 machine" }
+  else { Write-Output "  (no machines - not deployed)" }
+} else { Write-Output "  (could not read machine count)" }
 
-$toml = Get-Content "fly.toml" -Raw
+$toml = Get-Content (Join-Path $here "fly.toml") -Raw
 if ($toml -match "auto_stop_machines = false") { Write-Output "  OK  scale-to-zero disabled (rounds keep running)" } else { Write-Output "  !! auto_stop_machines is not false" }
 if ($toml -match "min_machines_running = 1") { Write-Output "  OK  pinned to 1 always-on machine" } else { Write-Output "  !! min_machines_running is not 1" }
 if ($toml -match "memory = `"512mb`"") { Write-Output "  OK  memory pinned to 512mb" } else { Write-Output "  !! memory size changed - re-check cost" }
