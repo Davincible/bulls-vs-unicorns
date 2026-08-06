@@ -16,7 +16,7 @@
   .pill b{font-size:14px} .pill .g{color:var(--gold)} .pill span{color:var(--ink-faint);font-size:9px;letter-spacing:.1em;text-transform:uppercase} .pill .brk{color:var(--ink-soft);font-size:10px;letter-spacing:0;text-transform:none}
   .nav,.modes{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
   .nav button,.modes button{font-family:var(--mono);font-size:11.5px;font-weight:700;color:var(--ink-soft);background:none;border:none;padding:9px 12px;cursor:pointer}
-  .nav button.on{background:var(--panel2);color:var(--gold)} .modes button.on[data-mode=normal]{background:var(--bull);color:#052} .modes button.on[data-mode=extraction]{background:var(--gold);color:#241c00}
+  .nav button.on{background:var(--panel2);color:var(--gold)} .modes button.on[data-mode=normal]{background:var(--bull);color:#052} .modes button.on[data-mode=extraction]{background:var(--gold);color:#241c00} #pairSel button.on{background:var(--gold);color:#241c00;border-color:var(--gold);box-shadow:0 0 10px rgba(255,192,72,.35)}
   .ficon{background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--ink-soft);cursor:pointer;font-size:14px;padding:8px 11px} .ficon:hover{color:var(--gold);border-color:var(--gold)}
   .ticker{margin-top:6px;background:linear-gradient(90deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:12px;height:34px;overflow:hidden;position:relative;display:flex;align-items:center}
   .ticker .lbl{flex:none;font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--gold);padding:0 14px;border-right:1px solid var(--line);height:100%;display:flex;align-items:center;background:rgba(255,192,72,.06)}
@@ -681,7 +681,7 @@
       $("#uniList").innerHTML='<div class="note">\u2014</div>';
       $("#bullPool").textContent="$0"; $("#uniPool").textContent="$0";
       $("#bullCount").textContent="0"; $("#uniCount").textContent="0";
-      if(st)$("#rtime").textContent=st.phase==="lobby"?("\ud83d\udfe2 open "+Math.ceil(st.closesInMs/1000)+"s"):"\u2694 in battle";
+      if(st){ w.lobbyLeft=st.closesInMs; w.phase=(st.phase==="lobby")?"lobby":"battle"; }   // feed the clock; the tick loop is the ONLY writer of #rtime
       return;
     }
     if(w.isN){ syncArenaN(w); return; }
