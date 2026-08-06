@@ -4,6 +4,21 @@ The mainnet launch is a **closed beta**: real money, whitelisted pre-funded wall
 only after BOTH the checklist below passes AND a canary round succeeds with Max's explicit go.
 Nothing here touches mainnet until every box is checked.
 
+## ⛔ Known blockers — code changes required BEFORE mainnet
+
+Verified against the real mainnet mints on 2026-08-06 (both `decimals=6`, ~1B supply,
+**mintAuthority = none**):
+
+1. **`convert` has no on-chain counterpart.** Swapping BULL↔UWU moves balance between tokens in the
+   ledger only. The vault's per-token holdings don't move, so any conversion volume drifts the book
+   and the reconciliation daemon will (correctly) freeze withdrawals. Either execute a real swap
+   (Jupiter/PumpSwap) on convert, or disable convert on mainnet. **Not optional.**
+2. **Bot funding can't mint on mainnet.** `seed-bots.ts` calls `faucet()` → `mintTo`, which needs
+   mint authority. ANSEM and UWU have **none** — supply is fixed. Bots must be funded by
+   *transferring purchased tokens*, so the script needs a transfer path for mainnet.
+3. **Bot float is real capital.** Whatever the bots play with is money you can genuinely lose to
+   players. Decide the number deliberately and treat it as a marketing/liquidity budget.
+
 ## 0. Prerequisites
 - A funded **house vault** keypair (holds real BULL/UWU + SOL float). Key stays in a secret
   manager as `VAULT_SECRET_KEY` — never in git, never in the image.
