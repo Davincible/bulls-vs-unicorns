@@ -47,13 +47,16 @@ export function poolBalance(field: Field): number {
 // 2-team arenas completely. Capping each draw at a share of what's left makes the float spread
 // across the population and degrade smoothly: a thin pool means many small bots, not a few rich
 // ones and a dead arena.
+// The default assumes a float big enough for 40 bots. A caller that knows how many bots the CURRENT
+// float can actually support passes its own spread - a fixed 40 against a small pool hands every bot
+// less than one minimum stake, so nobody can ever deploy.
 const SPREAD = Number(process.env.BOT_BANK_SPREAD || 40);   // ~how many bots the float should cover
 
 /** Take up to `want` of `field` out of the pool, never more than a fair share of what remains.
  *  Returns what was actually granted (may be less, or 0 when truly exhausted). */
-export function drawBank(field: Field, want: number): number {
+export function drawBank(field: Field, want: number, spread = SPREAD): number {
   if (!(want > 0)) return 0;
-  const share = poolBalance(field) / Math.max(1, SPREAD);
+  const share = poolBalance(field) / Math.max(1, spread);
   const target = Math.min(want, share);      // what we'll try to grant
   if (!(target > 0)) return 0;
   let left = target;

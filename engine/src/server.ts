@@ -84,6 +84,17 @@ function usdPerUnit(field: Field): number {
   return px && px > 0 ? px : 0;
 }
 const unitsForUsd = (field: Field, usd: number) => { const px = usdPerUnit(field); return px > 0 ? usd / px : 0; };
+// A round is entered in USD and settled ~60s later. If the feed goes stale in between, converting
+// the payout back at a zero price would divide by zero and wipe the winnings, so remember the last
+// good price per field and settle against that rather than destroying money.
+const lastGoodPx: Record<string, number> = { sol: 1 };
+function usdPerUnitSafe(field: Field): number {
+  const px = usdPerUnit(field);
+  if (px > 0) { lastGoodPx[field] = px; return px; }
+  return lastGoodPx[field] || 0;
+}
+/** Convert a USD amount back into units of `field`. Used on the settlement boundary. */
+const unitsFromUsd = (field: Field, usd: number) => { const px = usdPerUnitSafe(field); return px > 0 ? usd / px : 0; };
 // legacy token-count knobs still respected if explicitly set
 const BOT_BANK_MIN = Number(process.env.BOT_BANK_MIN || 0), BOT_BANK_MAX = Number(process.env.BOT_BANK_MAX || 0), BOT_STAKE_MIN = Number(process.env.BOT_STAKE_MIN || 0);
 // Bots draw their bank from REAL deposited money (bot-bank.ts). Inventing it made every bot
@@ -91,9 +102,27 @@ const BOT_BANK_MIN = Number(process.env.BOT_BANK_MIN || 0), BOT_BANK_MAX = Numbe
 // local testing only - it is refused on a live chain.
 const FAKE_BANK_OK = process.env.BOT_FAKE_BANK === "1" && IS_TEST_CHAIN;
 let poolWarned = false;
-function bankFor(field: Field, want: number): number {
+/** What the bot pool is worth right now, in dollars, across every token. */
+function floatUsd(): number {
+  return poolBalance("bull") * usdPerUnit("bull")
+       + poolBalance("uwu") * usdPerUnit("uwu")
+       + poolBalance("sol");
+}
+// How many bots the CURRENT float can actually field. The population used to follow a fixed
+// schedule (POP_START -> POP_MAX) regardless of how much real money backed it. Against a small
+// float that produced the worst possible outcome: ~68 bots each drawing pool/40, every one landing
+// a hair under the minimum stake, so nobody deployed and the whole population busted and respawned
+// every round (joined 50 / busted 49 / entries 0). Sizing the crowd to the money keeps each bot
+// solvent enough to actually play.
+const BOT_MIN_RUNWAY = Number(process.env.BOT_MIN_RUNWAY || 3);   // stakes a new bot should afford
+function popAffordable(): number {
+  const perBot = Math.max(BOT_BANK_USD_MIN, BOT_STAKE_USD_MIN * BOT_MIN_RUNWAY);
+  if (!(perBot > 0)) return 0;
+  return Math.floor(floatUsd() / perBot);
+}
+function bankFor(field: Field, want: number, spread?: number): number {
   if (botBankReady()) {
-    const got = drawBank(field, want);
+    const got = drawBank(field, want, spread);
     if (got < want * 0.5 && !poolWarned) { poolWarned = true; console.warn(`bot-bank: ${field} pool running low - seed more wallets (npm run seed:bots)`); }
     return got;
   }
@@ -121,7 +150,7 @@ function accountUsd(a: Account): number {
 }
 const walletish = () => { let s=""; for(let i=0;i<4;i++) s += B58[(Math.random()*B58.length)|0]; return s + "…" + B58[(Math.random()*B58.length)|0] + B58[(Math.random()*B58.length)|0] + B58[(Math.random()*B58.length)|0]; };
 let seq = 0;
-function newBot(aid: string, side: Side): Account {
+function newBot(aid: string, side: Side): Account | null {
   const id = `${aid}:bot:${++seq}`;
   // a third of newcomers show up as raw addresses — fresh wallets, no handle yet
   const name = Math.random() < 0.34 ? walletish() : NAMES[(Math.random()*NAMES.length)|0] + "_" + seq;
@@ -132,10 +161,15 @@ function newBot(aid: string, side: Side): Account {
   const want = BOT_BANK_MIN > 0
     ? BOT_BANK_MIN + Math.random() * (BOT_BANK_MAX - BOT_BANK_MIN)
     : unitsForUsd(field, BOT_BANK_USD_MIN + Math.random() * (BOT_BANK_USD_MAX - BOT_BANK_USD_MIN));
-  a[field] = bankFor(field, want);
+  // spread the draw across the number of bots the float can support, not a fixed 40
+  a[field] = bankFor(field, want, Math.max(1, popAffordable()));
+  // A bot that cannot afford one minimum stake is not a participant, it is churn: it busts on the
+  // next settle and takes a respawn slot with it. Hand the money back and don't create it.
+  const minStake = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(field, BOT_STAKE_USD_MIN);
+  if (!(a[field] >= minStake)) { returnBank(field, a[field]); return null; }
   ledger.set(id, a); created[arenaEco(aid)]++; return a;
 }
-function seedBots(aid: string, n: number) { for (let i=0;i<n;i++) newBot(aid, i%2 ? "uwu":"bull"); }
+function seedBots(aid: string, n: number) { for (let i=0;i<n;i++) if (!newBot(aid, i%2 ? "uwu":"bull")) break; }
 const botsFor = (aid: string) => [...ledger.values()].filter(a => a.isBot && a.id.startsWith(aid+":"));
 
 // ---- clients ----
@@ -154,7 +188,10 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   for (const [key, bal] of Object.entries(r.settlement)) {
     const id = key.split("|")[0];
     const a = ledger.get(id); if (!a) continue;
-    a[FIELD[tokA]] += bal.bull; a[FIELD[tokB]] += bal.uwu; a.games++; a.ret += bal.bull + bal.uwu;
+    // the sim runs in USD (see the enter path); credit each side in ITS OWN token
+    const retA = unitsFromUsd(FIELD[tokA] as Field, bal.bull);
+    const retB = unitsFromUsd(FIELD[tokB] as Field, bal.uwu);
+    a[FIELD[tokA]] += retA; a[FIELD[tokB]] += retB; a.games++; a.ret += retA + retB;
     if (a.side === r.winner) a.wins++;
     const f = r.fighters.find(x => x.id === key);
     if (f) { a.raided = (a.raided||0) + f.raided; if (f.bestHit > (a.best||0)) a.best = f.bestHit; }
@@ -165,16 +202,24 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   // real players fill the arena, so bots never crowd out humans.
   const realPlaying = s.entries.filter(e => !e.id.includes(":bot:")).length;
   let busted = 0;
-  // busted = can no longer afford the minimum stake, so it can never deploy again
-  const BUST_USD = Number(process.env.BOT_BUST_USD || BOT_STAKE_USD_MIN * 0.8);
+  // Busted = can no longer afford the minimum stake, so it can never deploy again.
+  // This MUST NOT sit below the minimum stake. At 0.8x it opened a dead band: a bot holding $0.487
+  // against a $0.50 minimum could neither deploy nor be retired, so it sat on its share of the
+  // float forever. Enough of them and the entire pool is trapped in wallets that never play - which
+  // is exactly what emptied the arena (joined 50 / busted 49 / entries 0). Retire at the stake
+  // minimum so unplayable money always returns to the pool.
+  const BUST_USD = Number(process.env.BOT_BUST_USD || BOT_STAKE_USD_MIN);
   for (const a of botsFor(aid)) if (accountUsd(a) < BUST_USD) { retireBot(a); busted++; bustedCount[mode]++; }
   rounds[mode]++; roundsByArena[aid] = (roundsByArena[aid] || 0) + 1;
   { const st = stat(aid); st.matches++; if (r.winner === "bull") st.winsA++; else st.winsB++; }
   const popCap = Math.min(POP_MAX, POP_START + Math.floor((roundsByArena[aid] || 0) * POP_GROWTH));
-  const target = Math.max(Number(process.env.POP_MIN || 12), popCap - realPlaying * 2);
+  // POP_MIN is a floor on ambition, never on affordability - the float has the final say
+  const wanted = Math.max(Number(process.env.POP_MIN || 12), popCap - realPlaying * 2);
+  const target = Math.min(wanted, popAffordable());
   let joined = 0;
   while (botsFor(aid).length < target) {
-    newBot(aid, botsFor(aid).filter(b=>b.side==="bull").length <= botsFor(aid).filter(b=>b.side==="uwu").length ? "bull":"uwu");
+    const made = newBot(aid, botsFor(aid).filter(b=>b.side==="bull").length <= botsFor(aid).filter(b=>b.side==="uwu").length ? "bull":"uwu");
+    if (!made) break;      // pool exhausted - stop, or this loop never terminates
     joined++;
   }
   broadcast({ t: "settled", arena: aid, mode, round: s.round, winner: r.winner, seed: s.seed, seedHash: s.seedHashPublished,
@@ -192,36 +237,45 @@ async function onSettleN(aid: string, r: any, s: any) {
     const a = ledger.get(wallet); if (!a) continue;
     const teamIdx = Number(teamStr) || 0;
     const tok = def.teams === 0 ? def.toks[0] : def.toks[teamIdx] || def.toks[0];
-    a[FIELD[tok]] += amount as number; a.games++; a.ret += amount as number;
+    // the N sim runs in USD too - credit the team's own token
+    const ret = unitsFromUsd(FIELD[tok] as Field, amount as number);
+    a[FIELD[tok]] += ret; a.games++; a.ret += ret;
     if (!a.isBot) touched.add(wallet);
   }
   const realPlaying = s.entries.filter((e: any) => !String(e.id).includes(":bot:")).length;
   let busted = 0;
-  const BUST_USD_N = Number(process.env.BOT_BUST_USD || BOT_STAKE_USD_MIN * 0.8);
+  const BUST_USD_N = Number(process.env.BOT_BUST_USD || BOT_STAKE_USD_MIN);   // same dead-band rule as the 2-team path
   for (const a of botsFor(aid)) if (accountUsd(a) < BUST_USD_N) { retireBot(a); busted++; }
   roundsByArena[aid] = (roundsByArena[aid] || 0) + 1;
   { const st = stat(aid); st.matches++; if (r.winnerTeam === 0) st.winsA++; else st.winsB++; }
   const popCap = Math.min(POP_MAX, POP_START + Math.floor((roundsByArena[aid] || 0) * POP_GROWTH));
-  const target = Math.max(Number(process.env.POP_MIN || 12), popCap - realPlaying * 2);
+  const wanted = Math.max(Number(process.env.POP_MIN || 12), popCap - realPlaying * 2);
+  const target = Math.min(wanted, popAffordable());
   let joined = 0;
-  while (botsFor(aid).length < target) { newBotN(aid); joined++; }
+  while (botsFor(aid).length < target) { if (!newBotN(aid)) break; joined++; }
   broadcast({ t: "roundStartN", phase: "settled", arena: aid, round: s.round, winnerTeam: r.winnerTeam,
               winnerId: r.winnerId, seed: s.seed, seedHash: s.seedHashPublished, teamTotals: r.teamTotals });
   for (const w of touched) pushBalance(w);
   persist();
 }
 // bots for N arenas: pick a team slot, bank in that team's token
-function newBotN(aid: string): Account {
+function newBotN(aid: string): Account | null {
   const def = NARENAS[aid];
   const id = `${aid}:bot:${++seq}`;
   const name = Math.random() < 0.34 ? walletish() : NAMES[(Math.random()*NAMES.length)|0] + "_" + seq;
-  const want = BOT_BANK_MIN + Math.random() * (BOT_BANK_MAX - BOT_BANK_MIN);
   const team = def.teams === 0 ? 0 : Math.floor(Math.random() * def.teams);
   const a: Account = { id, name, side: team === 1 ? "uwu" : "bull", bull: 0, uwu: 0, sol: 0,
                        isBot: true, dep: 0, ret: 0, games: 0, wins: 0 };
   (a as any).nteam = team;
   const fieldN = FIELD[def.toks[def.teams === 0 ? 0 : team]] as Field;
-  a[fieldN] = bankFor(fieldN, want);
+  // this used the legacy token-count knobs, which default to 0 - so `want` was 0 and every N-arena
+  // bot drew an empty bank. Denominate in USD like the 2-team path.
+  const want = BOT_BANK_MIN > 0
+    ? BOT_BANK_MIN + Math.random() * (BOT_BANK_MAX - BOT_BANK_MIN)
+    : unitsForUsd(fieldN, BOT_BANK_USD_MIN + Math.random() * (BOT_BANK_USD_MAX - BOT_BANK_USD_MIN));
+  a[fieldN] = bankFor(fieldN, want, Math.max(1, popAffordable()));
+  const minStakeN = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(fieldN, BOT_STAKE_USD_MIN);
+  if (!(a[fieldN] >= minStakeN)) { returnBank(fieldN, a[fieldN]); return null; }
   ledger.set(id, a); return a;
 }
 function botsEnterN(aid: string) {
@@ -253,10 +307,11 @@ function botsEnterN(aid: string) {
     if (!(minStakeN > 0) || stake < minStakeN) continue;
     a[FIELD[tok]] -= stake;
     const eco = NARENAS[aid].eco;
-    const usdA = stake * usdPerUnit(FIELD[tok] as Field);
+    const usdA = stake * usdPerUnitSafe(FIELD[tok] as Field);
+    if (!(usdA > 0)) { a[FIELD[tok]] += stake; continue; }   // no price -> undo the debit, sit out
     a.dep += stake; treasury[eco] += usdA * FEE; totalDeployed[eco] += usdA;
     stat(aid).deployed += usdA; stat(aid).take += usdA * FEE;
-    rn.enter(`${a.id}|${def.teams === 0 ? 0 : team}`, def.teams === 0 ? 0 : team, stake * (1 - FEE));
+    rn.enter(`${a.id}|${def.teams === 0 ? 0 : team}`, def.teams === 0 ? 0 : team, usdA * (1 - FEE));
   }
 }
 
@@ -318,7 +373,7 @@ startReconcile(ledgerLiabilities, solUsd, Number(process.env.RECONCILE_MS || 15_
 }
 const SEED = Number(process.env.SEED_BOTS || 18);
 for (const aid of ARENA_IDS) if (botsFor(aid).length === 0) seedBots(aid, SEED);
-for (const aid of NARENA_IDS) { let guard = 0; while (botsFor(aid).length < SEED && guard++ < 500) newBotN(aid); }
+for (const aid of NARENA_IDS) { let guard = 0; while (botsFor(aid).length < SEED && guard++ < 500) if (!newBotN(aid)) break; }
 
 // bots auto-enter each lobby (a fraction, with a fee taken on deploy)
 function botsEnter(aid: string) {
@@ -353,10 +408,15 @@ function botsEnter(aid: string) {
     if (!(minStake > 0) || stake < minStake) continue;
     a[FIELD[myTok]] -= stake;
     const mode = arenaEco(aid);
-    const usdN = stake * usdPerUnit(FIELD[myTok] as Field);
+    const usdN = stake * usdPerUnitSafe(FIELD[myTok] as Field);
+    if (!(usdN > 0)) { a[FIELD[myTok]] += stake; continue; }   // no price -> undo the debit, sit out
     a.dep += stake; treasury[mode] += usdN * FEE; totalDeployed[mode] += usdN;
     stat(aid).deployed += usdN; stat(aid).take += usdN * FEE; depSide[mode][a.side] += usdN;
-    rn.enter(`${a.id}|${a.side}`, a.side, stake * (1 - FEE));   // net of deploy fee
+    // Enter in USD, not token counts. Handing the sim 49.7 UWU for one side and 1.6 USD for the
+    // other made army size depend on a token's unit price: the cheaper coin fielded a ~30x larger
+    // force and won every round. CAP and MIN_ENTRY were already dollar amounts, so USD is the unit
+    // the rest of the economy assumes.
+    rn.enter(`${a.id}|${a.side}`, a.side, usdN * (1 - FEE));   // net of deploy fee
   }
 }
 
@@ -580,12 +640,16 @@ wss.on("connection", (ws, req) => {
         const bank = a[FIELD[myTok]];
         if (rn.state.phase !== "lobby") return ws.send(JSON.stringify({ t: "error", msg: "Deposits closed — wait for the next lobby." }));
         // the CAP is per side per round, so topping up cannot push you past it
+        // entries are USD, so the cap is genuinely $CAP per side rather than CAP-of-whatever-token
+        const usdP = usdPerUnitSafe(FIELD[myTok] as Field);
+        if (!(usdP > 0)) return ws.send(JSON.stringify({ t: "error", msg: "Price feed unavailable — try again in a moment." }));
         const already = rn.state.entries.filter(e => e.id === `${m.wallet}|${m.side}`)
                           .reduce((n, e) => n + e.stake / (1 - FEE), 0);
-        const headroom = Math.max(0, CAP - already);
-        const stake = Math.min(Number(m.stake)||0, bank, headroom);
+        const headroom = Math.max(0, CAP - already);                      // USD
+        const stake = Math.min(Number(m.stake)||0, bank, headroom / usdP); // token units
+        const stakeUsd = stake * usdP;
         if (headroom < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: `You're at the $${CAP} cap on that side this round.` }));
-        if (stake < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: `Minimum entry is $${MIN_ENTRY}.` }));
+        if (stakeUsd < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: `Minimum entry is $${MIN_ENTRY}.` }));
         a[FIELD[myTok]] -= stake;                                      // debit the arena token
         a.dep += stake; a.side = m.side;
         if (m.ref && !a.refBy && m.ref !== m.wallet) a.refBy = String(m.ref).slice(0, 64);
@@ -599,11 +663,10 @@ wss.on("connection", (ws, req) => {
           pushBalance(a.refBy);
         }
         const eco = arenaEco(aid);
-        const usdP = usdPerUnit(FIELD[myTok] as Field);
-        treasury[eco] += (fee - refCut) * usdP; totalDeployed[eco] += stake * usdP;
-        depSide[eco][m.side as Side] += stake * usdP;
-        stat(aid).deployed += stake * usdP; stat(aid).take += fee * usdP;
-        rn.enter(`${m.wallet}|${m.side}`, m.side, stake * (1 - FEE));
+        treasury[eco] += (fee - refCut) * usdP; totalDeployed[eco] += stakeUsd;
+        depSide[eco][m.side as Side] += stakeUsd;
+        stat(aid).deployed += stakeUsd; stat(aid).take += fee * usdP;
+        rn.enter(`${m.wallet}|${m.side}`, m.side, stakeUsd * (1 - FEE));
         ws.send(JSON.stringify({ t: "entered", arena: aid, mode: arenaEco(aid), side: m.side, stake }));
         pushBalance(m.wallet); persist();
       } else if (m.t === "resync") {          // { arenas: ["au-normal", ...] } -> in-flight rounds
@@ -637,15 +700,17 @@ wss.on("connection", (ws, req) => {
         const tok = def.toks[def.teams === 0 ? 0 : team] || def.toks[0];
         const a = acct(m.wallet, "bull");
         const bank = a[FIELD[tok]];
+        const usdE1 = usdPerUnitSafe(FIELD[tok] as Field);
+        if (!(usdE1 > 0)) return ws.send(JSON.stringify({ t: "error", msg: "Price feed unavailable — try again in a moment." }));
         const already = rn.state.entries.filter(e => e.id === `${m.wallet}|${team}`).reduce((n, e) => n + e.stake / (1 - FEE), 0);
-        const stake = Math.min(Number(m.stake) || 0, bank, Math.max(0, CAP - already));
-        if (stake < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: "Insufficient balance for that arena's token." }));
+        const stake = Math.min(Number(m.stake) || 0, bank, Math.max(0, CAP - already) / usdE1);
+        const usdE = stake * usdE1;
+        if (usdE < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: "Insufficient balance for that arena's token." }));
         a[FIELD[tok]] -= stake; a.dep += stake;
         const eco = def.eco;
-        const usdE = stake * usdPerUnit(FIELD[tok] as Field);
         treasury[eco] += usdE * FEE; totalDeployed[eco] += usdE;
         stat(aid).deployed += usdE; stat(aid).take += usdE * FEE;
-        rn.enter(`${m.wallet}|${team}`, team, stake * (1 - FEE));
+        rn.enter(`${m.wallet}|${team}`, team, usdE * (1 - FEE));
         ws.send(JSON.stringify({ t: "enteredN", arena: aid, team, stake }));
         pushBalance(m.wallet); persist();
       } else if (m.t === "faucet") {                          // { t:'faucet', wallet, side }

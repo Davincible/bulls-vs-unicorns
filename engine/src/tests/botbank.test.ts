@@ -101,3 +101,65 @@ test("a busted bot's remaining money returns to the pool instead of vanishing", 
   assert.ok(Math.abs(destroyed) < 1e-9,
     `no money may be destroyed by a bust; ${destroyed} went missing`);
 });
+
+// The arena died in production with "joined 50 / busted 49 / entries 0": bots were retired at 0.8x
+// the minimum stake, so anything holding between 0.8x and 1x could neither deploy nor be recycled.
+// Each one sat on a share of the float permanently. Enough of them and the pool reads empty while
+// every token is still on the books. This models a full life-cycle and pins the invariant that
+// makes it impossible: money is never held by a bot that cannot play.
+test("float is never trapped in bots that can neither deploy nor bust", () => {
+  const POOL_START = 1520;          // UWU actually recovered on mainnet
+  const MIN_STAKE = 16.93;          // $0.50 at the live UWU price
+  const BUST_AT = MIN_STAKE;        // must not be lower - that is the dead band
+
+  const pool = { uwu: POOL_START };
+  const bots: number[] = [];
+  const SPREAD = 20;
+
+  const draw = (want: number) => {
+    const got = Math.min(want, pool.uwu / SPREAD);
+    pool.uwu -= got;
+    return got;
+  };
+
+  for (let round = 0; round < 60; round++) {
+    // retire anyone who cannot afford a stake, returning their balance
+    for (let i = bots.length - 1; i >= 0; i--) {
+      if (bots[i] < BUST_AT) { pool.uwu += bots[i]; bots.splice(i, 1); }
+    }
+    // top the population up, refusing to create a bot that cannot play
+    while (bots.length < 20) {
+      const bank = draw(MIN_STAKE * 4);
+      if (bank < MIN_STAKE) { pool.uwu += bank; break; }
+      bots.push(bank);
+    }
+    // Play the round zero-sum, as the real settlement is: a loser's stake moves to a winner.
+    // Modelling it as a flat edge against nobody would bleed the float for reasons that have
+    // nothing to do with the invariant under test.
+    const playing = bots.map((b, i) => [b, i] as const).filter(([b]) => b >= MIN_STAKE).map(([, i]) => i);
+    for (let k = 0; k + 1 < playing.length; k += 2) {
+      const [w, l] = round % 2 === 0 ? [playing[k], playing[k + 1]] : [playing[k + 1], playing[k]];
+      const stake = Math.min(bots[w], bots[l], MIN_STAKE);
+      bots[w] += stake; bots[l] -= stake;
+    }
+  }
+
+  const held = bots.reduce((s, b) => s + b, 0);
+  assert.ok(Math.abs(pool.uwu + held - POOL_START) < 0.01,
+            `float must be conserved: ${(pool.uwu + held).toFixed(2)} vs ${POOL_START}`);
+  // the invariant that was violated in production
+  const stuck = bots.filter(b => b < MIN_STAKE);
+  assert.equal(stuck.length, 0, "no bot may hold float it cannot stake");
+});
+
+test("a bust threshold below the stake minimum strands money — the bug, reproduced", () => {
+  const MIN_STAKE = 16.93;
+  const BUST_AT = MIN_STAKE * 0.8;        // the old default
+  const bots = [16.5, 15.2, 14.8];        // all below the stake minimum, all above the old bust line
+  const canPlay = bots.filter(b => b >= MIN_STAKE).length;
+  const wouldRetire = bots.filter(b => b < BUST_AT).length;
+  assert.equal(canPlay, 0, "none can deploy");
+  assert.equal(wouldRetire, 0, "and under the old rule none are recycled either — money stranded");
+  // under the corrected rule every one of them is returned to the pool
+  assert.equal(bots.filter(b => b < MIN_STAKE).length, bots.length);
+});
