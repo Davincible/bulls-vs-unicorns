@@ -52,6 +52,14 @@ For a **public** devnet demo you must re-create the mints against public devnet:
 `SOLANA_RPC=https://api.devnet.solana.com npm run setup:devnet` — which needs ~0.05 devnet SOL
 in the vault. The public faucet was rate-limiting this machine; a local validator sidesteps it.
 
+## C+. Proof of reserves (public trust page)
+
+`web/solvency.html` is a standalone public page showing, per asset, what players are owed vs. what
+the vault holds on-chain, with an overall solvent / shortfall / frozen banner. It reads the engine's
+`GET /solvency` and auto-refreshes. Open it with the same engine convention as the app:
+`https://your-site/solvency.html?engine=wss://your-engine`. The engine also exposes `GET /health`
+(200 solvent, 503 when a solvency breach has frozen withdrawals) for host liveness probes.
+
 ## D. What's left
 
 - **Trustless custody (Anchor vault).** `programs/vault/src/lib.rs` is written — a pooled vault

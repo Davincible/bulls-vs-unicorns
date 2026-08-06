@@ -1,0 +1,24 @@
+name: engine tests
+
+# Nothing ships that fails the money-critical invariants. Runs the committed suite
+# (sim conservation/determinism/no-friendly-fire, ledger crash-safety, allowlist,
+# reconciliation solvency, arena registry, vault-key loading) on every push/PR.
+on:
+  push:
+    paths: ["engine/**", ".github/workflows/ci.yml"]
+  pull_request:
+    paths: ["engine/**", ".github/workflows/ci.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"   # required: node:sqlite (ledger) + node:test
+      - run: npm install --no-audit --no-fund
+      - run: npm test
