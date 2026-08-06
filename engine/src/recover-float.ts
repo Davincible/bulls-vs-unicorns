@@ -12,7 +12,7 @@
 import { loadSnapshot, saveSnapshot, flushSnapshot } from "./store.ts";
 import { poolPubkeys } from "./bot-wallets.ts";
 import { vaultTokenBalance, solBalance, vaultPubkey, chainReady } from "./chain-ops.ts";
-import { priceUSD } from "./prices.ts";
+import { priceUSD, refreshPrices } from "./prices.ts";
 
 const APPLY = process.env.RECOVER_APPLY === "1";
 
@@ -56,6 +56,8 @@ async function main() {
   const heldUwu = await vaultTokenBalance("uwu");
   const heldBull = await vaultTokenBalance("bull");
   const heldSolNative = await solBalance(vaultPubkey());
+  // pull a fresh price before judging solvency - a stale/absent feed must not wave this through
+  await refreshPrices().catch(() => {});
   const px = priceUSD("sol") || 0;
   const heldSolUsd = px > 0 ? heldSolNative * px : 0;
 
@@ -72,8 +74,15 @@ async function main() {
   if (otherUwu + wantUwu > heldUwu + 1e-6) {
     console.error(`\nREFUSING: recovery would owe more UWU than the vault holds.`); process.exit(1);
   }
-  if (px > 0 && otherSol + wantSol > heldSolUsd + 1e-6) {
-    console.error(`\nREFUSING: recovery would owe more SOL than the vault holds.`); process.exit(1);
+  // A missing price must FAIL the check, not skip it. The first run printed "~$0.00" because the
+  // price loop had not ticked yet, which would have waved the SOL leg through unverified.
+  if (wantSol > 0.0001 && !(px > 0)) {
+    console.error(`\nREFUSING: SOL price unavailable, so the SOL leg cannot be verified against`);
+    console.error(`vault holdings. Wait for the price feed and re-run.`); process.exit(1);
+  }
+  if (otherSol + wantSol > heldSolUsd + 1e-6) {
+    console.error(`\nREFUSING: recovery would owe $${(otherSol + wantSol).toFixed(2)} of SOL but the`);
+    console.error(`vault only holds ${heldSolNative.toFixed(4)} SOL (~$${heldSolUsd.toFixed(2)}).`); process.exit(1);
   }
   console.log("\nsolvency check: PASS - the vault fully backs the restored balances");
 
