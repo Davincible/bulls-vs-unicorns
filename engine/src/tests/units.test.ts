@@ -230,6 +230,20 @@ test("a realistic round with per-wallet detail fits in one transaction", () => {
   assert.ok(bytes < 700, `7-player round encodes to ${bytes} bytes — must stay under the memo cap`);
 });
 
+// The memo is written for a HUMAN reading it on Solscan, not for a decoder. That is the whole point
+// of anchoring: a proof only we can read is just a receipt.
+test("the memo reads as plain English on an explorer", () => {
+  const text = _encodeForTest([anchorFor(4)], true);
+  assert.ok(text.includes("Bulls vs Unicorns"), "says what it is");
+  assert.ok(text.includes("Round 4746"), "says which round");
+  assert.ok(text.includes("UWU vs SOL"), "names the actual coins, not slot A/B");
+  assert.ok(/Winner: (UWU|SOL)/.test(text), "names the winning army");
+  assert.ok(text.includes("commit(before)") && text.includes("seed(revealed)"),
+            "labels the two halves of the fairness proof so a stranger knows what to check");
+  assert.ok(text.includes("$"), "money is shown in dollars");
+  assert.ok(!text.includes('{"a":'), "no raw JSON");
+});
+
 test("even a busy round still fits", () => {
   const bytes = Buffer.byteLength(_encodeForTest([anchorFor(14)], true));
   assert.ok(bytes < 700, `14-player round encodes to ${bytes} bytes`);
@@ -239,8 +253,9 @@ test("dropping player detail is the last resort, and the proof always survives",
   const full = _encodeForTest([anchorFor(40)], true);
   const lean = _encodeForTest([anchorFor(40)], false);
   assert.ok(Buffer.byteLength(lean) < Buffer.byteLength(full));
-  for (const must of ['"h":', '"s":', '"w":', '"r":']) {
-    assert.ok(lean.includes(must), `${must} (the verifiable part) must never be dropped`);
+  // whatever gets dropped, the part a stranger needs in order to VERIFY must always survive
+  for (const must of ["commit(before)", "seed(revealed)", "Winner:", "Round "]) {
+    assert.ok(lean.includes(must), `"${must}" (the verifiable part) must never be dropped`);
   }
 });
 

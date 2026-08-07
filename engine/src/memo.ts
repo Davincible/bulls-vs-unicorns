@@ -44,27 +44,51 @@ let lastSig: string | null = null;
 export const memoEnabled = () => ON;
 export const memoStats = () => ({ enabled: ON, queued: queue.length, posted, failed, degraded, lastSig, batch: BATCH });
 
-const n = (x: number, dp = 4) => Number((x || 0).toFixed(dp));
-const shortId = (id: string) => id.includes(":bot:") ? "b" + id.split(":bot:")[1] : id.slice(0, 6);
+const NL = String.fromCharCode(10);
+const n = (x: number, dp = 2) => (x || 0).toFixed(dp);
+const shortId = (id: string) => id.includes(":bot:") ? "bot" + id.split(":bot:")[1] : id.slice(0, 4);
 
-/** Compact wire form. Short keys and trimmed ids, because every byte is transaction size. */
+// slot A / slot B token names, so the memo names the actual coins rather than "A" and "B"
+const TOKENS: Record<string, [string, string]> = {
+  us: ["UWU", "SOL"], au: ["ANSEM", "UWU"], as: ["ANSEM", "SOL"],
+};
+
+/**
+ * HUMAN-READABLE on purpose.
+ *
+ * The first version packed this into compact JSON to save bytes. That was the wrong trade: a proof
+ * nobody can read is just a receipt. Anyone opening the transaction on Solscan should be able to
+ * see who played, what they put in, what they took out, and check the seed against the commitment
+ * WITHOUT a decoder. A memo has ~700 usable bytes and a 7-player round costs ~350, so the space
+ * was never the binding constraint.
+ *
+ * Every figure is USD. A fighter exits holding BOTH tokens because raids take the enemy's coin, so
+ * "out" is the sum of the two — which is why in and out balance to the 0.2% fee.
+ */
+function encodeRound(r: RoundAnchor, withPlayers: boolean): string {
+  const pair = r.arena.split("-")[0];
+  const [tokA, tokB] = TOKENS[pair] || ["A", "B"];
+  const mode = r.arena.includes("extraction") ? "extraction" : "mayhem";
+  const win = r.winner === "bull" ? tokA : tokB;
+
+  const lines = [
+    `Bulls vs Unicorns | Round ${r.round} | ${tokA} vs ${tokB} ${mode}`,
+    `Winner: ${win} | Pot: $${n(r.pot)} | Players: ${r.players.length}`,
+    `Provably fair -- commit(before): ${r.seedHash.slice(0, 16)} | seed(revealed): ${r.seed.slice(0, 16)}`,
+  ];
+  if (withPlayers && r.players.length) {
+    lines.push(r.players.map(f => {
+      const army = f.side === "bull" ? tokA : tokB;
+      const out = (f.outA || 0) + (f.outB || 0);
+      return `${shortId(f.id)}(${army}) $${n(f.inTok)}>$${n(out)}`;
+    }).join(" | "));
+  }
+  lines.push("verify: bulls-arena-engine.fly.dev/fair");
+  return lines.join(NL);
+}
+
 function encode(rows: RoundAnchor[], withPlayers: boolean): string {
-  const body = rows.map(r => {
-    const base: any = {
-      a: r.arena.replace("-extraction", "-x").replace("-normal", "-n"),
-      r: r.round,
-      h: r.seedHash.slice(0, 16),     // enough to bind the commitment; full hash is served over http
-      s: r.seed.slice(0, 16),
-      w: r.winner === "bull" ? "A" : "B",
-      p: n(r.pot, 2),
-      c: r.players.length,
-    };
-    // per-wallet: [id, side(0=A,1=B), staked, outA, outB] — arrays beat objects for size
-    if (withPlayers) base.f = r.players.map(f => [shortId(f.id), f.side === "bull" ? 0 : 1,
-                                                  n(f.inTok), n(f.outA), n(f.outB)]);
-    return base;
-  });
-  return "BvU1|" + JSON.stringify(body);
+  return rows.map(r => encodeRound(r, withPlayers)).join(NL + "---" + NL);
 }
 
 /** Queue a settled round. Never throws and never blocks settlement — anchoring is best-effort. */
