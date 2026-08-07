@@ -1939,9 +1939,20 @@ for (const sig of ["SIGINT", "SIGTERM"] as const)
   process.on(sig, () => {
     const n = refundOpenRounds();
     if (n) console.log(`refunded ${n} open stake(s) from the in-flight round`);
+    // persist() BEFORE flush(). persist() serialises the live ledger into the snapshot; flush()
+    // only writes whatever was already staged. Without the persist, the refund above was computed
+    // correctly, applied to the in-memory accounts, and then thrown away on exit - the stakes came
+    // back to nobody. Every other call site pairs them; this one, the only one that runs while the
+    // process is dying, did not.
+    //
+    // It hid because the money is not LOST: the coin never leaves the vault, so the ledger simply
+    // stops claiming it and the rebalance daemon re-credits the house from chain a few minutes
+    // later. That is the oscillation - claim collapsing on restart, then being restored in one
+    // large correction (+1260 UWU in a single cycle).
+    persist();
     flush();
-    console.log("ledger flushed to disk");
+    console.log("ledger persisted and flushed to disk");
     process.exit(0);
   });
-process.on("exit", () => flush());
+process.on("exit", () => { persist(); flush(); });   // same reason: stage the live ledger, then write
 console.log(`⚔  engine live on ws://localhost:${PORT}  (authoritative rounds + hybrid bots) chain=${chainReady()}`);
