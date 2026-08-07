@@ -183,9 +183,17 @@ const FAKE_BANK_OK = process.env.BOT_FAKE_BANK === "1" && IS_TEST_CHAIN;
 let poolWarned = false;
 /** What the bot pool is worth right now, in dollars, across every token. */
 function floatUsd(): number {
-  return poolBalance("bull") * usdPerUnit("bull")
-       + poolBalance("uwu") * usdPerUnit("uwu")
-       + poolBalance("sol");
+  // The whole house float, not just the loose part. Counting only the POOL meant that once the
+  // money was distributed into bots the target population collapsed - $250 of UWU sitting in bots
+  // with $0.75 loose sized the arena at TWO fighters. Retiring a bot returns its balance to the
+  // pool, so money in bots is every bit as available as money in the pool.
+  let total = 0;
+  for (const f of ["bull", "uwu", "sol"] as const) {
+    let held = poolBalance(f);
+    for (const a of ledger.values()) if (a.isBot && !(a as any).retired) held += a[f] || 0;
+    total += f === "sol" ? held : held * usdPerUnit(f);
+  }
+  return total;
 }
 // How many bots the CURRENT float can actually field. The population used to follow a fixed
 // schedule (POP_START -> POP_MAX) regardless of how much real money backed it. Against a small
@@ -663,6 +671,55 @@ function matchPlayerStake(aid: string, playerSide: Side, stakeUsd: number): void
   }
 }
 
+// Every round should have a real fight in it. Left to chance a thin pool produced one-fighter
+// rounds, which look broken whatever the economics say. This tops each side up to a floor, drawing
+// from the float only as far as it genuinely stretches.
+const MIN_PER_SIDE = Number(process.env.MIN_PER_SIDE || 3);
+function ensureMinimumEntries(aid: string): void {
+  const rn = runners[aid]; if (!rn || rn.state.phase !== "lobby") return;
+  const [tokA, tokB] = arenaTokens(aid);
+  for (const side of ["bull", "uwu"] as Side[]) {
+    const tok = side === "bull" ? tokA : tokB;
+    const f = FIELD[tok] as Field;
+    const px = pxForRound(aid, rn.state.round, f);
+    if (!(px > 0)) continue;
+    let have = rn.state.entries.filter(e => e.side === side).length;
+    if (have >= MIN_PER_SIDE) continue;
+    const minUsd = BOT_STAKE_USD_MIN;
+    // Defection can leave an army with no fighters at all while the float sits in the other one.
+    // Create what the side is missing; newBot draws from the pool and returns null if it truly
+    // cannot be funded, so this can never invent money.
+    let guard = 0;
+    while (botsFor(aid).filter(b => b.side === side).length < MIN_PER_SIDE && guard++ < MIN_PER_SIDE * 2) {
+      if (!newBot(aid, side)) break;
+    }
+    for (const b of botsFor(aid)) {
+      if (have >= MIN_PER_SIDE) break;
+      if (b.side !== side) continue;
+      if (rn.state.entries.some(e => e.id.startsWith(b.id + "|"))) continue;   // already in
+      let bal = (b[f] || 0) * px;
+      if (bal < minUsd) {                       // top the fighter up from the float
+        const drawn = drawBank(f, (minUsd - bal) / px, 1);
+        if (drawn > 0) { b[f] = (b[f] || 0) + drawn; bal += drawn * px; }
+      }
+      if (bal < minUsd) continue;               // the float genuinely cannot cover it
+      const tokens = minUsd / px;
+      b[f] -= tokens;
+      const feeTok = tokens * FEE;
+      bankFee(f, feeTok);
+      treasury[arenaEco(aid)] += feeTok * px;
+      flow(aid, rn.state.round, f).out += tokens;
+      flow(aid, rn.state.round, f).in += feeTok;
+      b.dep += minUsd;
+      totalDeployed[arenaEco(aid)] += minUsd;
+      stat(aid).deployed += minUsd;
+      depSide[arenaEco(aid)][side] += minUsd;
+      rn.enter(`${b.id}|${side}`, side, minUsd * (1 - FEE));
+      have++;
+    }
+  }
+}
+
 function botsEnter(aid: string) {
   const rn = runners[aid]; if (rn.state.phase !== "lobby") return;
   const [tokA, tokB] = arenaTokens(aid);
@@ -731,11 +788,11 @@ setInterval(async () => {
   for (const aid of ARENA_IDS) {
     const mode = arenaEco(aid);
     const rn = runners[aid];
-    if (rn.state.phase === "lobby" && lastPhase[aid] !== "lobby") botsEnter(aid);   // fires the instant the lobby opens
+    if (rn.state.phase === "lobby" && lastPhase[aid] !== "lobby") { botsEnter(aid); ensureMinimumEntries(aid); }   // fires the instant the lobby opens
     const was = rn.state.phase;
     lastPhase[aid] = rn.state.phase;
     const settled = await rn.tick();
-    if (settled && rn.state.phase === "lobby") { botsEnter(aid); lastPhase[aid] = "lobby"; }
+    if (settled && rn.state.phase === "lobby") { botsEnter(aid); ensureMinimumEntries(aid); lastPhase[aid] = "lobby"; }
     if (was === "lobby" && rn.state.phase === "battle" && rn.state.result) {
       const s = rn.state;
       broadcast({ t: "roundStart", arena: aid, mode, round: s.round, multiplier: s.multiplier,

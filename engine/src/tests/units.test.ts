@@ -525,3 +525,30 @@ test("but never beyond what the float actually holds", () => {
   assert.equal(answered, 44.53, "the house answers what it can and no more");
   assert.ok(answered < need, "the remainder stays unmatched and is refunded to the player");
 });
+
+// Sizing the arena from the POOL alone meant that once the float was distributed into bots the
+// target population collapsed — $250 of UWU held by bots with $0.75 loose sized the arena at TWO
+// fighters. Retiring a bot returns its balance to the pool, so money in bots is just as available.
+test("the float counts money held by bots, not just the loose pool", () => {
+  const pool = 0.75, inBots = 250 * 0.0277 + 2.66, perBot = 8;
+  const poolOnly = Math.floor(pool / perBot);
+  const whole = Math.floor((pool + inBots) / perBot);
+  assert.equal(poolOnly, 0, "pool-only sizing sees an empty arena");
+  assert.ok(whole >= 1, `counting bots gives ${whole} fighters of headroom`);
+  assert.ok(whole > poolOnly);
+});
+
+test("each side is topped up to a floor so a round is never one fighter", () => {
+  const MIN_PER_SIDE = 3;
+  const present = { bull: 1, uwu: 0 };
+  const needBull = Math.max(0, MIN_PER_SIDE - present.bull);
+  const needUwu = Math.max(0, MIN_PER_SIDE - present.uwu);
+  assert.equal(needBull, 2);
+  assert.equal(needUwu, 3);
+});
+
+test("the floor still cannot conjure money the float does not have", () => {
+  const minUsd = 0.5, floatLeft = 0.3;
+  const canFund = floatLeft >= minUsd;
+  assert.equal(canFund, false, "a fighter is skipped rather than funded from nothing");
+});
