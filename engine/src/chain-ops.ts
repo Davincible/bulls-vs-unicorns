@@ -15,6 +15,25 @@ const toWhole = (base: bigint | number) => Number(base) / UNIT;
 const cfg = loadConfig();
 const vault = loadVaultKeypair();
 const seenSigs = new Set<string>(); // dedupe deposit credits
+// Signatures whose verification is IN FLIGHT. Both verifiers used to check seenSigs, await an RPC
+// round trip, and only then record the signature - a check-then-act straddling an await. Two
+// concurrent calls for the same signature both passed the check, both awaited, and both returned a
+// positive delta, so ONE on-chain deposit was credited to the ledger TWICE. Sending the same
+// relayTx message twice in quick succession was enough to trigger it.
+//
+// Reserving before the await closes the window. It is deliberately a SEPARATE set from seenSigs:
+// an RPC failure must release the reservation so a genuine retry can still be credited, whereas
+// seenSigs is permanent and means "already credited". Collapsing the two would turn one dropped
+// RPC call into a deposit that could never be credited at all.
+const inFlightSigs = new Set<string>();
+/** Reserve a signature for verification. False if already credited, or already being verified. */
+function claimSig(sig: string): boolean {
+  if (seenSigs.has(sig) || inFlightSigs.has(sig)) return false;
+  inFlightSigs.add(sig);
+  return true;
+}
+/** Test-only view of the dedupe state. */
+export function __sigState(sig: string) { return { seen: seenSigs.has(sig), inFlight: inFlightSigs.has(sig) }; }
 
 export function chainReady(): boolean { return !!(cfg && cfg.mints?.bull && cfg.mints?.uwu); }
 export function vaultPubkey(): string { return vault.publicKey.toBase58(); }
@@ -65,18 +84,20 @@ export async function buildSolDepositTx(walletB58: string, sol: number): Promise
 
 /** Verify a native-SOL deposit: confirm the VAULT's lamport balance actually rose. */
 export async function verifySolDeposit(sig: string): Promise<number> {
-  if (seenSigs.has(sig)) return 0;
-  const conn = connection();
-  const tx = await conn.getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
-  if (!tx || tx.meta?.err) return 0;
-  const keys = tx.transaction.message.accountKeys.map(k => k.pubkey.toBase58());
-  const idx = keys.indexOf(vault.publicKey.toBase58());
-  if (idx < 0) return 0;
-  const before = tx.meta?.preBalances?.[idx] ?? 0, after = tx.meta?.postBalances?.[idx] ?? 0;
-  const delta = (after - before) / LAMPORTS_PER_SOL;
-  if (delta <= 0) return 0;
-  seenSigs.add(sig);
-  return delta;
+  if (!claimSig(sig)) return 0;              // reserved BEFORE the await, so a twin call sees it
+  try {
+    const conn = connection();
+    const tx = await conn.getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+    if (!tx || tx.meta?.err) return 0;
+    const keys = tx.transaction.message.accountKeys.map(k => k.pubkey.toBase58());
+    const idx = keys.indexOf(vault.publicKey.toBase58());
+    if (idx < 0) return 0;
+    const before = tx.meta?.preBalances?.[idx] ?? 0, after = tx.meta?.postBalances?.[idx] ?? 0;
+    const delta = (after - before) / LAMPORTS_PER_SOL;
+    if (delta <= 0) return 0;
+    seenSigs.add(sig);                       // permanent: this one has now been credited
+    return delta;
+  } finally { inFlightSigs.delete(sig); }    // release, so a failed read can be retried
 }
 
 /** Pay native SOL out of the vault to a player. */
@@ -121,21 +142,23 @@ export async function walletTokenBalance(walletB58: string, side: "bull" | "uwu"
 // Returns the credited whole-token amount (0 if not valid / already seen).
 export async function verifyDeposit(sig: string, side: "bull" | "uwu"): Promise<number> {
   if (!cfg) throw new Error("chain not configured");
-  if (seenSigs.has(sig)) return 0;
-  const conn = connection();
-  const mint = mintFor(cfg, side).toBase58();
-  const tx = await conn.getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
-  if (!tx || tx.meta?.err) return 0;
-  const pre = tx.meta?.preTokenBalances || [];
-  const post = tx.meta?.postTokenBalances || [];
-  const v = vault.publicKey.toBase58();
-  const findBal = (arr: any[]) => arr.find(b => b.owner === v && b.mint === mint);
-  const before = findBal(pre)?.uiTokenAmount?.uiAmount || 0;
-  const after = findBal(post)?.uiTokenAmount?.uiAmount || 0;
-  const delta = after - before;
-  if (delta <= 0) return 0;
-  seenSigs.add(sig);
-  return delta;
+  if (!claimSig(sig)) return 0;              // reserved BEFORE the await, so a twin call sees it
+  try {
+    const conn = connection();
+    const mint = mintFor(cfg, side).toBase58();
+    const tx = await conn.getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+    if (!tx || tx.meta?.err) return 0;
+    const pre = tx.meta?.preTokenBalances || [];
+    const post = tx.meta?.postTokenBalances || [];
+    const v = vault.publicKey.toBase58();
+    const findBal = (arr: any[]) => arr.find(b => b.owner === v && b.mint === mint);
+    const before = findBal(pre)?.uiTokenAmount?.uiAmount || 0;
+    const after = findBal(post)?.uiTokenAmount?.uiAmount || 0;
+    const delta = after - before;
+    if (delta <= 0) return 0;
+    seenSigs.add(sig);                       // permanent: this one has now been credited
+    return delta;
+  } finally { inFlightSigs.delete(sig); }    // release, so a failed read can be retried
 }
 
 // Withdraw: send `amount` tokens of `side` from vault → player's wallet. Returns tx signature.

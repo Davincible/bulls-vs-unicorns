@@ -1064,10 +1064,51 @@ const bootAt = Date.now();
 // Where the player-facing files live. In the container the image puts them at /app/web (set via
 // WEB_DIR); locally they sit next to the engine folder.
 const WEB_DIR = pathResolve(process.env.WEB_DIR || pathJoin(pathDirname(toPath(import.meta.url)), "..", "..", "web"));
+// SEC-M3 — per-IP rate limit on the HTTP surface. The WebSocket already had one; these endpoints
+// did not, and they are not all cheap: /standings walks the entire round log per request and
+// /solvency and /float read cached chain state. An unauthenticated caller could pin the event loop
+// for free, which starves the round runners — the part that has to keep time for real money.
+//
+// A token bucket rather than a fixed window, so an ordinary page load can burst (the UI hits
+// several endpoints at once) while a sustained flood still gets throttled. Bounded map, swept on
+// write, because a rate limiter that grows a table per source IP is itself a memory DoS.
+const RL_BURST = Number(process.env.RL_BURST || 30);        // requests available instantly
+const RL_PER_SEC = Number(process.env.RL_PER_SEC || 8);     // sustained refill
+const RL_MAX_KEYS = 5000;
+const buckets = new Map<string, { tokens: number; at: number }>();
+function rateLimited(ip: string): boolean {
+  const now = Date.now();
+  let b = buckets.get(ip);
+  if (!b) {
+    if (buckets.size >= RL_MAX_KEYS) {
+      // drop the stalest half rather than growing without bound
+      for (const [k, v] of [...buckets].sort((x, y) => x[1].at - y[1].at).slice(0, RL_MAX_KEYS / 2)) buckets.delete(k);
+    }
+    b = { tokens: RL_BURST, at: now };
+    buckets.set(ip, b);
+  }
+  b.tokens = Math.min(RL_BURST, b.tokens + ((now - b.at) / 1000) * RL_PER_SEC);
+  b.at = now;
+  if (b.tokens < 1) return true;
+  b.tokens -= 1;
+  return false;
+}
+/** Client IP, preferring the proxy header Fly sets — otherwise every request looks like one peer. */
+function clientIp(req: any): string {
+  const fwd = String(req.headers["fly-client-ip"] || req.headers["x-forwarded-for"] || "");
+  return (fwd.split(",")[0] || "").trim() || req.socket?.remoteAddress || "?";
+}
+
 const httpServer = createServer((req, res) => {
   const cors = { "access-control-allow-origin": "*", "content-type": "application/json" };
   const url = (req.url || "/").split("?")[0];
   if (req.method !== "GET") { res.writeHead(405, cors); return res.end('{"error":"GET only"}'); }
+  // /live is exempt: it is the platform's liveness probe and must never be throttled, or a burst
+  // of traffic would make the host believe the engine is down and restart it mid-round.
+  if (url !== "/live" && rateLimited(clientIp(req))) {
+    res.writeHead(429, { ...cors, "retry-after": "1" });
+    return res.end('{"error":"rate limited"}');
+  }
   // LIVENESS — "is the process up?" only. The host's health check must point HERE, not at
   // /health: a solvency freeze is a money problem that restarting cannot fix, and wiring the
   // platform check to it would just restart-loop the engine during an incident.
