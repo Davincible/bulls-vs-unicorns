@@ -10,9 +10,11 @@
 //
 // Devnet has no Jupiter liquidity, so on a test chain we simulate the swap at the live oracle price
 // (clearly flagged) to keep the code path exercised; mainnet does the real thing.
-import { Connection, Keypair, VersionedTransaction, PublicKey } from "@solana/web3.js";
+import { Connection, Keypair, VersionedTransaction, PublicKey, SystemProgram,
+         TransactionMessage } from "@solana/web3.js";
 import { RPC } from "./chain.ts";
 import { priceUSD, type PriceToken } from "./prices.ts";
+import bs58 from "bs58";
 
 // Free tier needs no API key, which is one less secret to leak. Set JUPITER_API_KEY to use the
 // paid host with higher limits.
@@ -38,10 +40,83 @@ export interface SwapResult {
   priceImpactPct: number;
   simulated: boolean;       // true = test-chain oracle simulation, not a real swap
   sig?: string;
+  viaJito?: boolean;        // true = went out as a private bundle, never in the public mempool
   error?: string;
 }
 
+/** base58 signature of a signed transaction — what an explorer and getSignatureStatus expect. */
+const bs58Sig = (t: VersionedTransaction) => bs58.encode(t.signatures[0]);
+
 const headers = () => (JUP_KEY ? { "x-api-key": JUP_KEY } : undefined) as Record<string, string> | undefined;
+
+// Jito's published mainnet tip accounts. A bundle must pay one of them to be considered; picking at
+// random spreads load and avoids a hot account becoming a write-lock bottleneck.
+const JITO_TIP_ACCOUNTS = [
+  "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
+  "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
+  "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
+  "ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49",
+  "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
+  "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
+  "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
+  "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
+];
+// Jito can rotate these. Refresh from the block engine when we can and keep the published list as
+// the fallback, so a rotation degrades to "still works" rather than "every bundle is rejected".
+let tipAccounts = JITO_TIP_ACCOUNTS.slice();
+let tipFetchedAt = 0;
+async function refreshTipAccounts(): Promise<void> {
+  if (!JITO_URL || Date.now() - tipFetchedAt < 60 * 60_000) return;
+  tipFetchedAt = Date.now();
+  try {
+    const r = await fetch(JITO_URL, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getTipAccounts", params: [] }) });
+    const j = await r.json() as any;
+    if (Array.isArray(j?.result) && j.result.length) tipAccounts = j.result;
+  } catch { /* keep the published list */ }
+}
+
+export const pickTipAccount = (r = Math.random()) =>
+  tipAccounts[Math.min(tipAccounts.length - 1, Math.floor(r * tipAccounts.length))];
+
+/** Build the tip transfer that buys the bundle its inclusion. */
+function buildTipTx(vault: Keypair, blockhash: string, lamports: number): VersionedTransaction {
+  const msg = new TransactionMessage({
+    payerKey: vault.publicKey,
+    recentBlockhash: blockhash,
+    instructions: [SystemProgram.transfer({
+      fromPubkey: vault.publicKey,
+      toPubkey: new PublicKey(pickTipAccount()),
+      lamports,
+    })],
+  }).compileToV0Message();
+  const tx = new VersionedTransaction(msg);
+  tx.sign([vault]);
+  return tx;
+}
+
+/**
+ * Submit [swap, tip] as an atomic Jito bundle.
+ *
+ * A swap sent to a public RPC sits in the mempool where a sandwich bot can see it, trade in front of
+ * it and sell into it. A bundle goes straight to a block builder: never public, all-or-nothing, and
+ * ordered as we specify. Returns true if Jito ACCEPTED the bundle — acceptance is not inclusion, so
+ * the caller still confirms the signature and falls back to a normal send if it never lands.
+ */
+async function sendJitoBundle(txs: VersionedTransaction[]): Promise<boolean> {
+  try {
+    const body = {
+      jsonrpc: "2.0", id: 1, method: "sendBundle",
+      params: [txs.map(t => Buffer.from(t.serialize()).toString("base64")), { encoding: "base64" }],
+    };
+    const r = await fetch(JITO_URL, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    if (!r.ok) return false;
+    const j = await r.json() as any;
+    return !!j?.result;
+  } catch { return false; }
+}
 
 /** Ask Jupiter what a swap would return. Amounts in RAW units. */
 export async function quote(inputMint: string, outputMint: string, rawAmount: number) {
@@ -112,13 +187,37 @@ export async function swapExact(
     const conn = new Connection(RPC, "confirmed");
     const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
     tx.sign([vault]);
-    const sig = await conn.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
     const bh = await conn.getLatestBlockhash("confirmed");
-    const conf = await conn.confirmTransaction({ signature: sig, ...bh }, "confirmed");
-    if (conf.value.err) throw new Error("swap tx failed on-chain: " + JSON.stringify(conf.value.err));
+
+    // PRIVATE PATH FIRST. With a block-engine endpoint configured the swap is bundled with a tip and
+    // never enters the public mempool, so it cannot be front-run or sandwiched. Acceptance is not
+    // inclusion, so we wait for the signature and fall back to an ordinary broadcast if it does not
+    // land — the same transaction, so there is no risk of executing the swap twice.
+    let landed = false;
+    if (JITO_URL) {
+      await refreshTipAccounts();
+      const tip = buildTipTx(vault, tx.message.recentBlockhash || bh.blockhash, JITO_TIP_LAMPORTS);
+      if (await sendJitoBundle([tx, tip])) {
+        const deadline = Date.now() + 25_000;
+        while (Date.now() < deadline) {
+          const st = await conn.getSignatureStatus(bs58Sig(tx));
+          if (st?.value?.confirmationStatus === "confirmed" || st?.value?.confirmationStatus === "finalized") {
+            if (st.value.err) throw new Error("swap tx failed on-chain: " + JSON.stringify(st.value.err));
+            landed = true; break;
+          }
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      }
+    }
+
+    if (!landed) {
+      await conn.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
+      const conf = await conn.confirmTransaction({ signature: bs58Sig(tx), ...bh }, "confirmed");
+      if (conf.value.err) throw new Error("swap tx failed on-chain: " + JSON.stringify(conf.value.err));
+    }
 
     // Credit what the route actually promised after fees/slippage, not a nominal rate.
-    return { ok: true, outAmount: Number(q.outAmount) / 10 ** outDp, priceImpactPct: impact, simulated: false, sig };
+    return { ok: true, outAmount: Number(q.outAmount) / 10 ** outDp, priceImpactPct: impact, simulated: false, sig: bs58Sig(tx), viaJito: landed };
   } catch (e) {
     return { ok: false, outAmount: 0, priceImpactPct: 0, simulated: false, error: (e as Error).message };
   }

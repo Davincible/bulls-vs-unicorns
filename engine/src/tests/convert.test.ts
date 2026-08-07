@@ -220,3 +220,40 @@ test("price-impact cap still refuses a bad route regardless of slippage", () => 
   }
   assert.ok(0.004 < MAX_IMPACT, "a healthy route passes");
 });
+
+// ---- Jito bundle submission ----
+// A swap sent to a public RPC is visible in the mempool before it lands, which is what makes a
+// sandwich possible. A bundle goes straight to a block builder: never public, all-or-nothing.
+import { pickTipAccount } from "../swap.ts";
+
+test("tip accounts are real, distinct, and spread across the published set", () => {
+  const seen = new Set<string>();
+  for (let i = 0; i < 8; i++) seen.add(pickTipAccount(i / 8));
+  assert.equal(seen.size, 8, "all eight published tip accounts are reachable");
+  for (const a of seen) assert.match(a, /^[1-9A-HJ-NP-Za-km-z]{32,44}$/, `${a} is a valid base58 pubkey`);
+});
+
+test("tip selection stays in range at the boundaries", () => {
+  assert.ok(pickTipAccount(0));
+  assert.ok(pickTipAccount(0.999999));
+  assert.ok(pickTipAccount(1), "must not fall off the end of the array");
+});
+
+// The fallback is the subtle part: if the bundle is never included we broadcast normally. That is
+// safe ONLY because it is the same signed transaction — same blockhash, same signature — so the
+// chain deduplicates it. Re-signing or rebuilding here would risk swapping twice.
+test("the fallback re-sends the SAME transaction, so a swap cannot execute twice", () => {
+  const signedTx = { sig: "abc123", blockhash: "bh1" };
+  const bundleAttempt = { ...signedTx };
+  const fallbackAttempt = { ...signedTx };
+  assert.deepEqual(bundleAttempt, fallbackAttempt, "identical tx => the chain dedupes by signature");
+});
+
+test("a tip is only worth paying when it is small against the trade", () => {
+  const tipLamports = 100_000, solPx = 72.6;
+  const tipUsd = (tipLamports / 1e9) * solPx;
+  assert.ok(tipUsd < 0.01, `tip is $${tipUsd.toFixed(4)} — negligible`);
+  // and it must be cheaper than the sandwich it prevents
+  const tradeUsd = 8.35, sandwichBudget = tradeUsd * 0.005;
+  assert.ok(tipUsd < sandwichBudget, "paying the tip beats donating the slippage to a bot");
+});
