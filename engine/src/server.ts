@@ -356,13 +356,14 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
     // them, so the leaderboard could only ever show losers ("nobody is profitable", -50% aggregate).
     // Let a bot convert its raided coin through the treasury first, exactly like a player: the house
     // is the counterparty, it is a pure ledger move, and the vault already holds both tokens.
-    if (a[own] * usdPerUnitSafe(own) < BUST_USD && a[foe] * usdPerUnitSafe(foe) >= BUST_USD) {
-      // DEFECT TO THE COIN YOU WON. No conversion, no fee, nothing moves: a bot holding the enemy's
-      // coin simply fights for that army next round. Cheaper than a swap, and it reads true — raiders
-      // naturally migrate toward whichever coin is winning.
-      a.side = a.side === "bull" ? "uwu" : "bull";
-      switched++;
-    }
+    // FIGHT FOR THE COIN YOU ACTUALLY HOLD. Blind-flipping the side stranded money on the wrong
+    // army: in us-extraction side "bull" plays UWU and side "uwu" plays SOL, so a bot flipped onto
+    // the SOL side while holding UWU could not use a penny of it — $6.95 of float sat idle in bots
+    // that read as broke. Pick the side by holdings instead, which is also self-correcting.
+    const usdA = (a[FIELD[tokA] as Field] || 0) * usdPerUnitSafe(FIELD[tokA] as Field);
+    const usdB = (a[FIELD[tokB] as Field] || 0) * usdPerUnitSafe(FIELD[tokB] as Field);
+    const want: Side = usdA >= usdB ? "bull" : "uwu";
+    if (a.side !== want && Math.max(usdA, usdB) >= BUST_USD) { a.side = want; switched++; }
     if (a[own] * usdPerUnitSafe(own) < BUST_USD) { retireBot(a); busted++; bustedCount[mode]++; }
   }
   rounds[mode]++; roundsByArena[aid] = (roundsByArena[aid] || 0) + 1;
@@ -695,8 +696,10 @@ function ensureMinimumEntries(aid: string): void {
     }
     for (const b of botsFor(aid)) {
       if (have >= MIN_PER_SIDE) break;
-      if (b.side !== side) continue;
-      if (rn.state.entries.some(e => e.id.startsWith(b.id + "|"))) continue;   // already in
+      // A fighter may take EITHER army, exactly like a player — what matters is holding that side's
+      // coin, not a label. A bot with both can field on both, which puts stranded money to work and
+      // fills the arena. It cannot attack itself: the friendly-fire rule keys on the wallet.
+      if (rn.state.entries.some(e => e.id === `${b.id}|${side}`)) continue;   // already on THIS side
       let bal = (b[f] || 0) * px;
       if (bal < minUsd) {                       // top the fighter up from the float
         const drawn = drawBank(f, (minUsd - bal) / px, 1);

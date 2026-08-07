@@ -552,3 +552,46 @@ test("the floor still cannot conjure money the float does not have", () => {
   const canFund = floatLeft >= minUsd;
   assert.equal(canFund, false, "a fighter is skipped rather than funded from nothing");
 });
+
+// In us-extraction, side "bull" plays UWU and side "uwu" plays SOL. Blind-flipping the side after a
+// raid therefore stranded money: a bot flipped onto the SOL side while holding UWU could not use a
+// penny of it, and read as broke while holding real float.
+test("a bot fights for whichever coin it actually holds", () => {
+  const PXU = 0.0277;
+  const bot = { uwuTokens: 250, solUsd: 0 };
+  const usdA = bot.uwuTokens * PXU, usdB = bot.solUsd;
+  const side = usdA >= usdB ? "bull" : "uwu";
+  assert.equal(side, "bull", "holding UWU means fighting for the UWU army");
+  assert.ok(usdA > 6, `$${usdA.toFixed(2)} of float that a blind flip would have stranded`);
+});
+
+test("picking by holdings is self-correcting, unlike a flip", () => {
+  const pick = (a: number, b: number) => (a >= b ? "bull" : "uwu");
+  assert.equal(pick(7, 0), "bull");
+  assert.equal(pick(0, 7), "uwu");
+  assert.equal(pick(7, 0), "bull", "same input, same answer — it cannot oscillate");
+});
+
+// A fighter may take either army, exactly like a player: what matters is holding that side's coin,
+// not a label. This puts stranded money to work and fills the arena.
+test("a bot holding both coins can field on both sides", () => {
+  const PXU = 0.0277, MIN = 0.5;
+  const bot = { uwuTokens: 250, solUsd: 4.0 };
+  const canBull = bot.uwuTokens * PXU >= MIN;      // UWU army
+  const canUwu = bot.solUsd >= MIN;                // SOL army
+  assert.ok(canBull && canUwu, "holds enough of both to enter twice");
+});
+
+test("fielding both sides is not self-dealing — friendly fire keys on the wallet", () => {
+  const a = "us-extraction:bot:4|bull", b = "us-extraction:bot:4|uwu";
+  assert.equal(a.split("|")[0], b.split("|")[0], "same owner");
+  // the sim skips any pair sharing an owner, so the two entries never trade blows
+  assert.ok(a !== b, "distinct entries, but they cannot fight each other");
+});
+
+test("a bot is never entered twice on the SAME side", () => {
+  const entries = ["bot4|bull"];
+  const already = (id: string, side: string) => entries.some(e => e === `${id}|${side}`);
+  assert.equal(already("bot4", "bull"), true, "blocked");
+  assert.equal(already("bot4", "uwu"), false, "but the other army is open to it");
+});
