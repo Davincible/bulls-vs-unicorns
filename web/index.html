@@ -987,13 +987,13 @@
         <div class="pstat"><div class="v">${fmt(p.raided)}</div><div class="n">Raided this round</div></div>
         <div class="pstat"><div class="v">${fmt(p.dmgDealt)}</div><div class="n">Damage dealt</div></div>
         <div class="pstat"><div class="v">${fmt(p.dmgTaken)}</div><div class="n">Damage taken</div></div></div>
-      <div class="sec">All-time (saved)</div>
-      <div class="pg"><div class="pstat"><div class="v">${r.games}</div><div class="n">Games</div></div>
-        <div class="pstat"><div class="v">${r.wins}</div><div class="n">Games won</div></div>
+      <div class="sec">All-time${_srec?"":" (saved)"}</div>
+      <div class="pg"><div class="pstat"><div class="v">${_srec?_srec.rounds:r.games}</div><div class="n">Rounds played</div></div>
+        <div class="pstat"><div class="v">${_srec?_srec.wins:r.wins}</div><div class="n">Rounds won</div></div>
         <div class="pstat"><div class="v ${atPnl>=0?'pos':'neg'}">${atPnl>=0?'+':'−'}${fmt(Math.abs(atPnl))}</div><div class="n">All-time P/L</div></div>
         <div class="pstat"><div class="v">${fmt(r.raided)}</div><div class="n">Total raided</div></div>
         <div class="pstat"><div class="v" style="color:var(--gold)">${fmt(r.bankroll||0)}</div><div class="n">Wallet now</div></div>
-        <div class="pstat"><div class="v">${r.games?Math.round(r.wins/r.games*100):0}%</div><div class="n">Win rate</div></div></div>`;
+        <div class="pstat"><div class="v">${(()=>{const g=_srec?_srec.rounds:r.games,w2=_srec?_srec.wins:r.wins;return g?Math.round(w2/g*100):0;})()}%</div><div class="n">Win rate</div></div></div>`;
     $("#modal").classList.add("on"); $("#pClose").onclick=()=>$("#modal").classList.remove("on");
   }
   $("#modal").addEventListener("click",e=>{if(e.target.id==="modal")$("#modal").classList.remove("on");});
