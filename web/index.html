@@ -329,6 +329,10 @@
         <div class="note" style="margin-bottom:8px">Who is committing money, and which coin is actually changing hands. Raids TAKE the enemy's coin, so the two columns are different currencies.</div>
         <div class="brBar" id="brBar"><div class="brA" id="brBarA"></div><div class="brB" id="brBarB"></div></div>
         <div class="brLegend"><span id="brLegA">—</span><span id="brLegB">—</span></div>
+        <!-- C5 — deployed says who showed up; raided says who actually won the exchanges. Shown as a
+             second bar against the same width so the two are directly comparable at a glance. -->
+        <div class="brBar" id="brBarS" style="margin-top:10px;height:14px"><div class="brA" id="brBarSA"></div><div class="brB" id="brBarSB"></div></div>
+        <div class="brLegend"><span id="brLegSA">—</span><span id="brLegSB">—</span></div>
         <div class="dgrid" style="margin-top:12px">
           <div class="stat b"><div class="v" id="brDepA">$0</div><div class="n" id="brDepAN">Deployed · side A</div></div>
           <div class="stat u"><div class="v" id="brDepB">$0</div><div class="n" id="brDepBN">Deployed · side B</div></div>
@@ -1209,6 +1213,12 @@
     const usd=(f,n)=>{ const p=f==="sol"?1:px[f==="bull"?"ansem":f]; return p>0?n*p:null; };
     const money=(f,n)=>{ const u=usd(f,n); return u==null?fmt(n):"$"+u.toFixed(2); };
     const tokAmt=(f,n)=>n.toFixed(n>=100?0:2)+" "+(f==="bull"?"ANSEM":f.toUpperCase());
+    const money2=(n)=>"$"+Number(n||0).toFixed(2);
+    // engine-side all-time stats for THIS arena. Declared up here because both the raided bar and
+    // the all-time tiles read it, and the bar renders first - a `const` used above its declaration
+    // is a TDZ ReferenceError, which would take the whole dashboard down rather than one figure.
+    const _ast=(window.__ST&&window.__ST.arenas&&window.__ST.arenas[PAIRING+"-"+w.mode]||{}).stats||{};
+    const _engAll=(_ast.stolenA!==undefined||_ast.stolenB!==undefined);
 
     const depA=w.online?(w.engDepBull||0):w.dep.bull, depB=w.online?(w.engDepUwu||0):w.dep.unicorn;
     const tot=depA+depB, pa=tot>0?(depA/tot*100):50;
@@ -1219,6 +1229,17 @@
     bar("brBarA",pa); bar("brBarB",100-pa);
     setTok("brLegA",A.tok,A.label+" "+pa.toFixed(0)+"%");
     setTok("brLegB",B.tok,(100-pa).toFixed(0)+"% "+B.label);
+    // C5 — raided split, all-time, from the engine. Deployed shows who committed; this shows who
+    // actually took value off the other side, which is the part deployment alone never tells you.
+    {
+      const sa=_ast.stolenA||0, sb=_ast.stolenB||0, stot=sa+sb;
+      const spa=stot>0?(sa/stot*100):50;
+      bar("brBarSA",spa); bar("brBarSB",100-spa);
+      if(stot>0){
+        setTok("brLegSA",A.tok,"raided "+money2(sa)+" ("+spa.toFixed(0)+"%)");
+        setTok("brLegSB",B.tok,money2(sb)+" ("+(100-spa).toFixed(0)+"%) raided");
+      } else { set("brLegSA","raided — no rounds yet"); set("brLegSB",""); }
+    }
     set("brDepA","$"+depA.toFixed(2)); set("brDepAN","Deployed · "+A.team);
     set("brDepB","$"+depB.toFixed(2)); set("brDepBN","Deployed · "+B.team);
     set("brRaids",w.raidCount||0);
@@ -1229,8 +1250,6 @@
     // w.stolenAll is a browser-local tally: it zeroes on reload and on every arena switch, and only
     // ever counted hits this tab was open to see, so it was "this session" wearing an all-time
     // label. Fall back to it only when the engine figure has not arrived yet.
-    const _ast=(window.__ST&&window.__ST.arenas&&window.__ST.arenas[PAIRING+"-"+w.mode]||{}).stats||{};
-    const _engAll=(_ast.stolenA!==undefined||_ast.stolenB!==undefined);
     const all=w.stolenAll||{};
     // side A fights with token fa, so what gets stolen FROM them is fa (and vice versa)
     set("brStoleA",tokAmt(fa,st[fa]||0)); setTok("brStoleAN",A.tok,A.label+" taken  ("+money(fa,st[fa]||0)+")");
@@ -1835,16 +1854,22 @@
     return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,"0")).join("");
   }
   window.__shareLegend=(i)=>{const w=W();const l=(w.legends||[])[i];if(!l)return;
-    const bull=l.side==="bull", em=bull?"🐂":"🦄";
-    const team=bull?"@blknoiz06":"@unicornandmemes", tick=bull?"$BULL":"$UWU";
+    // The arena is not always Bulls vs Unicorns. This used to hardcode the bull/unicorn emoji and
+    // $BULL/$UWU, so a win in the UWU/SOL arena was broadcast under the wrong two tokens entirely -
+    // the same class of bug as the "BULL" label showing while playing SOL. Read the live arena.
+    const bull=l.side==="bull";
+    const MA=metaA(), MB=metaB(), me=bull?MA:MB, them=bull?MB:MA;
+    const em=me.emoji;
+    const HANDLE={BULL:"@blknoiz06",UWU:"@unicornandmemes",SOL:"@solana"};
+    const team=HANDLE[me.label]||"", tick="$"+me.label, foe="$"+them.label;
     let x=null; try{x=JSON.parse(localStorage.getItem("bvu_x")||"null");}catch(e){}
     const winner=(l.name==="You"&&x)?("@"+x.h):l.name;                       // mention connected winners
     let ref=""; try{if(MYWALLET)ref=" "+location.origin+location.pathname+"?ref="+MYWALLET;}catch(e){}
     const core=`${em} ${winner} turned ${fmt(l.inAmt)} into ${fmt(l.outAmt)} (+${((l.roi-1)*100).toFixed(0)}%) in one round of Bulls vs Unicorns`;
     const variants=[
-      `${core} — riding with ${team} ⚔ provably fair${ref}`,
+      (team?`${core} — riding with ${team} ⚔ provably fair${ref}`:`${core} ⚔ provably fair${ref}`),
       `${core} — ${tick} army stays winning ⚔${ref}`,
-      `${core} ⚔ ${tick} vs ${bull?"$UWU":"$BULL"} — pick your side${ref}`,
+      `${core} ⚔ ${tick} vs ${foe} — pick your side${ref}`,
     ];
     shareX(variants[(Math.random()*3)|0]);};
   async function verifyLastRound(){
