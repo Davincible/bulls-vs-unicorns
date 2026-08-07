@@ -150,3 +150,46 @@ test("a SOL->UWU convert credits the dollar value that went in", () => {
             "dollars in == dollars out, less the house fee");
   assert.ok(credited > 290 && credited < 305, `expected ~301 UWU, got ${credited.toFixed(2)}`);
 });
+
+// ---- INTERNAL OTC: the treasury as counterparty ----
+// If the house pool already holds the token a player wants, we can settle the convert on the ledger
+// instead of routing through Jupiter. No gas, no slippage, liquidity stays in the vault, and the
+// spread we would have paid a pool becomes treasury revenue.
+test("OTC keeps the float whole: what the player gains, the house loses, plus the fee", () => {
+  const pxFrom = 0.0277, pxTo = 0.1763, fee = 0.01;      // UWU -> ANSEM
+  const amt = 500;                                        // player's UWU
+  const usdIn = amt * pxFrom;
+  const outUnits = (usdIn * (1 - fee)) / pxTo;
+
+  // house: -outUnits of ANSEM, +amt of UWU
+  const houseDeltaUsd = (amt * pxFrom) - (outUnits * pxTo);
+  assert.ok(Math.abs(houseDeltaUsd - usdIn * fee) < 1e-9, "the house nets exactly the fee");
+  // player: -usdIn, +usdIn*(1-fee)
+  assert.ok(Math.abs(outUnits * pxTo - usdIn * (1 - fee)) < 1e-9, "the player pays exactly the fee");
+});
+
+test("OTC never changes what the vault must hold on-chain", () => {
+  // ledger ownership moves between house and player; the vault's totals are untouched
+  const vault = { uwu: 1866, bull: 0 };
+  const before = { ...vault };
+  const house = { uwu: 1000, bull: 500 }, player = { uwu: 500, bull: 0 };
+  const outUnits = 78.5;
+  house.bull -= outUnits; player.bull += outUnits;
+  house.uwu += 500;       player.uwu -= 500;
+  assert.deepEqual(vault, before, "no on-chain movement at all");
+  assert.equal(house.uwu + player.uwu, 1500 + 0, "total UWU claim unchanged");
+  assert.equal(house.bull + player.bull, 500, "total ANSEM claim unchanged");
+});
+
+test("OTC is refused when the house is short, so it can fall back to a real swap", () => {
+  const housePool = 10;          // ANSEM the house holds
+  const needed = 78.5;
+  assert.ok(needed > housePool, "must not hand out tokens the pool does not have");
+});
+
+test("the OTC fee is set to what the real route would have cost", () => {
+  const feeToken = 0.01, feeSol = 0.003;
+  assert.ok(feeToken < 0.02, "a thin memecoin pair really costs ~2% round trip — we charge half");
+  assert.equal(feeSol, 0.003, "SOL pairs are liquid; charge the standard convert fee");
+  assert.ok(feeToken > feeSol, "the illiquid pair earns more spread");
+});

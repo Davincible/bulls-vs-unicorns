@@ -21,7 +21,7 @@ import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, fo
 import { isAllowed as walletAllowed } from "./allowlist.ts";
 import { start as startReconcile, isFrozen, latest as reconLatest } from "./reconcile.ts";
 import { allowMessage, connectionAllowed, releaseConnection, LIMITS } from "./limits.ts";
-import { initBotBank, drawBank, returnBank, poolBalance, botBankReady, type Field } from "./bot-bank.ts";
+import { initBotBank, drawBank, returnBank, takeExact, poolBalance, botBankReady, type Field } from "./bot-bank.ts";
 import { recoverInPlace, resyncPoolToChain } from "./recover-float.ts";
 import { getFloatRecoveredAt, markFloatRecovered } from "./ledger.ts";
 import { poolPubkeys } from "./bot-wallets.ts";
@@ -56,6 +56,18 @@ const solUsd = () => SOL_USD_FIXED > 0 ? SOL_USD_FIXED : priceUSD("sol");
 // Convert is now a REAL on-chain swap (swap.ts), so it is rate limited to one per round per wallet:
 // each costs gas and crosses a spread. One lobby + one battle is the natural window.
 const CONVERT_COOLDOWN_MS = Number(process.env.CONVERT_COOLDOWN_MS || 65_000);
+// INTERNAL OTC. A convert does not have to touch Jupiter: if the house pool already holds the token
+// the player wants, the treasury can be the counterparty. Ledger ownership moves, the vault's
+// on-chain holdings do not, and the fee stays in-house instead of being paid to a pool.
+//
+// The fee is set to what the REAL route would have cost, so the player is never worse off and the
+// house keeps the spread. A thin memecoin pair costs ~2% round trip (pool fee + spread + slippage),
+// so we charge 1%; anything routed through SOL is cheap and liquid, so we charge the standard 0.3%.
+// If the pool is short of the destination token we fall through to a genuine swap.
+const OTC_FEE_TOKEN = Number(process.env.OTC_FEE_TOKEN || 0.01);   // token <-> token (e.g. UWU<->ANSEM)
+const OTC_FEE_SOL = Number(process.env.OTC_FEE_SOL || 0.003);      // anything involving SOL
+const OTC_ENABLED = process.env.OTC_DISABLE !== "1";
+const otcFeeFor = (a: Field, b: Field) => (a === "sol" || b === "sol") ? OTC_FEE_SOL : OTC_FEE_TOKEN;
 const lastConvertAt = new Map<string, number>();
 // load once - the vault signs every swap
 let _vaultKp: ReturnType<typeof loadVaultKeypair> | null = null;
@@ -447,6 +459,39 @@ if (process.env.RESYNC_POOL_ON_BOOT === "1") {
   if (p.wallets > 0) console.log(`bot-bank: ${p.wallets} funded wallet(s) — bull ${p.bull.toFixed(1)}, uwu ${p.uwu.toFixed(1)}, sol ${p.sol.toFixed(1)}`);
   else if (!FAKE_BANK_OK) console.warn(`bot-bank: NO funded wallets — bots cannot deploy. Run: npm run seed:bots`);
 }
+
+// ONE-SHOT LEDGER CORRECTION. Used to repay a player whose balance was wrong through OUR fault —
+// here, the convert decimals bug that credited 1000x too little while the swap itself executed
+// correctly and the proceeds stayed in the vault.
+//
+// This MOVES money from the house pool to a player. It never mints: the amount is taken out of the
+// pool with takeExact, so if the house is short it does nothing at all. The vault already holds the
+// tokens (they arrived from the real swap), so backing is unchanged.
+//
+//   CREDIT_WALLET=<pubkey> CREDIT_FIELD=uwu CREDIT_AMOUNT=262 CREDIT_NOTE="convert decimals bug"
+if (process.env.CREDIT_WALLET && process.env.CREDIT_AMOUNT) {
+  await (async () => {
+    try {
+      const w = String(process.env.CREDIT_WALLET);
+      const f = (process.env.CREDIT_FIELD || "uwu") as Field;
+      const amount = Number(process.env.CREDIT_AMOUNT);
+      const note = process.env.CREDIT_NOTE || "operator correction";
+      if (!(amount > 0)) { console.log("credit: refused — amount must be positive"); return; }
+      const acc = ledger.get(w);
+      if (!acc) { console.log(`credit: refused — no ledger account for ${w}`); return; }
+      const before = acc[f] || 0;
+      const poolBefore = poolBalance(f);
+      if (!takeExact(f, amount)) {
+        console.log(`credit: refused — house pool holds ${poolBefore.toFixed(4)} ${f}, needs ${amount}`);
+        return;
+      }
+      acc[f] = before + amount;
+      persist(); flush();
+      console.log(`credit: ${w} ${f} ${before.toFixed(4)} -> ${acc[f].toFixed(4)} (+${amount}) | pool ${poolBefore.toFixed(2)} -> ${poolBalance(f).toFixed(2)} | ${note}`);
+    } catch (e) { console.error("credit failed:", (e as Error).message); }
+  })();
+}
+
 // SOLVENCY: what real players could withdraw, per asset. Bots are internal credit (never paid to
 // a real wallet) so they are NOT a liability. bull/uwu are whole tokens; sol is USD units.
 function ledgerLiabilities() {
@@ -999,6 +1044,27 @@ wss.on("connection", (ws, req) => {
         const priceTokOf = (f: Field) => (f === "bull" ? "ansem" : f) as "ansem" | "uwu" | "sol";
         const decOf = (f: Field) => f === "sol" ? 9 : (mi?.decimals ?? 6);   // wSOL 9 dp, our tokens 6
         const fromMint = mintOf(from), toMint = mintOf(to);
+        // ---- INTERNAL OTC FIRST -------------------------------------------------------------
+        // If the house already holds what the player wants, be the counterparty ourselves: no
+        // Jupiter, no gas, no slippage, and the fee stays in the treasury. Purely a ledger move —
+        // the vault's on-chain holdings are untouched, so backing is unchanged by construction.
+        const pxFrom = usdPerUnitSafe(from), pxTo = usdPerUnitSafe(to);
+        if (OTC_ENABLED && pxFrom > 0 && pxTo > 0) {
+          const otcFee = otcFeeFor(from, to);
+          const usdIn = amt * pxFrom;
+          const outUnits = (usdIn * (1 - otcFee)) / pxTo;
+          if (outUnits > 0 && takeExact(to, outUnits)) {
+            returnBank(from, amt);                       // the house takes in what the player gave
+            a[to] += outUnits;
+            addConvFees(usdIn * otcFee);                 // the spread we would have paid a pool
+            ws.send(JSON.stringify({ t: "converted", to, from, amount: amt, got: outUnits,
+                                     fee: outUnits * otcFee / (1 - otcFee), otc: true,
+                                     priceImpact: 0, simulated: false }));
+            pushBalance(m.wallet); persist();
+            return;
+          }
+        }
+
         // LEDGER UNITS vs TOKENS. Every field except `sol` is held as whole tokens; `sol` is held in
         // USD units. The swap deals in tokens, so cross the boundary here and back again below.
         const solPx = priceUSD("sol") || 0;

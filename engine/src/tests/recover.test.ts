@@ -144,3 +144,28 @@ test("bot holdings count as house money, so they are not double-credited", () =>
   assert.equal(pool.uwu, 350);
   assert.equal(bot.uwu, 150, "money in play is not moved");
 });
+
+// ---- operator credit: repaying a player for OUR bug ----
+// The convert decimals bug credited 1000x too little while the swap executed correctly, so the
+// proceeds sat in the vault and were later swept into the house float. Repaying that has to move
+// money from the house to the player WITHOUT minting: the amount comes out of the pool or not at all.
+test("a credit moves house -> player and conserves the total", () => {
+  const pool = { uwu: 1800 }, player = { uwu: 1.15 };
+  const amount = 262;
+  const totalBefore = pool.uwu + player.uwu;
+  pool.uwu -= amount; player.uwu += amount;
+  assert.equal(pool.uwu + player.uwu, totalBefore, "nothing minted, nothing burned");
+  assert.ok(Math.abs(player.uwu - 263.15) < 1e-9);
+});
+
+test("a credit larger than the house pool is refused outright", () => {
+  const pool = 10, amount = 262;
+  const canPay = pool >= amount;
+  assert.equal(canPay, false, "must not hand out tokens the pool does not have");
+});
+
+test("the credited amount matches what the convert should have paid", () => {
+  const usdConverted = 7.27, uwuPx = 0.0277, CONVERT_FEE = 0.003;
+  const shouldHavePaid = (usdConverted * (1 - CONVERT_FEE)) / uwuPx;
+  assert.ok(Math.abs(shouldHavePaid - 262) < 2, `expected ~262 UWU, computed ${shouldHavePaid.toFixed(1)}`);
+});

@@ -70,6 +70,22 @@ export function drawBank(field: Field, want: number, spread = SPREAD): number {
   return target - left;                      // granted = target minus whatever we couldn't source
 }
 
+/** Take an EXACT amount out of the house pool, or nothing. Unlike drawBank this is not capped by
+ *  the per-bot spread — it exists for treasury operations (internal OTC conversion), where the
+ *  house is acting as the counterparty rather than funding a bot. Returns false if short. */
+export function takeExact(field: Field, amount: number): boolean {
+  if (!(amount > 0)) return false;
+  if (poolBalance(field) + 1e-9 < amount) return false;
+  let left = amount;
+  for (const a of poolAccounts()) {
+    if (left <= 1e-12) break;
+    const take = Math.min(a[field] || 0, left);
+    if (take <= 0) continue;
+    a[field] -= take; left -= take;
+  }
+  return left <= 1e-9;
+}
+
 /** Give money back to the pool (a bot being pruned, or handing back an unused bank). */
 export function returnBank(field: Field, amount: number): void {
   if (!(amount > 0)) return;
