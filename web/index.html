@@ -199,7 +199,7 @@
         <div class="modes" id="pairSel"><button data-pair="au" class="on" title="ANSEM vs UWU"><span class="tico" data-tok="ansem"></span><span class="pairnm">ANSEM<i>vs</i>UWU</span></button><button data-pair="as" title="ANSEM vs SOL"><span class="tico" data-tok="ansem"></span><span class="pairnm">ANSEM<i>vs</i>SOL</span></button><button data-pair="us" title="UWU vs SOL"><span class="tico" data-tok="uwu"></span><span class="pairnm">UWU<i>vs</i>SOL</span></button><button data-pair="3w" title="3-WAY: all three armies"><span class="tico" data-tok="ansem"></span><span class="tico" data-tok="uwu"></span><span class="tico" data-tok="sol"></span></button><button data-pair="ffa" title="BULLS FFA: every fighter for themselves"><span class="tico" data-tok="ansem"></span><span class="tico" data-tok="ansem"></span><span class="tico" data-tok="ansem"></span></button></div>
         <div class="hbreak"></div>
         <button class="ficon" id="infoBtn" title="How the game works">ⓘ</button>
-        <div class="pill"><b class="g" id="arenaTag">BULL vs UWU</b><span>arena</span></div>
+        <div class="pill"><b class="g" id="arenaTag">ANSEM vs UWU</b><span>arena</span></div>
         <div class="pill" id="backPill" style="cursor:help" title="Loading backing…"><b class="g" id="backDot">●</b><span id="backTxt">backing</span></div>
         <div class="pill" id="fairPill" style="cursor:pointer" title="Provably fair: the engine publishes sha256(seed) before the lobby opens, then reveals the seed. Your browser recomputes the whole round from it — no trust required. Click to verify the last round."><b class="g">✓</b><span>fair</span></div>
         <div id="profWrap" style="position:relative">
@@ -220,19 +220,19 @@
           <div id="chainOn" style="display:none">
             <div class="note" id="chainAddr" style="font-family:var(--mono)"></div>
             <div class="wcells" style="margin-top:8px">
-              <div class="cell b"><div class="v" id="ocBull">0</div><div class="n"><span class="tico" data-tok="ansem"></span> on-chain BULL</div></div>
+              <div class="cell b"><div class="v" id="ocBull">0</div><div class="n"><span class="tico" data-tok="ansem"></span> on-chain ANSEM</div></div>
               <div class="cell u"><div class="v" id="ocUwu">0</div><div class="n"><span class="tico" data-tok="uwu"></span> on-chain UWU</div></div>
             </div>
             <div class="cell" style="margin-top:6px"><div class="v" id="ocSol">0</div><div class="n"><span class="tico" data-tok="sol"></span> SOL (for tx fees)</div></div>
             <div class="testnet-only">
-              <button class="abtn jb" id="btnFundMe" style="width:100%;margin-top:8px">🎁 Get test SOL + 500 BULL + 500 UWU</button>
+              <button class="abtn jb" id="btnFundMe" style="width:100%;margin-top:8px">🎁 Get test SOL + 500 ANSEM + 500 UWU</button>
               <div class="row2" style="margin-top:6px"><button class="abtn ghost" id="fauBull">Faucet <span class="tico" data-tok="ansem"></span> 500</button><button class="abtn ghost2" id="fauUwu">Faucet <span class="tico" data-tok="uwu"></span> 500</button></div>
               <button class="abtn ghost" id="fauSol" style="width:100%;margin-top:6px"><span class="tico" data-tok="sol"></span> Get 500 SOL units (arena credit)</button>
             </div>
             <span class="wlabel" style="margin-top:10px">Amount</span>
             <input id="chainAmt" type="number" value="50" min="1" step="1" style="width:100%;background:var(--panel2);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:8px;font-family:var(--mono);font-size:14px">
             <span class="wlabel" style="margin-top:8px">On-chain → game wallet</span>
-            <div class="row2"><button class="abtn jb" id="depBull">Deposit <span class="tico" data-tok="ansem"></span> BULL</button><button class="abtn ju" id="depUwu">Deposit <span class="tico" data-tok="uwu"></span> UWU</button></div>
+            <div class="row2"><button class="abtn jb" id="depBull">Deposit <span class="tico" data-tok="ansem"></span> ANSEM</button><button class="abtn ju" id="depUwu">Deposit <span class="tico" data-tok="uwu"></span> UWU</button></div>
             <div class="row2" style="margin-top:6px"><button class="abtn" id="depSol" style="background:#9945FF;color:#fff"><span class="tico" data-tok="sol"></span> Deposit SOL</button><button class="abtn ghost" id="wdSol">Withdraw <span class="tico" data-tok="sol"></span></button></div>
             <div class="note" style="font-size:10px;margin-top:4px" id="solNote"><span class="tico" data-tok="sol"></span> deposits are a real native-SOL transfer, credited at the live SOL price.</div>
             <span class="wlabel" style="margin-top:8px">Game wallet → Phantom</span>
@@ -317,8 +317,8 @@
             <div class="cell b"><div class="v" id="wBull">$0</div><div class="sub">—</div><div class="n"><span class="tico" data-tok="ansem"></span> ANSEM</div></div>
             <div class="cell u"><div class="v" id="wUwu">$0</div><div class="sub">—</div><div class="n"><span class="tico" data-tok="uwu"></span> UWU</div></div><div class="cell"><div class="v" id="wSol">$0</div><div class="sub">—</div><div class="n"><span class="tico" data-tok="sol"></span> SOL</div></div>
           </div>
-          <div class="row2"><button class="abtn ghost" id="convBull"><span class="tico" data-tok="uwu"></span>→<span class="tico" data-tok="ansem"></span> to BULL</button><button class="abtn ghost2" id="convUwu"><span class="tico" data-tok="ansem"></span>→<span class="tico" data-tok="uwu"></span> to UWU</button></div>
-          <button class="abtn ghost2" id="addFunds" style="margin-top:8px;width:100%">+ Add $100 BULL &amp; $100 UWU</button>
+          <div class="row2"><button class="abtn ghost" id="convBull"><span class="tico" data-tok="uwu"></span>→<span class="tico" data-tok="ansem"></span> to ANSEM</button><button class="abtn ghost2" id="convUwu"><span class="tico" data-tok="ansem"></span>→<span class="tico" data-tok="uwu"></span> to UWU</button></div>
+          <button class="abtn ghost2" id="addFunds" style="margin-top:8px;width:100%">+ Add $100 ANSEM &amp; $100 UWU</button>
           <div class="wcells" style="margin-top:10px"><div class="cell"><div class="v" id="myStake">$0</div><div class="n">In-ring size</div></div><div class="cell"><div class="v pos" id="myPnl">$0</div><div class="n">All-time P/L</div></div></div>
         </div>
         <div class="panelC" id="fairPanel">
@@ -349,7 +349,7 @@
           <div id="autoside" style="display:none"><button data-side="both" class="on"></button></div>
           <div class="toggle" id="autoConv"><span class="sw"></span><span>Auto-convert raids → my coin</span></div>
 
-          <div class="row2" id="deploy2" style="margin-top:8px"><button class="abtn jb" id="joinBull">Deploy BULL <span class="tico" data-tok="ansem"></span></button><button class="abtn ju" id="joinUni">Deploy UWU <span class="tico" data-tok="uwu"></span></button></div>
+          <div class="row2" id="deploy2" style="margin-top:8px"><button class="abtn jb" id="joinBull">Deploy ANSEM <span class="tico" data-tok="ansem"></span></button><button class="abtn ju" id="joinUni">Deploy UWU <span class="tico" data-tok="uwu"></span></button></div>
           <div id="deployN" style="display:none;margin-top:8px"></div>
           <div class="note" id="walletNote">Deploy on BOTH sides at once if you like. Deposits open only in the lobby.</div>
         </div>
@@ -461,8 +461,8 @@
     </div>
   </div>
   <footer><b style="color:var(--gold)">Live on Solana mainnet · real funds.</b> Balances are custodial: the engine holds them against an on-chain vault, and you can withdraw at any time.
-  <b style="color:var(--ink)">The house plays too.</b> Some fighters are funded by the house from its own float — they are funded between rounds, never mid-fight, and they win and lose on the same rules and the same published seed as everyone else. The matched book slightly favours smaller positions.
-  Raids TAKE the enemy's coin into your bag (claim reallocation). No cash — only BULL &amp; UWU, wallet shared across modes. Normal = raids compound in-ring · Extraction = raids bank to your wallet in real time. House edge 0.2% per deploy · 0.3% on convert. BULL = Ansem, UWU = Unicorn. · <a href="solvency.html" style="color:var(--ink-soft);text-decoration:none">🔒 Proof of reserves</a></footer>
+  <b style="color:var(--ink)">The house plays too.</b> Some fighters are funded by the house from its own float — they are funded between rounds, never mid-fight, and they win and lose on the same rules and the same published seed as everyone else.
+  Raids TAKE the enemy's coin into your bag (claim reallocation). Arenas run on ANSEM, UWU and SOL; your wallet is shared across modes. Normal = raids compound in-ring · Extraction = raids bank to your wallet in real time. House fee 0.2% per deploy · 0.3% on convert. · <a href="solvency.html" style="color:var(--ink-soft);text-decoration:none">🔒 Proof of reserves</a></footer>
   <div class="modal" id="modal"><div class="pcard" id="pcard"></div></div>
 </div>
 
@@ -629,7 +629,7 @@
   // `tok` lets a call site ask for this token's icon without needing to know which key it came
   // from. `emoji` survives only for the genuinely text-only surfaces \u2014 canvas labels and the X
   // share string \u2014 where a background-image cannot go.
-  const TOKMETA={ansem:{tok:"ansem",label:"BULL",team:"Bulls",emoji:"\ud83d\udc02"},
+  const TOKMETA={ansem:{tok:"ansem",label:"ANSEM",team:"Bulls",emoji:"\ud83d\udc02"},
                  uwu:{tok:"uwu",label:"UWU",team:"Unicorns",emoji:"\ud83e\udd84"},
                  sol:{tok:"sol",label:"SOL",team:"Solana",emoji:"\u25ce"}};
   // ---- token icons -------------------------------------------------------------------------
@@ -809,7 +809,7 @@
     }
     for(let i=w.accounts.length-1;i>=0;i--){if(w.accounts[i].bankroll<5){w.accounts.splice(i,1);w.acctBusted++;}}   // broke accounts leave
     const joins=2+((Math.random()*3)|0); for(let k=0;k<joins;k++)newAccount(w,Math.random()<0.5?"bull":"unicorn");   // new accounts join (growing base)
-    // user's per-round P/L per side (counts extracted) + return bags to shared wallet as BULL/UWU
+    // user's per-round P/L per side (counts extracted) + return bags to shared wallet as ANSEM/UWU
     for(const c of w.userCircles){ const dep=c.deposited, banked=c.banked||0, ringBack=ring(c), out=ringBack+banked, pnl=out-dep;
       w.userRounds.unshift({round:w.roundNo,side:c.side,dep,out,pnl,win:c.side===win,mode:w.mode,hits:(c.hits||[]).slice(-30)}); if(w.userRounds.length>60)w.userRounds.pop();
       WALLET.bull+=bullTot(c); WALLET.uwu+=uwuTot(c); }
@@ -961,7 +961,7 @@
     if(hp){const bk=safeV(hp), pl=tot(hp)-hp.deposited;
       // rebuild the tooltip only when something in it changed (was: every single frame)
       const tipKey=hp.id+"|"+ring(hp).toFixed(2)+"|"+bk.toFixed(2)+"|"+pl.toFixed(2)+"|"+(hp.raided||0).toFixed(2);
-      if(tip.dataset.k!==tipKey){ tip.dataset.k=tipKey; tip.innerHTML=`<div class="nm"><span class="dot ${hp.side==="bull"?"bull":"uni"}"></span>${hp.isUser?'<span class="youtag">YOU</span> ':''}${esc(hp.name)}</div><div class="r"><span>Ring size</span><b>${fmt(ring(hp))}</b></div><div class="r"><span>${icoH("ansem")} BULL held</span><b>${bullTot(hp).toFixed(1)}</b></div><div class="r"><span>${icoH("uwu")} UWU held</span><b>${uwuTot(hp).toFixed(1)}</b></div>${bk>0?`<div class="r"><span>banked (safe)</span><b style="color:var(--gold)">${fmt(hp.sBull||0)}🐂 + ${fmt(hp.sUwu||0)}🦄</b></div>`:''}<div class="r"><span>Raided</span><b>${fmt(hp.raided)}</b></div><div class="r"><span>Won/lost</span><b class="${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}</b></div><div class="r" style="color:var(--ink-faint);margin-top:3px">click for full profile</div>`; }
+      if(tip.dataset.k!==tipKey){ tip.dataset.k=tipKey; tip.innerHTML=`<div class="nm"><span class="dot ${hp.side==="bull"?"bull":"uni"}"></span>${hp.isUser?'<span class="youtag">YOU</span> ':''}${esc(hp.name)}</div><div class="r"><span>Ring size</span><b>${fmt(ring(hp))}</b></div><div class="r"><span>${icoH("ansem")} ANSEM held</span><b>${bullTot(hp).toFixed(1)}</b></div><div class="r"><span>${icoH("uwu")} UWU held</span><b>${uwuTot(hp).toFixed(1)}</b></div>${bk>0?`<div class="r"><span>banked (safe)</span><b style="color:var(--gold)">${fmt(hp.sBull||0)}🐂 + ${fmt(hp.sUwu||0)}🦄</b></div>`:''}<div class="r"><span>Raided</span><b>${fmt(hp.raided)}</b></div><div class="r"><span>Won/lost</span><b class="${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}</b></div><div class="r" style="color:var(--ink-faint);margin-top:3px">click for full profile</div>`; }
       const r=canvas.getBoundingClientRect();tip.style.opacity=1;let tx=hp.x*(r.width/W2)+18,ty=hp.y*(r.height/H2)-10;if(tx+180>r.width)tx=hp.x*(r.width/W2)-190;if(ty<44)ty=44;tip.style.left=tx+"px";tip.style.top=ty+"px";}else tip.style.opacity=0;
     // ?art=1 — a one-second answer to "are the logos working?". Draws the three faces at a size you
     // cannot miss, bypassing every fighter-size and targeting concern.
@@ -987,7 +987,7 @@
 
   const teamOf=r=>(r.depB||0)>=(r.depU||0)?"bull":"unicorn";
   function compBar(bull,uwu,maxV){const t=bull+uwu||0.0001,wpct=clamp(t/maxV*100,5,100),gp=bull/t*100;
-    return `<div class="csize"><div class="compbar" title="🐂 ${fmt(bull)} BULL · 🦄 ${fmt(uwu)} UWU" style="width:${wpct}%"><div class="track"><div class="cg" style="width:${gp}%"></div><div class="cp" style="width:${100-gp}%"></div></div><div class="div" style="left:${gp}%"></div></div><span class="csizeNum">${fmt(t)}</span></div>`;}
+    return `<div class="csize"><div class="compbar" title="🐂 ${fmt(bull)} ANSEM · 🦄 ${fmt(uwu)} UWU" style="width:${wpct}%"><div class="track"><div class="cg" style="width:${gp}%"></div><div class="cp" style="width:${100-gp}%"></div></div><div class="div" style="left:${gp}%"></div></div><span class="csizeNum">${fmt(t)}</span></div>`;}
 
   function openProfile(w,p){
     // online fighters are keyed "wallet|side" — match the account by wallet id first (names can
@@ -1003,7 +1003,7 @@
       <div class="sec">This round</div>
       <div class="pg"><div class="pstat"><div class="v">${fmt(tot(p))}</div><div class="n">Bag size</div></div>
         <div class="pstat"><div class="v ${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}</div><div class="n">Won / loss</div></div>
-        <div class="pstat"><div class="v" style="color:var(--bull)">${bullTot(p).toFixed(1)}</div><div class="n">${icoH("ansem")} BULL held</div></div>
+        <div class="pstat"><div class="v" style="color:var(--bull)">${bullTot(p).toFixed(1)}</div><div class="n">${icoH("ansem")} ANSEM held</div></div>
         <div class="pstat"><div class="v" style="color:var(--uni)">${uwuTot(p).toFixed(1)}</div><div class="n">${icoH("uwu")} UWU held</div></div>
         ${bk>0?`<div class="pstat"><div class="v" style="color:var(--gold)">${(p.sBull||0).toFixed(1)}</div><div class="n">${icoH("ansem")} banked (safe)</div></div>
         <div class="pstat"><div class="v" style="color:var(--gold)">${(p.sUwu||0).toFixed(1)}</div><div class="n">${icoH("uwu")} banked (safe)</div></div>`:''}
@@ -1638,7 +1638,7 @@
   $("#fairPill").onclick=verifyLastRound;
   if($("#btnVerify2"))$("#btnVerify2").onclick=verifyLastRound;
   $("#profBtn").onclick=()=>{$("#profDrop").classList.toggle("on");if(window.drawOverview)drawOverview();};
-  $("#addFunds").onclick=()=>{WALLET.bull+=100;WALLET.uwu+=100;INVESTED+=200;$("#walletNote").textContent="Added $100 BULL + $100 UWU.";saveWallet();syncDOM();};
+  $("#addFunds").onclick=()=>{WALLET.bull+=100;WALLET.uwu+=100;INVESTED+=200;$("#walletNote").textContent="Added $100 ANSEM + $100 UWU.";saveWallet();syncDOM();};
   function switchLobby(pr){
     if(pr===PAIRING)return;
     PAIRING=pr; localStorage.setItem("bvu_arena",PAIRING);
@@ -2146,7 +2146,7 @@
     const bull=l.side==="bull";
     const MA=metaA(), MB=metaB(), me=bull?MA:MB, them=bull?MB:MA;
     const em=me.emoji;
-    const HANDLE={BULL:"@blknoiz06",UWU:"@unicornandmemes",SOL:"@solana"};
+    const HANDLE={ANSEM:"@blknoiz06",UWU:"@unicornandmemes",SOL:"@solana"};
     const team=HANDLE[me.label]||"", tick="$"+me.label, foe="$"+them.label;
     let x=null; try{x=JSON.parse(localStorage.getItem("bvu_x")||"null");}catch(e){}
     const winner=(l.name==="You"&&x)?("@"+x.h):l.name;                       // mention connected winners
