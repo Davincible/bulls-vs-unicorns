@@ -128,12 +128,12 @@
 <div class="app">
   <div class="wrap">
     <header>
-      <div class="brand"><h1><span class="b">🐂</span><span class="vs">⚔</span><span class="u">🦄</span> ARENA</h1></div>
+      <div class="brand"><h1><span class="b"><span class="tico" data-tok="ansem"></span></span><span class="vs">⚔</span><span class="u"><span class="tico" data-tok="uwu"></span></span> ARENA</h1></div>
       <div class="hstats">
-        <div class="pill" title="House take (0.2% of deploys + 0.3% converts)"><b class="g" id="treasury">$0</b><span class="brk" id="treasuryBrk">🐂$0 · 🦄$0</span><span>House take</span></div>
+        <div class="pill" title="House take (0.2% of deploys + 0.3% converts)"><b class="g" id="treasury">$0</b><span class="brk" id="treasuryBrk"><span class="tico" data-tok="ansem"></span>$0 · <span class="tico" data-tok="uwu"></span>$0</span><span>House take</span></div>
         <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button><button data-view="referrals">Referrals</button><button data-view="history">History</button></div>
         <div class="modes"><button data-mode="normal" class="on">Mayhem</button><button data-mode="extraction">💰 Extraction</button></div>
-        <div class="modes" id="pairSel"><button data-pair="au" class="on" title="ANSEM vs UWU">🐂⚔🦄</button><button data-pair="as" title="ANSEM vs SOL">🐂⚔◎</button><button data-pair="us" title="UWU vs SOL">🦄⚔◎</button><button data-pair="3w" title="3-WAY: all three armies">🐂🦄◎</button><button data-pair="ffa" title="BULLS FFA: every fighter for themselves">🐂🐂🐂</button></div>
+        <div class="modes" id="pairSel"><button data-pair="au" class="on" title="ANSEM vs UWU"><span class="tico" data-tok="ansem"></span>⚔<span class="tico" data-tok="uwu"></span></button><button data-pair="as" title="ANSEM vs SOL"><span class="tico" data-tok="ansem"></span>⚔<span class="tico" data-tok="sol"></span></button><button data-pair="us" title="UWU vs SOL"><span class="tico" data-tok="uwu"></span>⚔<span class="tico" data-tok="sol"></span></button><button data-pair="3w" title="3-WAY: all three armies"><span class="tico" data-tok="ansem"></span><span class="tico" data-tok="uwu"></span><span class="tico" data-tok="sol"></span></button><button data-pair="ffa" title="BULLS FFA: every fighter for themselves"><span class="tico" data-tok="ansem"></span><span class="tico" data-tok="ansem"></span><span class="tico" data-tok="ansem"></span></button></div>
         <button class="ficon" id="infoBtn" title="How the game works">ⓘ</button>
         <div class="pill"><b class="g" id="arenaTag">BULL vs UWU</b><span>arena</span></div>
         <div class="pill" id="fairPill" style="cursor:pointer" title="Provably fair: the engine publishes sha256(seed) before the lobby opens, then reveals the seed. Your browser recomputes the whole round from it — no trust required. Click to verify the last round."><b class="g">✓</b><span>fair</span></div>
@@ -155,27 +155,27 @@
           <div id="chainOn" style="display:none">
             <div class="note" id="chainAddr" style="font-family:var(--mono)"></div>
             <div class="wcells" style="margin-top:8px">
-              <div class="cell b"><div class="v" id="ocBull">0</div><div class="n">🐂 on-chain BULL</div></div>
-              <div class="cell u"><div class="v" id="ocUwu">0</div><div class="n">🦄 on-chain UWU</div></div>
+              <div class="cell b"><div class="v" id="ocBull">0</div><div class="n"><span class="tico" data-tok="ansem"></span> on-chain BULL</div></div>
+              <div class="cell u"><div class="v" id="ocUwu">0</div><div class="n"><span class="tico" data-tok="uwu"></span> on-chain UWU</div></div>
             </div>
-            <div class="cell" style="margin-top:6px"><div class="v" id="ocSol">0</div><div class="n">◎ SOL (for tx fees)</div></div>
+            <div class="cell" style="margin-top:6px"><div class="v" id="ocSol">0</div><div class="n"><span class="tico" data-tok="sol"></span> SOL (for tx fees)</div></div>
             <div class="testnet-only">
               <button class="abtn jb" id="btnFundMe" style="width:100%;margin-top:8px">🎁 Get test SOL + 500 BULL + 500 UWU</button>
-              <div class="row2" style="margin-top:6px"><button class="abtn ghost" id="fauBull">Faucet 🐂 500</button><button class="abtn ghost2" id="fauUwu">Faucet 🦄 500</button></div>
-              <button class="abtn ghost" id="fauSol" style="width:100%;margin-top:6px">◎ Get 500 SOL units (arena credit)</button>
+              <div class="row2" style="margin-top:6px"><button class="abtn ghost" id="fauBull">Faucet <span class="tico" data-tok="ansem"></span> 500</button><button class="abtn ghost2" id="fauUwu">Faucet <span class="tico" data-tok="uwu"></span> 500</button></div>
+              <button class="abtn ghost" id="fauSol" style="width:100%;margin-top:6px"><span class="tico" data-tok="sol"></span> Get 500 SOL units (arena credit)</button>
             </div>
             <span class="wlabel" style="margin-top:10px">Amount</span>
             <input id="chainAmt" type="number" value="50" min="1" step="1" style="width:100%;background:var(--panel2);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:8px;font-family:var(--mono);font-size:14px">
             <span class="wlabel" style="margin-top:8px">On-chain → game wallet</span>
-            <div class="row2"><button class="abtn jb" id="depBull">Deposit 🐂 BULL</button><button class="abtn ju" id="depUwu">Deposit 🦄 UWU</button></div>
-            <div class="row2" style="margin-top:6px"><button class="abtn" id="depSol" style="background:#9945FF;color:#fff">◎ Deposit SOL</button><button class="abtn ghost" id="wdSol">Withdraw ◎</button></div>
-            <div class="note" style="font-size:10px;margin-top:4px" id="solNote">◎ deposits are a real native-SOL transfer, credited at the live SOL price.</div>
+            <div class="row2"><button class="abtn jb" id="depBull">Deposit <span class="tico" data-tok="ansem"></span> BULL</button><button class="abtn ju" id="depUwu">Deposit <span class="tico" data-tok="uwu"></span> UWU</button></div>
+            <div class="row2" style="margin-top:6px"><button class="abtn" id="depSol" style="background:#9945FF;color:#fff"><span class="tico" data-tok="sol"></span> Deposit SOL</button><button class="abtn ghost" id="wdSol">Withdraw <span class="tico" data-tok="sol"></span></button></div>
+            <div class="note" style="font-size:10px;margin-top:4px" id="solNote"><span class="tico" data-tok="sol"></span> deposits are a real native-SOL transfer, credited at the live SOL price.</div>
             <span class="wlabel" style="margin-top:8px">Game wallet → Phantom</span>
-            <div class="row2"><button class="abtn ghost" id="wdBull">Withdraw 🐂</button><button class="abtn ghost2" id="wdUwu">Withdraw 🦄</button></div>
+            <div class="row2"><button class="abtn ghost" id="wdBull">Withdraw <span class="tico" data-tok="ansem"></span></button><button class="abtn ghost2" id="wdUwu">Withdraw <span class="tico" data-tok="uwu"></span></button></div>
             <div class="note" id="chainNote" style="margin-top:8px">—</div>
             <h3 style="margin-top:14px">Account overview</h3>
             <canvas id="ovGraph" width="292" height="84" style="width:100%;background:var(--panel2);border:1px solid var(--line2);border-radius:8px"></canvas>
-            <div class="note" style="font-size:10px">🐂 green · 🦄 purple — your game balance over this session</div>
+            <div class="note" style="font-size:10px"><span class="tico" data-tok="ansem"></span> green · <span class="tico" data-tok="uwu"></span> purple — your game balance over this session</div>
             <h3 style="margin-top:12px">Identity</h3>
             <div style="display:flex;gap:8px;align-items:center">
               <img id="xAvatar" style="width:34px;height:34px;border-radius:50%;border:1px solid var(--line2);display:none">
@@ -192,7 +192,7 @@
     <div class="ticker"><div class="lbl">🏆 Big Wins</div><div class="track" id="tickerTrack"></div></div>
     <div id="introModal" style="display:none;position:fixed;inset:0;background:rgba(5,5,10,.8);z-index:100;align-items:center;justify-content:center">
       <div style="max-width:520px;margin:auto;background:var(--panel);border:1px solid var(--line2);border-radius:16px;padding:24px 26px;position:relative">
-        <h2 style="margin:0 0 4px">🐂 Bulls vs Unicorns 🦄</h2>
+        <h2 style="margin:0 0 4px"><span class="tico" data-tok="ansem"></span> Bulls vs Unicorns <span class="tico" data-tok="uwu"></span></h2>
         <div class="note" style="font-size:13px;line-height:1.55">
           We made this so two memecoins can have <b>epic battles</b> together.<br>
           Deploy your Bulls or your Unicorns and send them to fight — when fighters <b>collide</b>,
@@ -216,13 +216,13 @@
 
     <div class="view on" id="viewArena">
       <div class="arena-grid">
-        <div class="team bull"><h2>🐂 Bulls</h2><div class="big" id="bullPool">$0</div><div class="kv"><span>Alive</span><b id="bullCount">0</b></div>
+        <div class="team bull"><h2><span class="tico" data-tok="ansem"></span> Bulls</h2><div class="big" id="bullPool">$0</div><div class="kv"><span>Alive</span><b id="bullCount">0</b></div>
           <div class="wlabel" style="margin:2px 0 0">Alive fighters (health)</div><div class="sideList" id="bullList"></div>
           <button class="joinbtn" id="joinBull2">Deploy Bulls</button></div>
         <div class="stage" id="stage">
           <div class="roundbar" id="roundbar" style="color:var(--bull)"></div>
           <div class="strength" id="nBar" style="display:none"></div>
-          <div class="strength" id="strength2"><div class="s sb" id="strBull" style="width:50%">🐂 $0</div><div class="s su" id="strUni" style="width:50%">$0 🦄</div></div>
+          <div class="strength" id="strength2"><div class="s sb" id="strBull" style="width:50%"><span class="tico" data-tok="ansem"></span> $0</div><div class="s su" id="strUni" style="width:50%">$0 <span class="tico" data-tok="uwu"></span></div></div>
           <canvas id="canvas"></canvas>
           <div class="stagetop"><div class="rtag" id="modeTag" style="color:var(--bull)">NORMAL</div><div class="rtag">⏱ <span class="t" id="rtime">—</span> · <span class="m" id="rtagMult" title="Round multiplier — every raid hits this many × harder this round. Higher = bigger swings, faster deaths.">1× round</span></div></div>
           <div class="myhud" id="myhud" style="display:none"></div>
@@ -231,7 +231,7 @@
           <div class="tip" id="tip"></div>
           <div class="helpbar" id="helpbar">Deploy during the lobby. Raiding TAKES the enemy's coin into your bag — watch a circle change colour as it eats the enemy. Click any circle for its profile.</div>
         </div>
-        <div class="team uni"><h2>🦄 Unicorns</h2><div class="big" id="uniPool">$0</div><div class="kv"><span>Alive</span><b id="uniCount">0</b></div>
+        <div class="team uni"><h2><span class="tico" data-tok="uwu"></span> Unicorns</h2><div class="big" id="uniPool">$0</div><div class="kv"><span>Alive</span><b id="uniCount">0</b></div>
           <div class="wlabel" style="margin:2px 0 0">Alive fighters (health)</div><div class="sideList" id="uniList"></div>
           <button class="joinbtn" id="joinUni2">Deploy Unicorns</button></div>
       </div>
@@ -249,10 +249,10 @@
         <div class="panelC">
           <h3>My wallet <span class="youtag">SHARED</span></h3>
           <div class="wcells w3">
-            <div class="cell b"><div class="v" id="wBull">$0</div><div class="sub">—</div><div class="n">🐂 ANSEM</div></div>
-            <div class="cell u"><div class="v" id="wUwu">$0</div><div class="sub">—</div><div class="n">🦄 UWU</div></div><div class="cell"><div class="v" id="wSol">$0</div><div class="sub">—</div><div class="n">◎ SOL</div></div>
+            <div class="cell b"><div class="v" id="wBull">$0</div><div class="sub">—</div><div class="n"><span class="tico" data-tok="ansem"></span> ANSEM</div></div>
+            <div class="cell u"><div class="v" id="wUwu">$0</div><div class="sub">—</div><div class="n"><span class="tico" data-tok="uwu"></span> UWU</div></div><div class="cell"><div class="v" id="wSol">$0</div><div class="sub">—</div><div class="n"><span class="tico" data-tok="sol"></span> SOL</div></div>
           </div>
-          <div class="row2"><button class="abtn ghost" id="convBull">🦄→🐂 to BULL</button><button class="abtn ghost2" id="convUwu">🐂→🦄 to UWU</button></div>
+          <div class="row2"><button class="abtn ghost" id="convBull"><span class="tico" data-tok="uwu"></span>→<span class="tico" data-tok="ansem"></span> to BULL</button><button class="abtn ghost2" id="convUwu"><span class="tico" data-tok="ansem"></span>→<span class="tico" data-tok="uwu"></span> to UWU</button></div>
           <button class="abtn ghost2" id="addFunds" style="margin-top:8px;width:100%">+ Add $100 BULL &amp; $100 UWU</button>
           <div class="wcells" style="margin-top:10px"><div class="cell"><div class="v" id="myStake">$0</div><div class="n">In-ring size</div></div><div class="cell"><div class="v pos" id="myPnl">$0</div><div class="n">All-time P/L</div></div></div>
         </div>
@@ -279,7 +279,7 @@
           <div id="autoside" style="display:none"><button data-side="both" class="on"></button></div>
           <div class="toggle" id="autoConv"><span class="sw"></span><span>Auto-convert raids → my coin</span></div>
 
-          <div class="row2" id="deploy2" style="margin-top:8px"><button class="abtn jb" id="joinBull">Deploy BULL 🐂</button><button class="abtn ju" id="joinUni">Deploy UWU 🦄</button></div>
+          <div class="row2" id="deploy2" style="margin-top:8px"><button class="abtn jb" id="joinBull">Deploy BULL <span class="tico" data-tok="ansem"></span></button><button class="abtn ju" id="joinUni">Deploy UWU <span class="tico" data-tok="uwu"></span></button></div>
           <div id="deployN" style="display:none;margin-top:8px"></div>
           <div class="note" id="walletNote">Deploy on BOTH sides at once if you like. Deposits open only in the lobby.</div>
         </div>
@@ -292,7 +292,7 @@
       <div class="card">
         <div class="lbhead"><div class="tabs"><button data-tab="round" class="on">This round</button><button data-tab="alltime">All-time</button><button data-tab="legends">👑 Hall of Fame</button></div>
           <div class="rnav" id="rnav"><button id="rPrev">◀</button><span class="lab" id="rLab">LIVE</span><button id="rNext">▶</button></div></div>
-        <div class="lbHrow"><span class="rk">#</span><span>Fighter</span><span id="lbColBar">Wallet size (🐂/🦄 split)</span><span class="wl">Won / loss ($)</span><span class="rd rdh" id="lbColRd">Raided</span></div>
+        <div class="lbHrow"><span class="rk">#</span><span>Fighter</span><span id="lbColBar">Wallet size (<span class="tico" data-tok="ansem"></span>/<span class="tico" data-tok="uwu"></span> split)</span><span class="wl">Won / loss ($)</span><span class="rd rdh" id="lbColRd">Raided</span></div>
         <div id="lbRows"></div>
       </div>
     </div>
@@ -414,21 +414,51 @@
   }
   // C1/C2/C3 — engine-side round history. Replaces the browser-only log that started empty on every
   // reconnect. Rows expand, carry a real timestamp, and link to the on-chain anchor for that round.
+  // Which tokens a round was actually fought with. A round's `side` is only meaningful relative to
+  // the arena it was played in: "bull" is ANSEM in au, but it is UWU in the us pairing. Labelling
+  // from the CURRENTLY selected arena therefore mislabels every row that came from a different one,
+  // which is why these rows read as unrelated to what they claim to be.
+  function roundToks(r){
+    const pair=String(r.arena||"au-normal").split("-")[0];
+    return PAIRTOK[pair]||PAIRTOK.au;
+  }
+  function roundSideMeta(r,side){
+    const [ta,tb]=roundToks(r);
+    return TOKMETA[side==="bull"?ta:tb]||TOKMETA[ta];
+  }
+  function arenaTag(r){
+    const [pair,mode]=String(r.arena||"au-normal").split("-");
+    const [ta,tb]=PAIRTOK[pair]||PAIRTOK.au;
+    return ((TOKMETA[ta]||{}).label||"?")+"/"+((TOKMETA[tb]||{}).label||"?")+
+           " "+((mode||"normal")==="normal"?"MAY":"EXT");
+  }
   function renderServerRounds(){
     const rounds=window.__ROUNDS||[];
+    const here=PAIRING+"-"+activeMode;
     for(const id of ["allRounds","arenaRounds"]){
       const el=document.getElementById(id); if(!el)continue;
-      if(!rounds.length){ el.innerHTML='<div class="note">No settled rounds yet — the first lands within a minute.</div>'; continue; }
+      // THE ARENA PANEL SHOWS THIS ARENA. It used to render the global log unfiltered, so a UWU/SOL
+      // player was shown ANSEM/UWU rounds under UWU/SOL headings - and since the round counter runs
+      // per arena, an unrelated "#5" sat directly above this arena's own "#5".
+      const list=id==="arenaRounds"?rounds.filter(r=>(r.arena||"au-normal")===here):rounds;
+      if(!list.length){ el.innerHTML='<div class="note">'+(id==="arenaRounds"
+        ?'No settled rounds in this arena yet — the first lands within a minute.'
+        :'No settled rounds yet — the first lands within a minute.')+'</div>'; continue; }
       const lim=id==="arenaRounds"?6:30;
-      el.innerHTML=rounds.slice(0,lim).map((r,i)=>{
+      el.innerHTML=list.slice(0,lim).map((r,i)=>{
         const when=r.at?timeAgo(r.at):"";
         const pot=(r.players||[]).reduce((s,p)=>s+(p.inUsd||0),0);
         const link=r.sig?`<a href="https://solscan.io/tx/${r.sig}" target="_blank" rel="noopener" style="color:var(--gold);text-decoration:none" onclick="event.stopPropagation()">⛓ on-chain</a>`:'<span style="color:var(--ink-faint)">anchoring…</span>';
+        const wm=roundSideMeta(r,r.winner);
         const body=(r.players||[]).slice().sort((a,b)=>(b.outUsd-b.inUsd)-(a.outUsd-a.inUsd)).map(p=>{
           const net=(p.outUsd||0)-(p.inUsd||0);
-          return `<div class="prRow"><span class="fn">${esc(p.name||p.id)}</span><span>${p.side==="bull"?"A":"B"}</span><span>$${(p.inUsd||0).toFixed(2)}</span><span>$${(p.outUsd||0).toFixed(2)}</span><span class="pnl ${net>=0?'pos':'neg'}">${net>=0?'+':'−'}$${Math.abs(net).toFixed(2)}</span></div>`;
+          // p.tok is what the engine recorded for this player; fall back to the arena's side map
+          const pm=TOKMETA[p.tok]||roundSideMeta(r,p.side);
+          return `<div class="prRow"><span class="fn">${esc(p.name||p.id)}</span><span>${icoH(pm.tok)}${pm.label}</span><span>$${(p.inUsd||0).toFixed(2)}</span><span>$${(p.outUsd||0).toFixed(2)}</span><span class="pnl ${net>=0?'pos':'neg'}">${net>=0?'+':'−'}$${Math.abs(net).toFixed(2)}</span></div>`;
         }).join("");
-        return `<div class="prTable" style="margin-bottom:8px"><div class="prRow h arHead" style="cursor:pointer"><span>#${r.round} ▸</span><span>winner ${r.winner==="bull"?"A":"B"}</span><span>${(r.players||[]).length} played</span><span>pot $${pot.toFixed(2)}</span><span class="pnl" style="font-size:10px">${when} · ${link}</span></div><div class="arBody" style="display:${i===0?"block":"none"}">${body}</div></div>`;
+        // the all-arenas view keeps the tag, so a row always says which arena it belongs to
+        const tag=id==="allRounds"?` <span style="color:var(--ink-faint);font-size:.75em">${esc(arenaTag(r))}</span>`:"";
+        return `<div class="prTable" style="margin-bottom:8px"><div class="prRow h arHead" style="cursor:pointer"><span>#${r.round}${tag} ▸</span><span>winner ${icoH(wm.tok)}${wm.label}</span><span>${(r.players||[]).length} played</span><span>pot $${pot.toFixed(2)}</span><span class="pnl" style="font-size:10px">${when} · ${link}</span></div><div class="arBody" style="display:${i===0?"block":"none"}">${body}</div></div>`;
       }).join("");
     }
   }
@@ -441,15 +471,17 @@
     if(s<60)return Math.floor(s)+"s ago"; if(s<3600)return Math.floor(s/60)+"m ago";
     if(s<86400)return Math.floor(s/3600)+"h ago"; return Math.floor(s/86400)+"d ago";}
 
-  function renderAllRounds(){
-    const el=document.getElementById("allRounds"); if(!el)return;
-    if(!ROUNDLOG.length){el.innerHTML='<div class="note">No finished rounds yet — the first one lands in about a minute.</div>';return;}
-    el.innerHTML=ROUNDLOG.map((r,i)=>{
-      const pot=r.players.reduce((s,p)=>s+p.stake,0);
-      const rows=r.players.map(p=>`<div class="prRow"><span class="fn">${p.bot?"":"⭐ "}${esc(p.name)}</span><span><span class="dot ${p.side==="bull"?"bull":"uni"}"></span> ${p.side==="bull"?"A":"B"}</span><span>$${p.stake.toFixed(2)}</span><span>$${p.out.toFixed(2)}</span><span class="pnl ${p.pnl>=0?'pos':'neg'}">${p.pnl>=0?'+':'−'}$${Math.abs(p.pnl).toFixed(2)}</span></div>`).join("");
-      return `<div class="prTable" style="margin-bottom:8px"><div class="prRow h arHead" data-i="${i}" style="cursor:pointer"><span>#${r.round} ▸</span><span>winner ${r.winner==="bull"?"A":"B"}</span><span>${r.players.length} played</span><span>pot $${pot.toFixed(2)}</span><span class="pnl"></span></div><div class="arBody" style="display:${i===0?"block":"none"}">${rows}</div></div>`;
-    }).join("");
-  }
+  // renderAllRounds is GONE, and its removal is the actual fix for "previous rounds are unrelated".
+  //
+  // There were two renderers writing the SAME #allRounds element from two unrelated sources: this
+  // one, from the browser's own ROUNDLOG, and renderServerRounds, from the engine's round log.
+  // Whichever ran last won, so the panel alternated between two different histories - one of them
+  // reset on every reload, numbered per arena, and labelled its columns "A" and "B".
+  //
+  // The engine's log wins on every count: it survives reconnects, it is survivorship-free, and each
+  // row is committed on-chain by that round's results hash. So the local copy is deleted outright
+  // rather than kept in sync - two sources of truth for the same panel is what caused this.
+  function renderAllRounds(){ renderServerRounds(); }
   document.addEventListener("click",e=>{const h=e.target.closest(".arHead");if(!h)return;
     const body=h.nextElementSibling; if(body)body.style.display=body.style.display==="none"?"block":"none";});
   const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -493,9 +525,47 @@
   IMG.bull.src="data:image/jpeg;base64,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"; IMG.uwu.src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/4gKgSUNDX1BST0ZJTEUAAQEAAAKQbGNtcwQwAABtbnRyUkdCIFhZWiAAAAAAAAAAAAAAAABhY3NwQVBQTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA9tYAAQAAAADTLWxjbXMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAtkZXNjAAABCAAAADhjcHJ0AAABQAAAAE53dHB0AAABkAAAABRjaGFkAAABpAAAACxyWFlaAAAB0AAAABRiWFlaAAAB5AAAABRnWFlaAAAB+AAAABRyVFJDAAACDAAAACBnVFJDAAACLAAAACBiVFJDAAACTAAAACBjaHJtAAACbAAAACRtbHVjAAAAAAAAAAEAAAAMZW5VUwAAABwAAAAcAHMAUgBHAEIAIABiAHUAaQBsAHQALQBpAG4AAG1sdWMAAAAAAAAAAQAAAAxlblVTAAAAMgAAABwATgBvACAAYwBvAHAAeQByAGkAZwBoAHQALAAgAHUAcwBlACAAZgByAGUAZQBsAHkAAAAAWFlaIAAAAAAAAPbWAAEAAAAA0y1zZjMyAAAAAAABDEoAAAXj///zKgAAB5sAAP2H///7ov///aMAAAPYAADAlFhZWiAAAAAAAABvlAAAOO4AAAOQWFlaIAAAAAAAACSdAAAPgwAAtr5YWVogAAAAAAAAYqUAALeQAAAY3nBhcmEAAAAAAAMAAAACZmYAAPKnAAANWQAAE9AAAApbcGFyYQAAAAAAAwAAAAJmZgAA8qcAAA1ZAAAT0AAACltwYXJhAAAAAAADAAAAAmZmAADypwAADVkAABPQAAAKW2Nocm0AAAAAAAMAAAAAo9cAAFR7AABMzQAAmZoAACZmAAAPXP/bAEMABQMEBAQDBQQEBAUFBQYHDAgHBwcHDwsLCQwRDxISEQ8RERMWHBcTFBoVEREYIRgaHR0fHx8TFyIkIh4kHB4fHv/bAEMBBQUFBwYHDggIDh4UERQeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHv/CABEIAZABkAMBIgACEQEDEQH/xAAcAAEAAQUBAQAAAAAAAAAAAAAABgEDBAUHAgj/xAAbAQACAgMBAAAAAAAAAAAAAAAABQQGAQIDB//aAAwDAQACEAMQAAAB4wAAAAAAAAAFQL2zkdtN6lWe1nw3KlydLjV2QpUjQN/XfeO2pP656Q3E+gudKYHO0712nOKNvq1a+2OHIAAAAAAAAAAAAAAAAVAzJAwlaHd7Stkc09Uq1YK0Z2rWgzWtBtWvmuc1mcf67XVWHxzpXNN9gfta27jXXR6OcUULeeJZHK0ixRCigAAAAAAAAAAAVMrfOPv8/LtDpWh809KVztVSzoZDRa1XCl2LDvC2FLLUYROEgzYn2XlrPcvJoq48ujmh0D+fPqxHqbhjGmZhtGFB03efbXWM6LoetrqSGsjHrSKg1wAAAAAAABU2nbe1J3q5v65GPnzJE75v9F89rivm+HTyxY6fXS/MVR4bnSV1kRf3JW2+n97XM69b/WNduqvXcfC2Wi56/PGHP8d6z0X1Fqt4lRfKGR40vftPMjn2/sbuRPHt84oNs48Rm9lUugLPwKZV6DTUAAAAAqZW+bsm8XLs+qpVhLrk2rkbv9AZEWkNEqkT5Z9Cwpm15crR/YgAAdIi3UESW7jZivosOB9G5G0Z6beaPIslg71g5+vqdO4xzP6E+ft9rYjRc2Vwi4yndAanbXGz0Ejtahs4xlK6CL9imVag1wAAAqHuU4O1tjatfNXrD1d8348wIsvruZB5xXa1r5PEMg2y+Sd21mNOJrluxWUM56HJIF02pVfDyreOvg2+Pz7ntlsNFZ+xmyXdcc6kgruj5B9Exjhw+aV+xFhgHuUxWsyT0Jqtrd7ZQSO2siHQ4xW0WhFYQgABXMxJKxkZilbu7rctZnKT6ENiAdL32bhViq6cT2V2VRDJixNhxz6A4x13j7311k15R2TGkiNDrrmaWLsbm/UdZMkcLnWPs3T2bYe4V+tBppC+F/VGoD5NZGOABdmkHzWc6bvPq72x49tcQPHlUVolQoIUUVDOkWDnXVvVS6yme8ilYLYNei5brjHeNftLVRpsYPbZ143Nrewl97k/WITz5Qvr8H6H16gtVgABA54dewcuIAAQj51+weVBwtWgAElkHP5zbLHeD9xSDzrQpFUYFPrNb1nayum49ea311l3cP3wn5ZqoErZe/Prp0DbbuufDJvT6VHt7caaBz5PHsECnp17Dm3Lj0l8vsY+oHy/PQ7GM5AAAAAOScR+yeVhwpcthWQR+9J7z549+gXNZvMY5942mr89pSRR+Uue/pStqZVuW8mJIydRscBXJ2omzwCY9X492GtVYFqsAAADnvAOw8ZxgDDe6LMD66YGfnYAAAAAAPnznX1l8y7baZWmusu28Tld3tYNGGkjE4g9OrGTItHu2fOqlXcvzsdXsVcuHzOGzZPxqHb0A3nbPn3uKCvbEJ0YAAAHH+M9z4ZjAGAD6v2+o2+dgAAABGd+m85zHdS/sOTiejNtp4/OMFWpi0657O+ka/WizPkA6BCq6lv7XWbKbBqGUjX4OTqqYu38gsem1ouiZMAHXORzheu6gKxUwAAAKc86ID5owfqVjHy1m/TALV0zkAAADScd20es1rUrRgxj220u2UpfF3I9S50IlsRlC9Jt1FwslYnLIymW+c/AzpCutfNZ3bTefV2lwt76jstZPgYswBl4jXHd9jxvr1VqF4RIQAAAAAAAAAANXtOdyJXPKFvuYAALdzA5cofKItKUdX3KlbpaEaksaUr7Wx1ez2T1DLvqtXuNPSV2XNYBPpbqp4cvPYzkAdG5z7jRvoVHpDVKcGmgAAAAAAAAA5J1vkjJpEhZbSAACPbuFqU1mVRWYx1uwUrcbLWMyWKp1tjcaDf806tDqTiaKSxqpwazuB3oHedx7Zaxu5kLz6ZNDI6Qi4cvdY1CrlCexc61rPh3JoN+qrIa6AAAAAAAAOWdTjMubx1es2u3hnK3jRVctytYVysVnENnFhbVUrZnlYbMYJXk/iSRnfRVOTWi0zax6Q6pLH1YqMLeSSAyFy83wfWHO6lyDq/ni7JFAXqVZKZ+Clc91kR0yjydG8ify3jW5bPhfUrL5gDW5UKh9POVhbpTJ2trAopkccjG8ht2ibrH1qZitCNGoA28p1O2u1mBpPx4TJYzT642esvQIEhUrfGNce/XmRdlYtAWJbFJXPZ7MWS0pJG6wtOv+dHtPFUdGWjaYnvIth69YtvJnsOuDLY97GbuVhJHO4xsfYzWLSNvl0wvYX8O7lZORc9+oOe2SFx9WlkggFbtrdye2/uUrf7XVS2ZjOs9ePPajStHHnvcvR7u6zqqVZdsXRSfR1qLlSyNyPd+KsWic0lHnKwKJBAAAX++th78c8+LGVUMBnWQxq3ru2MTO1+w1yGmQAA5pyn6h5RaIHNBY4VyZaffWt3Wvmr9tXTbiGJl+KKdXgD1vdDlMum8UrdZ9bV1oe9trtgue1musntF09DztcAAAyOmuDnaTBtUKY+Y9STpIqYG1hdNZavWK3M2unrd76YefhZsXoGmQAAUqycjgn0jyy8xtf6pX1l1WtPJnWRnIx6JWaCFHAFaA3OdHN9bJd0O5GXv9NPEzSVWdnr/ABZd5ybdqD1ySxjPq759A9+G2Nn4xPDqN5xM+5K0wci9jruwKu559BhZuFm7YDTIBSuLlZGP5v5xZ8+rDTXk6lffWddBsItXlfgVhOAAABXIx3QknrTbi6zvXauKdgjY6Fr9gpcOH+t7oaY092fGQu7XhpkAAAAAY+RZ6YysPIsTePjKxcqB2DXIBax2rnG8tVkciMv3sS5rvnzH9xW7PLdgpqKg1wAAAAAVz8B2zJc+L7i4zfond/MW+U8u9c053hY69SlHBZDXZXWUf39B3qImQAAAAAMmJl4mXnB4jczMmiUQ1vou+Rmaut26dXnvzZlJoX0HyaIRGLwu68UQqDnqAAAAAAABW/YdCQXo5tLPLz1Ku5FVK5y2uqcM9AkfHVW37xXh+1re3W3NsxVmeoM5E5QHD7nSvHJtY2z03QQytnzmYlK2fatfNeu1a0prn3h4OoQQbtgrKyg1wAAAAAAAAAACtAZW00Rj0kzSbCxysx59MuwZzVSuc1UqZqpUzVSpsrQZrWgz6UpjPtrtUqj7jTY6twKCDxAAAAAAAAAAAAAAAAALubrknbeZMa9Ne0mR6/O67quo9yN9o1dds7Suqt6m5aKxG1kONoaQOWxwrZXwoI+gAAAAAAAAB//EAC8QAAICAQIEBQMEAgMAAAAAAAIDAQQFABAGERIgExQhMEAVIjMjMTI1BzQWQVD/2gAIAQEAAQUC+ICWlqKVidfTmajG6+mxr6bGixs6nHN1NKzGjUwP/FBZnKqDJ0uikdApY+xETM47HRVrz+5pUemY9U6ZQcOiEhn5yKzG6TSWOhGBj2uH8fJnkT8Kj2GAnp2PCdOrtV8tFdjdIqLX7uPpsttWIgviRpLpd08p1YogenJYqfjDElNaly1HsTMRorKB0V5ManIL5fUdU7LLVmhTXUrdExriWzHnonn7BgJjaoyPxUJJs10AmO5jlrhl+NMtuLUkU9n764Mxvlt+I7fnMuJmOl3nDrA4ksjQvKivc7rVQHaasll8GrXlsgIhGkB4rrHDyxpbOsrVptxp6mCnQVnHoMec6ZQZGgx58/p69eQTrhvEKZfcM9QujWSs+HQOq8Y1jMbbvvEArVL11tu/XvmOkuW2O16RcNlBIP36lfxNDERG2P8A96YiYzeDiYauyeopJ1XrLT31K7LL0IikAzzGVhM54xRjtOQtscP1kVcUzp6M1XVVyehKRmrf0MwUdjli0LVckn7tVEtKI5RvXPw31zhqNcQ4zxkz6T38M1+iqQwWuRK1L41xHZJh6wtQbl1KxUvJfh4vqLhW9d5pKtYBw9jVi0LKCSz20KlpgMAO8Dtwy5jsa1wLmJ56z+Jhwz6T24mhNuUSPh7co1mpGcnpDTS1U9S8l+G+mbNAo6S3EpGaduG9thIuBoSs/ZEZIkKhQbjG/CxDOLyn5FuYvSGw0MjiK1rVlLK7uzhUo8uwCGQdGomJ1kbQ06rTljdsFfi7Wsr8RRRMTxZS8tkOyPTVG34kdl+v4oT7NFPTG4x2cLObF/J/k0lxqmu2HBlccq8ohmC34bseHd0YQevA1xIEDS2q0PqOErOtYq5jcjXvC6uthcVYo8jjGrYlnZHpqhZ8UezJo6S76q/EZuEc+3hvGkrWT/nso5WaGi0b+OW+u9RpdtXhstp+OVbUBM6hQ8+KK6qw64SczzFuuqymhjq1ItuIeH0ZZmaxdnFWewCkSquhy92DBg9cqb3VV+Gvcf27MXPPHZP8m9YjFv8A1xAolZSNLxlB1PDYwaEdl2jXuaySa55Hh2hZrXe3LUVZCk9ZJd2VHSlgzExvlE9S+2oHW3cB7VjLDx6yTSyf898crbi3+zQMNxdRYqrdx4+1PEXfxHgFZXT1Gl3Zi39hREjZX4TeymHSrYB56/btj0mmctq3/wDX0IkUqpsKVBCw1xLj/GVwd/H4HGWBbcPsApA67IarfLK5juketkbCGvSNwKC7MXMTj2DBBXq9elgIDuYwQhTfQzHweIuFq/luzEt5Fu4PEUUci2oD67dZaD1nV2SJgxAjvwk0Jp+1xZxB5CPr+Y19fzGvr+Y1w7xRZsZD2+KOGgfohkS2UcgwJ6h3yQdFnarHSndM/q6pdbXdnCbIHI+zxplbeMS1htZvw/8A3nucW4NtKzvi2dSN8sHNeh/eI5RvX5dDGguMZ+Hs4Y/t/Z/yV/DspvKrax7isUfbyqqtillKRUbG2LPpfvbHrr6rRzfuyeQL9FOOWNSArX2YJvhZT2f8lfw7cL/UezZeuum5xC8ie9zyIYLTaC505ZqKuXQ7efWGR0nRj9Xdg9cMmFoQHiOj0jsSwlNxrisUfY/yJWYyj24X+o9jM5QKQ5G++6zsuq8VP/aC6k7345WqHZdKYh9g2ji09/DDibjvYmImM7wvWvaucOZau36Hl9fQ8vqnw/lW2VAKl9+XvhRr23nZfqfSPqB86rvHDIPJMVDJ1Zkcjx/+rvlI5WaMfZvf2rxEJEuo+3hN7ItfFnWduebu7T6w2i3qoqJSmqBuogVgc8zxc86++X/LS/Dve/JUT47LLYQqqBAvtrOOu7HWYt0/iZV3gY/vb+PWK/Bvl/yUvw73vyVLQpGCmza78HkZpvSwXK+HxdYOJ775dNbWK/Bvl/yUZ+ze/wDvqqUC/wBjhrJc/icV/wBp35Vn3axccq++X/LR7L0fbqP3j9tSYwXaJEBYbIKuJ+FxV/adzmQpbTlh6x8cqm+ULnYpT+pvcjmnYSHo1ZaPne6q9lZ+LyCrqvg8XK6bvawxWNyx4xbIjpTvfnnarTydu2Oa9vEPoosliMkopcP8dV1+K+tTQgDQogLE1eX0Z2lRdpMwlzzlL4HEFArtZq2KPezYBMPcbi2QPW2Oxk9Rj+8esbujpZtjXwE+k70SgbnaqIUYWTjQ2QnQsAvayF2rQRZ4txCSRxEl8la0Vkpjip9tWVG+6J+oM0V186mefZjA6n72i6EbV55q3uj674oS3j96xQdf2BKRmLDOcWo5g0D7SasdZ6gnLNRicamI9I24uaB5fvxodKd8qfJW1IvXewPUvfG8vLb4vISmY9Y6h15hevML15hegcBT1D3CUjMWTgV3WHBGRdsmMQTTPWXwFuC/buWMkax6A3yR9VjZRdLOyyHQzURznHqNQ7xHOcZWsLR4C9co1yjXKNGsTjy6teCyNfrxrxtC0Z1ExO5hBahhLnxonXW2dcrGvBmdeXVvxRh/HDtxi+Z7tLoWU8y3rF1L3sh1r1jV9b94jnOJx/hR7RCJaJATrwmDr9cNeMzXjqLVafXv4ow0FG4xJEhcLXvlGcg7Kp9LOyyvoPET9++Jx/hezK9SMxvMTGzDgI5tHXoY1Y5M9jiTBwqNsansmeUWWeI3tQfWG7A6xxi+le2Ep9Mew94Vky5YzqYidCMRLo5jpXLzh/dpPodf8/s8UYfwZrqlrBiBHfIt6V91c+g+xbJCB58sdS5sGYmO9QxOs/XYzHxLrVnH5Jdmy6/LdDagsjHrE+ksDq1+vOgGBiP9z2XCs13aC6TdzKBF7JYzvqs5xvXj7seCztR0GJpjSznnus+uNgnpLa1Tr2dXKMsXQqeV1znn2R/uexLOZCvVpazr75F3OfYGZGVH1jtX/hwigXWn0eUgz1MYOFTOzp+0Y5DuJzETPr1lqGaI45b842nmNvtn7X6MpIxGBhjYHWRpMLF7XHeEE+0lnQQzzjbgwAjE6u1/MKgiBjh6gUXWH8rPts+4yqJgV8xNn5+1scwlsyCx6A5k1tWuCAcsWqLl1OZCgacsP267eiY24JsAVLa+iGpQfULSlJJHpD2zierzStBzk3eje23aTVXibI2NFJGypXGuvVx0IrMKBGw4ml7td3RqNUrTqdjF5KvfRphgsb+Zoou08nVtu9+1/DeZiIyGZWvTmscyjbKrPD+UpkvnE6c1ag4kzIWRsvls++l0hoZiYUxii+uZXVq3ZsltQy1mrFPL1LM+7a/hoiEBuZmurVy9Ztdq7NhY2bjfDe4ml8FTJCVsg47qt+1W1Wz46r5Km+ImJj2DIQi7kqQjYzrZixZe8u6w8VQ1hML4YzIyp8T7K3uUS8tfAfr9rQcQfb/yEdf8hjTOIC5Mztshbk7zNGwznvmYiH29TPOfjLaQaW4D+O2yIaa02T8pbzHQPAvhTMRploI0xxn88TIdDZnQ2FzqCifbIwHRWlxo7Rzoikv/ABOc6hrI1Flkai1OvNxrzevN683rzZamyzUsZPxf/8QAMREAAQMCBQIFAwMFAQAAAAAAAQACAwQRBRASITETICIwMkFRI0JhFBUzNENScYGR/9oACAEDAQE/AfIjgkk9IUeFSH1GyZhEf3FDDKcey/bab/FOwunTMPimcRG7hSYRK307qSCSP1C3nwUck3HChw+KPncoADtxCr0jQ3lYUy0ZPzk5odsVPhcUm7diqijlg9Q28trS42CpqAN8UnKG2TnhouVJiULON0/F3faEcTnKGIVJ+5OcXG5VPinSbpLUzFYHDfZMeHjUMiAdiqvCx6ov/EQQbHyGMc92lqpqZsI/KebNJVJXb2kKcZ5Noh/0oYXLKLyu3UeDwj1br9pp73RoqZguWqdzC+7BYKKPqPDflS4Lt9MotINlFPJCfCVTYq13hk2QN+Mq2hbOLj1J7Cw6XdzWlxsFTQCJv5ybBqG6liLZCwLDsQ6f0pOzFKoW6TcsLYHTX+FM1zmENO6h/mF1WR6JP95Ulc+nNuQoZ2TN1Nyr6ITtuPUiCDY9tFBpGs85QRfccpIunW/73VTTCQXbyqOvdA7RLwgQcsRYWTn85YVG0R6vcqoqGwgF3CrKUwv6kfpVRUCVo23zpql9O+4UMzZmBzcsVpP7rf8AvZTxdR6Cp2a3b5tldLVXdlVU4kGr3WDzu1FhKqqxtNbUOViFa2d1mjYLUqOp6Moc7hVdQySmN/cISPDdIO3bQVZgfvwUDcXRGoWKq6foSludLHpYmtLjYKOMMFsjwoXkT3KJAVXUt06WlYbI2OcFyxOUmQx/HZNO6W2r278Kqdbem7kZYrBri1jkZRN1OAQUczfSwKeXpMumX0+LKoYYpiFLM6TnOaYy2J8umm6Mgcgbi6c0OFipmdN5afZUjd75UzdUgUxD6hjL54uLVHnaTa+WGy9SAfjLFo9M1/lUo8OVJcFz/ZYQ0uc6Q54zF4hJ5kcbpXaWqjwtrBeTcrQ21lW4axzC6MWKwZ/qZljLPC1yg/jGU0jg4tB2VJG2nia35zxSLXAfx5mHUghZqPqKPGyonVfW0yXsulL1i8u8PwsMcBUHLFheBQ+gZRiMz/UOypJP1Mhk9hsM3NDhYqtpDTv/AB5VHF1Zmt7J36InOWGf1AyxT+nUB8Ayn/kKwRxs5qLgOc6qnbUR6SpI3Ru0u8nCP5+zF6gNZ0hyVhQvPfLFT9BU58OVSPFdUNb+lvte6rZHSU4kYm8KaoESbXNPIVXTxVY8J3UjDG4td5GHzCKcE8IG/GVZiLIPC3cqWV0rtTlhDN3Oyxd/ha1U53tlUNu2+WGVjtoSL5VzeDm+Nr/UjSN9k6kd7J0T28jNsT3cBNpP8ihTxj2RqJI3WY7ZOrJ3cuOeHx9OEfnLFJNU1vhMdpdfIi4siLGywgO69wNspGB4sU8aXWHc6NruQmxtbwOyam+5ucEfUeGpotsi7SLlSv6jy7KF2puVQz7lhDQILjKpqb+FvYXAcoG+YN0Oyog+5uWGwaR1DliM2iPT85xP0nIi+yoCwRBrfZVVQPQ3sJsLqR93LUmvN7p24UbNPcKQPkHwgLIusLqqn60mrshfcWOXVFPS6vlRytk7DuuiUYCoWWG/kGRrSLoLEKn+23tBso36gp/QgSDcKGXqDvPCj1e/ZZTTaBtyrlzlU1Ihbb3RJJue4EtNwmvDwjB8KKPQboO8oNXKlotZuCixlNudynOLjc+QDZRzDg9mpaldX7r2U9bbZiJJNz5bJS1NmafJvZPq2N43Uk75OfPa9zeEKg+6FSF12Lrs+V+oYjVj2Tqt3snSOdyfJ//EADgRAAECBAQEBAMHAwUAAAAAAAECAwAEBREQEiExEzJBUQYgIjAUM4EVIzRCUmFxFkORU6Gx0eH/2gAIAQIBAT8B9hmVee5Ew1Qnlc5tCKA0OZRhNGlR0j7IlP0wqjSvaGaaxMrUGlGwh2hPp5TeHZd1nnTb35SmvTOoFh3iWpDDOp1MAAbeWtVDhp4SDqd48PtZWCvucFJChYxM0Vl3VGhiakHpbmGntoQpxWVI1iRoyUet7U9oAAwW4lAuo2h6tS7e2sOV9Z5EwqtTR6wavNj80OOKcUVK3MSVZ4DYbKdBCK3LKGukNuJcSFJwUkKFjE/RQfWz/iFJKTY+wwwt9eRESNPRKp7nvDqsqCRFNq1lFL53h+cdXowPqYMg8/6nlw3Smhzax9lsXvBk5dAuREytC3LoFhDLfEcCe8O0j9Bggg2hmaelz6DEnW0L9LuhgEHUYVCmpmRmGiocbU2rKrfzNoU4oJTvEhIplUfud8HXQRlhxopcKIkJ7J9255KtNi3CT9cKQ2FP37Q6FKQQneGvmi8TKMq8JGpOSxtumJeYRMJzIOFSp4mUZk8whSSk2Plo8jw08Ve5wec6DBxvhzf8w/L5xpvEpOqYVkc2gG+FTQUTB/fCkNpDWbqYffDIBVtE3LFpXERyw++HEjvjJzi5VeZMS76X0BacK1IacdH18lMlPiHtdhAFtIdXlGIcU5M3VhMMhYv1ilPKzFBMTM2mXtm6xUZpMwbJG0ZYlH+C4Cdomn0OS5vAcUBlvp5aZPGWc15TANxcQpIULGJ+V+GeKOmNKluCwL7mCQBcwtWY4HaG1kPXMXAiZfGXKkxT3EtvAqioufeFHbyOvKctfp56JOcRHCVuMK1LcRniDcYSbPGeSiLWFoUg7kw87wk3hN8uuD6C26RDjql74uvF2xPtyb5YeSuAcwuIWkLTYw+2WnCg9IoTV3FL7YTKjokQ6Qt9Cb41UWf97KbXwpL3Flh+2FcayTGbvFDRZgnvhMLIcJ6ARSklSlLONXb9QX7jbanFZUxK01KBdzUxkTa0TlPQUlSBYx4fc5kYeIEXQlcUoWlU4VRxXxK0gxKtpZbSnGpN52P49yQlQ0jMdzB20iUVM8Wzm0cNzilZPp7RRFATRGFcF5b6xTvwyMJgI+NVxNrxKufEOFfQaDFSQoWMTksWF/t7Uo1xXQnyPKyNkxRfxQwrX4UxSjeVThVhaaVFHVopMFQG+MywH0ZTDjakKyq9mlfO8lUmAlHDG5ihpvM37DCtm0t9Yoa7sW7YVxuzwV3iTm/h76bxOOFxgLRCdorNeaplgoXJ6RL+NJVfzEkQuakaj8twZoWkoUUn2JF0NPAnaAb7YTc+hn0p1MOOKcVmVFAb1UvCvrshKIoTtlqR3wrbOdnP2wp02rRki+HjdjVt3C8Nz0w3yqMN155PMLw3Xmjzi0NT8u7yqgEHaCbQ9UJdnmVDtfT/AG0wurTS/wA0SM0+GEnMdoM28rdWNIZ4UsP3wrjuZ/L2iSe4L6VQDeHWw6goPWHWy2soPSKWFca9sJ+SZnGS29t/xE2w2w8ptKswEaR6YsIy4NTbzPIqHZp57mVFjFouBFNrFyGnv84yjBfdCISkJFhC1BKbmJh3iuqWeuFLmeMwO4wrcps8n6xS0gM3EE2jxJ4jLl5aWOnU+RqXccBKBCkKTuIF94BJhScu4hW/kpNUuAy6f4woknkRxVbnCtTPCZyDc40yb+He12Mbw4hLiSlW0NshgcMdI8UV8ZTKy5v3PkabLisoiQluEzY7wprNooRMS6AjKBa8Nq4a9YmXw5tCvL4YmROOpl3j/wCwkZRYQpQSLmJ+a+JeKunkpE9xUcJW4wqhPAXrbSJuSelleraN4GCFFJuIFUSlI0huqtK30ipzQcUAg4qxMbRSpR6YmEZTbUawNorU9YcBH18rbim1BSYkZ1M0i/XrFaSTL6d4cbS4kpVtFRkvhV6bGNtfM3bMLxNFsjSDimRf+HMxl9I6xTqcqZVmVtDLYRZKIqE+JVvKOYwpRUbnzMPrYXnRErONTqLdeoh6hKzfdq0j+mmHk2mNYq3gfTPJn6GJqSmJRWR5JHnO0SdNmp1WVhBMUfwQ21ZycNz26Q9Iy77PAWn09oc8PNp+QbDtCmGqd6lHMvtDrqnVZlew24ptWZJiRq6XPQ7oYGuD8s1MJyOpBic8FSD+rfoMP+AplPynAYc8HVRGyL/WP6Tq3+l/uP8AuGvBtUXum31iX8Avn5zgH8RJeDqfL6qGc/vDTLbScqBYYEgamJ6shPoZ37wpRWbn25WpvS+m4iXqrD3WxgEH2CQnUxM1hhnROpiaqD0zudPfZm3meRUNV10c4vCK6yeYEQKvKn80fa0p+qFViVHWF11kcqbw7XHVcgtDs069zq9n/8QAPRAAAQMBBAgDBgQFBAMAAAAAAQACEQMSICExBBATIjBBUXEyQGEjQlKBobEUM3KRBTQ1c5JQYoLBQ2Px/9oACAEBAAY/AvKbrHFeH6rxtWNX6L836L836LdqfReJqnZz2W8wj/Rd1pK3jZW9LlusA4EDNPrVcapYcOmrephbhLVhvdliPP4CB1W/vFYCOGNKq4Bp3R19VWeBMNu7zQVNMwVvNw6+b3Rh1UnePFAG7TnF6axvhaICDWui2YPrwJp7pUPb5eAFaq/twcSFjUHyWElYNK/K+qZQpUZc8xmtkMebj1K3HR6JtGo5oLAsDwIcJCtUsR08rDVhn1v7zgtxv7rxR2WJJunStIZFV43O2utVaIANgfJYOIWJtJul1amza+bICqaOHWrBvyMHKy4eSn3VDRGplKYtOARLKp2wEycjrzk9FDd0LIqWsK3nALdNpbzgF4iuaFYzFHe7oOaFjgq76e88MMBSaZ1U6dCi8se6NpZ3QrFJoa2mzABVdLdDH1DJsqKm8FuH5XocoOXI+QtO8P3UAQNdD+437qE7SNCZjzpNGfZWfyhzHNYy7uV1N8UqQxP0QZTy+6BUwnxAL93LVvNVFlBpa0tDjJnEpwdlGKr0KBJpNduzqkGFZrf5KQZF2y4KDiOR42PhUC5TqRNlwKZVGTmg6hU0amwOZiQG4uUHgGu5sOecD6LELDFqyKZQ5DeOoU3mGRJ9U2mwQ1ogId0zSqdFwfaio8ZXN3LosMD0u2XKDlyPEgKyLwtmbBsjsgHHNYI6RozYqDxD4lBvOcfy2fVBreQy15KtYymNTatMw5uRTSeiHdVtGBaNo3N2QRb0uS0wVZdg773bLvki13CAHNRz53wA2CHGfVN7LdOHRWgnvDbNUjAp1Gq2y4XarJxtSrbVvLAo1SJ5AdSnVDm4zrxAa9mBE/VEKCFth4dIFvLK7K2bzvfe7aHiHC2jszlwBRtnZkE2U3tq3Th0UjPmFjuvGToTh8NzY2ZFXn0jX4/omY429dIzFVkhpj6I7sOGDmnmvZmHgbzeitOWz0eztaZlojP0nknU6rHMe3AgjK7grLjvi7tW5HPgRy58FumVTBI3W+ib21hwUhV204ZUqxLuydSf4mmDrGwt7TlZzTHV6dipGI12iJMQtGp0W2Rvn7anULZ2dmYRpVmy0pzqLTJwxOtlbauo1miLUTIWyrCWnwvGTrocM1a587haciiw8r/qc+Do5/8AWE3tcFjM6qtr394dkJyQLKLJczBycS6293P0ut27Zs5Kj/DtHFizgT6lVHVqZa2zE9bz9HqttT4fQp9J4hzDBu2uXNSMrm0GYveguTdDG5uMBUqT4lrYKb2ubQ/LU3+2PuU/2cupvEEZ4qnTaIDRlf8AxVgbK1atTwBVbUNKsxpDcMD3T6VRtl7DBF3Yn5XIPNFl2evCpVHZuYCUdUNC391WW6jpbPzKbcf0rSPl5H8doYdUq++yeXpdDhmEHi4Ko5YG4BrxuYXKEH/xj7IgiVadhjkrLRAuFrhIOYTPwlv8PUO/hgPJVdK0AObUBtFk4R0F00jzyuFvVEay7XmsdTNHbhazQaOVx1G3vh0x6cM6Jojh+J94/Cv6hVX9Qqr+fqpmjadZIqmy0tbkeI/TNCFmpEuYB4uyLSIIwOsOHJBw53D646xcI9NT6zuwulhzeyBwtHGiENdVJl0Tl/8AU6pUcXPcZJPO5oX95v34tTTKDJ0VxkmfCbln4bjX9NYFy1GaJcU79V2n2PC0Hu//AKu0tIpgF1N1oTkqNd8Bz2BxjiVKGluApOGO9C2e1pVWnFrqbpGuz8Vx49NTbhKb2RJ6oNbdomJk2eFoPd//AFe0X+03hOq1XWWhRozAxvV2JU1qjnn1W8AVuEgqHhNd63IRC7C4GdUZOQhBnVRdbVZ4mmQqVZ0S4Y8HR9IaJbRcbXzi9ov9pvBsssuq/CrVQw3k3ldPUamO6i49ONxoCDXcltT8r9kgezNkcGCJC2miluj1pLnYYOlWPwxrYTapYhf0+v8A4r+n1/8AFMY7QnsaTiX4BNpsENaIA4FvAvPhanVqnidqleBsK1EJtjmpeiEy5PUJxuN1NgRgnRkMLzqE+zImPLmPAzdbrhbkOCh+crfbK3RACJUdDcb2XzuDsomAF68lvnE43m1aZgj6plf4hiOnla1QHENw4Du2o97jOy+dwdlGzx6ptvI8ANqOOxOY6JtVnhcJHlKejAw0i0714DtR73GdkRcbqY45cEaFWcMBuOJ+nlP+A4Dafz1dzcb2ThcabtknG8HNJa4ZEINte1aN4Hyf/AXy8ouOptyOgR7XO2sOnDU22MG3xWpGHBCCBUjeb08lTqfGz7XrTjgoHhGtg9Lj024RrsWt1Bzs01wxlDUynMWjCstb+6LSwYiFgHT3X5rVtmMcwt5wmue5u0HiA8iNnG0YcJRZUaWuHI3P93RS462t9bpJ66puEazTccDlcpOcYAdeL6YDXHMwt7FcwsHDhbbS6wpMmEAx1av602ZfvCZY/h38SsvydscPut1qwEIh2kuqSJEjJYwfkvC1eKPldnpcefTWLgdcc7lcY5pkRwZCxMrFsLA3fEqBqve2nSndHvIhmh0sfiFr7qBrNkzZaAeBa+K4GddZbcNz53BSqn2fL0UhZhc/2XP9lz/ZR914hekGF1RBAa5YuN2bQUUh81U0mkdoCZLed8NHNBvS521g8B1sXICirVI6N6LESslkslBCyW7VgKIafVY03z2WO73WBnX0PVRW+RXsxbUClHrK8TVvVHEdFlr/ABejNFto32j3he2h5XC7oETc7XPUarUYNuQEK1Ye05Dpw95oKwlvZRTqYeqkm36BfkOUOH7hPbOAy4B07RGb2dVoy/VcgINuCn1u97voU4elzbVhv+6OnCyu+vJS+nDeeK6gqqB14LtM0Nu5m9g5dte1cO1yUXXvW5CcTnOs16rc/DPBdXfk1Uw51k1PCDzuTqx+HDVUAyDlVHrwjpmjN9l77eisoAXLAzdf9LsBsrFCppILWcgRmt0jgYotosLyKjXQOgKqfxH8NVpihRIotqDEu7JuisdtCKVt1TLFaL+DxFXSLBPVomSP2TtEa3wMtOdrwwcMioNQR6BQEf08IsqgFhzBXsZ2b8ibhccgi88CycxclNFQw1YQQrTN1ysPEO+9wn11zrG1acMrLi37KgNFrfhn0PyzYtDKIhVaj37StVNqo+In5KZun9PBssE+vJe0dbT2PAsx+1zZDlnwZCm5VruaCKeDe6NSg6D8PJWXtsuUFWH5/fVAzKA6XIU6sQsLmY1A/EIvDOHatm35lYKBi7oq1VxO0syBOQ564HiPEka7bRvOebWqzNkgyCtjV8Q59Vh4uSlTyYOIylMWl4U6m4zHNUvnePVCwCXFR+62NLPmeiAzdzcn03eFwgoxkrRVo8SDlrfo+Ac10556zDZePCscxmrUbp+/FbUbm3ksX4p1R2E8lTcchN61VdHQcynECMUKNLF5+isjE8zqqVj7rSUXFScuNBy1CvQdZeE1zHt2kbzOY1Fz3BoHVH8O01GxvFuUrefsz7rHeQH6rklWNF33/FyW0qvLnIwJn1ViqW0q3Muyd21W6r2sb1JWxokii07xPvLDBvkIOSkK1Te5h6tML+cd/iFOkV31O5w1hn5lMe6eSs2tm7o7jD9Wq04gBRS9q70yXtH7vwjK7ZZpFVregeV7bSKjx0c+VJy8nhf9nVMdDio0ijHq1btYA9HYKRiODL3Bo9So2tpwOTVFGkG+pxU1ajnX/wDcpd5SQodwZp1XtPoVArz+oSvyqP1W/o0n0cv5U/5r+VP+a9no4B/3OlQ1tNh6gLHSHD9OCl73OnqeBJUU/wB1j5f0XQ+X3cSt4+b6rHDyWJhbuKxPn8Ct4SuiwIPDxIWGKwwWJ/0XBxWMFYtXg+q8H1Xg+q8H1XhCzhYuPlf/xAAqEAEAAQMDAwMFAQEBAQAAAAABEQAhMSBBURBhcTCRoUCBsdHwweHxUP/aAAgBAQABPyH6MFwNCyJ2KjLSeRRvfLVvE9pV3v8AfNd7/fNbBfMKISN2oC52XNLR5IqE5/8AiQBjsUDJUhGT3xQIQW8X9AmapgCjr8QGMVBSEHFDQnwRQNw9yryQ0hDHn6+7dwVfV+KoIQ7emATdMiX+KcES2dI0eRonwpvSF7sY+rRwblioMO+/qiAt6mwUGwf9o0YBc2KEJZUTDWAhBKPYOPapGjjj6eWJWghdeNAAAAMB6GGXloy491LXeEo6nu09Kv0URKO9GL9uKG9buYpfIK5mgwHx6CArbNS0vv6RGE+kg5Yy1YKXla7UHbejST96cHYijMud3QCoCWkkkVNw+Tno2JaHEPDMlk18JTVqIdygmb4Vhifhofqi76HqRa/PUuY/RScQctRuDo4QUzxLStkpsHatuk0PaqlLhsUlKtESBzihp7LmkyKf2ik2V2vRvrXc99NNOIJIuKzSFPteqCY3bCxVgR2vSRmpMMcndVxYolY20BBVoINgWqyPc3qQC/I1R2vs8Vnv7j6B2WzQEIOOv87hUjAjaKUgEkCPct4plUEwlTzFv4xU6nmag4NUqzMuBy1C/ZdjLdrvzU6X0ZGDPKc/E9IIXkzVw+IBC6tBMw0eFQdpPOInpJUirp7D/aEmTGlJOPkrNg+560xFmWgIICwaENxzzDQioJHJJPRGQmHSRxQUBEyPoXGVOS3/AGaCgmp0+NUBibvVkUMBzt0hfijYewqCoBcBSYpzTnFgEcT30Sxd3Kp8uXScnJ+KzK9x6m0LdogMBo5qCMVGVJeNgRVw5jRGUJQoBKJ5e9BQITVN3JeN3FWCER2dVsh+1SekD7gB+ek/fTQuVIXpj6eAymR7U6ESkY0HmBxUPHpW8zdxQxQj6V4JVEgXZaN96w97PnmfZPavkqiBQM8KL+JOGiRY0VCeUp0C99++luElHZP+NOVc7bVGi15rAD4qccmkWhVvys9bhOi5AGHF6HecnmkcZLI0xJgCyUwmlKhmiKFtf5nTxb270EYfRtB/g0T3caADOCVp5r5rpJMiXlWGXsKjT2/KP2VGhRQsaGbaN2wvQ69nkqdB4NZs8Q1fPS1GztcGyqTzGugPJUBjRXP7HegQMnDmixmRjUOUSzlaUqVDVr35NNnP93oQ6wvQAACA6yu2lZRTyCzXz3V4cZ71L2+5uUA86vMqkoFQjAzfqV5G/RvlPuuah4rao81b0K+xifwUAFZA5WkMTFS9BR2jQ7feDyUNYcmS3VcWgoLto8uaUbNb2tKIoHao+sLDvoHOQhrJKtcTPNoCDpEh8vivmtForYhw0Us/vtcv/KN9w179KCM0a7j8cNLbW/Yxn/ynxlv3BRdxAnltqKuBPwGanzKfc0g8tihbSiR0RBcvjVGLyPQ6TXaRvkgcrVlRYMTRZYtLQKxifF6WVRLhBibHc+KiQyHDWMFqseMRmaNdsAIE+e6mzIu2TTPf7/roVXgQlKts20w6zfW3RPGgBBpUCbULQGRiUnqzbFcUox/Zmj00HPQnbgZsiV+5NCZOf9/Q25bEa4LI5ti87UkMOhw4SSt1TPbRADQO6bQggwdBzVT4qbFWCWhVwGNCuCQ28KAAExWfINjJQOAY0BwFCFkoDEFC4eJ+iIyI+SgyMZmNMgOXloBPZSMbPWZ+3XuKN9dF53F2/isbAjRdEV27P99M0c4syH9/uv8A1T9V/wCqfqv/AFz9UMB2HKY/z1BSjVqQLAwU2JcHD1yLKaPGBOicBbrd8N9Du1J9FgHTSeSPsX/z0pTuYYALX/kUgfS8qd/oZHA5oFMz20XC3UZ0WlLoegkneok2I0TRQXei5kGKct3af5fD64YxLGcjmikBjCU29SEEpNjhmlLCXJH+PW+NlT1xjNx9q3rxBnR2bKirBH8Ug8zQQYDSx/e3NvoA/wCtx6RZh3aZQHgoAEWJzFBQB3JoleNZKsiNX+iKFy3UCK4kNKmQjRKXsaL8wuiqx+FVyolmhANtLeBdBvRnieDHoumExMFp9z51f1uPRyqZfOOamYLC2aSsjMNYozGzoU7uz70PNY0W0GZmk0/eklx41jBhYNz0WQk2SkJycvW6/F/9qFeSHhlDqIQfIxoTeaGucLYPQlQs7Oe/is/xMGDsdHJwKRdyXep3DYzQdAZ3jERUgCWRYrsctNZmc6HR7CVFyGNGf31vQzH2VGoZ3nVGVLtYfplBLU/njH5eok5UFNw5imxApRNBAUMdqgIgmCu7DT90Bo/r71+Rpx+SDR+L4hrOx5ffU/FF4YhxQaAbBu3PpWPBt3NKrKy60Dtrqc6f/t7vQbaMZuScGp23McUEEa8PHkT5FTmQ5uEn6T9cpB6DKN4NX/292vAnQCXz0wsm9HoOAhgubgd+fpP5vPoNAwFNqZFNw0fx92me1oznDHTBWPx0IAFidTBxlEI1K6hMhefo/wC7zrxQmO7T1yvRJJGdCT9gKIB3odZB5T0M0whmZmtqhi4c5oRJMOr8+unFPxmW79ESVtB7v+6mMYU95MXfoZp0djolnDHtXkDGjucdQoFdMTS8SGKGvZgoobkDptaMqZDZut9RLbKAqXiQtfSAov2rfcx2U6NmPIzH0KCb9NEm5WdvgaHcs7afZiOtpJnCrCDbqoErAUq6VlSgvenAMJPXavK3WDllOzSQSDDPUtAqrtQiCMjoQSGsEGTKpWB8abB8rikIY+lZ2gKKrwBdqYCk4PlP4VeGAKbXedlDOU72qOEuc0BsExIu1rVenz0/vaLSIeBSKVnRcZIdGFdnvW/Tv0toi5lus1McZkC9cFTyA39GbMNFFluQU4EDdmpgxc0I4Tq2zWcE8FXSM7MmN9sfNMhil/7FAAACwHUlndpvoX2XWjkJT1iRvoh25fQ0Abl2hkTgqoBJHFJZ97RVVDinhFf+7QiSMmm9kqCQI3aLMslZKaFAlYKeKwTmr24+NGeYmW/ukVCQ6sqCoAMDRJA2t6+aKGSeuSpAMNzowBloXgVHQgBK2CgEquGfvoiJEb812HtXYe1dh7Viima733rAXYIxUnGLuc1ItEZiypy6O1tX8vB63zDgbVtQWzilELzi0UgkN3C1T2SOxWBuNOa733oAwdGg+2UdzyUkMOmUK1h50SlQ7G7oj+bHROJydEFSuPbQgBK4KKU1f078sBTJ+BrZr7v+U4seK/4r+7/lMB+cWCpySf2+hHZMwQiFR3tcMz5nqYvK0D+L99EIN7nTYHFjpuByFJxruoKwErVkNWX+39AJYpNmayXVkBOk5yrDlpNFLK+KG1sqAxAQPn0YiP7EHHWTYYn+dAIsFJP2m2ktUS7M6CV/atzSHjq1xzB2HPokepzBlo4/DiomOmUCprFd0HTNJBm5mkWRagWtYHFKFZZHooJCSNRaCwb+TtRIY3eCsYQaPv0eKdUJOWdNw2uJpIxB7VHH4ch71cgOz6FzVzam5E8zIYoQQJrnL+FRkvhQZRERT00iwE+1TlU6yOZhWxSoMhxUWV7ApxMs2GvyMr+vx6R/tjBaX3Un8TQjEBW8x6F/uDvokfAqJ+XxM9qiex1cgbLtTrQHPu6tqIAgEeesJ7qbknS8+lEpDklFrFHCbYAG4dqMbD6FsGwCokEU30f1+NQioJJnqiz5nYp7qJ2cH2q7zuQ2Z0Xdt8noiWhKAx9+sZczRp3mbw+3ir32y7nakWw5s17ZHij8PDw6KW+MPzUE7I0Q5EUqxaeKA3mv+BTI5Oj/AN7pYCzD7amxDAfPSZafHUEMVMG8aopZGwM3wnqMpwdqSsvpNNtvQkkj0FMKU2gyDmOhkMEFM+1UTkLMqEBnDUOZYfd9QpCuSnBUHDMRNX5cU7Gv7+2poWFyozxY7VGZuVy0x3KpCANwy1MXLi4SK3rdaeKa/bKfbvqcwaUkjI9FKtwZB7dUeBSjM1Y+HRSJDSDMrdfULePcDS/woaJhK07K2GYL5NUA/B+AqMybs5O1bWIX8qIwLt56QcpEzEwYqymF6kZAwet3H+KQkjI1ili5InFTC6ctze3QSVSqgKC1HJuy9GBwdjL5/wAovj1/jtCBADK0Iwcwt/dPkLdp7j7LIpjmNwXML2tQCREpcEcIq/zQWe0bxUTsMH0G8FRSSNWR/ElfFAkfy+KTTJmLB7GDqwENBsuzRCR8WZ+9CJIyer8d0YDWVaDfj3upGHPD/wCsaQptgQp0M1GXeGsTNh9FZ2OKmivua3rzwVOhF2efiilvTkFAEEuJv6PdtkBSHjkm5WFLN1NIpptNvbWsC/CkDVt9HKGGoy280IkmPQIERAqVOoeQXu0RXb7ftThj3WM/Ffxf1X839U32+HxFJeTAvy0oMT/NqbqFKyeg6SA3qabdEkufp7eM8Gtw7D9MsXq3f4qmX2PqpqwrDhrOJ0I4Z+hNkh3qdDOm9ng+vzWUfBTIr5V8UDrtU9ZCFHet5OrIKrSz/wDENhaicCv8gVKsfboUOdI0QqZLULbD7Kzq+9Ku/wBJ/9oADAMBAAIAAwAAABDzzzzzzzjaA9TkWkOTzzzzzzzzzzzzzjXsGeeagu3wEnfzzzzzzzzzz3IdNpx3u1c6cLzHPTzzzzzzx6yPxdYT42jIs0a4rwTfzzzzzvlKPhj3330MKq5Xz8LzKTzzzgy1z8ALD/8AzY61gI08Rj80888iQef9ABno2dkDeh8M089BT084bZ+9sUFVsQ888F888s88K8j82/p+U98789l8z38888800jKRR9Yml99E8888iBB88888s80P8oPZam99q8888KBBU888+9cvNBTPQV+99q8888cfv88843t0ZcFy+IEZ99uL888888888qd99obDqHR0o499q188888888r999txbZZlV/bd/wCXWPPPPPPPG9ffvnP7/wCUHzD1oJBGNLXzr2zY72PxLc0BEC6n2x7PNEM4GEF8VDzzjMc6y1na3vkIIIgc2euEIILXz8qzzx1kJCgIIIMhlU4okIIJCJqP/wA8sBR7BuAIRPp6gKhCCqGirj8888BXh7gTCCCCCQtBCCGrLjs88888ngMqHFCCCCCADPKQkqe8888888RGbZ20KOFJK44omY2888888888s8YL1YYZY8vc1788888888888888zgIOYlTvo88888888//EACgRAQACAQIEBgMBAQAAAAAAAAEAESExQRBRcdEgYYGRocEwsfDh8f/aAAgBAwEBPxD8CtO/r3mXD5Pb5gNV6Ud45lPq/U/gveJzSer9x9AUy03+pkkfB/vWI0/V+fICuZ+ucqEdTT2hFEGDBgzN+Wvkf7LN3frgFTZL70bT27RHU5jT/PxhjtZXZOTY7wbIMszR5zCJXl3YnTOrfaaEh6RjsO0fvaxSuByZZE9R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";
   let uid=0, W2=900, H2=560, activeMode="normal", activeView="arena";
   // ---- arena selection: the pairing decides which tokens the whole UI talks about ----
-  const TOKMETA={ansem:{label:"BULL",team:"Bulls",emoji:"\ud83d\udc02"},
-                 uwu:{label:"UWU",team:"Unicorns",emoji:"\ud83e\udd84"},
-                 sol:{label:"SOL",team:"Solana",emoji:"\u25ce"}};
+  // `tok` lets a call site ask for this token's icon without needing to know which key it came
+  // from. `emoji` survives only for the genuinely text-only surfaces \u2014 canvas labels and the X
+  // share string \u2014 where a background-image cannot go.
+  const TOKMETA={ansem:{tok:"ansem",label:"BULL",team:"Bulls",emoji:"\ud83d\udc02"},
+                 uwu:{tok:"uwu",label:"UWU",team:"Unicorns",emoji:"\ud83e\udd84"},
+                 sol:{tok:"sol",label:"SOL",team:"Solana",emoji:"\u25ce"}};
+  // ---- token icons -------------------------------------------------------------------------
+  // The armies used to be emoji: a generic ox, a generic unicorn, and a ring for Solana. Now that
+  // the real art exists it should be the same face everywhere - in the arena, the panels, the
+  // leaderboard and the arena picker - so a player reads one identity per token rather than two.
+  //
+  // Delivered as a CSS background keyed on data-tok, NOT as an <img> string. Nearly every call site
+  // here writes through textContent, and this file has already had one stored-XSS bug: switching
+  // those to innerHTML to fit a picture in would trade a cosmetic problem for a security one.
+  // A class and an attribute render the logo while the text path stays inert.
+  const TOKSRC={ansem:IMG.bull.src, uwu:IMG.uwu.src, sol:SOLART.toDataURL("image/png")};
+  (function injectIcons(){
+    const css=Object.entries(TOKSRC).map(([k,src])=>`.tico[data-tok="${k}"]{background-image:url("${src}")}`).join("");
+    const st=document.createElement("style");
+    st.textContent=".tico{display:inline-block;width:1.05em;height:1.05em;vertical-align:-0.19em;"+
+      "background-size:cover;background-position:center;border-radius:50%;margin-right:.18em;"+
+      "flex:none}"+css;
+    document.head.appendChild(st);
+  })();
+  const TOKOF={bull:"ansem",ansem:"ansem",uwu:"uwu",unicorn:"uwu",sol:"sol"};
+  /** Icon as a DOM node — for the textContent call sites, which must never take an HTML string. */
+  function icoNode(tok){ const e=document.createElement("span"); e.className="tico";
+    e.setAttribute("data-tok",TOKOF[tok]||tok); return e; }
+  /** Icon as markup — only for templates that already build innerHTML. The attribute is one of our
+   *  own constants, never user text, so this adds no new injection surface. */
+  function icoH(tok){ return '<span class="tico" data-tok="'+(TOKOF[tok]||tok)+'"></span>'; }
+  /** Build a label that interleaves icons and text: strings are text, {t:"uwu"} is an icon.
+   *  Same reasoning as setTok - nodes, never an HTML string, so untrusted text can never execute. */
+  function setParts(el,parts){ if(typeof el==="string")el=document.getElementById(el)||document.querySelector(el);
+    if(!el)return; el.textContent="";
+    for(const q of parts) el.appendChild(typeof q==="string"?document.createTextNode(q):icoNode(q.t)); }
+  /** Set an element's text with a leading token icon, building nodes rather than parsing HTML. */
+  function setTok(el,tok,txt){
+    if(typeof el==="string") el=/^[#.\[]/.test(el)?document.querySelector(el):(document.getElementById(el)||document.querySelector(el));
+    if(!el)return;
+    el.textContent=""; if(tok)el.appendChild(icoNode(tok)); el.appendChild(document.createTextNode(txt)); }
   let PAIRING=localStorage.getItem("bvu_arena")||"au";
   const PAIRTOK={au:["ansem","uwu"],as:["ansem","sol"],us:["uwu","sol"],"3w":["ansem","uwu","sol"],ffa:["ansem","ansem"]};
   const isNArena=()=>PAIRING==="3w"||PAIRING==="ffa";
@@ -772,7 +842,7 @@
     if(hp){const bk=safeV(hp), pl=tot(hp)-hp.deposited;
       // rebuild the tooltip only when something in it changed (was: every single frame)
       const tipKey=hp.id+"|"+ring(hp).toFixed(2)+"|"+bk.toFixed(2)+"|"+pl.toFixed(2)+"|"+(hp.raided||0).toFixed(2);
-      if(tip.dataset.k!==tipKey){ tip.dataset.k=tipKey; tip.innerHTML=`<div class="nm"><span class="dot ${hp.side==="bull"?"bull":"uni"}"></span>${hp.isUser?'<span class="youtag">YOU</span> ':''}${esc(hp.name)}</div><div class="r"><span>Ring size</span><b>${fmt(ring(hp))}</b></div><div class="r"><span>🐂 BULL held</span><b>${bullTot(hp).toFixed(1)}</b></div><div class="r"><span>🦄 UWU held</span><b>${uwuTot(hp).toFixed(1)}</b></div>${bk>0?`<div class="r"><span>banked (safe)</span><b style="color:var(--gold)">${fmt(hp.sBull||0)}🐂 + ${fmt(hp.sUwu||0)}🦄</b></div>`:''}<div class="r"><span>Raided</span><b>${fmt(hp.raided)}</b></div><div class="r"><span>Won/lost</span><b class="${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}</b></div><div class="r" style="color:var(--ink-faint);margin-top:3px">click for full profile</div>`; }
+      if(tip.dataset.k!==tipKey){ tip.dataset.k=tipKey; tip.innerHTML=`<div class="nm"><span class="dot ${hp.side==="bull"?"bull":"uni"}"></span>${hp.isUser?'<span class="youtag">YOU</span> ':''}${esc(hp.name)}</div><div class="r"><span>Ring size</span><b>${fmt(ring(hp))}</b></div><div class="r"><span>${icoH("ansem")} BULL held</span><b>${bullTot(hp).toFixed(1)}</b></div><div class="r"><span>${icoH("uwu")} UWU held</span><b>${uwuTot(hp).toFixed(1)}</b></div>${bk>0?`<div class="r"><span>banked (safe)</span><b style="color:var(--gold)">${fmt(hp.sBull||0)}🐂 + ${fmt(hp.sUwu||0)}🦄</b></div>`:''}<div class="r"><span>Raided</span><b>${fmt(hp.raided)}</b></div><div class="r"><span>Won/lost</span><b class="${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}</b></div><div class="r" style="color:var(--ink-faint);margin-top:3px">click for full profile</div>`; }
       const r=canvas.getBoundingClientRect();tip.style.opacity=1;let tx=hp.x*(r.width/W2)+18,ty=hp.y*(r.height/H2)-10;if(tx+180>r.width)tx=hp.x*(r.width/W2)-190;if(ty<44)ty=44;tip.style.left=tx+"px";tip.style.top=ty+"px";}else tip.style.opacity=0;
     // ?art=1 — a one-second answer to "are the logos working?". Draws the three faces at a size you
     // cannot miss, bypassing every fighter-size and targeting concern.
@@ -810,10 +880,10 @@
       <div class="sec">This round</div>
       <div class="pg"><div class="pstat"><div class="v">${fmt(tot(p))}</div><div class="n">Bag size</div></div>
         <div class="pstat"><div class="v ${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}</div><div class="n">Won / loss</div></div>
-        <div class="pstat"><div class="v" style="color:var(--bull)">${bullTot(p).toFixed(1)}</div><div class="n">🐂 BULL held</div></div>
-        <div class="pstat"><div class="v" style="color:var(--uni)">${uwuTot(p).toFixed(1)}</div><div class="n">🦄 UWU held</div></div>
-        ${bk>0?`<div class="pstat"><div class="v" style="color:var(--gold)">${(p.sBull||0).toFixed(1)}</div><div class="n">🐂 banked (safe)</div></div>
-        <div class="pstat"><div class="v" style="color:var(--gold)">${(p.sUwu||0).toFixed(1)}</div><div class="n">🦄 banked (safe)</div></div>`:''}
+        <div class="pstat"><div class="v" style="color:var(--bull)">${bullTot(p).toFixed(1)}</div><div class="n">${icoH("ansem")} BULL held</div></div>
+        <div class="pstat"><div class="v" style="color:var(--uni)">${uwuTot(p).toFixed(1)}</div><div class="n">${icoH("uwu")} UWU held</div></div>
+        ${bk>0?`<div class="pstat"><div class="v" style="color:var(--gold)">${(p.sBull||0).toFixed(1)}</div><div class="n">${icoH("ansem")} banked (safe)</div></div>
+        <div class="pstat"><div class="v" style="color:var(--gold)">${(p.sUwu||0).toFixed(1)}</div><div class="n">${icoH("uwu")} banked (safe)</div></div>`:''}
         <div class="pstat"><div class="v">${fmt(p.deposited)}</div><div class="n">Deposited</div></div>
         <div class="pstat"><div class="v">${fmt(p.raided)}</div><div class="n">Raided this round</div></div>
         <div class="pstat"><div class="v">${fmt(p.dmgDealt)}</div><div class="n">Damage dealt</div></div>
@@ -858,7 +928,7 @@
         return `<div class="lbRow ${mine?'you':''}" data-name="${esc(r.name)}"><span class="rk">${i+1}</span><span class="who">${mine?'<span class="youtag">YOU</span> ':''}<span class="nmx">${esc(r.name)}</span><div class="pct" style="color:var(--ink-faint)">${r.wins}W / ${r.rounds} rounds</div></span>${compBar(pnl>=0?(r.staked||0):0,pnl>=0?0:(r.staked||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}$${Math.abs(pnl).toFixed(2)}<div class="pct">staked $${(r.staked||0).toFixed(2)}</div></span><span class="rd" style="color:${roi>=0?'var(--gold)':'var(--danger)'}">${roi>=0?'+':''}${roi.toFixed(1)}%<div class="pct" style="color:var(--ink-faint)">${tokLine(r.tokNet)}</div></span></div>`;
       }).join("");
       return;}
-    $("#lbColBar").textContent="Wallet size (🐂/🦄 split)";$("#lbColRd").textContent="Raided";
+    setParts("lbColBar",["Wallet size (",{t:"ansem"},"/",{t:"uwu"}," split)"]);$("#lbColRd").textContent="Raided";
     $("#rnav").style.visibility="visible";
     const isLive=lbIdx===0, snap=isLive?snapshot(w,null):w.history[lbIdx-1];
     $("#rLab").textContent=isLive?"LIVE · R"+w.roundNo:("R"+(snap?snap.round:"?")+(snap&&snap.winner?(" · "+(snap.winner==="bull"?"🐂":"🦄")):""));
@@ -880,6 +950,9 @@
   function sideListHTML(w,side){const list=w.players.filter(p=>alive(p)&&p.side===side).sort((a,b)=>ring(b)-ring(a));const mx=Math.max(CAP,...list.map(ring));
     return list.slice(0,20).map(p=>`<div class="fRow ${p.isUser?'you':''}" data-name="${esc(p.name)}"><span class="fn">${p.isUser?'YOU':esc(p.name)}</span><span class="hbar"><i style="width:${clamp(ring(p)/mx*100,6,100)}%"></i></span><span class="fv">${fmt(ring(p))}</span></div>`).join("")||'<div class="note" style="margin:2px 0">—</div>';}
   function applyArenaSkin(){
+    // the previous-rounds panel is filtered to the selected arena, so it has to be redrawn whenever
+    // the selection changes - otherwise the last arena's rows sit there under the new arena's name
+    renderServerRounds();
     document.querySelectorAll("#pairSel button").forEach(b=>b.classList.toggle("on",b.dataset.pair===PAIRING));
     if(isNArena()){
       const t=$("#arenaTag"); if(t)t.textContent=PAIRING==="3w"?"3-WAY":"BULLS FFA";
@@ -890,17 +963,17 @@
     }
     const A=metaA(), B=metaB();
     const set=(sel,txt)=>{const e=document.querySelector(sel);if(e)e.textContent=txt;};
-    set(".team.bull h2",A.emoji+" "+A.team); set(".team.uni h2",B.emoji+" "+B.team);
+    setTok(".team.bull h2",A.tok,A.team); setTok(".team.uni h2",B.tok,B.team);
     set("#joinBull2","Deploy "+A.team); set("#joinUni2","Deploy "+B.team);
-    set("#joinBull","Deploy "+A.label+" "+A.emoji); set("#joinUni","Deploy "+B.label+" "+B.emoji);
+    setTok("#joinBull",A.tok,"Deploy "+A.label); setTok("#joinUni",B.tok,"Deploy "+B.label);
     const wb=$("#wBull"), wu=$("#wUwu");
-    if(wb&&wb.parentElement){const n=wb.parentElement.querySelector(".n");if(n)n.textContent=A.emoji+" "+A.label+" wallet";}
-    if(wu&&wu.parentElement){const n=wu.parentElement.querySelector(".n");if(n)n.textContent=B.emoji+" "+B.label+" wallet";}
+    if(wb&&wb.parentElement){const n=wb.parentElement.querySelector(".n");if(n)setTok(n,A.tok,A.label+" wallet");}
+    if(wu&&wu.parentElement){const n=wu.parentElement.querySelector(".n");if(n)setTok(n,B.tok,B.label+" wallet");}
     const cb=$("#convBull"), cu=$("#convUwu");
-    if(cb)cb.textContent=B.emoji+" to "+A.label; if(cu)cu.textContent=A.emoji+" to "+B.label;
+    if(cb)setTok(cb,B.tok,"to "+A.label); if(cu)setTok(cu,A.tok,"to "+B.label);
     document.querySelectorAll("#autoside button").forEach(b=>{
-      if(b.dataset.side==="bull")b.textContent=A.emoji+" "+A.team;
-      if(b.dataset.side==="unicorn")b.textContent=B.emoji+" "+B.team;});
+      if(b.dataset.side==="bull")setTok(b,A.tok,A.team);
+      if(b.dataset.side==="unicorn")setTok(b,B.tok,B.team);});
     const t=$("#arenaTag"); if(t)t.textContent=A.label+" vs "+B.label;
   }
   // the Big Wins ticker belongs to every arena, not just the two-team path
@@ -937,7 +1010,7 @@
     panelLabels(".team.bull","Alive","Alive fighters (health)");
     panelLabels(".team.uni","Alive","Alive fighters (health)");
     $("#bullList").innerHTML=sideListHTML(w,"bull");$("#uniList").innerHTML=sideListHTML(w,"unicorn");
-    $("#strBull").style.width=(B.v/totv*100)+"%";$("#strUni").style.width=(U.v/totv*100)+"%";$("#strBull").textContent="🐂 "+fmt(B.v);$("#strUni").textContent=fmt(U.v)+" 🦄";
+    $("#strBull").style.width=(B.v/totv*100)+"%";$("#strUni").style.width=(U.v/totv*100)+"%";setParts("strBull",[{t:metaA().tok},fmt(B.v)]);setParts("strUni",[fmt(U.v)+" ",{t:metaB().tok}]);
     // online the two treasury buckets are deploy-take and convert-fees, not per-token splits
     $("#treasury").textContent=fmt(treasTotal(w));$("#treasuryBrk").textContent=w.online?("deploys "+fmt(w.treasury.bull)+" · conv "+fmt(w.treasury.uwu)):("🐂"+fmt(w.treasury.bull)+" · 🦄"+fmt(w.treasury.uwu));$("#rtagMult").textContent=w.multiplier+"× round";
     {
@@ -960,7 +1033,7 @@
       const spare=["bull","uwu","sol"].find(f=>f!==fa&&f!==fb)||"sol";
       cell("#wBull",fa); cell("#wUwu",fb); cell("#wSol",spare);
       const sn=document.querySelector("#wSol")?.parentElement?.querySelector(".n");
-      if(sn)sn.textContent=(spare==="bull"?"🐂 ANSEM":spare==="uwu"?"🦄 UWU":"◎ SOL")+" (other)";
+      if(sn)setParts(sn,[{t:spare==="bull"?"ansem":spare==="uwu"?"uwu":"sol"},(spare==="bull"?"ANSEM":spare==="uwu"?"UWU":"SOL")+" (other)"]);
     }
     // Prefer the ENGINE's figure: userCircles only populate when a round starts with your entry,
     // so a mid-round join or a reconnect showed $0 while real money was staked.
@@ -978,7 +1051,7 @@
     const allRounds=[].concat(...Object.keys(worlds).map(md=>(worlds[md].userRounds||[]).map(r=>({...r,mode:r.mode||md}))))
       .sort((a,b)=>(b.at||0)-(a.at||0));
     $("#prRows").innerHTML=allRounds.slice(0,14).map((r,i)=>{
-      const hits=(r.hits||[]),log=hits.length?hits.slice().reverse().map(h=>{const te=h.tk==="bull"?"🐂":"🦄";return h.dir==="out"?`<div style="color:var(--bull)">→ raided ${fmt(h.amt)} ${te} off ${h.who}</div>`:`<div style="color:var(--danger)">← ${h.who} took ${fmt(h.amt)} ${te}</div>`;}).join(""):'<div style="color:var(--ink-faint)">no hits logged</div>';
+      const hits=(r.hits||[]),log=hits.length?hits.slice().reverse().map(h=>{const te=icoH(h.tk==="bull"?"ansem":"uwu");return h.dir==="out"?`<div style="color:var(--bull)">→ raided ${fmt(h.amt)} ${te} off ${h.who}</div>`:`<div style="color:var(--danger)">← ${h.who} took ${fmt(h.amt)} ${te}</div>`;}).join(""):'<div style="color:var(--ink-faint)">no hits logged</div>';
       return `<div class="prRow" style="cursor:pointer"><span>#${r.round} <span style="color:var(--ink-faint);font-size:.75em">${(r.arena||"au").toUpperCase()}·${(r.mode||"normal")==="normal"?"MAY":"EXT"}</span> ▸</span><span><span class="dot ${r.side==="bull"?"bull":"uni"}"></span> ${r.side==="bull"?"Bull":"Uni"}</span><span>${fmt(r.dep)}</span><span>${r.outB!==undefined?`<span style="color:var(--bull)">${fmt(r.outB)}🐂</span> <span style="color:var(--uni)">+ ${fmt(r.outU)}🦄</span>`:fmt(r.out)}</span><span class="pnl ${r.pnl>=0?'pos':'neg'}">${r.pnl>=0?'+':'−'}${fmt(Math.abs(r.pnl))}</span></div><div class="hitlog" style="display:none;font-family:var(--mono);font-size:10.5px;padding:4px 0 8px 46px;border-bottom:1px solid var(--line)">${log}</div>`;
     }).join("")||'';
     const nP=worlds.normal.userRounds.reduce((s,r)=>s+r.pnl,0), xP=worlds.extraction.userRounds.reduce((s,r)=>s+r.pnl,0);
@@ -989,7 +1062,7 @@
   document.addEventListener("click",e=>{const row=e.target.closest(".sideList .fRow");if(!row)return;const w=W();const p=w.players.find(x=>x.name===row.dataset.name&&alive(x));if(p)openProfile(w,p);});
   function renderDashArenas(){
     const el=$("#dashArenas"), st=window.__ST; if(!el||!st||!st.arenas)return;
-    const pairs=[["au","🐂⚔🦄 ANSEM/UWU"],["as","🐂⚔◎ ANSEM/SOL"],["us","🦄⚔◎ UWU/SOL"]];
+    const pairs=[["au",icoH("ansem")+"⚔"+icoH("uwu")+" ANSEM/UWU"],["as",icoH("ansem")+"⚔"+icoH("sol")+" ANSEM/SOL"],["us",icoH("uwu")+"⚔"+icoH("sol")+" UWU/SOL"]];
     let tDep=0,tTake=0,tMatch=0;
     const eco=(id,label)=>{
       const cards=pairs.map(([pid,pname])=>{
@@ -1002,7 +1075,7 @@
           <div style="font-family:var(--mono);font-size:11px;color:var(--ink-soft);margin-top:6px;line-height:1.7">
             deployed <b style="color:var(--ink)">${fmt(x.deployed)}</b><br>
             house take (0.2%) <b style="color:var(--gold)">${fmt(x.take)}</b><br>
-            matches <b style="color:var(--ink)">${x.matches}</b> · wins ${TOK_META[ta].emoji}${x.winsA} / ${TOK_META[tb].emoji}${x.winsB}</div></div>`;
+            matches <b style="color:var(--ink)">${x.matches}</b> · wins ${icoH(ta)}${x.winsA} / ${icoH(tb)}${x.winsB}</div></div>`;
       }).join("");
       return `<div style="margin-top:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--gold)">${label}</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:6px">${cards}</div></div>`;
@@ -1015,7 +1088,7 @@
   function nArmyLabel(w,i){
     if(w.nTeams===0)return {label:"BULLS",emoji:"\ud83d\udc02"};
     const t=w.toks&&w.toks[i]; const m=t&&TOKMETA[t];
-    return m?{label:m.label,emoji:m.emoji}:{label:"TEAM "+(i+1),emoji:""};
+    return m?{label:m.label,emoji:m.emoji,tok:m.tok}:{label:"TEAM "+(i+1),emoji:"",tok:null};
   }
   function syncArenaN(w){
     const isFFA=(w.nTeams||0)===0, nT=isFFA?1:(w.nTeams||3);
@@ -1032,7 +1105,7 @@
       bar.innerHTML=isFFA
         ? '<div class="s" style="width:100%;background:#18e08a;color:#0a0a10">\ud83d\udc02 '+w.players.filter(p=>!p.dead).length+' BULLS FIGHTING \u00b7 '+fmt(total)+' AT STAKE</div>'
         : tt.map((v,i)=>{const L=nArmyLabel(w,i);
-            return '<div class="s" style="width:'+Math.max(8,v/total*100)+'%;background:'+TEAMCOL[i]+';color:#0a0a10">'+L.emoji+' '+fmt(v)+'</div>';}).join("");
+            return '<div class="s" style="width:'+Math.max(8,v/total*100)+'%;background:'+TEAMCOL[i]+';color:#0a0a10">'+(L.tok?icoH(L.tok):'')+' '+fmt(v)+'</div>';}).join("");
     }
     $(".team.bull h2").innerHTML=isFFA?"\ud83d\udc02 Bulls in the pit":"\u2694 Armies";
     panelLabels(".team.bull","Alive",isFFA?"Alive fighters (health)":"Armies (total staked)");
@@ -1042,7 +1115,7 @@
       ? w.players.filter(p=>!p.dead).sort((a,b)=>((b.nring||0)+(b.nbank||0))-((a.nring||0)+(a.nbank||0))).slice(0,20)
           .map(p=>'<div class="fRow '+(p.isUser?'you':'')+'"><span class="fn">'+(p.isUser?'YOU':p.name)+'</span><span class="hbar"><i style="width:'+clamp(((p.nring||0)+(p.nbank||0))/(total||1)*400,6,100)+'%"></i></span><span class="fv">'+fmt((p.nring||0)+(p.nbank||0))+'</span></div>').join("")||'<div class="note">\u2014</div>'
       : tt.map((v,i)=>{const L=nArmyLabel(w,i);
-          return '<div class="armyRow"><span class="nm" style="color:'+TEAMCOL[i]+'">'+L.emoji+' '+L.label+'</span><span class="hb"><i style="width:'+clamp(v/Math.max(...tt,1)*100,4,100)+'%;background:'+TEAMCOL[i]+'"></i></span><span class="vv">'+fmt(v)+'</span></div><div class="note" style="font-size:10px;margin:-2px 0 4px">'+aliveN[i]+' alive'+(bkT[i]>0.5?' &middot; <span style="color:var(--gold)">'+fmt(bkT[i])+' banked</span>':'')+'</div>';}).join("");
+          return '<div class="armyRow"><span class="nm" style="color:'+TEAMCOL[i]+'">'+(L.tok?icoH(L.tok):'')+' '+L.label+'</span><span class="hb"><i style="width:'+clamp(v/Math.max(...tt,1)*100,4,100)+'%;background:'+TEAMCOL[i]+'"></i></span><span class="vv">'+fmt(v)+'</span></div><div class="note" style="font-size:10px;margin:-2px 0 4px">'+aliveN[i]+' alive'+(bkT[i]>0.5?' &middot; <span style="color:var(--gold)">'+fmt(bkT[i])+' banked</span>':'')+'</div>';}).join("");
     $(".team.uni h2").innerHTML="\ud83c\udfc6 Standings";
     // This panel used to be the Unicorn side, so its headline was max(army totals) - which read as
     // "$18" next to Armies "$48" and made no sense. Standings is about FIGHTERS, so lead with the
@@ -1068,7 +1141,7 @@
     const isFFA=(w.nTeams||0)===0, n=isFFA?1:(w.nTeams||3);
     let html="";
     for(let i=0;i<n;i++){ const L=nArmyLabel(w,i);
-      html+='<button class="abtn" data-nteam="'+i+'" style="width:100%;margin-bottom:6px;background:'+TEAMCOL[i]+';color:#0a0a10;font-weight:800">'+(isFFA?"\ud83c\udfc1 Enter the pit":"Deploy "+L.emoji+" "+L.label)+'</button>';
+      html+='<button class="abtn" data-nteam="'+i+'" style="width:100%;margin-bottom:6px;background:'+TEAMCOL[i]+';color:#0a0a10;font-weight:800">'+(isFFA?"\ud83c\udfc1 Enter the pit":"Deploy "+(L.tok?icoH(L.tok):"")+" "+L.label)+'</button>';
     }
     if(host.dataset.sig!==html){ host.dataset.sig=html; host.innerHTML=html;
       host.querySelectorAll("[data-nteam]").forEach(b=>b.onclick=()=>deployN(+b.dataset.nteam)); }
@@ -1104,8 +1177,8 @@
 
     document.getElementById("brArena").textContent="· "+A.label+" vs "+B.label;
     bar("brBarA",pa); bar("brBarB",100-pa);
-    set("brLegA",A.emoji+" "+A.label+" "+pa.toFixed(0)+"%");
-    set("brLegB",(100-pa).toFixed(0)+"% "+B.label+" "+B.emoji);
+    setTok("brLegA",A.tok,A.label+" "+pa.toFixed(0)+"%");
+    setTok("brLegB",B.tok,(100-pa).toFixed(0)+"% "+B.label);
     set("brDepA","$"+depA.toFixed(2)); set("brDepAN","Deployed · "+A.team);
     set("brDepB","$"+depB.toFixed(2)); set("brDepBN","Deployed · "+B.team);
     set("brRaids",w.raidCount||0);
@@ -1113,10 +1186,10 @@
 
     const st=w.stolen||{}, all=w.stolenAll||{};
     // side A fights with token fa, so what gets stolen FROM them is fa (and vice versa)
-    set("brStoleA",tokAmt(fa,st[fa]||0)); set("brStoleAN",A.emoji+" "+A.label+" taken  ("+money(fa,st[fa]||0)+")");
-    set("brStoleB",tokAmt(fb,st[fb]||0)); set("brStoleBN",B.emoji+" "+B.label+" taken  ("+money(fb,st[fb]||0)+")");
-    set("brAllA",tokAmt(fa,all[fa]||0));  set("brAllAN",A.emoji+" "+A.label+" taken  ("+money(fa,all[fa]||0)+")");
-    set("brAllB",tokAmt(fb,all[fb]||0));  set("brAllBN",B.emoji+" "+B.label+" taken  ("+money(fb,all[fb]||0)+")");
+    set("brStoleA",tokAmt(fa,st[fa]||0)); setTok("brStoleAN",A.tok,A.label+" taken  ("+money(fa,st[fa]||0)+")");
+    set("brStoleB",tokAmt(fb,st[fb]||0)); setTok("brStoleBN",B.tok,B.label+" taken  ("+money(fb,st[fb]||0)+")");
+    set("brAllA",tokAmt(fa,all[fa]||0));  setTok("brAllAN",A.tok,A.label+" taken  ("+money(fa,all[fa]||0)+")");
+    set("brAllB",tokAmt(fb,all[fb]||0));  setTok("brAllBN",B.tok,B.label+" taken  ("+money(fb,all[fb]||0)+")");
   }
   function syncDashboard(){renderDashArenas();renderBattleReport();const w=W();$("#dashMode").textContent="· "+MODE[w.mode].cap;
     $("#dDepBull").textContent=fmt(w.online?(w.engDepBull||0):w.dep.bull);$("#dDepUni").textContent=fmt(w.online?(w.engDepUwu||0):w.dep.unicorn);$("#dWinBull").textContent=w.matchWins.bull;$("#dWinUni").textContent=w.matchWins.unicorn;
@@ -1132,7 +1205,7 @@
     const net=tr-td,ne=$("#dNetPnl");ne.textContent=(net>=0?"+":"−")+"$"+Math.abs(net).toFixed(0);ne.className="v "+(net>=0?"pos":"neg");
     $("#legends").innerHTML=w.legends.length?w.legends.slice(0,10).map((l,i)=>`<div class="li"><span style="color:var(--ink-faint);width:16px">${i+1}</span><span class="dot ${l.side==="bull"?"bull":"uni"}"></span><span class="nm">${esc(l.name)}<div class="sub">${fmt(l.inAmt)} → ${fmt(l.outAmt)} · R${l.round}</div></span><span class="pct">${(l.roi*100).toFixed(0)}%</span></div>`).join(""):'<div class="note">Best plays show here.</div>';
     $("#hof").innerHTML="";
-    $("#matchHist").innerHTML=w.matches.length?w.matches.map(m=>`<div class="li"><span class="dot ${m.winner==="bull"?"bull":"uni"}"></span><span class="nm">Round ${m.round}</span><span class="sub">${m.mult}×</span><span class="v">${m.winner==="bull"?"🐂 Bulls":"🦄 Unicorns"}</span></div>`).join(""):'<div class="note">No finished rounds yet.</div>';
+    $("#matchHist").innerHTML=w.matches.length?w.matches.map(m=>`<div class="li"><span class="dot ${m.winner==="bull"?"bull":"uni"}"></span><span class="nm">Round ${m.round}</span><span class="sub">${m.mult}×</span><span class="v">${m.winner==="bull"?icoH("ansem")+" Bulls":icoH("uwu")+" Unicorns"}</span></div>`).join(""):'<div class="note">No finished rounds yet.</div>';
   }
   function syncDOM(){syncArena();if(activeView==="leaderboard")renderLB();if(activeView==="dashboard")syncDashboard();}
   // the battle report is a live read-out, so refresh it while it is on screen
@@ -1242,6 +1315,7 @@
     // Switching mode shows a DIFFERENT world. Without asking the engine for that mode's in-flight
     // round it sits empty until the next lobby opens - which reads as "the battle didn't load".
     if(window.__sendEngine)window.__sendEngine({t:"resync",arenas:[PAIRING+"-"+activeMode]});
+    renderServerRounds();                       // mode is part of the arena id, so the filter moved too
     syncDOM();};});
   document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>{activeView=b.dataset.view;document.querySelectorAll(".nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll(".view").forEach(v=>v.classList.remove("on"));$("#view"+activeView[0].toUpperCase()+activeView.slice(1)).classList.add("on");syncDOM();});
   document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{lbTab=b.dataset.tab;document.querySelectorAll(".tabs button").forEach(x=>x.classList.toggle("on",x===b));renderLB();});
@@ -2315,11 +2389,11 @@
   window.addEventListener("beforeunload",()=>{for(const m in worlds)save(worlds[m]);saveWallet();});
   // ---- arena picker cards + live prices ----
   const ARENA_DEFS=[
-    {id:"ansem-uwu",name:"ANSEM vs UWU",icons:"🐂⚔🦄",live:true,tokens:["ansem","uwu"]},
-    {id:"ansem-sol",name:"ANSEM vs SOL",icons:"🐂⚔◎",live:true,tokens:["ansem","sol"]},
-    {id:"uwu-sol",name:"UWU vs SOL",icons:"🦄⚔◎",live:true,tokens:["uwu","sol"]},
-    {id:"3way",name:"3-WAY",icons:"🐂🦄◎",live:true,tokens:["ansem","uwu","sol"],note:"three armies, one map"},
-    {id:"ffa-bull",name:"BULLS FFA",icons:"🐂🐂🐂",live:true,tokens:["ansem"],note:"free-for-all · biggest bag wins · Extraction"},
+    {id:"ansem-uwu",name:"ANSEM vs UWU",icons:icoH("ansem")+"⚔"+icoH("uwu"),live:true,tokens:["ansem","uwu"]},
+    {id:"ansem-sol",name:"ANSEM vs SOL",icons:icoH("ansem")+"⚔"+icoH("sol"),live:true,tokens:["ansem","sol"]},
+    {id:"uwu-sol",name:"UWU vs SOL",icons:icoH("uwu")+"⚔"+icoH("sol"),live:true,tokens:["uwu","sol"]},
+    {id:"3way",name:"3-WAY",icons:icoH("ansem")+icoH("uwu")+icoH("sol"),live:true,tokens:["ansem","uwu","sol"],note:"three armies, one map"},
+    {id:"ffa-bull",name:"BULLS FFA",icons:icoH("ansem")+icoH("ansem")+icoH("ansem"),live:true,tokens:["ansem"],note:"free-for-all · biggest bag wins · Extraction"},
   ];
   const PXMINTS={ansem:"9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump",uwu:"UWUy7J86LUiBv5SjAUZ53LMGhtnqvbQ7QNSSkyupump",sol:"So11111111111111111111111111111111111111112"};
   const PX={};
