@@ -37,6 +37,12 @@ export function pushRound(r: RoundRecord): void {
   if (roundLog.length > ROUND_LOG_MAX) roundLog.length = ROUND_LOG_MAX;
 }
 /** Newest-first slice, optionally only the rounds a given wallet actually played. */
+/** Attach the memo signature to a round once its anchor lands, so the UI can link to the proof. */
+export function markAnchored(arena: string, round: number, sig: string): void {
+  const r = roundLog.find(x => x.arena === arena && x.round === round);
+  if (r) r.sig = sig;
+}
+
 export function roundHistory(limit = 40, wallet?: string): RoundRecord[] {
   const rows = wallet ? roundLog.filter(r => r.players.some(p => p.id === wallet)) : roundLog;
   return rows.slice(0, limit);

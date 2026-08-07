@@ -237,6 +237,10 @@
       </div>
 
       <div class="miniLB" style="margin-top:12px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 14px">
+        <h3 style="margin:0 0 8px;font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-soft)">Previous rounds</h3>
+        <div id="arenaRounds" style="max-height:190px;overflow:auto"></div>
+      </div>
+      <div class="miniLB" style="margin-top:12px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 14px">
         <h3 style="margin:0 0 8px;font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-soft);display:flex;justify-content:space-between">Round standings <span id="miniCap" style="color:var(--ink-faint)">live</span></h3>
         <div id="miniGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:3px 16px;max-height:150px;overflow:auto"></div>
       </div>
@@ -408,6 +412,30 @@
     if(ROUNDLOG.length>30)ROUNDLOG.pop();
     renderAllRounds();
   }
+  // C1/C2/C3 — engine-side round history. Replaces the browser-only log that started empty on every
+  // reconnect. Rows expand, carry a real timestamp, and link to the on-chain anchor for that round.
+  function renderServerRounds(){
+    const rounds=window.__ROUNDS||[];
+    for(const id of ["allRounds","arenaRounds"]){
+      const el=document.getElementById(id); if(!el)continue;
+      if(!rounds.length){ el.innerHTML='<div class="note">No settled rounds yet — the first lands within a minute.</div>'; continue; }
+      const lim=id==="arenaRounds"?6:30;
+      el.innerHTML=rounds.slice(0,lim).map((r,i)=>{
+        const when=r.at?timeAgo(r.at):"";
+        const pot=(r.players||[]).reduce((s,p)=>s+(p.inUsd||0),0);
+        const link=r.sig?`<a href="https://solscan.io/tx/${r.sig}" target="_blank" rel="noopener" style="color:var(--gold);text-decoration:none" onclick="event.stopPropagation()">⛓ on-chain</a>`:'<span style="color:var(--ink-faint)">anchoring…</span>';
+        const body=(r.players||[]).slice().sort((a,b)=>(b.outUsd-b.inUsd)-(a.outUsd-a.inUsd)).map(p=>{
+          const net=(p.outUsd||0)-(p.inUsd||0);
+          return `<div class="prRow"><span class="fn">${esc(p.name||p.id)}</span><span>${p.side==="bull"?"A":"B"}</span><span>$${(p.inUsd||0).toFixed(2)}</span><span>$${(p.outUsd||0).toFixed(2)}</span><span class="pnl ${net>=0?'pos':'neg'}">${net>=0?'+':'−'}$${Math.abs(net).toFixed(2)}</span></div>`;
+        }).join("");
+        return `<div class="prTable" style="margin-bottom:8px"><div class="prRow h arHead" style="cursor:pointer"><span>#${r.round} ▸</span><span>winner ${r.winner==="bull"?"A":"B"}</span><span>${(r.players||[]).length} played</span><span>pot $${pot.toFixed(2)}</span><span class="pnl" style="font-size:10px">${when} · ${link}</span></div><div class="arBody" style="display:${i===0?"block":"none"}">${body}</div></div>`;
+      }).join("");
+    }
+  }
+  function timeAgo(t){const s=Math.max(0,(Date.now()-t)/1000);
+    if(s<60)return Math.floor(s)+"s ago"; if(s<3600)return Math.floor(s/60)+"m ago";
+    if(s<86400)return Math.floor(s/3600)+"h ago"; return Math.floor(s/86400)+"d ago";}
+
   function renderAllRounds(){
     const el=document.getElementById("allRounds"); if(!el)return;
     if(!ROUNDLOG.length){el.innerHTML='<div class="note">No finished rounds yet — the first one lands in about a minute.</div>';return;}
@@ -782,13 +810,22 @@
         return `<div class="lbRow" data-name="${esc(l.name)}"><span class="rk">${i+1}</span><span class="who"><span class="dot ${l.side==="bull"?"bull":"uni"}"></span><span class="nmx">${esc(l.name)}</span><div class="pct" style="color:var(--ink-faint)">round ${l.round} · ${l.mode||""}</div></span>${compBar(l.side==="bull"?(l.outAmt||0):0,l.side==="bull"?0:(l.outAmt||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}${fmt(Math.abs(pnl))}<div class="pct">${fmt(l.inAmt)} → ${fmt(l.outAmt)}</div></span><span class="rd" style="color:var(--gold)">${(l.roi*100).toFixed(0)}%</span><button class="abtn ghost" style="padding:2px 8px;font-size:10px" onclick="event.stopPropagation();window.__shareLegend&&__shareLegend(${i})">𝕏</button></div>`;
       }).join(""):'<div class="note">Best single-round returns will show here once rounds settle.</div>';
       return;}
-    if(lbTab==="alltime"){$("#rnav").style.visibility="hidden";$("#lbColBar").textContent="Wallet now (size)";$("#lbColRd").textContent="Raided (all-time)";
-      const atPnl=a=>(a.pnl!==undefined?a.pnl:(a.ret||0)-(a.dep||0));   // engine sends true P&L for real players (counts withdrawals)
-      // rank by TOTAL P&L (highest first) — the bar still shows wallet size
-      const rows=w.accounts.slice().sort((a,b)=>atPnl(b)-atPnl(a)).slice(0,40);
-      const maxV=Math.max(1,...rows.map(a=>a.bankroll||0));
-      $("#lbRows").innerHTML=rows.length?rows.map((a,i)=>{const pnl=atPnl(a),pct=a.dep>0?pnl/a.dep*100:0;
-        return `<div class="lbRow ${a.you?'you':''}" data-name="${esc(a.name)}"><span class="rk">${i+1}</span><span class="who"><span class="dot ${a.side==="bull"?"bull":"uni"}"></span>${a.you?'<span class="youtag">YOU</span> ':''}<span class="nmx">${esc(a.name)}</span></span>${compBar(a.side==="bull"?(a.bankroll||0):0,a.side==="bull"?0:(a.bankroll||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}${fmt(Math.abs(pnl))}<div class="pct">${pct>=0?'+':''}${pct.toFixed(0)}% · ${a.wins}W/${a.games}g</div></span><span class="rd">${fmt(a.raided||0)}</span></div>`;}).join(""):'<div class="note">Accounts populate as rounds run.</div>';
+    if(lbTab==="alltime"){$("#rnav").style.visibility="hidden";$("#lbColBar").textContent="Staked (all-time)";$("#lbColRd").textContent="ROI";
+      // FROM THE ROUND LOG, not from live balances. A balance board is a survey of SURVIVORS: a
+      // fighter who won and later retired vanishes with their profit, so the aggregate can only ever
+      // look negative — which is exactly why nobody appeared profitable. It also read ~0 for anyone
+      // mid-round, whose stake has left their balance and is sitting in the round. The engine
+      // derives these from the permanent log, and the same rows are committed to on-chain.
+      const rows=(window.__STANDINGS||[]).slice(0,40);
+      if(!rows.length){
+        $("#lbRows").innerHTML='<div class="note">Standings build from settled rounds — the first ones appear within a minute.</div>';
+        if(window.__sendEngine)window.__sendEngine({t:"standings",limit:40});
+        return;}
+      const maxV=Math.max(1,...rows.map(r=>Math.abs(r.staked||0)));
+      $("#lbRows").innerHTML=rows.map((r,i)=>{
+        const pnl=r.pnl||0, roi=(r.roi||0)*100, mine=MYWALLET&&r.id===MYWALLET;
+        return `<div class="lbRow ${mine?'you':''}" data-name="${esc(r.name)}"><span class="rk">${i+1}</span><span class="who">${mine?'<span class="youtag">YOU</span> ':''}<span class="nmx">${esc(r.name)}</span><div class="pct" style="color:var(--ink-faint)">${r.wins}W / ${r.rounds} rounds</div></span>${compBar(pnl>=0?(r.staked||0):0,pnl>=0?0:(r.staked||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}$${Math.abs(pnl).toFixed(2)}<div class="pct">staked $${(r.staked||0).toFixed(2)}</div></span><span class="rd" style="color:${roi>=0?'var(--gold)':'var(--danger)'}">${roi>=0?'+':''}${roi.toFixed(1)}%</span></div>`;
+      }).join("");
       return;}
     $("#lbColBar").textContent="Wallet size (🐂/🦄 split)";$("#lbColRd").textContent="Raided";
     $("#rnav").style.visibility="visible";
@@ -1064,6 +1101,9 @@
   function syncDOM(){syncArena();if(activeView==="leaderboard")renderLB();if(activeView==="dashboard")syncDashboard();}
   // the battle report is a live read-out, so refresh it while it is on screen
   setInterval(()=>{ if(activeView==="dashboard"&&document.visibilityState!=="hidden")renderBattleReport(); },1000);
+  // standings come from the engine's round log; refresh while the board is actually being looked at
+  setInterval(()=>{ if(activeView==="leaderboard"&&document.visibilityState!=="hidden"&&window.__sendEngine)
+    window.__sendEngine({t:"standings",limit:40}); },5000);
 
   let last=performance.now(), saveT=0;
   setInterval(()=>{const now=performance.now();let dt=Math.min(now-last,120)/1000;last=now;saveT+=dt;
@@ -1909,6 +1949,14 @@
           }
         }
       }
+      else if(m.t==="standings"){ window.__STANDINGS=m.standings||[]; if(activeView==="leaderboard")renderLB(); }
+      // engine-side history: survives restarts, identical for everyone, and is what the memo anchors
+      else if(m.t==="roundHistory"){ window.__ROUNDS=m.rounds||[]; renderServerRounds(); }
+      else if(m.t==="roundAnchored"){ const rs=window.__ROUNDS||[];
+        for(const k of (m.rounds||[])){ const row=rs.find(r=>r.arena===k.arena&&r.round===k.round); if(row)row.sig=m.sig; }
+        renderServerRounds(); }
+      else if(m.t==="roundLogged"){ if(m.round){ (window.__ROUNDS=window.__ROUNDS||[]).unshift(m.round);
+        if(window.__ROUNDS.length>60)window.__ROUNDS.pop(); renderServerRounds(); } }
       else if(m.t==="settled"){ if(m.arena&&m.arena!==PAIRING+"-"+m.mode)return;
         recordRound(m);
         const w=worlds[m.mode];

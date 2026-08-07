@@ -16,7 +16,7 @@ import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildD
 import { priceUSD, startPriceLoop, allPrices, refreshPrices } from "./prices.ts";
 import { RPC, loadVaultKeypair } from "./chain.ts";
 import { swapExact } from "./swap.ts";
-import { anchorRound, memoStats, resultsPayload, resultsHash, setMemoFeeSink } from "./memo.ts";
+import { anchorRound, memoStats, resultsPayload, resultsHash, setMemoFeeSink, setAnchorSink } from "./memo.ts";
 import { redact, redactDeep } from "./redact.ts";
 import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, forget as authForget,
          mintSession, resume as authResume } from "./auth.ts";
@@ -31,7 +31,7 @@ import { vaultTokenBalance } from "./chain-ops.ts";
 import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, totalDeployed, depSide,
          created, bustedCount, getConvFees, addConvFees, persist, restore, flush, bankFee, TREASURY_ID,
          acct, balPayload, leadersFor, accountUsd, cleanDisplayName, cleanAvatarUrl,
-         pushRound, roundHistory, resetLifetimeStats, treasuryAcct, standingsFromLog,
+         pushRound, roundHistory, markAnchored, resetLifetimeStats, treasuryAcct, standingsFromLog,
          publicName } from "./ledger.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
 import { type Tok, FIELD, PAIRINGS, ARENA_IDS, arenaTokens, arenaEco, NARENAS, NARENA_IDS,
@@ -560,6 +560,12 @@ if (process.env.RESYNC_POOL_ON_BOOT === "1") {
 // (it holds the only server-side key) but they must not be taken from the float that backs players:
 // the house pays for its own anchoring out of fee revenue. If the treasury has not earned enough
 // yet the balance simply goes negative, which is honest — it is a real cost we owe ourselves.
+// stamp each history row with the signature that anchored it, and tell everyone watching
+setAnchorSink((rounds, sig) => {
+  for (const r of rounds) markAnchored(r.arena, r.round, sig);
+  broadcast({ t: "roundAnchored", rounds, sig });
+});
+
 setMemoFeeSink((lamports) => {
   const px = solUsd();
   if (!(px > 0)) return;

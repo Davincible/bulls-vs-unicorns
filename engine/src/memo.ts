@@ -34,6 +34,10 @@ export const memoPause = (why: boolean) => { paused = why; };
 // (it is the only key the server holds) but they are booked against the treasury's own SOL, so the
 // house pays for its own anchoring out of fee revenue and players' backing is never consumed.
 let onFeePaid: ((lamports: number) => void) | null = null;
+// Report which rounds a signature anchored, so the history can link each row to its own proof
+// rather than to "the most recent memo", which would be wrong for anything but the newest round.
+let onAnchored: ((rounds: Array<{ arena: string; round: number }>, sig: string) => void) | null = null;
+export const setAnchorSink = (fn: (rounds: Array<{ arena: string; round: number }>, sig: string) => void) => { onAnchored = fn; };
 export const setMemoFeeSink = (fn: (lamports: number) => void) => { onFeePaid = fn; };
 export const LAMPORTS_PER_MEMO = 5000;
 
@@ -203,8 +207,10 @@ export async function flushMemos(): Promise<void> {
     tx.sign(kp);
     const sig = await conn.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
     await conn.confirmTransaction(sig, "confirmed");
+    const anchored = queue.slice(0, take);
     queue.splice(0, take);                       // only drop rows once they are really on-chain
     posted += take; lastSig = sig; lastError = null;
+    try { onAnchored?.(anchored.map(r => ({ arena: r.arena, round: r.round })), sig); } catch { /* never break anchoring */ }
     try { onFeePaid?.(LAMPORTS_PER_MEMO); } catch { /* accounting must not break anchoring */ }
     }
   } catch (e) {
