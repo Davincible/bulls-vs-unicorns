@@ -7,7 +7,7 @@
 #  2. No scale-to-zero. Rounds, bots and the reconciliation daemon run continuously; a stopped
 #     machine means the arena dies and solvency stops being checked.
 
-app = "bulls-arena-engine"
+app = "bulls-arena-er-devnet"
 primary_region = "iad"          # put it near your players; `fly platform regions` lists options
 
 [build]

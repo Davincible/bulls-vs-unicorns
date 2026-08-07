@@ -15,6 +15,7 @@ import { Connection, Keypair, VersionedTransaction, PublicKey, SystemProgram,
 import { RPC } from "./chain.ts";
 import { priceUSD, type PriceToken } from "./prices.ts";
 import bs58 from "bs58";
+import { refuseIfDisabled } from "./devnet-guard.ts";
 
 // Free tier needs no API key, which is one less secret to leak. Set JUPITER_API_KEY to use the
 // paid host with higher limits.
@@ -136,6 +137,10 @@ export async function quote(inputMint: string, outputMint: string, rawAmount: nu
  * Swap `whole` tokens of `inputMint` into `outputMint`, signed and paid for by the vault.
  * Returns how much actually arrived — the caller credits THAT, so the player bears real costs.
  */
+// ER FORK: swaps are hard-disabled. Jupiter has no meaningful devnet liquidity, and a swap is the
+// single most expensive mistake this fork could make — it is the one path that moves value OUT
+// irreversibly. Disabled at the function itself rather than at the call site, so a new caller
+// cannot reintroduce it by accident.
 export async function swapExact(
   vault: Keypair, inputMint: string, outputMint: string, whole: number, decimals: number,
   oracle?: { from: PriceToken; to: PriceToken },
@@ -153,6 +158,14 @@ export async function swapExact(
     }
     return { ok: true, outAmount: whole * rate, priceImpactPct: 0, simulated: true };
   }
+
+  // ER FORK KILL SWITCH. Everything above is the devnet oracle simulation and is exactly what this
+  // fork should be doing. Everything BELOW is a real Jupiter swap on a live chain — value leaving
+  // irreversibly, which is the one thing this branch must never do.
+  //
+  // My first attempt put this at the top of the function and killed the simulation too. That would
+  // have looked like a working guard while quietly disabling the devnet path the fork runs on.
+  refuseIfDisabled("jupiterSwaps");
 
   try {
     const raw = Math.floor(whole * 10 ** decimals);

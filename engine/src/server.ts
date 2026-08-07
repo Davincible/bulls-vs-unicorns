@@ -13,6 +13,14 @@ import type { RoundResult, RoundState } from "./round.ts";
 import type { Mode, Side } from "./game.ts";
 import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildDepositTx, walletTokenBalance, airdropSol, solBalance, broadcastSigned,
          buildSolDepositTx, verifySolDeposit, withdrawSol, inspectRelayTx } from "./chain-ops.ts";
+// ER FORK: devnet-only. This asserts BEFORE anything else can initialise a connection, a vault or
+// a swap. Import order matters here — a guard that runs after the chain module has already picked
+// up a mainnet RPC is decoration.
+import { assertForkIsDevnetOnly } from "./devnet-guard.ts";
+{
+  const checked = assertForkIsDevnetOnly();
+  console.log(`⛓ ER FORK — devnet only. Verified: ${checked.length ? checked.join(", ") : "defaults (devnet)"}`);
+}
 import { priceUSD, startPriceLoop, allPrices, refreshPrices } from "./prices.ts";
 import { RPC, loadVaultKeypair } from "./chain.ts";
 import { swapExact } from "./swap.ts";

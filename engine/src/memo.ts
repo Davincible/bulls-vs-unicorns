@@ -15,7 +15,11 @@ import { createHash } from "node:crypto";
 import { redact } from "./redact.ts";
 
 const MEMO_PROGRAM = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
-const ON = process.env.MEMO_ON_CHAIN === "1";
+// ER FORK: anchoring may only run against a provably-devnet RPC. On this branch the ER commits
+// state to devnet; writing memos to mainnet would spend real SOL from a fork.
+import { isDevnetUrl } from "./devnet-guard.ts";
+import { RPC as _RPC_FOR_GUARD } from "./chain.ts";
+const ON = process.env.MEMO_ON_CHAIN === "1" && isDevnetUrl(_RPC_FOR_GUARD);
 const BATCH = Math.max(1, Number(process.env.MEMO_BATCH || 1));
 // A legacy transaction is ~1232 bytes all-in and our overhead is ~170 (one signature, header,
 // two account keys, blockhash, instruction framing). 900 leaves a comfortable margin while giving
