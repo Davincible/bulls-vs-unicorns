@@ -739,11 +739,15 @@
       else if(tokOf==="uwu"){ art=IMG.uwu; artOK=imgOK.uwu; }
       // X avatar becomes the fighter's face when the player connected their handle
       if(p.avatar&&window.avatarImg){const av=avatarImg(p.avatar);if(av){art=av;artOK=true;}}
+      // THE ART GOES ON, OR THE GRADIENT DOES — never both. The fallback's `else` used to hang off
+      // the teamIdx check below, so in a 2-team arena (which has no teamIdx) it ALWAYS ran and
+      // painted a solid circle straight over the logo that had just been drawn. The art was working
+      // the whole time; it was being covered a line later.
       if(artOK){ ctx.save();ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,7);ctx.clip();ctx.drawImage(art,p.x-p.r,p.y-p.r,p.r*2,p.r*2);ctx.restore(); }
+      else { const grd=ctx.createRadialGradient(p.x-p.r*0.3,p.y-p.r*0.3,2,p.x,p.y,p.r);grd.addColorStop(0,col);grd.addColorStop(1,dk);ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,7);ctx.fillStyle=grd;ctx.fill(); }
       if(p.teamIdx!==undefined&&typeof TEAMCOL!=="undefined"&&TEAMCOL[p.teamIdx]){   // army identity ring
         ctx.save();ctx.lineWidth=Math.max(2.5,p.r*0.22);ctx.strokeStyle=TEAMCOL[p.teamIdx];
         ctx.globalAlpha=0.95;ctx.beginPath();ctx.arc(p.x,p.y,p.r-ctx.lineWidth/2,0,7);ctx.stroke();ctx.restore(); }
-      else { const grd=ctx.createRadialGradient(p.x-p.r*0.3,p.y-p.r*0.3,2,p.x,p.y,p.r);grd.addColorStop(0,col);grd.addColorStop(1,dk);ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,7);ctx.fillStyle=grd;ctx.fill(); }
       // stolen-coin wedge: shows how much of the ENEMY coin this fighter now holds
       const own=isB?p.bull:p.uwu, en=isB?p.uwu:p.bull, rv=own+en; const enFrac=rv>0?en/rv:0;
       if(enFrac>0.03){ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.arc(p.x,p.y,p.r,-Math.PI/2,-Math.PI/2+enFrac*6.2832);ctx.closePath();ctx.fillStyle=enemyCol;ctx.globalAlpha=0.55;ctx.fill();ctx.globalAlpha=1;}
