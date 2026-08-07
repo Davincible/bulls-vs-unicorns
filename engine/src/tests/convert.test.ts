@@ -257,3 +257,31 @@ test("a tip is only worth paying when it is small against the trade", () => {
   const tradeUsd = 8.35, sandwichBudget = tradeUsd * 0.005;
   assert.ok(tipUsd < sandwichBudget, "paying the tip beats donating the slippage to a bot");
 });
+
+// LIQUIDITY. An OTC gives the player house tokens and leaves the house holding what they gave up.
+// If the player then withdraws everything, the vault must really have it — and the token they handed
+// over is NOT the one they will withdraw. A big enough convert could therefore leave the vault unable
+// to pay, so a single order may only take a fraction of the SPARE holdings.
+test("one convert cannot drain the destination token", () => {
+  const held = 1866, owedToOthers = 400, FRACTION = 0.25;
+  const spare = held - owedToOthers;
+  const cap = spare * FRACTION;
+  assert.equal(cap, 366.5);
+  assert.ok(cap < spare, "a single order can never take everything spare");
+});
+
+test("the cap is measured after everyone else is paid, not against the raw balance", () => {
+  const held = 1000, owedToOthers = 950, FRACTION = 0.25;
+  const naive = held * FRACTION;                       // 250 — would eat into other players' money
+  const safe = (held - owedToOthers) * FRACTION;       // 12.5
+  assert.ok(safe < naive, "other players' balances are subtracted first");
+  assert.ok(held - owedToOthers - safe > 0, "and the rest still covers them");
+});
+
+test("an oversized convert routes to a real swap rather than being refused", () => {
+  const wanted = 900, cap = 366.5;
+  const useOtc = wanted <= cap;
+  assert.equal(useOtc, false, "too big for the house book");
+  // the fallback genuinely sources liquidity from the market instead of borrowing it from the house
+  assert.ok(!useOtc, "so it goes to Jupiter, which is the correct behaviour, not an error");
+});

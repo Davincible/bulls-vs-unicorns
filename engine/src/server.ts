@@ -16,7 +16,7 @@ import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildD
 import { priceUSD, startPriceLoop, allPrices, refreshPrices } from "./prices.ts";
 import { RPC, loadVaultKeypair } from "./chain.ts";
 import { swapExact } from "./swap.ts";
-import { anchorRound, memoStats, resultsPayload, resultsHash } from "./memo.ts";
+import { anchorRound, memoStats, resultsPayload, resultsHash, setMemoFeeSink } from "./memo.ts";
 import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, forget as authForget,
          mintSession, resume as authResume } from "./auth.ts";
 import { isAllowed as walletAllowed } from "./allowlist.ts";
@@ -30,7 +30,7 @@ import { vaultTokenBalance } from "./chain-ops.ts";
 import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, totalDeployed, depSide,
          created, bustedCount, getConvFees, addConvFees, persist, restore, flush, bankFee, TREASURY_ID,
          acct, balPayload, leadersFor, accountUsd, cleanDisplayName, cleanAvatarUrl,
-         pushRound, roundHistory, resetLifetimeStats } from "./ledger.ts";
+         pushRound, roundHistory, resetLifetimeStats, treasuryAcct } from "./ledger.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
 import { type Tok, FIELD, PAIRINGS, ARENA_IDS, arenaTokens, arenaEco, NARENAS, NARENA_IDS,
          FEE, CAP, CONVERT_FEE, MIN_ENTRY } from "./arenas.ts";
@@ -69,6 +69,13 @@ const CONVERT_COOLDOWN_MS = Number(process.env.CONVERT_COOLDOWN_MS || 65_000);
 const OTC_FEE_TOKEN = Number(process.env.OTC_FEE_TOKEN || 0.01);   // token <-> token (e.g. UWU<->ANSEM)
 const OTC_FEE_SOL = Number(process.env.OTC_FEE_SOL || 0.003);      // anything involving SOL
 const OTC_ENABLED = process.env.OTC_DISABLE !== "1";
+// The largest share of the vault's SPARE holdings (what is left after every other player is paid)
+// that any ONE internal convert may consume. Beyond this we route to a genuine swap so the
+// liquidity is really sourced rather than borrowed from the house's own book.
+const OTC_MAX_FRACTION = Number(process.env.OTC_MAX_FRACTION || 0.25);
+// How much of a player's stake the opposing army answers with. 1.0 = match it exactly, which keeps
+// the matched book full so the player's whole entry is live rather than mostly refunded.
+const MATCH_RATIO = Number(process.env.MATCH_RATIO || 1.0);
 const otcFeeFor = (a: Field, b: Field) => (a === "sol" || b === "sol") ? OTC_FEE_SOL : OTC_FEE_TOKEN;
 const lastConvertAt = new Map<string, number>();
 // load once - the vault signs every swap
@@ -523,6 +530,17 @@ if (process.env.RESYNC_POOL_ON_BOOT === "1") {
     } catch (e) { console.error("pool resync failed:", (e as Error).message); }
   })();
 }
+// Book every anchoring fee against the TREASURY's own SOL. The lamports physically leave the vault
+// (it holds the only server-side key) but they must not be taken from the float that backs players:
+// the house pays for its own anchoring out of fee revenue. If the treasury has not earned enough
+// yet the balance simply goes negative, which is honest — it is a real cost we owe ourselves.
+setMemoFeeSink((lamports) => {
+  const px = solUsd();
+  if (!(px > 0)) return;
+  const t = treasuryAcct();
+  t.sol = (t.sol || 0) - (lamports / 1e9) * px;    // `sol` is USD units
+});
+
 // Adopt the seeded bot wallets as house accounts — their real deposits become the bots' bankroll.
 {
   const p = initBotBank();
@@ -592,6 +610,50 @@ for (const aid of ARENA_IDS) if (botsFor(aid).length === 0) seedBots(aid, SEED);
 for (const aid of NARENA_IDS) { let guard = 0; while (botsFor(aid).length < SEED && guard++ < 500) if (!newBotN(aid)) break; }
 
 // bots auto-enter each lobby (a fraction, with a fee taken on deploy)
+/** Answer a player's deploy on the OPPOSING side.
+ *
+ *  Bots entered once per lobby on their own schedule, so a \$7 human entry sat against ~\$0.50 of
+ *  bots: the matched book refunded almost all of it and the round was a non-event. The house should
+ *  take the other side of real action whenever it can afford to — that is the whole point of holding
+ *  a float. Capped by what the pool actually has, so it can never promise money it does not hold. */
+function matchPlayerStake(aid: string, playerSide: Side, stakeUsd: number): void {
+  const rn = runners[aid]; if (!rn || rn.state.phase !== "lobby") return;
+  const foe: Side = playerSide === "bull" ? "uwu" : "bull";
+  const [tokA, tokB] = arenaTokens(aid);
+  const foeTok = foe === "bull" ? tokA : tokB;
+  const f = FIELD[foeTok] as Field;
+  const px = pxForRound(aid, rn.state.round, f);
+  if (!(px > 0)) return;
+
+  // how much the opposing army already has on the table
+  const already = rn.state.entries.filter(e => e.side === foe)
+                    .reduce((n, e) => n + e.stake / (1 - FEE), 0);
+  let need = stakeUsd * MATCH_RATIO - already;
+  if (need <= MIN_ENTRY) return;
+
+  // spread the answer across bots that can afford it, newest first
+  for (const b of botsFor(aid)) {
+    if (need <= MIN_ENTRY) break;
+    if (b.side !== foe) continue;
+    const have = (b[f] || 0) * px;
+    const give = Math.min(need, have, CAP);
+    if (give < MIN_ENTRY) continue;
+    const tokens = give / px;
+    b[f] -= tokens;
+    const feeTok = tokens * FEE;
+    bankFee(f, feeTok);
+    treasury[arenaEco(aid)] += feeTok * px;
+    flow(aid, rn.state.round, f).out += tokens;
+    flow(aid, rn.state.round, f).in += feeTok;
+    b.dep += give;
+    totalDeployed[arenaEco(aid)] += give;
+    stat(aid).deployed += give;
+    depSide[arenaEco(aid)][foe] += give;
+    rn.enter(`${b.id}|${foe}`, foe, give * (1 - FEE));
+    need -= give;
+  }
+}
+
 function botsEnter(aid: string) {
   const rn = runners[aid]; if (rn.state.phase !== "lobby") return;
   const [tokA, tokB] = arenaTokens(aid);
@@ -933,6 +995,7 @@ wss.on("connection", (ws, req) => {
         depSide[eco][m.side as Side] += stakeUsd;
         stat(aid).deployed += stakeUsd; stat(aid).take += fee * usdP;
         rn.enter(`${m.wallet}|${m.side}`, m.side, stakeUsd * (1 - FEE));
+        matchPlayerStake(aid, m.side as Side, stakeUsd);   // the house takes the other side
         ws.send(JSON.stringify({ t: "entered", arena: aid, mode: arenaEco(aid), side: m.side, stake }));
         pushBalance(m.wallet); persist();
       } else if (m.t === "resync") {          // { arenas: ["au-normal", ...] } -> in-flight rounds
@@ -1140,7 +1203,26 @@ wss.on("connection", (ws, req) => {
           const otcFee = otcFeeFor(from, to);
           const usdIn = amt * pxFrom;
           const outUnits = (usdIn * (1 - otcFee)) / pxTo;
-          if (outUnits > 0 && takeExact(to, outUnits)) {
+          // LIQUIDITY GUARD. An OTC hands the player house tokens and leaves the house holding the
+          // token they gave up. If they then withdraw everything, the vault must actually have it —
+          // and the token they gave us is NOT the one they will withdraw. So never let a single
+          // convert take more than a fraction of what the vault holds of the destination token, and
+          // never below what everyone else is already owed. Large orders fall through to a real
+          // swap, which genuinely sources the liquidity instead of borrowing it from the house.
+          const heldOnChain = to === "sol" ? lastChain.sol * solUsd()
+                            : to === "uwu" ? lastChain.uwu : lastChain.bull;
+          let owedToOthers = 0;
+          for (const o of ledger.values()) {
+            if (o.id === m.wallet || o.isBot) continue;
+            owedToOthers += o[to] || 0;
+          }
+          const spare = Math.max(0, heldOnChain - owedToOthers);
+          const cap = spare * OTC_MAX_FRACTION;
+          const withinLiquidity = outUnits <= cap;
+          if (!withinLiquidity) {
+            console.log(`otc: ${outUnits.toFixed(4)} ${to} exceeds the ${cap.toFixed(4)} liquidity cap — routing to a real swap`);
+          }
+          if (outUnits > 0 && withinLiquidity && takeExact(to, outUnits)) {
             returnBank(from, amt);                       // the house takes in what the player gave
             a[to] += outUnits;
             addConvFees(usdIn * otcFee);                 // the spread we would have paid a pool

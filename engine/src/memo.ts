@@ -29,6 +29,12 @@ const MEMO_CU_LIMIT = Number(process.env.MEMO_CU_LIMIT || 350_000);
 const MEMO_MIN_VAULT_SOL = Number(process.env.MEMO_MIN_VAULT_SOL || 0.05);
 let paused = false;
 export const memoPause = (why: boolean) => { paused = why; };
+// Network fees are an OPERATING COST, not a charge on the float. The lamports leave the vault
+// (it is the only key the server holds) but they are booked against the treasury's own SOL, so the
+// house pays for its own anchoring out of fee revenue and players' backing is never consumed.
+let onFeePaid: ((lamports: number) => void) | null = null;
+export const setMemoFeeSink = (fn: (lamports: number) => void) => { onFeePaid = fn; };
+export const LAMPORTS_PER_MEMO = 5000;
 
 export interface AnchorPlayer {
   id: string;        // wallet (or bot id)
@@ -198,6 +204,7 @@ export async function flushMemos(): Promise<void> {
     await conn.confirmTransaction(sig, "confirmed");
     queue.splice(0, take);                       // only drop rows once they are really on-chain
     posted += take; lastSig = sig; lastError = null;
+    try { onFeePaid?.(LAMPORTS_PER_MEMO); } catch { /* accounting must not break anchoring */ }
     }
   } catch (e) {
     failed++;

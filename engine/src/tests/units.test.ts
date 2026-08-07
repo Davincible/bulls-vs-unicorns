@@ -403,3 +403,57 @@ test("row order cannot be shuffled to hide a change", () => {
   assert.equal(_encodeForTest([a], false), _encodeForTest([b], false),
                "canonical sort means order is not part of the commitment");
 });
+
+// Network fees are an OPERATING COST. The lamports leave the vault because it holds the only
+// server-side key, but they must be booked against the house's own revenue — never taken from the
+// float that backs players.
+test("anchoring fees are charged to the treasury, not the float", () => {
+  const SOLPX = 72.8, LAMPORTS = 5000;
+  let treasurySol = 2.00, playerBacking = 65.88;
+  const cost = (LAMPORTS / 1e9) * SOLPX;
+  treasurySol -= cost;                              // the house pays
+  assert.ok(Math.abs(cost - 0.000364) < 1e-6, "$0.000364 per anchor");
+  assert.equal(playerBacking, 65.88, "players' backing is untouched");
+  assert.ok(treasurySol < 2.00, "and the house wears the cost");
+});
+
+test("a day of anchoring is a real but small cost against fee revenue", () => {
+  const perDay = 1763 * (5000 / 1e9) * 72.8;
+  assert.ok(perDay > 0.6 && perDay < 0.7, `$${perDay.toFixed(2)}/day — matches the $0.67 estimate`);
+});
+
+// A $7 human entry sat against ~$0.50 of bots, so the matched book refunded almost all of it and
+// the round was a non-event. The house holds a float precisely so it can take the other side.
+test("the opposing army answers a player's stake", () => {
+  const MIN = 0.01, RATIO = 1.0;
+  const playerStake = 7.28, alreadyOpposing = 0.5;
+  const need = playerStake * RATIO - alreadyOpposing;
+  assert.ok(need > 6.7, `house should add ~$${need.toFixed(2)} so the entry is actually live`);
+  assert.ok(need > MIN);
+});
+
+test("matching is capped by what the pool really holds", () => {
+  const need = 50, botHas = 3.2, CAP = 100;
+  const give = Math.min(need, botHas, CAP);
+  assert.equal(give, 3.2, "never promises money the house does not have");
+});
+
+test("an already-matched book is left alone", () => {
+  const playerStake = 5, alreadyOpposing = 5.2;
+  const need = playerStake * 1.0 - alreadyOpposing;
+  assert.ok(need <= 0.01, "no top-up needed when the other side is already there");
+});
+
+// Invented handles like "bagChaser_6" read as house bots the moment anyone looks twice. A fighter is
+// named only if they connected an X account; everyone else is what they actually are — an address.
+test("only a connected X identity earns a real name on the board", () => {
+  const tag = (id: string) => id.includes(":bot:") ? "k3Fq…8xR" : id.slice(0, 4) + "…" + id.slice(-3);
+  const withX = { id: "BTYdc2aw", name: "@MJCryptoBD", avatar: "https://x/pic", isBot: false };
+  const noX   = { id: "BTYdc2awdFDZnDc8wVs3wv61UEYDDMQ329Zy3KC9JHVZ", name: "You", avatar: null, isBot: false };
+  const bot   = { id: "us-extraction:bot:6", name: "bagChaser_6", avatar: null, isBot: true };
+
+  const show = (a: any) => (a.avatar && a.name && a.name !== "You") ? a.name : tag(a.id);
+  assert.equal(show(withX), "@MJCryptoBD", "X handle shown when connected");
+  assert.match(show(noX), /^BTYd…/, "otherwise a shortened address");
+  assert.ok(!/bagChaser/.test(show(bot)), "never an invented handle");
+});

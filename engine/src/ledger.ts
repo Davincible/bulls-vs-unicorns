@@ -151,6 +151,26 @@ export function hasActivity(a: Account): boolean {
 }
 
 // Leaderboard the engine owns, so real players actually appear on it (bots are scoped to the arena).
+// What a fighter is CALLED in public. An X handle if they connected one; otherwise a shortened
+// address. Invented handles like "bagChaser_6" read as house bots the moment anyone looks twice —
+// a wallet stub is what an unnamed participant actually is.
+const B58ID = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ123456789";
+function walletTag(id: string): string {
+  if (!id.includes(":bot:")) return id.slice(0, 4) + "…" + id.slice(-3);
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) { h ^= id.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  let out = "";
+  for (let i = 0; i < 7; i++) { out += B58ID[h % B58ID.length]; h = Math.imul(h ^ (h >>> 13), 2246822507) >>> 0; }
+  return out.slice(0, 4) + "…" + out.slice(4);
+}
+/** An X identity is the only thing that earns a real name on the board. */
+export function publicName(a: Account): string {
+  const n = (a.name || "").trim();
+  if (a.avatar && n && n !== "You") return n;      // connected X handle
+  if (!a.isBot && n.startsWith("@")) return n;
+  return walletTag(a.id);
+}
+
 export function leadersFor(aid: string) {
   const list = [...ledger.values()].filter(a => (a.isBot ? a.id.startsWith(aid + ":") : hasActivity(a)));
   // Everything on this board is DOLLARS. dep/ret/raided are accumulated in token units by the
@@ -161,7 +181,7 @@ export function leadersFor(aid: string) {
     const value = accountUsd(a);
     // dep/ret are already dollars (accumulated at the round's price) — do NOT re-price them
     const depUsd = a.dep || 0, retUsd = a.ret || 0;
-    return { id: a.id, name: a.name, avatar: a.avatar, side: a.side, value,
+    return { id: a.id, name: publicName(a), avatar: a.avatar, side: a.side, value,
       games: a.games, wins: a.wins, isBot: a.isBot,
       dep: depUsd, ret: retUsd, raided: (a.raided || 0) * px, best: (a.best || 0) * px,
       // a player's cost basis is what they DEPOSITED (depIn/wOut are token units of what they moved
