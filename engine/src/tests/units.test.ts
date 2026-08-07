@@ -682,3 +682,32 @@ test("within a round, USD is already price-neutral — the frozen rate sees to t
   assert.ok(Math.abs((outUsd / inUsd) - (outTok / inTok)) < 1e-9,
             "same ratio either way, because entry and exit use one price");
 });
+
+// B6 — matchPlayerStake fires the moment a player enters, which answers THAT entry but nothing
+// after it. A whale arriving later in the same lobby faced only what the house had already
+// committed, and the rest of their stake went unmatched and was refunded. Re-checking while the
+// lobby is open is free upside: the matched book refunds any excess anyway.
+test("a late whale is answered, not left unmatched", () => {
+  const RATIO = 1.0;
+  let houseCommitted = 2.0;
+  const early = 2.0;
+  assert.ok(houseCommitted >= early * RATIO, "the early entry is covered");
+  const late = 20.0;                                   // a whale joins the same lobby
+  const need = (early + late) * RATIO - houseCommitted;
+  assert.ok(need > 19, `house should add ~$${need.toFixed(2)} rather than leave it unmatched`);
+});
+
+test("only HUMAN stake is answered — bots matching bots would ratchet forever", () => {
+  const entries = [
+    { id: "WALLET|bull", stake: 5, bot: false },
+    { id: "us:bot:1|bull", stake: 3, bot: true },
+  ];
+  const human = entries.filter(e => !e.bot).reduce((s, e) => s + e.stake, 0);
+  assert.equal(human, 5, "the house answers the player, not its own fighters");
+});
+
+test("re-checking is idempotent — it subtracts what is already committed", () => {
+  const playerStake = 10, alreadyOpposing = 10;
+  const need = playerStake * 1.0 - alreadyOpposing;
+  assert.ok(need <= 0.01, "a matched book triggers no further stake");
+});

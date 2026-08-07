@@ -32,7 +32,7 @@ import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, to
          created, bustedCount, getConvFees, addConvFees, persist, restore, flush, bankFee, TREASURY_ID,
          acct, balPayload, leadersFor, accountUsd, cleanDisplayName, cleanAvatarUrl,
          pushRound, roundHistory, markAnchored, resetLifetimeStats, treasuryAcct, standingsFromLog,
-         publicName } from "./ledger.ts";
+         publicName, setInRingReader } from "./ledger.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
 import { type Tok, FIELD, PAIRINGS, ARENA_IDS, arenaTokens, arenaEco, NARENAS, NARENA_IDS,
          FEE, CAP, CONVERT_FEE, MIN_ENTRY } from "./arenas.ts";
@@ -551,6 +551,32 @@ async function autoRebalance(): Promise<void> {
   } catch (e) { console.error("auto-rebalance failed:", redact((e as Error).message)); }
 }
 setInterval(() => { void autoRebalance(); }, Number(process.env.REBALANCE_MS || 5 * 60_000)).unref?.();
+
+// B6 — KEEP WATCHING THE BOOK. matchPlayerStake fires the moment a player enters, which answers
+// that entry but nothing after it: a whale arriving later in the same lobby faced whatever the
+// house had already committed, and the rest of their stake went unmatched and was refunded. The
+// house wants that action. Over-committing costs nothing, because the matched book refunds any
+// excess anyway — so re-checking every second while a lobby is open is free upside.
+const WATCH_MS = Number(process.env.BOOK_WATCH_MS || 1200);
+setInterval(() => {
+  for (const aid of ARENA_IDS) {
+    const rn = runners[aid];
+    if (!rn || rn.state.phase !== "lobby" || !rn.state.entries.length) continue;
+    const [tokA, tokB] = arenaTokens(aid);
+    // How much REAL money sits on each side? Only humans are worth answering — bots matching bots
+    // would ratchet the book upward forever on both sides.
+    let human: Record<string, number> = { bull: 0, uwu: 0 };
+    for (const e of rn.state.entries) {
+      if (String(e.id).includes(":bot:")) continue;
+      human[e.side] = (human[e.side] || 0) + (e.stake || 0) / (1 - FEE);
+    }
+    for (const side of ["bull", "uwu"] as Side[]) {
+      const stake = human[side] || 0;
+      if (stake <= MIN_ENTRY) continue;
+      matchPlayerStake(aid, side, stake);   // it already subtracts what the other army has committed
+    }
+  }
+}, WATCH_MS).unref?.();
 refreshChainHoldings();
 
 if (process.env.RECOVER_FLOAT_ON_BOOT === "1") {
@@ -605,6 +631,27 @@ if (process.env.RESYNC_POOL_ON_BOOT === "1") {
 // the house pays for its own anchoring out of fee revenue. If the treasury has not earned enough
 // yet the balance simply goes negative, which is honest — it is a real cost we owe ourselves.
 // stamp each history row with the signature that anchored it, and tell everyone watching
+// A3 — sum this wallet's unsettled stakes across every arena, in dollars.
+setInRingReader((wallet) => {
+  let usd = 0;
+  for (const aid of ARENA_IDS) {
+    const st = runners[aid]?.state; if (!st?.entries?.length) continue;
+    const [tokA, tokB] = arenaTokens(aid);
+    for (const e of st.entries) {
+      if (String(e.id).split("|")[0] !== wallet) continue;
+      usd += (e.stake || 0) / (1 - FEE);      // entries are already USD, gross of the deploy fee
+    }
+  }
+  for (const aid of NARENA_IDS) {
+    const st = runnersN[aid]?.state; if (!st?.entries?.length) continue;
+    for (const e of st.entries) {
+      if (String(e.id).split("|")[0] !== wallet) continue;
+      usd += (e.stake || 0) / (1 - FEE);
+    }
+  }
+  return usd;
+});
+
 setAnchorSink((rounds, sig) => {
   for (const r of rounds) markAnchored(r.arena, r.round, sig);
   broadcast({ t: "roundAnchored", rounds, sig });

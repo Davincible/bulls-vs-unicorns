@@ -140,6 +140,11 @@ export function accountUsd(a: Account): number {
   return (a.bull || 0) * usdPer("bull") + (a.uwu || 0) * usdPer("uwu") + (a.sol || 0);
 }
 
+// The rounds live in server.ts; it registers a reader here so the balance payload can include the
+// staked amount without ledger.ts having to know what a round is.
+let inRingFor: ((wallet: string) => number) | null = null;
+export const setInRingReader = (fn: (wallet: string) => number) => { inRingFor = fn; };
+
 export function balPayload(wallet: string) {
   const a = ledger.get(wallet);
   // Dollar figures computed HERE, where the prices and the deposit split are known. depIn/wOut mix
@@ -151,6 +156,10 @@ export function balPayload(wallet: string) {
   const tokIn = Math.max(0, (a?.depIn || 0) - solIn), tokOut = Math.max(0, (a?.wOut || 0) - solOut);
   const investedUsd = (tokIn * px + solIn) - (tokOut * px + solOut);
   return { t: "balance", wallet, bull: a?.bull || 0, uwu: a?.uwu || 0, sol: a?.sol || 0,
+           // what this wallet has ON THE TABLE right now. The client used to derive this from its
+           // own userCircles, which only populate when a round STARTS with your entry — so a
+           // mid-round join or a reconnect showed $0 while real money was staked.
+           inRingUsd: inRingFor ? inRingFor(wallet) : 0,
            depIn: a?.depIn || 0, wOut: a?.wOut || 0, refEarned: a?.refEarned || 0,
            games: a?.games || 0, wins: a?.wins || 0,
            // what the balance is WORTH and what it COST, both in dollars

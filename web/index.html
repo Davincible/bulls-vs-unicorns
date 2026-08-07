@@ -936,7 +936,12 @@
       const sn=document.querySelector("#wSol")?.parentElement?.querySelector(".n");
       if(sn)sn.textContent=(spare==="bull"?"🐂 ANSEM":spare==="uwu"?"🦄 UWU":"◎ SOL")+" (other)";
     }
-    $("#myStake").textContent=fmt(w.userCircles.reduce((s,c)=>s+ring(c),0));
+    // Prefer the ENGINE's figure: userCircles only populate when a round starts with your entry,
+    // so a mid-round join or a reconnect showed $0 while real money was staked.
+    { const local=w.userCircles.reduce((s,c)=>s+ring(c),0);
+      const el=$("#myStake");
+      if(el)el.textContent = (window.__INRING_USD!=null&&window.__INRING_USD>local)
+        ? "$"+window.__INRING_USD.toFixed(2) : fmt(local); }
     const ap=userWorth()-INVESTED,apE=$("#myPnl");apE.textContent=(ap>=0?"+":"−")+"$"+Math.abs(ap).toFixed(2);apE.className="v "+(ap>=0?"pos":"neg");
     const cap=MODE[w.mode].cap,clr=MODE[w.mode].color;$("#modeTag").textContent=cap;$("#modeTag").style.color=clr;$("#roundbar").style.color=clr;$("#depMode").textContent=cap;
     renderTicker(w);
@@ -1928,27 +1933,39 @@
           // the local-sim startLobby() that used to do this never runs when connected.
           // ONE control: "repeat every round" replays your last deploy — fixed $ or % of wallet,
           // to whichever sides you have selected. Fires on the first lobby snapshot.
-          if(s.phase==="lobby"&&MYWALLET&&w.autoRound!==s.round&&$("#autoTick")&&$("#autoTick").checked){
-            w.autoRound=s.round;
-            const pct=w.autoPct||0;
-            for(const sd of ["bull","unicorn"]){
-              if(!SEL[sd])continue;
-              const tk=(sd==="bull"?metaA():metaB()); const fld=({ANSEM:"bull",UWU:"uwu",SOL:"sol"})[tk.label]||"bull";
-              const amt=pct>0?Math.min(WALLET[fld]*pct,CAP):room;
-              if(amt>=0.01)deposit(w,sd,amt);
-            }
-          }
-          if(s.phase==="lobby"&&MYWALLET&&w.autoPct>0&&w.autoRound!==s.round){
-            w.autoRound=s.round;
-            const inLobby=new Set((s.list||[]).map(e=>String(e.id)));   // don't double-deploy after a reload/reconnect mid-lobby
-            const sides=w.autoSide==="both"?["bull","unicorn"]:[w.autoSide];
-            for(const sd of sides){
-              if(inLobby.has(MYWALLET+"|"+cSide(sd)))continue;
-              const tk=sd==="bull"?"bull":"uwu";
-              const amt=Math.min(WALLET[tk]*w.autoPct/sides.length,WALLET[tk],CAP);
-              if(amt>=0.01&&window.__sendEngine){
-                window.__sendEngine({t:"enter",wallet:MYWALLET,mode,side:cSide(sd),stake:amt});
-                ev(w,"🤖 Auto-deploy "+fmt(amt)+" "+tk.toUpperCase()+" → "+(sd==="bull"?"Bulls":"Unicorns"),"you");
+          // AUTO-DEPLOY — one block, fired once per round at the moment the lobby opens.
+          //
+          // There used to be TWO of these. The first set w.autoRound = s.round, which made the
+          // second's `w.autoRound !== s.round` guard false, so they silently cancelled each other:
+          // whichever ran first won and the other never fired. That is why it "worked sometimes".
+          // The first also required a side to be manually selected, so with none selected it did
+          // nothing at all, and neither de-duplicated against a reconnect mid-lobby.
+          if(s.phase==="lobby" && MYWALLET && w.autoRound!==s.round){
+            const on = ($("#autoTick")&&$("#autoTick").checked) || (w.autoPct||0)>0;
+            if(on){
+              w.autoRound=s.round;   // claim the round FIRST, so a second state tick cannot re-fire
+              // Already in this lobby? A reload or reconnect replays the lobby snapshot, and
+              // deploying again would silently double the stake.
+              const already=new Set((s.list||[]).map(e=>String(e.id)));
+              // Which armies: an explicit selection, else the side last played, else both.
+              let sides=["bull","unicorn"].filter(sd=>SEL[sd]);
+              if(!sides.length && w.autoSide && w.autoSide!=="both") sides=[w.autoSide];
+              if(!sides.length && w.lastSide) sides=[w.lastSide];
+              if(!sides.length) sides=["bull","unicorn"];
+
+              const pct=w.autoPct||0;
+              for(const sd of sides){
+                if(already.has(MYWALLET+"|"+cSide(sd)))continue;
+                const meta=(sd==="bull"?metaA():metaB());
+                const fld=({ANSEM:"bull",UWU:"uwu",SOL:"sol"})[meta.label]||"bull";
+                const px=tokPx(fld); if(!(px>0))continue;
+                const haveUsd=(WALLET[fld]||0)*px;
+                // pct is a share of the WALLET; otherwise the fixed dollar amount from the selector
+                const wantUsd=pct>0 ? (haveUsd*pct)/sides.length : room;
+                const amtUsd=Math.min(wantUsd, haveUsd, CAP);
+                if(amtUsd<0.01)continue;
+                deposit(w,sd,amtUsd,true);            // auto: never prompts a wallet
+                ev(w,"🤖 Auto-deploy $"+amtUsd.toFixed(2)+" → "+meta.team,"you");
               }
             }
           }
@@ -1988,6 +2005,7 @@
               send({t:"convert",wallet:PK,to:tk2,from:off});}}
         }
         // the engine computes both in dollars — depIn/wOut are mixed units and must not be subtracted raw
+        if(m.inRingUsd!=null)window.__INRING_USD=m.inRingUsd;
         if(m.valueUsd!=null)WORTH_USD=m.valueUsd;
         if(m.investedUsd!=null){INVESTED_USD=m.investedUsd; INVESTED=m.investedUsd;}
         else INVESTED=(m.depIn||0)-(m.wOut||0);
