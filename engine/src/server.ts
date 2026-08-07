@@ -1033,7 +1033,22 @@ function botsEnter(aid: string) {
   const [tokA, tokB] = arenaTokens(aid);
   let pool = botsFor(aid);
   if (PLAY_MAX > 0) {   // cap entrants per side: pick a random slice of the community each round
-    const want = () => PLAY_MIN + Math.floor(Math.random() * Math.max(1, PLAY_MAX - PLAY_MIN + 1));
+    // LOBBY SIZE FOLLOWS THE ROOM. An empty lobby does not need a full arena — it is house money
+    // paying house fees to entertain nobody, and it makes the arena look busier than it is. So the
+    // floor is small when no human is in, and the cap opens up as real players arrive.
+    //
+    // Scaled on HUMAN STAKE rather than headcount: one person deploying $50 deserves a bigger room
+    // than five deploying a dollar between them, and headcount alone would let a handful of dust
+    // entries pull the whole arena open.
+    const humanUsd = rn.state.entries
+      .filter(e => !String(e.id).includes(":bot:"))
+      .reduce((n, e) => n + (e.stake || 0) / (1 - FEE), 0);
+    const IDLE_MAX = Math.max(1, Number(process.env.PLAY_IDLE_MAX || 3));
+    // every ~$10 of human money on the table opens the room by one more fighter per side
+    const opened = humanUsd > 0 ? IDLE_MAX + Math.ceil(humanUsd / Number(process.env.PLAY_SCALE_USD || 10)) : IDLE_MAX;
+    const hiCap = Math.min(PLAY_MAX, Math.max(IDLE_MAX, opened));
+    const loCap = Math.min(PLAY_MIN, hiCap);
+    const want = () => loCap + Math.floor(Math.random() * Math.max(1, hiCap - loCap + 1));
     const pick = (side: Side) => {
       const arr = pool.filter(b => b.side === side).sort(() => Math.random() - 0.5);
       return arr.slice(0, want());

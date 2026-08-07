@@ -14,6 +14,11 @@
   .brand .b{color:var(--bull)} .brand .u{color:var(--uni)} .brand .vs{color:var(--gold);font-size:.8em}
   .hstats{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
   /* Hall of Legends — one line per row: rank, name, deposit -> final, round, return. */
+  /* Band A hero — one figure, large, because the brief asks for a single number a player reads
+     first. Everything else on the dashboard is supporting detail. */
+  .bandHero{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .bandHero span{font-size:34px;font-weight:700;font-family:var(--mono);letter-spacing:-.02em;color:var(--ink)}
+  .bandHero small{font-size:12px;color:var(--ink-faint);font-family:var(--mono)}
   .hofnm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .hofrun{flex:0 0 auto;color:var(--ink-soft);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:nowrap}
   .hofrd{flex:0 0 auto;color:var(--ink-faint);font-size:11px;white-space:nowrap}
@@ -382,6 +387,20 @@
             <div class="note" style="margin-top:6px">Earned so far: <b id="refEarned" style="color:var(--gold)">$0</b></div>
 </div></div>
     <div class="view" id="viewDashboard">
+      <!-- BRIEF PART 4, BAND A — "the arena right now", first because it is the only band a player
+           cares about before they care about anything else. One hero figure, then the four facts
+           that decide whether to deploy: what is on the table, what just happened, what the house
+           is holding, and whether it can actually pay out. -->
+      <div class="card" id="bandA" style="margin-bottom:14px">
+        <h2>◎ The arena right now</h2>
+        <div class="bandHero"><span id="baHero">—</span><small id="baHeroSub">waiting for a round</small></div>
+        <div class="dgrid" style="margin-top:12px">
+          <div class="stat"><div class="v" id="baPot">—</div><div class="n" id="baPotN">This round</div></div>
+          <div class="stat"><div class="v" id="baLast">—</div><div class="n" id="baLastN">Last round</div></div>
+          <div class="stat"><div class="v" id="baFloat">—</div><div class="n">House float</div></div>
+          <div class="stat"><div class="v" id="baBack">—</div><div class="n" id="baBackN">Backing</div></div>
+        </div>
+      </div>
       <div id="dashArenas" style="max-width:1200px;margin:0 auto 14px"></div>
       <div class="card" style="margin-bottom:14px">
         <h2>⚔ Battle report <span style="font-family:var(--mono);font-size:12px;color:var(--ink-faint)" id="brArena"></span></h2>
@@ -1463,7 +1482,45 @@
       set("brAllB",tokAmt(fb,all[fb]||0));  setTok("brAllBN",B.tok,B.label+" taken (this session)");
     }
   }
-  function syncDashboard(){renderDashArenas();renderBattleReport();const w=W();$("#dashMode").textContent="· "+MODE[w.mode].cap;
+  function renderBandA(){
+    if(!document.getElementById("bandA"))return;
+    const w=W(), A=metaA(), B=metaB();
+    const set=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
+    // Everything here is engine-sourced. A figure with no backing shows an em dash, never 0 —
+    // zero is a claim, and on a money page a wrong zero reads as "there is nothing here".
+    const pot=(w.engPot!==undefined&&w.engPot!==null)?w.engPot:null;
+    const n=(w.engFighters!==undefined&&w.engFighters!==null)?w.engFighters:null;
+    if(pot!=null){
+      set("baHero","$"+Number(pot).toFixed(2));
+      set("baHeroSub", n!=null?("on the table across "+n+" fighter"+(n===1?"":"s")):"on the table");
+    } else { set("baHero","—"); set("baHeroSub","waiting for a round"); }
+    set("baPot", pot!=null?("$"+Number(pot).toFixed(2)):"—");
+    set("baPotN", (w.phase?String(w.phase).toUpperCase():"THIS ROUND")+(w.roundNo?(" · R"+w.roundNo):""));
+    const last=(window.__ROUNDS||[])[0];
+    if(last){
+      const wt=({bull:A,uwu:B})[last.winner]||{label:last.winner||"—"};
+      set("baLast", wt.label||"—");
+      set("baLastN","Last round won · R"+last.round);
+    } else { set("baLast","—"); set("baLastN","Last round"); }
+    const F=window.__FLOAT;
+    set("baFloat", F&&F.usd!=null?("$"+Number(F.usd).toFixed(2)):"—");
+    const bk=document.getElementById("backTxt");
+    set("baBack", bk?bk.textContent:"—");
+    set("baBackN","Backing · vault vs owed");
+  }
+  // house float for band A, from /float — the same figure the solvency guard uses
+  window.__FLOAT=null;
+  async function fetchFloat(){
+    try{ const r=await fetch("/float",{cache:"no-store"}); if(!r.ok)return;
+      const j=await r.json();
+      const px=j.price||{};
+      const usd=(j.uwu?j.uwu.trueTotal*(px.uwu||0):0)+(j.sol?j.sol.trueTotal:0)+(j.bull?j.bull.trueTotal*(px.bull||0):0);
+      window.__FLOAT={usd, at:j.at};
+    }catch(e){ /* keep the last good reading */ }
+  }
+  fetchFloat(); setInterval(()=>{ if(document.visibilityState!=="hidden") fetchFloat(); }, 25000);
+
+  function syncDashboard(){renderBandA();renderDashArenas();renderBattleReport();const w=W();$("#dashMode").textContent="· "+MODE[w.mode].cap;
     // ONE LEDGER. These tiles used to read w.dep / w.matchWins - browser counters that persist in
     // localStorage across arenas and modes, which is why the dashboard showed stale figures and
     // "Bulls" while the live arena was UWU vs SOL. The engine keeps a per-arena record (statsA);
@@ -2307,6 +2364,25 @@
             dep:L.dep||0,ret:L.ret||0,games:L.games,wins:L.wins,raided:L.raided||0,best:L.best||0,
             last:0,you:L.id===MYWALLET,isBot:!!L.isBot,pnl:L.pnl}));
           // house take / user base come from the engine, not the dead local-sim counters
+          // Band A needs what is on the table RIGHT NOW. The house block carries lifetime totals,
+          // not the live round, so derive the pot and headcount from the entry list the engine
+          // already sends. Stakes are net of the deploy fee, so gross them back up to what players
+          // actually committed — showing the net would understate the pot by the fee.
+          {
+            // The entry list empties when the fight starts — the stakes are in the sim, not the
+            // lobby. Overwriting with 0 made Band A read "$0.00 across 0 fighters" mid-battle,
+            // which breaks the rule that a figure with no data shows an em dash rather than a
+            // zero: on a money page a wrong zero reads as "there is nothing on the table".
+            // Hold the last real figures for the round, and clear them only when a new lobby opens.
+            const _l=s.list||[];
+            if(_l.length){
+              w.engFighters=_l.length;
+              w.engPot=_l.reduce((n,e)=>n+((+e.stake||0)/(1-0.002)),0);
+              w.engPotRound=s.round;
+            } else if(s.phase==="lobby" && w.engPotRound!==s.round){
+              w.engFighters=null; w.engPot=null;      // genuinely empty lobby, not a fight in progress
+            }
+          }
           if(s.house){ w.treasury.bull=s.house.take; w.treasury.uwu=s.house.conv||0;
             w.engDeployed=s.house.deployed; w.engAccounts=s.house.accounts; w.engBulls=s.house.bulls; w.engUnis=s.house.unis;
             w.engDepBull=s.house.depBull; w.engDepUwu=s.house.depUwu;
