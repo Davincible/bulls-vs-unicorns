@@ -120,6 +120,12 @@ function pxForRound(aid: string, round: number, f: Field): number {
 // debited at entry and credited at settlement is tallied per round and any gap is logged. A round
 // should only ever lose the deploy fee.
 const roundFlow = new Map<string, Record<string, { out: number; in: number }>>();
+/** Tokens of `f` currently staked in unsettled rounds (out of accounts, still ours). */
+function openStakes(f: Field): number {
+  let n = 0;
+  for (const m of roundFlow.values()) { const v = m[f]; if (v) n += Math.max(0, v.out - v.in); }
+  return n;
+}
 function flow(aid: string, round: number, f: Field) {
   const k = `${aid}:${round}`;
   let m = roundFlow.get(k);
@@ -641,7 +647,13 @@ const httpServer = createServer((req, res) => {
         const v = a[f] || 0;
         if (poolSet.has(a.id)) pool += v; else if (a.isBot) bots += v; else real += v;
       }
-      return { pool, bots, real, total: pool + bots + real, usd: (pool + bots + real) * usdPerUnitSafe(f) };
+      const accounts = pool + bots + real;
+      const open = openStakes(f);                       // staked in unsettled rounds — still ours
+      // `total` is accounts-only (kept for back-compat); `trueTotal` adds money on the table, which
+      // is what should be compared against chain holdings. A mid-round snapshot of accounts alone
+      // reads low because the stakes are out — that is sampling, not a leak.
+      return { pool, bots, real, total: accounts, open, trueTotal: accounts + open,
+               usd: (accounts + open) * usdPerUnitSafe(f) };
     };
     const out = { at: Date.now(), price: { bull: usdPerUnitSafe("bull"), uwu: usdPerUnitSafe("uwu") },
                   bull: per("bull"), uwu: per("uwu"), sol: per("sol"),
