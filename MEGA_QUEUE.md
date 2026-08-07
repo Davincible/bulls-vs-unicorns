@@ -227,3 +227,30 @@ table: +211.28 UWU and +0.128 SOL in one cycle, no chain movement behind either.
 
 Players fully backed throughout: 191.92 UWU owed against 1866.20 held, 0.0245 SOL against 0.9022.
 Residual $0.02 is rounds settling between correction and measurement.
+
+---
+
+## Pot sizing — RESOLVED (config, not code)
+
+Chased in the wrong place twice. BOT_COMMIT 0.35-0.85 -> 0.12-0.32: no effect. Then the per-fighter
+floor BOT_STAKE_USD_MIN -> 0.60: also no effect. Both were guesses about the sizing formula rather
+than measurements of what rounds actually contained.
+
+The round log answered it in one read:
+
+    round 797   37 fighters  $24.56  ($0.66 each)
+    round 798   41 fighters  $25.81  ($0.63 each)
+
+Per-fighter stake was already small — the pot was large because FORTY fighters were in it.
+PLAY_MIN/PLAY_MAX cap entrants per side and were both 0 (uncapped), so every solvent bot entered
+every round. Now 5-9 per side:
+
+    round 799   17 fighters  $11.87
+    round 800   16 fighters   $9.91
+    round 801   14 fighters   $8.60   (per fighter still $0.61 — only headcount moved)
+
+**Correction on record:** asked "how we got like 40 players now?", I answered that the arena ran
+10-14 and the 40 was the leaderboard's cumulative rows. That was wrong — there really were ~40
+fighters per round. My reading was stale, taken before the population grew off the funding fix.
+
+Live settings: PLAY_MIN=5 PLAY_MAX=9 BOT_STAKE_USD_MIN=0.60 BOT_COMMIT_MIN=0.12 BOT_COMMIT_MAX=0.32
