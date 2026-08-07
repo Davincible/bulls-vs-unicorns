@@ -940,7 +940,11 @@
     // repeat); offline fighter uids are unrelated to account ids, so fall back to name there
     const pid=String(p.id||"").split("|")[0];
     const r=(w.accounts&&((w.online&&w.accounts.find(a=>a.id!==undefined&&String(a.id)===pid))||w.accounts.find(a=>a.name===p.name)))||{dep:0,ret:0,games:0,wins:0,raided:0,best:0,bankroll:0}; const side=p.side, bk=safeV(p), pl=tot(p)-p.deposited, av=side==="bull"?"🐂":"🦄";
-    const atPnl=(r.pnl!==undefined)?r.pnl:(r.ret||0)-(r.dep||0);
+    // Prefer the engine's record for this wallet over the browser-saved one. The saved figures
+    // accumulate across arenas and still carry local-sim rounds from before the engine existed,
+    // which is why this card showed 104 games where the round log knows about 37.
+    const _srec=(window.__STANDINGS||[]).find(x=>x.id===(p&&(p.wallet||p.id)));
+    const atPnl=_srec?(_srec.pnl||0):((r.pnl!==undefined)?r.pnl:(r.ret||0)-(r.dep||0));
     $("#pcard").innerHTML=`<div class="top"><div class="av ${side==="bull"?'bull':'uni'}">${av}</div><div><h3>${p.isUser?'You':esc(p.name)}</h3><div class="sub">${side==="bull"?"Bull":"Unicorn"} · ${alive(p)?'alive':'💀 out'}</div></div><button class="close" id="pClose">✕</button></div>
       <div class="sec">This round</div>
       <div class="pg"><div class="pstat"><div class="v">${fmt(tot(p))}</div><div class="n">Bag size</div></div>
@@ -1145,7 +1149,13 @@
       const el=$("#myStake");
       if(el)el.textContent = (window.__INRING_USD!=null&&window.__INRING_USD>local)
         ? "$"+window.__INRING_USD.toFixed(2) : fmt(local); }
-    const ap=userWorth()-INVESTED,apE=$("#myPnl");apE.textContent=(ap>=0?"+":"−")+"$"+Math.abs(ap).toFixed(2);apE.className="v "+(ap>=0?"pos":"neg");
+    // ONE SOURCE OF TRUTH. This used to be userWorth() - INVESTED: current wallet worth minus a
+    // client-side counter. That is a third opinion on the same question, and it disagreed with both
+    // the leaderboard (engine round log) and the profile card (browser-saved stats) - three numbers
+    // for one wallet, with different round counts, because they were counting different things.
+    // The round log is the only survivorship-free, on-chain-anchored answer, so defer to it.
+    const _me=(window.__STANDINGS||[]).find(r=>MYWALLET&&r.id===MYWALLET);
+    const ap=_me?(_me.pnl||0):(userWorth()-INVESTED),apE=$("#myPnl");apE.textContent=(ap>=0?"+":"−")+"$"+Math.abs(ap).toFixed(2);apE.className="v "+(ap>=0?"pos":"neg");
     const cap=MODE[w.mode].cap,clr=MODE[w.mode].color;$("#modeTag").textContent=cap;$("#modeTag").style.color=clr;$("#roundbar").style.color=clr;$("#depMode").textContent=cap;
     renderTicker(w);
     $("#toasts").innerHTML=w.events.filter(e=>e.life>0).slice(-5).map(e=>`<div class="toast ${e.kind}">${e.txt}</div>`).join("");
