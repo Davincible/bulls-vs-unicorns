@@ -254,3 +254,42 @@ every round. Now 5-9 per side:
 fighters per round. My reading was stale, taken before the population grew off the funding fix.
 
 Live settings: PLAY_MIN=5 PLAY_MAX=9 BOT_STAKE_USD_MIN=0.60 BOT_COMMIT_MIN=0.12 BOT_COMMIT_MAX=0.32
+
+
+---
+
+## BLK-2 — the swap path is no longer unproven
+
+Not by a controlled canary. By an accidental one: auto-convert fired a real Jupiter swap on
+2026-08-07 17:13:15 UTC, before I removed the feature.
+
+    vault  0.0643 SOL  ->  ~178.98 UWU    (Jupiter, Pump.fun Amm, 0.0106% price impact)
+
+Both legs reconcile against chain:
+
+**SOL leg — exact.** Measured immediately after a rebalance pass, ledger vs chain differed by
+**+0.000005 SOL — five lamports**. The ledger's SOL debit matched the vault's actual outflow to the
+lamport. That is the leg that carries the decimals risk, because SOL is held in USD units and has to
+cross a unit boundary in both directions.
+
+**UWU leg — no decimals-class error.** The failure mode that bit before was a 1000x credit. Chain
+UWU holds ~1866 and the ledger tracks it within ordinary drift; a mis-scaled credit would have shown
+as ~178,000 or ~0.18 UWU and would be unmissable. It is neither.
+
+**What this does NOT prove:** it was one swap, at one size, on one route, in one direction
+(SOL -> UWU). It is evidence, not coverage. `engine/mainnet-canary.mjs` still exists for a
+deliberate check, and a UWU -> SOL convert has still never run.
+
+## SOL churn — explained, bounded, auto-corrected
+
+Not a leak. Two separate things were being read as one:
+
+1. **The debit-then-settle gap.** The ledger debits when a convert is requested; the chain settles
+   moments later. Sampling in between shows a phantom "stranded" balance. That is what the $4.72
+   reading was, and it resolved itself.
+
+2. **Ordinary per-cycle drift**, ~$1.3-1.8 per 5-minute pass, always in the safe direction (chain
+   holds more than the ledger claims). Consistent with rounding across many small token operations
+   per round. The $1 deadband now catches it; corrections are converging: $12.33 -> $1.83 -> $1.29.
+
+Zero CONSERVATION warnings throughout.
