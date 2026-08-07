@@ -663,6 +663,32 @@ const BOT_MAX_BANK_USD = Number(process.env.BOT_MAX_BANK_USD || 12);
 // This is house money moving between house wallets. It never touches a player balance, never
 // creates balance (every token comes out of the pool), and is bounded by BOT_MAX_BANK_USD, the
 // same ceiling levelBots enforces from the other direction.
+// CAPITAL FRAGMENTATION. Bots used to bust constantly, so the population policed itself. Once
+// funding was fixed they stopped dying and nothing culled them: the count reached 77 accounts
+// holding ~$1.04 each while only 10 can enter a round. Sixty-seven wallets sat out every round
+// holding ~$70 of idle float, and because each bank was ~$1, the per-fighter stake was pinned to
+// the MINIMUM rather than driven by the commit fraction — the arena fielded $6.50 rounds on a $114
+// float, 5.7% utilisation.
+//
+// More accounts is not more depth. Past a couple of rotations' worth of entrants it is just the
+// same money cut into thinner pieces. Retire the excess back into the pool, where it funds the
+// fighters that DO play. retireBot already returns balance safely and keeps the account's record.
+const POP_ROTATIONS = Number(process.env.BOT_POP_ROTATIONS || 3);
+function capPopulation(aid: string): void {
+  const perSideCap = PLAY_MAX > 0 ? PLAY_MAX : 9;
+  const target = Math.max(6, perSideCap * 2 * POP_ROTATIONS);   // both sides, a few rotations deep
+  const alive = botsFor(aid).filter(a => !(a as any).retired);
+  if (alive.length <= target) return;
+  // retire the POOREST first: they are the ones whose banks are too thin to field real size, and
+  // their capital does more work consolidated behind a fighter that actually enters.
+  const px = (f: Field) => (f === "sol" ? 1 : usdPerUnitSafe(f));
+  const worth = (a: any) => (a.bull || 0) * px("bull") + (a.uwu || 0) * px("uwu") + (a.sol || 0);
+  const excess = alive.sort((x, y) => worth(x) - worth(y)).slice(0, alive.length - target);
+  let freed = 0;
+  for (const a of excess) { freed += worth(a); retireBot(a); }
+  if (freed > 0.01) console.log(`population: retired ${excess.length} thin account(s), $${freed.toFixed(2)} back to the pool (${alive.length} -> ${target})`);
+}
+
 function levelBots(): void {
   if (!botBankReady()) return;
   const pxOf = (f: Field) => (f === "sol" ? 1 : usdPerUnitSafe(f));
@@ -1042,6 +1068,7 @@ function ensureMinimumEntries(aid: string): void {
 }
 
 function botsEnter(aid: string) {
+  capPopulation(aid);   // keep the float behind fighters that can actually enter
   const rn = runners[aid]; if (rn.state.phase !== "lobby") return;
   const [tokA, tokB] = arenaTokens(aid);
   let pool = botsFor(aid);

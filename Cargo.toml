@@ -1,0 +1,19 @@
+# ER fork workspace.
+#
+# Scoped to the ER program ONLY — deliberately not `programs/*`. The repo also contains
+# programs/vault (Anchor 0.30.1), which is written but dormant: its declare_id! is a placeholder
+# marked "replaced at deploy" and no engine code references it. Pulling it into this workspace makes
+# cargo resolve one dependency graph across both, and anchor 0.30.1's solana-program 1.17 pins
+# zeroize <1.4 while ephemeral-rollups-sdk 0.16.2 needs curve25519-dalek 4.x with zeroize ^1 — an
+# unsatisfiable conflict that has nothing to do with either program's correctness.
+#
+# Upgrading the vault to anchor 1.x is a separate piece of work with its own risk. It is not a
+# prerequisite for the ER migration, so it does not get to block it.
+[workspace]
+members = ["programs/bulls-arena"]
+resolver = "2"
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1

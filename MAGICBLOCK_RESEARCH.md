@@ -8,8 +8,18 @@ come from reading the reference program's source rather than from doc prose.
 
 ## 0. The finding that shapes everything else
 
-**We have no on-chain program.** Bulls ⚔ Unicorns is an off-chain authoritative engine (TypeScript,
-Node) with:
+**CORRECTION (found while building):** I first wrote that there is *no* on-chain program. That was
+wrong, and I found it only because my `programs/*` workspace glob picked up a package I did not know
+existed. `programs/vault` is a 223-line Anchor 0.30.1 program with `initialize` / `deposit` /
+`withdraw` / admin instructions.
+
+It is **dormant**, not live: its `declare_id!` is the placeholder `VauLt111…` marked "replaced at
+deploy", and **no engine code references it** — the running game uses a custodial keypair vault, not
+this program. So the substance below holds (nothing on-chain drives a round; every balance is a
+SQLite row), but the flat claim was false and stating it confidently was the mistake.
+
+**No on-chain program drives the game.** Bulls ⚔ Unicorns is an off-chain authoritative engine
+(TypeScript, Node) with:
 
 - a **custodial vault** holding SPL tokens and SOL,
 - a **ledger** in `node:sqlite` — every balance, stake and settlement is a database row,
