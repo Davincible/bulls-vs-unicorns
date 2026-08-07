@@ -528,14 +528,28 @@ for (const aid of NARENA_IDS) runnersN[aid] = new RoundRunnerN(NARENAS[aid].eco,
 const lastChain = { uwu: 0, bull: 0, sol: 0, at: 0 };
 // the exact anchors we hashed, so /round can serve byte-identical data for verification
 const lastAnchors = new Map<string, any>();
+// SEC-M7. Two problems lived in the old three-line version of this.
+//
+// It assigned each balance as it arrived, so a failure on the SECOND read left uwu fresh, bull and
+// sol stale, and `at` never updated - a record that was internally inconsistent (one token read now,
+// another read ten minutes ago) while still claiming the older timestamp. Anything comparing tokens
+// against each other was then comparing two different moments. Reads now land in locals and commit
+// together or not at all.
+//
+// And nothing downstream checked the age. A vault reading is a claim about NOW; the arena moves
+// money continuously, so an hour-old reading is not a slightly worse answer, it is a different
+// question. Consumers that spend money on the answer must refuse a stale one rather than act on it.
+const CHAIN_MAX_AGE_MS = Number(process.env.CHAIN_MAX_AGE_MS || 5 * 60_000);
+function chainStale(): boolean { return !lastChain.at || (Date.now() - lastChain.at) > CHAIN_MAX_AGE_MS; }
 async function refreshChainHoldings() {
   if (!chainReady()) return;
   try {
-    lastChain.uwu = await vaultTokenBalance("uwu");
-    lastChain.bull = await vaultTokenBalance("bull");
-    lastChain.sol = await solBalance(vaultPubkey());
-    lastChain.at = Date.now();
-  } catch { /* leave the last good reading in place */ }
+    const uwu = await vaultTokenBalance("uwu");
+    const bull = await vaultTokenBalance("bull");
+    const sol = await solBalance(vaultPubkey());
+    // commit as one snapshot, so the three figures are always from the same moment
+    lastChain.uwu = uwu; lastChain.bull = bull; lastChain.sol = sol; lastChain.at = Date.now();
+  } catch { /* leave the last good reading, and its real age, in place */ }
 }
 setInterval(refreshChainHoldings, 60_000).unref?.();
 
@@ -563,6 +577,13 @@ async function autoRebalance(): Promise<void> {
   if (staked > 0) return;
   try {
     await refreshChainHoldings();
+    // SEC-M7: if that read failed, lastChain still holds an OLDER snapshot. Crediting the house
+    // from it would be acting on what the vault held some time ago, while the arena has been
+    // settling rounds since. Skip the cycle - the next one runs in five minutes.
+    if (chainStale()) {
+      console.warn(`auto-rebalance: skipped — chain reading is ${Math.round((Date.now() - (lastChain.at || 0)) / 1000)}s old`);
+      return;
+    }
     const px = solUsd();
     const held: Record<string, number> = { uwu: lastChain.uwu, bull: lastChain.bull, sol: px ? lastChain.sol * px : 0 };
     const pool = new Set(poolPubkeys());
@@ -1209,6 +1230,10 @@ const httpServer = createServer((req, res) => {
                                             treasury: s.treasury / solPx, open: s.open / solPx,
                                             trueTotal: s.trueTotal / solPx, unit: "SOL" } : null },
                   chain: { uwu: lastChain.uwu, bull: lastChain.bull, sol: lastChain.sol,
+                           // a vault reading is a claim about a MOMENT — publish which one
+                           at: lastChain.at || null,
+                           ageSec: lastChain.at ? Math.round((Date.now() - lastChain.at) / 1000) : null,
+                           stale: chainStale(),
                            units: { uwu: "UWU", bull: "BULL", sol: "SOL" } } };
     res.writeHead(200, cors); return res.end(JSON.stringify(out));
   }
@@ -1241,9 +1266,35 @@ const httpServer = createServer((req, res) => {
     const cache = ext === ".html"
       ? "no-cache, no-store, must-revalidate"
       : "public, max-age=3600";
-    res.writeHead(200, { "content-type": MIME[ext] || "application/octet-stream",
-                         "cache-control": cache, "x-content-type-options": "nosniff",
-                         "referrer-policy": "strict-origin-when-cross-origin" });
+    // SEC-L3 — CSP on the HTML only. Be honest about what this does and does not buy: the app is
+    // one enormous inline script, so 'unsafe-inline' is unavoidable without a build step, and that
+    // means this does NOT stop injected script from RUNNING.
+    //
+    // What it does stop is the part that turns an injection into a loss. connect-src and img-src
+    // confine where anything can send data, so injected code cannot beacon a wallet address or a
+    // signature out to an attacker's host; script-src stops it pulling further code from anywhere
+    // we do not already trust; base-uri 'none' blocks a <base> tag from silently re-pointing every
+    // relative URL on the page. Given this file has already carried a stored-XSS bug, containing
+    // the blast radius is worth more than the clean policy we cannot have yet.
+    //
+    // The origins are exactly the ones the page really uses - unpkg (web3.js, pinned by SRI),
+    // esm.sh (a dynamic import), dexscreener (prices), privy (login), unavatar (profile images).
+    // solscan and twitter appear only as anchor hrefs, which are navigation, not subresources.
+    const csp = [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' https://unpkg.com https://esm.sh",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: https://unavatar.io",
+      "connect-src 'self' ws: wss: https://api.dexscreener.com https://auth.privy.io https://esm.sh",
+      "object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'",
+    ].join("; ");
+    const head: Record<string, string> = {
+      "content-type": MIME[ext] || "application/octet-stream",
+      "cache-control": cache, "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+    };
+    if (ext === ".html") head["content-security-policy"] = csp;
+    res.writeHead(200, head);
     res.end(data);
   });
 });
