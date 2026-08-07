@@ -503,6 +503,28 @@
   <footer><b style="color:var(--gold)">Live on Solana mainnet · real funds.</b> Balances are custodial: the engine holds them against an on-chain vault, and you can withdraw at any time.
   <b style="color:var(--ink)">Provably fair.</b> The engine publishes sha256(seed) before deploys open and reveals the seed when the fight starts, so no outcome can be chosen after the fact. Every round is recomputable in your browser from that seed, and its result is anchored on Solana.
   Raids TAKE the enemy's coin into your bag (claim reallocation) — keep it, deploy it, or withdraw it. Arenas run on ANSEM, UWU and SOL; your wallet is shared across modes. Normal = raids compound in-ring · Extraction = raids bank to your wallet in real time. Fees: 0.2% per deploy · 0.3% on convert. · <a href="solvency.html" style="color:var(--ink-soft);text-decoration:none">🔒 Proof of reserves</a></footer>
+  <!-- PAUSED SCREEN. Shown when the engine reports paused. Deliberately NOT a blocking modal over
+       a dead page: balances, withdrawals and proof of reserves stay reachable underneath, because
+       the one thing someone must never lose access to is their own money. -->
+  <div id="pausedScreen" style="display:none;position:fixed;inset:0;z-index:900;
+       background:rgba(6,6,12,.93);backdrop-filter:blur(7px);align-items:center;justify-content:center">
+    <div style="max-width:520px;text-align:center;padding:28px">
+      <div id="pausedArt" style="display:flex;gap:14px;justify-content:center;align-items:center;margin-bottom:20px"></div>
+      <div style="font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--gold)">Paused</div>
+      <h1 style="margin:8px 0 10px;font-size:26px;letter-spacing:-.01em">The arena is paused</h1>
+      <p style="color:var(--ink-soft);font-size:14px;line-height:1.55;margin:0 0 18px">
+        No rounds are running and nothing is being staked. Every balance is untouched and still
+        backed on-chain — you can check the vault or withdraw at any time.
+      </p>
+      <div class="dgrid" style="margin-bottom:18px">
+        <div class="stat"><div class="v" id="pzFloat">—</div><div class="n">Held in vault</div></div>
+        <div class="stat"><div class="v" id="pzBack">—</div><div class="n">Backing</div></div>
+      </div>
+      <button class="abtn ghost" id="pzDismiss" style="width:100%">View wallet &amp; proof of reserves</button>
+      <div class="note" style="margin-top:10px">Open stakes from the last round were refunded before the pause.</div>
+    </div>
+  </div>
+
   <div class="modal" id="modal"><div class="pcard" id="pcard"></div></div>
 </div>
 
@@ -1259,6 +1281,42 @@
     window.addEventListener("resize",()=>{ for(const p of panels){ if(st[p.id]&&st[p.id].float){ if(wide())place(p); else undock(p);} } });
     window.__PANELS={dock,undock,panels,state:()=>st};
   })();
+
+  // PAUSED SCREEN — driven by the engine, never guessed at. If /health says paused, say so plainly
+  // rather than letting the arena sit empty and look broken.
+  async function checkPaused(){
+    const el=$("#pausedScreen"); if(!el)return;
+    try{
+      const r=await fetch("/health",{cache:"no-store"}); if(!r.ok)return;
+      const h=await r.json();
+      if(!h.paused){ el.style.display="none"; return; }
+      el.style.display="flex";
+      // The figures are the POINT of this screen — "your money is still here" is not reassuring
+      // with an em dash next to it. checkPaused runs on load, before the float and backing fetches
+      // have returned, so pull them now rather than showing placeholders until the next 20s tick.
+      if(!window.__FLOAT&&typeof fetchFloat==="function") await fetchFloat();
+      if(typeof fetchBacking==="function"&&$("#backTxt")&&$("#backTxt").textContent==="backing") await fetchBacking();
+      const F=window.__FLOAT, bk=$("#backTxt");
+      const setv=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
+      setv("pzFloat", F&&F.usd!=null?("$"+Number(F.usd).toFixed(2)):"—");
+      setv("pzBack", bk?bk.textContent:"—");
+      const art=$("#pausedArt");
+      if(art&&!art.dataset.done&&window.__ART){
+        const a=window.__ART(); art.dataset.done="1";
+        // reuse the fighters' own art rather than shipping a new asset for one screen
+        for(const k of ["bull","uwu","sol"]){
+          if(!a[k]||!a[k].ok)continue;
+          const d=document.createElement("div");
+          d.className="tico"; d.setAttribute("data-tok",k==="bull"?"ansem":k);
+          d.style.cssText="width:54px;height:54px;border-radius:50%;opacity:.9";
+          art.appendChild(d);
+        }
+      }
+    }catch(e){ /* leave whatever is on screen rather than flashing a wrong state */ }
+  }
+  checkPaused(); setInterval(checkPaused, 20000);
+  document.addEventListener("click",e=>{ if(e.target&&e.target.id==="pzDismiss"){
+    const el=$("#pausedScreen"); if(el)el.style.display="none"; }});
 
   let lbTab="round", lbIdx=0;
   function renderLB(){
