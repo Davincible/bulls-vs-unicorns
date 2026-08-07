@@ -24,7 +24,7 @@ import { isAllowed as walletAllowed } from "./allowlist.ts";
 import { start as startReconcile, isFrozen, latest as reconLatest } from "./reconcile.ts";
 import { allowMessage, connectionAllowed, releaseConnection, LIMITS } from "./limits.ts";
 import { initBotBank, drawBank, returnBank, takeExact, poolBalance, botBankReady, type Field } from "./bot-bank.ts";
-import { recoverInPlace, resyncPoolToChain } from "./recover-float.ts";
+import { recoverInPlace, resyncPoolToChain, writeDownOverclaim } from "./recover-float.ts";
 import { getFloatRecoveredAt, markFloatRecovered } from "./ledger.ts";
 import { poolPubkeys } from "./bot-wallets.ts";
 import { vaultTokenBalance } from "./chain-ops.ts";
@@ -690,6 +690,35 @@ if (process.env.RECOVER_FLOAT_ON_BOOT === "1") {
         console.log(`float recovery: credited ${r.credited} wallet(s) — ${r.uwu.toFixed(2)} UWU, $${r.sol.toFixed(2)} SOL`);
       } else console.log(`float recovery: skipped — ${r.reason}`);
     } catch (e) { console.error("float recovery failed:", (e as Error).message); }
+  })();
+}
+
+// ONE-SHOT correction for phantom house float. Deliberately NOT a daemon and NOT on by default:
+// a scheduled write-down is how a genuine loss gets papered over. Set WRITEDOWN_OVERCLAIM=1 for a
+// single boot, read the log, then remove the flag. It refuses outright if players are not fully
+// backed (that is a real shortfall, not phantom float), if the excess is too large to be a rounding
+// artefact, or if the pool cannot absorb it.
+if (process.env.WRITEDOWN_OVERCLAIM === "1") {
+  await (async () => {
+    try {
+      await refreshPrices().catch(() => {});
+      await refreshChainHoldings();
+      if (chainStale()) { console.error("writedown: REFUSED — chain reading is stale"); return; }
+      const pool = new Set(poolPubkeys());
+      const px = solUsd();
+      let moved = false;
+      for (const f of ["uwu", "bull", "sol"] as const) {
+        // sol is held in the ledger as USD, so compare in USD on both sides
+        const chainHeld = f === "sol" ? (px > 0 ? lastChain.sol * px : 0) : lastChain[f];
+        if (!(chainHeld > 0)) { console.log(`writedown: ${f} skipped — no chain reading`); continue; }
+        const r = writeDownOverclaim(ledger, pool, f, chainHeld, openStakes(f));
+        if (r.wrote > 0) {
+          moved = true;
+          console.log(`writedown: ${f} ${r.from.toFixed(4)} -> ${r.to.toFixed(4)} (wrote off ${r.wrote.toFixed(4)})`);
+        } else console.log(`writedown: ${f} — ${r.reason}`);
+      }
+      if (moved) { persist(); flush(); console.log("writedown: persisted"); }
+    } catch (e) { console.error("writedown failed:", redact((e as Error).message)); }
   })();
 }
 

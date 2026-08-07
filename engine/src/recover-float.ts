@@ -195,3 +195,62 @@ const isEntry = (() => {
   catch { return false; }
 })();
 if (isEntry) main().catch(e => { console.error("recover failed:", e.message); process.exit(1); });
+
+/** Write off phantom HOUSE float — a deliberate, one-shot correction, never a daemon.
+ *
+ *  resyncPoolToChain refuses to write anything DOWN, and that rule stays. It exists because writing
+ *  balances down is exactly how a real shortfall gets hidden, and a daemon doing it on a schedule
+ *  would paper over a genuine loss the same way it papers over a bug. So this is a separate path
+ *  with its own name, run once on purpose.
+ *
+ *  The distinction it turns on:
+ *    - players under-backed            -> a real shortfall. Writing down HIDES it. REFUSED here too.
+ *    - players backed, house over-claiming -> phantom float. Nobody is owed it, no coin exists
+ *      behind it, and leaving it is the unsafe option: a bot can lose phantom balance to a real
+ *      player, at which point it becomes an unbacked liability for real and eats the buffer.
+ *
+ *  Guards, in order: players must stay fully backed after the write-down; only pool wallets are
+ *  touched, never a player and never a bot's own winnings; nothing goes below zero; and the excess
+ *  must be a small fraction of house holdings, so a bad chain read cannot zero the book.
+ */
+export function writeDownOverclaim(
+  ledger: Map<string, any>, pool: Set<string>,
+  field: "bull" | "uwu" | "sol", chainHeld: number, openStake = 0,
+  opts: { maxFrac?: number; minExcess?: number } = {},
+): { wrote: number; from: number; to: number; reason?: string } {
+  const maxFrac = opts.maxFrac ?? 0.25;
+  const minExcess = opts.minExcess ?? 0;
+  let house = 0, player = 0;
+  const poolAccts: any[] = [];
+  for (const a of ledger.values()) {
+    const v = a[field] || 0;
+    if (pool.has(a.id)) { house += v; poolAccts.push(a); }
+    else if (a.isBot) house += v;
+    else player += v;
+  }
+  if (!poolAccts.length) return { wrote: 0, from: house, to: house, reason: "no pool wallets" };
+  if (!(chainHeld > 0)) return { wrote: 0, from: house, to: house, reason: "no chain reading" };
+
+  // openStake is money that has left accounts but is still in the vault. Counting the ledger
+  // without it would read the whole open book as phantom and write off live stakes.
+  const claimed = house + player + openStake;
+  const excess = claimed - chainHeld;
+  if (excess <= minExcess) return { wrote: 0, from: house, to: house, reason: `no excess (claimed ${claimed.toFixed(4)} vs chain ${chainHeld.toFixed(4)})` };
+
+  // players must still be whole afterwards — this is the line that separates a correction from a cover-up
+  if (chainHeld < player) {
+    return { wrote: 0, from: house, to: house,
+             reason: `REFUSED: players owed ${player.toFixed(4)} exceed chain ${chainHeld.toFixed(4)} — real shortfall, not phantom float` };
+  }
+  const poolHeld = poolAccts.reduce((n, a) => n + (a[field] || 0), 0);
+  if (poolHeld < excess) {
+    return { wrote: 0, from: house, to: house,
+             reason: `REFUSED: excess ${excess.toFixed(4)} exceeds pool holdings ${poolHeld.toFixed(4)} — needs manual review` };
+  }
+  if (house > 0 && excess / house > maxFrac) {
+    return { wrote: 0, from: house, to: house,
+             reason: `REFUSED: excess ${excess.toFixed(4)} is ${(excess / house * 100).toFixed(1)}% of house float — too large to be a rounding artefact` };
+  }
+  for (const a of poolAccts) a[field] = Math.max(0, (a[field] || 0) - excess * ((a[field] || 0) / poolHeld));
+  return { wrote: excess, from: house, to: house - excess };
+}
