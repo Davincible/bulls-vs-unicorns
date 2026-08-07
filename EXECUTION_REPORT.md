@@ -1,169 +1,170 @@
-# Execution report
+# EXECUTION REPORT — MagicBlock ER migration (DEVNET ONLY)
 
-Autonomous run: security audit → mega queue → execution. Live mainnet system throughout.
-
-**Tests: 201 → 236.** All green at every commit. Nine deploys, none rolled back.
-
----
-
-## 1. Security fixes
-
-### CRITICAL
-
-**SEC-C1 — API key leakable through a public endpoint** · `memo.ts:211`, `server.ts` `/memo`
-
-*Before:* `/memo` returned `lastError` verbatim on an unauthenticated `CORS:*` endpoint. Node's
-fetch errors routinely embed the full request URL, and ours carries the Helius API key. Same class
-as the leak that already shipped once, when the keyed RPC was broadcast to every browser.
-
-*After:* a redactor applied at **both** the source (where the error is stored) and the sink (where
-stats are served), so a future field cannot leak merely by being added. Strips named credential
-params, any query string on a URL, byte-array keys, and the exact secrets held in env.
-
-*Judgement call:* I deliberately do **not** redact "any long base58 string". A secret key and a
-transaction signature are both ~88 chars and indistinguishable by shape — a length rule would have
-destroyed `lastSig`, which is public data we need. Matching the actual secret is precise instead of
-clever. 8 tests.
-
-**SEC-C2 — `relayTx` was an open transaction relay** · `server.ts:1218`, `chain-ops.ts`
-
-*Before:* broadcast arbitrary caller-supplied signed bytes through our paid RPC. Crediting was
-always safe (the `verify*` path checks the vault really received the money) but **broadcasting is a
-separate capability**, and unconstrained it let an authenticated caller push any transaction —
-spam, MEV, arbitrage — at our cost and under our endpoint's reputation. The allowlist limited *who*,
-not *what*.
-
-*After:* refuses unless the fee payer is the authenticated wallet, every program is one our own
-deposit builder emits, and the transaction actually pays the vault. SPL deposits target the vault's
-*ATA* rather than the vault pubkey, so the check derives both — a naive pubkey check would have
-missed every token deposit.
-
-*Alternative considered:* simulate and inspect balance deltas. Stricter, but costs an RPC round trip
-per deposit and still needs this structural check to know what the deltas should be. 6 tests.
-
-### HIGH
-
-| ID | Before → After |
-|---|---|
-| **SEC-H2** | `convert` ignored the solvency freeze while `withdraw` respected it — so the one moment the books were known-bad was the one moment a player could rotate into whichever asset was better backed. Now gated. |
-| **SEC-H3** | `faucet` **mints balance** and required no signature. Disabled on live chains, but that gate is a regex on the RPC URL. Added to `GUARDED` — a second lock, not a second check on the same one. |
-| **SEC-H4** | `Number("Infinity") \|\| 0` is `Infinity`, not 0, so `Infinity` reached `Math.round(sol * LAMPORTS_PER_SOL)`. Most paths happened to neutralise it via `Math.min(x, balance)`; `buildSolDepositTx` did not. One `money()` helper at every client-supplied amount. |
-| **SEC-H1** | **Cannot be fixed by upgrading** — see below. |
-
-**SEC-H1** deserves a straight answer rather than a tick. `npm audit` reports 3 high / 5 moderate,
-all transitive under `@solana/*`. `bigint-buffer@1.1.5` **is** the latest and is still flagged; there
-is no fixed version upstream. What makes it acceptable is that the advisory is a buffer overflow in
-the **native addon**, and the addon is not loadable in our image — the package falls back to pure JS
-on every boot. That is now **asserted by a test**, so a future `npm rebuild` that enables the addon
-fails the suite instead of silently reintroducing the exposure. A second test asserts we never call
-the affected API directly.
-
-### MEDIUM
-**SEC-M2** — `side` was validated by treating anything non-`"bull"` as `"uwu"` and forwarding the raw
-string into chain code. Now rejected explicitly.
+Branch `magicblock-er-migration`, forked from `main` at the live mainnet build.
+**341 tests green.** Nothing deployed. Nothing on mainnet touched.
 
 ---
 
-## 2. Correctness and feature work
+## 1. Headline
 
-**A4 — the leaderboard was measuring the wrong population.** It read live balances, which is a
-survey of *survivors*: a fighter who won and later retired vanished with their profit, so the
-aggregate could only ever look negative. That is what "nobody is profitable" actually was. It now
-renders from `/standings`, derived from the permanent round log — and the same rows are committed
-on-chain by the results hash, so a sceptic can rebuild the board from Solana without trusting us.
+The queue is exhausted, but not completed, and the reason is environmental rather than technical:
+**no Rust program can be compiled on this machine.** Everything that does not require a compiler is
+done and verified; everything that does is written in full and has never run.
 
-*Found while wiring it:* the client never handled `roundHistory` or `roundLogged` **at all**. The
-server-side log shipped earlier was complete but nothing consumed it — the browser was still keeping
-its own in-memory list, which is why history appeared to reset on every reconnect.
-
-**C1/C2/C3** — previous rounds now appear under the arena page, rows expand, and each carries a real
-timestamp plus a link to the memo transaction that anchored *that* round. The engine reports which
-rounds each signature covers, so a row links to its own proof rather than to whichever memo happened
-to be most recent.
-
-**D1 — the pool re-anchors itself.** A convert moves the vault's token mix on-chain but leaves the
-ledger pool untouched, so the float strands: 1,588 UWU once sat in the vault owned by nobody while
-the arena could field three fighters. This had needed a manual resync **three times**. The daemon
-only credits the house up to what the chain backs, never touches player balances, skips the SOL leg
-when there is no price rather than valuing it at zero, refuses outright on an over-claiming ledger,
-and ignores gaps under $5.
-
-**Token-denominated P&L — your observation, and you were right.** USD P&L conflates whether you won
-rounds with whether the coin moved. The live board makes the case better than any argument:
-`d8kU…VtX` shows **+$0.49 profit while down 0.18 SOL and 10.85 UWU**. Dollars said winner, coins said
-loser. Standings now carry a per-token net alongside USD.
-
-Worth noting what was already right: *within* a round USD is price-neutral, because entry and exit
-use one frozen rate. The drift only enters when summing across rounds.
+I have not marked anything verified that has not executed. Where source is complete but uncompiled,
+it says so.
 
 ---
 
-## 3. BLOCKED — needs you
+## 2. Completed and verified
 
-**BLK-1 · Operator fee-payer wallet.** Network fees come from the vault, which also holds player
-SOL. *Tried:* charging fees to the treasury's own SOL (done — the house pays out of revenue) and a
-0.05 SOL reserve that halts anchoring before it could threaten a withdrawal (done). *Cannot proceed
-without:* a funded keypair. Until then the lamports still physically leave the vault, even though
-they are booked against the house.
+### ER-000 · Mainnet kill switch ✅
+`engine/src/devnet-guard.ts`. Asserts at import time, before any money path initialises, and **fails
+closed** — an allowlist of positively-identified devnet/local hosts, not a denylist. A denylist
+silently permits every endpoint nobody thought to ban, including mainnet behind an unfamiliar proxy.
 
-**BLK-2 · Mainnet canary.** The real Jupiter swap has never run with real money. Everything around
-it is proven — routes quote sanely, decimals fixed, refund-on-failure tested, Jito bundling live.
-*Cannot proceed without:* you spending ~$2. This is the last genuinely unproven path.
+Disabled at source rather than at call sites: real Jupiter swaps, mainnet memo anchoring, and the Fly
+target retargeted to `bulls-arena-er-devnet`. `VAULT_SECRET` present in the environment is refused on
+**presence**, not on use — its presence means production config was copied across.
 
-**BLK-3 · Add float.** ~$104 supports 6–15 fighters. Bigger lobbies need more. Product decision.
+*Verified:* mainnet RPC refused; unknown host refused; secrets redacted from the refusal; a mainnet
+**fallback** inside an otherwise-devnet list refused; all-devnet env passes. 10 tests.
 
-**BLK-4 · Full seed in the memo.** Currently 16 hex chars — enough to *anchor* a round, not to
-*recompute* it. ~48 bytes/round more, trivially affordable. Held because it changes a published
-format and is cheaper to decide now than after there is history worth preserving.
+### ER-001 · Research grounding ✅
+`MAGICBLOCK_RESEARCH.md`, from registries and reference source rather than doc prose. Two doc errors
+found: the Magic Router page names npm packages that **do not exist** (real ones are scoped
+`@magicblock-labs/*`), and the reference example pins the JS SDK and Anchor behind its own declared
+versions.
 
----
+### ER-011 · Workspace ✅ (resolution verified)
+Scoped to `programs/bulls-arena` only. Not `programs/*`: that pulls in the dormant `programs/vault`
+(Anchor 0.30.1), whose solana-program 1.17 pins `zeroize <1.4` while `ephemeral-rollups-sdk 0.16.2`
+needs curve25519-dalek 4.x with `zeroize ^1`. Unsatisfiable, unrelated to either program's correctness.
 
-### Second batch
+### ER-012 · Devnet keypair ✅ / funding ⛔
+Fork-local keypair `9BAjpGZfJm8sfnqNr1vj1K9X3fY8fjk4LE2KRtSTRCaj`, gitignored, never the production
+vault. **Faucet rate-limited** at 2, 1 and 0.5 SOL — a named-legitimate blocker.
 
-**B4/B5 — auto-deploy fired "sometimes" because there were TWO blocks doing it.** The first set
-`w.autoRound = s.round`, which made the second's `w.autoRound !== s.round` guard false, so they
-silently cancelled each other — whichever ran first won and the other never fired. The first also
-required a side to be manually selected, so with none selected it did nothing at all, and neither
-de-duplicated against a reconnect replaying the lobby snapshot, which would have doubled the stake.
-Now one block, claiming the round *before* deploying so a second tick cannot re-fire.
+### ER-051 · Algorithm parity + properties ✅
+`engine/src/er-sim.ts` — a line-for-line TypeScript mirror of the Rust. 13 properties pinned:
+determinism, batching-independence, conservation over 25 random lobbies, no self-dealing, teammates
+never trading, one-sided lobby stalemate, top-up on repeat entry, convergence, tie-to-side-A, and the
+exact sha256 preimage the Rust builds.
 
-**A3 — in-ring size read $0 while money was staked.** The client derived it from `userCircles`,
-which only populate when a round *starts* with your entry, so a mid-round join or reconnect saw
-nothing. The engine now reports the wallet's unsettled stake directly.
-
-**B6 — the house now keeps watching the book.** Matching fired only at the instant a player entered,
-so a whale arriving later in the same lobby faced whatever had already been committed and the rest
-of their stake went unmatched. Re-checks every 1.2s while a lobby is open. Only *human* stake is
-answered — bots matching bots would ratchet the book upward forever — and it is idempotent.
-
-## 4. Not reached
-
-B2 verify engagement · B3 sub-cent damage on screen · B7 queued deposits · B8 server-side
-auto-deploy · A5 battle report totals · C4 X share on one line · C5 stolen-vs-deployed bar ·
-C6 profile viewer · SEC-M1 per-wallet mutex · M3 HTTP rate limiting · M6 CORS tightening ·
-M7 stale chain reads.
-
-None are blocked; I ran out of context, not options. `MEGA_QUEUE.md` has them ordered.
+### Guarded deploy script ✅
+`scripts/deploy-devnet.mjs` verifies the cluster by **genesis hash**, not by URL — a proxy can be
+named anything, it cannot forge the cluster it fronts. *Verified live:* reads
+`EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG (devnet)`, refuses mainnet outright, refuses the
+default CLI keypair, and stops cleanly at the unbuilt binary.
 
 ---
 
-## 5. Residual risk
+## 3. The bug the mirror caught
 
-1. **The vault key is a single point of failure.** Server compromise = loss of everything in the
-   vault. Bounded by keeping the float in bot wallets whose keys are off-server, which is already
-   the design. Stated so it is explicit, not because it is unhandled.
-2. **`/round/*` publishes full wallet addresses.** By design — it is the data the on-chain hash
-   commits to — but it deserves to be a decision rather than an accident.
-3. **HTTP endpoints have no rate limiting.** The WebSocket does. `/standings` walks the whole round
-   log per request.
-4. **`isFrozen()` is now checked on withdraw, withdrawSol and convert** — but any *future* money path
-   must remember to check it. A single guarded wrapper would make that structural.
-5. **8 dependency advisories remain open upstream** with no fixed version. Mitigated and asserted,
-   not eliminated.
+Worth its own section, because it is the strongest argument for having written the mirror at all.
 
-## 6. Recommended next
+The `tick` damage rule was a percentage of **remaining** hp. That is exponential decay: it approaches
+zero and never arrives, and integer division then floors it to `0` while hp is still positive, so the
+exchange is skipped forever.
 
-1. **Do the canary** (BLK-2). It is the only unproven money path and costs ~$2.
-2. **Fund a fee-payer** (BLK-1) so operations never touch player-backed SOL.
-3. **B4/B5 auto-deploy** — the most user-visible remaining bug.
-4. **SEC-M3 rate limiting** before the allowlist opens to anyone.
+**Measured: 5,000 ticks, ZERO deaths, every fighter stuck at hp = 3.** A round that never resolves.
+
+Deployed to a rollup, that would have presented as an infrastructure problem — rounds hanging, ticks
+landing but nothing happening — and been debugged against the ER for a long time before anyone
+suspected the arithmetic. Fixed identically in both implementations with a `DUST` floor: below it the
+remainder transfers in one blow and the fighter dies. Value still conserved.
+
+One of the three failures was **my test being wrong, not the code**: I asserted 20 bps of 1,000,000
+is 200; it is 2,000. Corrected the expectation.
+
+---
+
+## 4. Written in full, never compiled
+
+`programs/bulls-arena/src/lib.rs` — `Arena` + `Round`, `init_arena`, `open_round` (publishes
+sha256(seed) **before** entries open), `delegate_round`, `enter`, `tick`, `reveal` (checks the seed
+against the commitment — without that check the commitment is decoration), `settle`, `close_round`.
+
+Design decisions and the alternatives rejected:
+
+| Decision | Alternative considered | Why rejected |
+|---|---|---|
+| One `Round` account holds all fighters | One account per fighter | 40 delegations + 40 commits per round; the round stops being atomic; a partial commit leaves it half-settled |
+| Delegate the round, not balances | Delegate balances too | A delegated account is unusable by base-layer programs — withdrawals would freeze for the length of every round |
+| Keep commit-reveal RNG | Adopt MagicBlock VRF | Ours is already anchored and browser-verifiable; swapping it is a design decision, not a migration step |
+| Target the round, not the bank | Full custody migration | A rewrite of the entire money system on a codebase with ~25 known-and-fixed money bugs — unreviewable in one pass |
+
+It carries the commit trap from the research: `settle` and `close_round` call `round.exit(&crate::ID)?`
+before building the bundle, because Anchor serialises at instruction end while the commit reads
+account info during it. Without it you commit pre-mutation bytes, silently.
+
+---
+
+## 5. BLOCKED
+
+### ER-010 · Toolchain — no Windows SDK, no admin
+**Works:** Solana CLI 4.1.2 (devnet-configured), `cargo-build-sbf` 4.1.0, platform-tools v1.54,
+Rust 1.97.1.
+**Fails:** linking the **host** build scripts (`proc-macro2`, `serde`, `borsh`, `syn`) — not the SBF
+target.
+
+Six approaches, in order:
+1. `cargo install anchor-cli` → Git Bash's GNU `link` shadows MSVC `link.exe` (`link: extra operand`)
+2. From PowerShell → no linker at all; **MSVC is not installed**
+3. `winget install …WinLibs…LLVM --scope user` → succeeded without admin; gcc 14.2.0 + LLVM
+4. `rustup default …-gnu` → `cargo-build-sbf` pins its own **msvc-hosted** toolchain, overriding it
+5. Shimmed `link.exe` → `lld-link.exe` → **worked**; advanced to `could not open 'kernel32.lib'`
+6. Hunted the SDK → no `kernel32.lib` anywhere; `Windows Kits` absent; MinGW ships GNU-format `.a`
+
+**To unblock, any one of:** VS Build Tools with the Windows SDK (admin) · standalone Windows SDK
+(admin) · a GNU-hosted sbf toolchain (not shipped) · `cargo install xwin` (circular — needs the
+missing linker to install).
+
+### ER-012 funding · devnet faucet rate-limited
+Fund via <https://faucet.solana.com> or retry later.
+
+### Downstream of ER-010 — nothing built, nothing deployed
+ER-021 → ER-025, ER-030, ER-031, ER-040, ER-041, ER-050. Source exists for the program; the client
+integration (ER-040/041) was not written, because writing a client against an IDL that has never been
+generated would be guessing at its own shape.
+
+---
+
+## 6. Performance vs baseline
+
+**Not measured, and I will not estimate it.** ER-030 exists precisely because a 40s fight at ~10ms
+slots is ~4,000 ER transactions, and whether that is one tick per slot or batched is a throughput
+question to be *measured*. Nothing has run on the ER, so there is no observation to report. The
+pre-migration baseline is known — rounds settle off-chain in single-digit milliseconds because it is
+a JS loop over an in-memory array — and that is exactly why the comparison would be meaningless
+without real ER numbers.
+
+---
+
+## 7. Residual risks before this fork could go anywhere
+
+1. **The program has never been compiled.** It is reviewable, not proven. Expect real compile errors;
+   the SDK's macro expansions (`#[ephemeral]`, `#[delegate]`, `#[commit]`) are the likeliest source.
+2. **Parity is one-sided.** The TS mirror is tested; the Rust is not. They are asserted to be
+   identical by reading, which is the weakest form of assurance. ER-051 is only half done.
+3. **The dormant `programs/vault` is untouched** and still on Anchor 0.30.1. If it is ever revived it
+   will collide with the ER SDK's dependency graph.
+4. **Commit cadence is unknown.** Docs say "periodically or on-demand" without naming the automatic
+   frequency parameter; `DelegateConfig`'s non-`validator` fields are hidden behind
+   `..Default::default()` in every example.
+5. **Custody is unchanged.** This fork moves the round, not the money. Anyone reading "migrated to
+   ER" should understand balances are still a SQLite row behind a custodial keypair.
+6. **This is a fork and must stay one.** The mainnet guard is why it is safe; do not port the guard
+   off and the program on.
+
+---
+
+## 8. Recommended next
+
+1. Install VS Build Tools + Windows SDK, or move the build to Linux/CI. Everything below is blocked
+   on this and nothing else.
+2. `cargo-build-sbf` → expect and fix macro-expansion errors → generate the IDL.
+3. Fund the devnet payer, deploy, run the delegation round-trip (ER-050) and record signatures.
+4. Close ER-051 properly: run the Rust against the same seeds as `er-sim.ts` and diff the settlement
+   byte-for-byte. Until that passes, the on-chain game is not known to be the game players watch.
+5. Only then ER-030/031 — measure before designing the tick loop around an assumption.

@@ -9,3 +9,4 @@ target/
 .anchor/
 test-ledger/
 package-lock.json
+.devnet/
