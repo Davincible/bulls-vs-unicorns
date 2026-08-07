@@ -113,6 +113,15 @@ function usdPerUnit(field: Field): number {
   const px = priceUSD(field === "bull" ? "ansem" : "uwu");
   return px && px > 0 ? px : 0;
 }
+// Every money value arriving from a client passes through here. `Number("Infinity") || 0` is
+// Infinity, not 0 — so the usual `Number(m.x) || 0` idiom lets Infinity reach transaction
+// construction, where Math.round(Infinity) produces a nonsense amount or throws. Reject rather than
+// rely on each call site remembering to clamp.
+const money = (v: unknown, fallback = 0): number => {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+};
+
 const unitsForUsd = (field: Field, usd: number) => { const px = usdPerUnit(field); return px > 0 ? usd / px : 0; };
 // A round is entered in USD and settled ~60s later. If the feed goes stale in between, converting
 // the payout back at a zero price would divide by zero and wipe the winnings, so remember the last
@@ -1085,7 +1094,7 @@ wss.on("connection", (ws, req) => {
         const already = rn.state.entries.filter(e => e.id === `${m.wallet}|${m.side}`)
                           .reduce((n, e) => n + e.stake / (1 - FEE), 0);
         const headroom = Math.max(0, CAP - already);                      // USD
-        const stake = Math.min(Number(m.stake)||0, bank, headroom / usdP); // token units
+        const stake = Math.min(money(m.stake), bank, headroom / usdP); // token units
         const stakeUsd = stake * usdP;
         if (headroom < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: `You're at the $${CAP} cap on that side this round.` }));
         if (stakeUsd < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: `Minimum entry is $${MIN_ENTRY}.` }));
@@ -1146,7 +1155,7 @@ wss.on("connection", (ws, req) => {
         const usdE1 = pxForRound(aid, rn.state.round, FIELD[tok] as Field);
         if (!(usdE1 > 0)) return ws.send(JSON.stringify({ t: "error", msg: "Price feed unavailable — try again in a moment." }));
         const already = rn.state.entries.filter(e => e.id === `${m.wallet}|${team}`).reduce((n, e) => n + e.stake / (1 - FEE), 0);
-        const stake = Math.min(Number(m.stake) || 0, bank, Math.max(0, CAP - already) / usdE1);
+        const stake = Math.min(money(m.stake), bank, Math.max(0, CAP - already) / usdE1);
         const usdE = stake * usdE1;
         if (usdE < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: "Insufficient balance for that arena's token." }));
         a[FIELD[tok]] -= stake; a.dep += usdE;      // dollars, to match ret
@@ -1190,8 +1199,10 @@ wss.on("connection", (ws, req) => {
       } else if (m.t === "buildSolDeposit") {   // { wallet, sol } -> unsigned system transfer
         const px = solUsd();
         if (!px) return ws.send(JSON.stringify({ t: "error", msg: "SOL price unavailable right now — try again in a moment." }));
-        const txB64 = await buildSolDepositTx(m.wallet, Number(m.sol) || 0);
-        ws.send(JSON.stringify({ t: "solDepositTx", sol: Number(m.sol) || 0, priceUsd: px, txB64 }));
+        const solIn = money(m.sol);
+        if (!(solIn > 0)) return ws.send(JSON.stringify({ t: "error", msg: "Enter an amount above zero." }));
+        const txB64 = await buildSolDepositTx(m.wallet, solIn);
+        ws.send(JSON.stringify({ t: "solDepositTx", sol: solIn, priceUsd: px, txB64 }));
       } else if (m.t === "depositSol") {        // { wallet, sig } -> credit USD units at live price
         const px = solUsd();
         if (!px) return ws.send(JSON.stringify({ t: "error", msg: "SOL price unavailable — deposit not credited yet, retry shortly." }));
@@ -1205,7 +1216,7 @@ wss.on("connection", (ws, req) => {
         const px = solUsd();
         if (!px) return ws.send(JSON.stringify({ t: "error", msg: "SOL price unavailable — withdrawal paused." }));
         const a = acct(m.wallet, "bull");
-        const units = Math.min(Number(m.units) || 0, a.sol);
+        const units = Math.min(money(m.units), a.sol);
         if (units < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: "Nothing to withdraw." }));
         const sol = units / px;
         a.sol -= units; pushBalance(m.wallet);
@@ -1266,9 +1277,10 @@ wss.on("connection", (ws, req) => {
       } else if (m.t === "withdraw") {                        // { t:'withdraw', wallet, side, amount }
         if (isFrozen()) return ws.send(JSON.stringify({ t: "error", msg: "Withdrawals are temporarily paused (solvency check). Try again shortly." }));
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
+        if (m.side !== "bull" && m.side !== "uwu") return ws.send(JSON.stringify({ t: "error", msg: "Unknown side." }));
         const a = acct(m.wallet, m.side);
         const bank = m.side === "bull" ? a.bull : a.uwu;
-        const amt = Math.min(Number(m.amount)||0, bank);
+        const amt = Math.min(money(m.amount), bank);
         if (amt < 0.01) return ws.send(JSON.stringify({ t: "error", msg: "Nothing to withdraw on that side." }));
         if (m.side === "bull") a.bull -= amt; else a.uwu -= amt;       // debit first, refund on failure
         pushBalance(m.wallet);
@@ -1280,13 +1292,17 @@ wss.on("connection", (ws, req) => {
         // swaps a raided coin back so you can keep deploying. Token-GENERAL now: the old handler only
         // knew bull<->uwu, so on the live UWU/SOL arena a player holding raided SOL had no way back
         // and the button did nothing. `from` may be explicit; else we take the largest other balance.
+        // A convert changes what the vault owes per asset, so it must respect a solvency freeze —
+        // otherwise the one moment the books are known-bad is the moment a player can rotate into
+        // whichever asset is better backed and withdraw once the freeze lifts.
+        if (isFrozen()) return ws.send(JSON.stringify({ t: "error", msg: "Converts are paused (solvency check). Try again shortly." }));
         const CFIELDS = ["bull", "uwu", "sol"] as const;
         const to = (CFIELDS.includes(m.to) ? m.to : "uwu") as Field;
         const a = acct(m.wallet, (to === "sol" ? "uwu" : to) as Side);
         let from = (CFIELDS.includes(m.from) && m.from !== to ? m.from : null) as Field | null;
         if (!from) from = CFIELDS.filter(f => f !== to).sort((x, y) => (a[y] || 0) - (a[x] || 0))[0] as Field;
         const avail = a[from] || 0;
-        const amt = Math.min(Number(m.amount) > 0 ? Number(m.amount) : avail, avail);
+        const amt = Math.min(money(m.amount) > 0 ? money(m.amount) : avail, avail);
         if (amt < 0.01) return ws.send(JSON.stringify({ t: "error", msg: "Nothing to convert." }));
         // ONE conversion per round. Each one is a real on-chain swap costing gas and crossing a
         // spread, so unlimited converting would both drain the vault's SOL and let someone farm the

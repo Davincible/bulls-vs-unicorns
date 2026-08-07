@@ -63,6 +63,9 @@ export function endSession(_token: string): void { /* no server-side state to cl
 export const GUARDED = new Set([
   "enter", "enterN", "withdraw", "withdrawSol", "convert",
   "buildDeposit", "buildSolDeposit", "deposit", "depositSol", "setName", "fundMe", "relayTx",
+  // faucet MINTS balance. It is disabled on live chains, but that gate is a regex on the RPC URL —
+  // defence in depth, not a second lock on the same door.
+  "faucet",
   // NB: authResume is deliberately NOT guarded — it is how a socket becomes authed.
 ]);
 
