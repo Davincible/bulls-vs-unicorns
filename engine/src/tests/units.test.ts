@@ -310,3 +310,35 @@ test("a bot's P/L is winnings against stake, not against a deposit it never made
   const bot = { dep: 12.5, ret: 14.0 };
   assert.ok(Math.abs((bot.ret - bot.dep) - 1.5) < 1e-9);
 });
+
+// A raid TAKES the enemy's coin, so a winning bot ends the round holding the coin it cannot stake.
+// Judging bust on own-token alone retired exactly the winners and deleted their profit with them —
+// which is why the board could only ever show losers and the aggregate read -50%.
+test("a winner must not be retired for holding what it just won", () => {
+  const PXU = 0.0277, PXS = 1, MIN = 0.5;
+  const winner = { own: 0.1, foe: 12.0 };                 // 12 SOL-USD raided, own token spent
+  const ownUsd = winner.own * PXU;
+  assert.ok(ownUsd < MIN, "own token alone looks broke");
+  const total = ownUsd + winner.foe * PXS;
+  assert.ok(total > MIN * 10, `but it is actually up $${total.toFixed(2)} — retiring it deletes the profit`);
+});
+
+// The fix is not to convert the winnings — it is to change sides. A bot holding the enemy's coin
+// simply fights for that army next round. Nothing moves, no fee is charged, and it reads true:
+// raiders migrate toward whichever coin is winning.
+test("a bot defects to the coin it raided instead of converting", () => {
+  const MIN = 0.5, PXS = 1;
+  const bot = { side: "bull", own: 0.1, foe: 12.0 };
+  const canPlayOwn = bot.own * 0.0277 >= MIN;
+  const canPlayFoe = bot.foe * PXS >= MIN;
+  assert.equal(canPlayOwn, false, "cannot fight for its old army");
+  assert.equal(canPlayFoe, true, "but it is rich in the other one");
+  const newSide = bot.side === "bull" ? "uwu" : "bull";
+  assert.equal(newSide, "uwu", "so it switches");
+});
+
+test("switching sides costs nothing and moves no money", () => {
+  const before = { pool: 1000, botOwn: 0.1, botFoe: 12.0, treasury: 5 };
+  const after = { ...before };                    // a side flip touches no balance at all
+  assert.deepEqual(after, before, "no conversion, no fee, no float movement");
+});

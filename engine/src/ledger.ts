@@ -22,6 +22,25 @@ export const ledger = new Map<string, Account>();
 // ---- engine-wide accounting state (exported objects: server.ts mutates them in place) ----
 export const rounds: Record<Mode, number> = { normal: 0, extraction: 0 };
 export const roundsByArena: Record<string, number> = {};
+
+/** The last N settled rounds, engine-side so they survive a restart and are identical for everyone.
+ *  Persisted with the ledger; this is the same data the on-chain memo anchors. */
+export interface RoundRecord {
+  at: number; arena: string; round: number; winner: string; pot: number;
+  seedHash: string; seed: string; sig?: string;          // sig = the memo tx, once it lands
+  players: Array<{ id: string; name: string; side: string; bot: boolean; inUsd: number; outUsd: number }>;
+}
+export const roundLog: RoundRecord[] = [];
+const ROUND_LOG_MAX = Number(process.env.ROUND_LOG_MAX || 200);
+export function pushRound(r: RoundRecord): void {
+  roundLog.unshift(r);
+  if (roundLog.length > ROUND_LOG_MAX) roundLog.length = ROUND_LOG_MAX;
+}
+/** Newest-first slice, optionally only the rounds a given wallet actually played. */
+export function roundHistory(limit = 40, wallet?: string): RoundRecord[] {
+  const rows = wallet ? roundLog.filter(r => r.players.some(p => p.id === wallet)) : roundLog;
+  return rows.slice(0, limit);
+}
 // per-arena economics for the dashboard: deployed, house take, matches, slot wins
 export const statsA: Record<string, { deployed: number; take: number; matches: number; winsA: number; winsB: number }> = {};
 export const stat = (aid: string) => (statsA[aid] ||= { deployed: 0, take: 0, matches: 0, winsA: 0, winsB: 0 });
@@ -166,7 +185,20 @@ export function persist() {
   // to one acct() would recreate on demand, so dropping it is lossless for balances (it only forgets
   // a cosmetic display name) — and it stops free account creation from bloating the ledger forever.
   saveSnapshot({ accounts: [...ledger.values()].filter(hasActivity), treasury, totalDeployed, depSide, created,
-                 busted: bustedCount, convFees, rounds, roundsByArena, statsA, floatRecoveredAt } as any);
+                 busted: bustedCount, convFees, rounds, roundsByArena, statsA, floatRecoveredAt,
+                 roundLog: roundLog.slice(0, 200) } as any);
+}
+
+/** Wipe lifetime P&L counters. Balances are NEVER touched — dep/ret/games/wins/raided/best are
+ *  display statistics, and theirs were accumulated in mixed units before the USD fix. */
+export function resetLifetimeStats(): number {
+  let n = 0;
+  for (const a of ledger.values()) {
+    if (!(a.dep || a.ret || a.games || a.wins || a.raided || a.best)) continue;
+    a.dep = 0; a.ret = 0; a.games = 0; a.wins = 0; a.raided = 0; a.best = 0;
+    n++;
+  }
+  return n;
 }
 
 /** Load the last snapshot on boot, then write off any SOL liability not backed by a real deposit. */
@@ -185,6 +217,8 @@ export function restore() {
   Object.assign(bustedCount, snap.busted || {});
   Object.assign(rounds, snap.rounds || {});
   Object.assign(roundsByArena, (snap as any).roundsByArena || {});
+  roundLog.length = 0;
+  for (const r of ((snap as any).roundLog || [])) roundLog.push(r);
   convFees = snap.convFees || 0;
   floatRecoveredAt = (snap as any).floatRecoveredAt || 0;
   Object.assign(statsA, (snap as any).statsA || {});

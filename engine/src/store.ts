@@ -25,12 +25,13 @@ export interface Snapshot {
   convFees?: number;
   rounds?: Record<string, number>;
   roundsByArena?: Record<string, number>;
+  roundLog?: unknown[];
   statsA?: Record<string, unknown>;
   savedAt?: number;
   floatRecoveredAt?: number;
 }
 // keys that are per-account rows; everything else on the Snapshot is engine-wide "meta"
-const META_KEYS = ["treasury", "totalDeployed", "depSide", "created", "busted", "convFees", "rounds", "statsA", "savedAt", "floatRecoveredAt", "roundsByArena"] as const;
+const META_KEYS = ["treasury", "totalDeployed", "depSide", "created", "busted", "convFees", "rounds", "statsA", "savedAt", "floatRecoveredAt", "roundsByArena", "roundLog"] as const;
 
 const db = new DatabaseSync(DB_PATH);
 db.exec("PRAGMA journal_mode = WAL");

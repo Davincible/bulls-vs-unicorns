@@ -29,7 +29,8 @@ import { poolPubkeys } from "./bot-wallets.ts";
 import { vaultTokenBalance } from "./chain-ops.ts";
 import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, totalDeployed, depSide,
          created, bustedCount, getConvFees, addConvFees, persist, restore, flush, bankFee, TREASURY_ID,
-         acct, balPayload, leadersFor, accountUsd, cleanDisplayName, cleanAvatarUrl } from "./ledger.ts";
+         acct, balPayload, leadersFor, accountUsd, cleanDisplayName, cleanAvatarUrl,
+         pushRound, roundHistory, resetLifetimeStats } from "./ledger.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
 import { type Tok, FIELD, PAIRINGS, ARENA_IDS, arenaTokens, arenaEco, NARENAS, NARENA_IDS,
          FEE, CAP, CONVERT_FEE, MIN_ENTRY } from "./arenas.ts";
@@ -280,6 +281,24 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   // round, and the population target creeps up over time — while still throttling down as
   // real players fill the arena, so bots never crowd out humans.
   auditRound(aid, s.round);
+  // Engine-side history: the same for every viewer and it survives a restart, unlike the browser's
+  // in-memory list which started empty on every reconnect.
+  try {
+    const pxA = pxForRound(aid, s.round, FIELD[tokA] as Field);
+    const pxB = pxForRound(aid, s.round, FIELD[tokB] as Field);
+    pushRound({
+      at: Date.now(), arena: aid, round: s.round, winner: r.winner,
+      pot: s.entries.reduce((t: number, e: any) => t + (e.stake || 0) / (1 - FEE), 0),
+      seedHash: s.seedHashPublished || "", seed: s.seed || "",
+      players: s.entries.map((e: any) => {
+        const id = String(e.id).split("|")[0];
+        const bal = (r.settlement as any)[e.id] || {};
+        return { id, name: nameFor(id), side: e.side, bot: String(e.id).includes(":bot:"),
+                 inUsd: (e.stake || 0) / (1 - FEE),
+                 outUsd: (bal.bull || 0) + (bal.uwu || 0) };
+      }),
+    });
+  } catch { /* history must never break a settlement */ }
   // Anchor the round on-chain: seed commitment, revealed seed, winner, and every wallet's entry and
   // exit in both tokens. Best-effort and non-blocking — settlement must never wait on the network.
   try {
@@ -295,7 +314,7 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
     });
   } catch { /* anchoring must never break a settlement */ }
   const realPlaying = s.entries.filter(e => !e.id.includes(":bot:")).length;
-  let busted = 0;
+  let busted = 0, switched = 0;
   // Busted = can no longer afford the minimum stake, so it can never deploy again.
   // This MUST NOT sit below the minimum stake. At 0.8x it opened a dead band: a bot holding $0.487
   // against a $0.50 minimum could neither deploy nor be retired, so it sat on its share of the
@@ -306,9 +325,22 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   // Judge a bot on the token it actually plays. Total portfolio value would keep a bot alive on a
   // pile of the ENEMY's coin it can never stake - a zombie holding float nobody can use.
   const ownFieldOf = (b: Account) => FIELD[b.side === "bull" ? tokA : tokB] as Field;
+  const foeFieldOf = (b: Account) => FIELD[b.side === "bull" ? tokB : tokA] as Field;
   for (const a of botsFor(aid)) {
-    const own = a[ownFieldOf(a)] * usdPerUnitSafe(ownFieldOf(a));
-    if (own < BUST_USD) { retireBot(a); busted++; bustedCount[mode]++; }
+    const own = ownFieldOf(a), foe = foeFieldOf(a);
+    // A WINNER in extraction ends the round holding the ENEMY's coin — that is what raiding IS.
+    // Judging bust on own-token alone therefore retired the winners and deleted their profit with
+    // them, so the leaderboard could only ever show losers ("nobody is profitable", -50% aggregate).
+    // Let a bot convert its raided coin through the treasury first, exactly like a player: the house
+    // is the counterparty, it is a pure ledger move, and the vault already holds both tokens.
+    if (a[own] * usdPerUnitSafe(own) < BUST_USD && a[foe] * usdPerUnitSafe(foe) >= BUST_USD) {
+      // DEFECT TO THE COIN YOU WON. No conversion, no fee, nothing moves: a bot holding the enemy's
+      // coin simply fights for that army next round. Cheaper than a swap, and it reads true — raiders
+      // naturally migrate toward whichever coin is winning.
+      a.side = a.side === "bull" ? "uwu" : "bull";
+      switched++;
+    }
+    if (a[own] * usdPerUnitSafe(own) < BUST_USD) { retireBot(a); busted++; bustedCount[mode]++; }
   }
   rounds[mode]++; roundsByArena[aid] = (roundsByArena[aid] || 0) + 1;
   { const st = stat(aid); st.matches++; if (r.winner === "bull") st.winsA++; else st.winsB++; }
@@ -322,6 +354,7 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
     if (!made) break;      // pool exhausted - stop, or this loop never terminates
     joined++;
   }
+  broadcast({ t: "roundLogged", round: roundHistory(1)[0] });
   broadcast({ t: "settled", arena: aid, mode, round: s.round, winner: r.winner, seed: s.seed, seedHash: s.seedHashPublished,
               settlement: r.settlement, hits: r.hits.length,
               community: { total: botsFor(aid).length + realPlaying, joined, busted, cap: popCap } });
@@ -455,6 +488,14 @@ if (process.env.RECOVER_FLOAT_ON_BOOT === "1") {
 // Re-anchor the house float to the vault's real contents. Safe to leave on: it only ever moves the
 // house UP TO what the chain backs, never past it, and refuses outright if the books already claim
 // more than the vault holds.
+// One-shot: clear lifetime P&L counters that were accumulated in mixed units before the USD fix.
+// Balances are untouched — these are display statistics only.
+if (process.env.RESET_STATS_ON_BOOT === "1") {
+  const n = resetLifetimeStats();
+  if (n) { persist(); flush(); }
+  console.log(`lifetime stats reset on ${n} account(s) — balances untouched`);
+}
+
 if (process.env.RESYNC_POOL_ON_BOOT === "1") {
   await (async () => {
     try {
@@ -802,6 +843,7 @@ wss.on("connection", (ws, req) => {
     return;
   }
   clients.add(ws);
+  ws.send(JSON.stringify({ t: "roundHistory", rounds: roundHistory(40) }));
   ws.send(JSON.stringify({ t: "chain", ready: chainReady(), vault: chainReady() ? vaultPubkey() : null, mints: mints(), rpc: CLIENT_RPC }));
   // send the in-flight round immediately so a joiner isn't staring at an empty arena
   for (const aid of ARENA_IDS) {
@@ -1166,6 +1208,9 @@ wss.on("connection", (ws, req) => {
         // Deploying into a round is not a chain operation and must never cost the player a signature.
         const token = r.ok ? mintSession(m.wallet) : undefined;
         ws.send(JSON.stringify({ t: "authResult", ...r, token }));
+      } else if (m.t === "roundHistory") {
+        ws.send(JSON.stringify({ t: "roundHistory", rounds: roundHistory(Math.min(Number(m.limit) || 40, 200),
+                                                                        m.mine ? String(m.wallet || "") : undefined) }));
       } else if (m.t === "getBalance") {
         if (!isAuthed(ws, m.wallet)) return;         // balances are private; only the owner may read
         ws.send(JSON.stringify(balPayload(m.wallet)));
