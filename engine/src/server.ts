@@ -864,6 +864,11 @@ for (const aid of NARENA_IDS) { let guard = 0; while (botsFor(aid).length < SEED
  *  bots: the matched book refunded almost all of it and the round was a non-event. The house should
  *  take the other side of real action whenever it can afford to — that is the whole point of holding
  *  a float. Capped by what the pool actually has, so it can never promise money it does not hold. */
+// How much the house has committed IN RESPONSE to human stake, per arena-round and per side.
+// Deliberately separate from the routine bot book: that money would have been deployed anyway, so
+// counting it as an answer means the house never actually responds to a player.
+const matchedBook = new Map<string, { bull: number; uwu: number }>();
+
 function matchPlayerStake(aid: string, playerSide: Side, stakeUsd: number): void {
   const rn = runners[aid]; if (!rn || rn.state.phase !== "lobby") return;
   const foe: Side = playerSide === "bull" ? "uwu" : "bull";
@@ -873,10 +878,26 @@ function matchPlayerStake(aid: string, playerSide: Side, stakeUsd: number): void
   const px = pxForRound(aid, rn.state.round, f);
   if (!(px > 0)) return;
 
-  // how much the opposing army already has on the table
-  const already = rn.state.entries.filter(e => e.side === foe)
-                    .reduce((n, e) => n + e.stake / (1 - FEE), 0);
-  let need = stakeUsd * MATCH_RATIO - already;
+  // WHAT COUNTS AS "ALREADY MATCHED".
+  //
+  // This used to subtract everything the opposing army held, including the routine bot book the
+  // runners deploy on both sides every round regardless of who is playing. So a $5 human entry
+  // against a foe side already holding $30 of ordinary bot money computed need = 5 - 30 and did
+  // NOTHING - the routine book silently absorbed the player's action and the house never answered
+  // it. From the player's seat that reads as "I added money and nobody came", which is exactly the
+  // report that found this.
+  //
+  // Matching is a RESPONSE to human stake, so it has to be measured against what was committed in
+  // response, not against the whole book. Tracked per arena-round so the 1.2s watcher can re-run
+  // freely without ever answering the same stake twice.
+  const mk = `${aid}:${rn.state.round}`;
+  let m = matchedBook.get(mk);
+  if (!m) {
+    m = { bull: 0, uwu: 0 };
+    matchedBook.set(mk, m);
+    if (matchedBook.size > 64) for (const k of [...matchedBook.keys()].slice(0, 32)) matchedBook.delete(k);
+  }
+  let need = stakeUsd * MATCH_RATIO - m[foe];
   if (need <= MIN_ENTRY) return;
 
   // Spread the answer across bots, TOPPING THEM UP from the pool when they are short. Matching only
@@ -888,7 +909,20 @@ function matchPlayerStake(aid: string, playerSide: Side, stakeUsd: number): void
   // position. Spreading the same money over many fighters at VARIED sizes gives the house the
   // numbers advantage it should have — SMALL_EDGE tilts play toward smaller positions, so a swarm
   // of modest fighters beats one whale holding the identical total.
-  const roster = botsFor(aid).filter(b => !rn.state.entries.some(e => e.id === `${b.id}|${foe}`));
+  // ROSTER. This used to EXCLUDE every bot that already had an entry on the foe side. The runners
+  // deploy bots on both sides every round as ordinary play, so by the time a human enters, nearly
+  // every bot is already on the book and the roster came back empty - the house could not answer at
+  // all, with $100 sitting in the pool, because it had nobody left it was willing to use.
+  //
+  // There was never a reason for that filter: enter() MERGES a repeat id into the existing fighter
+  // (round.ts) rather than rejecting it or spawning a duplicate, so topping up an already-deployed
+  // bot has always been supported. Prefer bots with no entry yet, because more distinct fighters is
+  // a better book and SMALL_EDGE favours a swarm of modest positions - but never refuse to answer
+  // just because they are all already in.
+  const _all = botsFor(aid);
+  const _fresh = _all.filter(b => !rn.state.entries.some(e => e.id === `${b.id}|${foe}`));
+  const _used = _all.filter(b => rn.state.entries.some(e => e.id === `${b.id}|${foe}`));
+  const roster = _fresh.concat(_used);
   const spread = Math.max(1, Math.min(roster.length, SWARM_SIZE));
   let idx = 0;
   for (const b of roster) {
@@ -917,6 +951,7 @@ function matchPlayerStake(aid: string, playerSide: Side, stakeUsd: number): void
     stat(aid).deployed += give;
     depSide[arenaEco(aid)][foe] += give;
     rn.enter(`${b.id}|${foe}`, foe, give * (1 - FEE));
+    m[foe] += give;            // credited against THIS side's answer, so the watcher stays idempotent
     need -= give;
   }
 }
