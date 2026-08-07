@@ -545,6 +545,16 @@ const AUTO_REBALANCE = process.env.AUTO_REBALANCE !== "0";
 const REBALANCE_MIN_GAP_USD = Number(process.env.REBALANCE_MIN_GAP_USD || 5);
 async function autoRebalance(): Promise<void> {
   if (!AUTO_REBALANCE || !chainReady() || isFrozen()) return;
+  // NEVER sample the books mid-round. A stake leaves the account the moment it is placed but the
+  // vault still holds the coin, so accounts read low against unchanged chain holdings and the gap
+  // this daemon measures is inflated by the entire open stake:
+  //     gap = (chain - ledger) + open
+  // Crediting that would mint house balance out of money already on the table. It is also why the
+  // log was full of "INSOLVENT" refusals that /solvency flatly contradicted - both were reading a
+  // book caught mid-settlement, which is not a state the comparison is meaningful in. Between
+  // rounds every stake is back in an account and the two sides are comparable again.
+  const staked = (["bull", "uwu", "sol"] as const).reduce((n, f) => n + openStakes(f), 0);
+  if (staked > 0) return;
   try {
     await refreshChainHoldings();
     const px = solUsd();
@@ -555,9 +565,10 @@ async function autoRebalance(): Promise<void> {
       if (!(held[f] > 0)) continue;
       const usdPerTok = f === "sol" ? 1 : usdPerUnitSafe(f);
       if (!(usdPerTok > 0)) continue;
-      // only act on a gap big enough to matter, so we are not rewriting the book every minute
-      const r = resyncPoolToChain(ledger, pool, f, held[f]);
-      if (r.moved * usdPerTok >= REBALANCE_MIN_GAP_USD) {
+      // only act on a gap big enough to matter, so we are not rewriting the book every minute.
+      // The threshold is passed IN so the decision happens before the mutation, not after it.
+      const r = resyncPoolToChain(ledger, pool, f, held[f], REBALANCE_MIN_GAP_USD / usdPerTok);
+      if (r.moved > 0) {
         console.log(`auto-rebalance: ${f} ${r.from.toFixed(4)} -> ${r.to.toFixed(4)} (+${r.moved.toFixed(4)}, $${(r.moved * usdPerTok).toFixed(2)})`);
         persist(); flush();
       } else if (r.reason && r.reason.startsWith("INSOLVENT")) {

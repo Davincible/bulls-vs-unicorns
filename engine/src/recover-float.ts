@@ -70,9 +70,13 @@ export async function recoverInPlace(
  *    - if the ledger claims MORE than the chain holds, that is insolvency: refuse and report it,
  *      because writing balances down would hide a real shortfall
  */
+/** `minGap` — refuse to move anything smaller. The caller used to apply the credit and THEN decide
+ *  whether it was big enough to persist, so a sub-threshold resync mutated memory and was never
+ *  written down: the running ledger and the snapshot silently disagreed until the next restart
+ *  quietly reverted it. Deciding before mutating keeps the two in step. */
 export function resyncPoolToChain(
   ledger: Map<string, any>, pool: Set<string>,
-  field: "bull" | "uwu" | "sol", chainHeld: number,
+  field: "bull" | "uwu" | "sol", chainHeld: number, minGap = 0,
 ): { moved: number; from: number; to: number; reason?: string } {
   let house = 0, player = 0;
   const poolAccts: any[] = [];
@@ -91,6 +95,7 @@ export function resyncPoolToChain(
     return { moved: 0, from: house, to: house,
              reason: gap < -0.0001 ? `INSOLVENT: ledger ${house.toFixed(4)} > backing ${target.toFixed(4)}` : "already in sync" };
   }
+  if (gap < minGap) return { moved: 0, from: house, to: house, reason: `gap ${gap.toFixed(4)} below minimum ${minGap}` };
   const each = gap / poolAccts.length;
   for (const a of poolAccts) a[field] = (a[field] || 0) + each;
   return { moved: gap, from: house, to: house + gap };

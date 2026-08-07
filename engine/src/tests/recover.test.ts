@@ -203,3 +203,36 @@ test("a missing SOL price skips the SOL leg rather than valuing it at zero", () 
   const shouldSkip = !(px > 0);
   assert.equal(shouldSkip, true, "valuing SOL at 0 would look like a huge shortfall and refuse");
 });
+
+// ── resync: decide before mutating ───────────────────────────────────────────────────────────
+// The daemon used to apply the credit and only THEN ask whether it was worth persisting, so a
+// sub-threshold resync changed memory and was never written down. The running ledger and the
+// snapshot then disagreed until a restart silently reverted it.
+test("resync leaves balances untouched when the gap is below the minimum", () => {
+  const pool = new Set(["p1", "p2"]);
+  const led = ledgerOf(acct("p1", { uwu: 100 }), acct("p2", { uwu: 100 }), acct("u1", { uwu: 50 }));
+  const before = [...led.values()].map((a: any) => a.uwu);
+  const r = resyncPoolToChain(led as any, pool, "uwu", 253, 10);   // gap = 253-50-200 = 3, min 10
+  assert.equal(r.moved, 0);
+  assert.match(String(r.reason), /below minimum/);
+  assert.deepEqual([...led.values()].map((a: any) => a.uwu), before, "no balance may move");
+});
+
+test("resync still credits when the gap clears the minimum, and only pool wallets", () => {
+  const pool = new Set(["p1", "p2"]);
+  const led = ledgerOf(acct("p1", { uwu: 100 }), acct("p2", { uwu: 100 }), acct("u1", { uwu: 50 }));
+  const r = resyncPoolToChain(led as any, pool, "uwu", 300, 10);   // gap = 300-50-200 = 50
+  assert.equal(Math.round(r.moved), 50);
+  assert.equal((led.get("p1") as any).uwu, 125);
+  assert.equal((led.get("p2") as any).uwu, 125);
+  assert.equal((led.get("u1") as any).uwu, 50, "a player balance is never touched");
+});
+
+test("resync still refuses to write down an over-claiming ledger", () => {
+  const pool = new Set(["p1"]);
+  const led = ledgerOf(acct("p1", { uwu: 500 }), acct("u1", { uwu: 50 }));
+  const r = resyncPoolToChain(led as any, pool, "uwu", 200, 10);
+  assert.equal(r.moved, 0);
+  assert.match(String(r.reason), /INSOLVENT/);
+  assert.equal((led.get("p1") as any).uwu, 500);
+});
