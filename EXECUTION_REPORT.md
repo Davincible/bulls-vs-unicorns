@@ -2,7 +2,7 @@
 
 Autonomous run: security audit → mega queue → execution. Live mainnet system throughout.
 
-**Tests: 201 → 233.** All green at every commit. Nine deploys, none rolled back.
+**Tests: 201 → 236.** All green at every commit. Nine deploys, none rolled back.
 
 ---
 
@@ -118,12 +118,30 @@ format and is cheaper to decide now than after there is history worth preserving
 
 ---
 
+### Second batch
+
+**B4/B5 — auto-deploy fired "sometimes" because there were TWO blocks doing it.** The first set
+`w.autoRound = s.round`, which made the second's `w.autoRound !== s.round` guard false, so they
+silently cancelled each other — whichever ran first won and the other never fired. The first also
+required a side to be manually selected, so with none selected it did nothing at all, and neither
+de-duplicated against a reconnect replaying the lobby snapshot, which would have doubled the stake.
+Now one block, claiming the round *before* deploying so a second tick cannot re-fire.
+
+**A3 — in-ring size read $0 while money was staked.** The client derived it from `userCircles`,
+which only populate when a round *starts* with your entry, so a mid-round join or reconnect saw
+nothing. The engine now reports the wallet's unsettled stake directly.
+
+**B6 — the house now keeps watching the book.** Matching fired only at the instant a player entered,
+so a whale arriving later in the same lobby faced whatever had already been committed and the rest
+of their stake went unmatched. Re-checks every 1.2s while a lobby is open. Only *human* stake is
+answered — bots matching bots would ratchet the book upward forever — and it is idempotent.
+
 ## 4. Not reached
 
-B4/B5 auto-deploy reliability · B6 reactive whale response · B7 queued deposits · B8 server-side
-auto-deploy · A3 in-ring size · A5 battle report totals · C4 X share on one line · C5 stolen-vs-
-deployed bar · C6 profile viewer · SEC-M1 per-wallet mutex · M3 HTTP rate limiting · M6 CORS
-tightening · M7 stale chain reads.
+B2 verify engagement · B3 sub-cent damage on screen · B7 queued deposits · B8 server-side
+auto-deploy · A5 battle report totals · C4 X share on one line · C5 stolen-vs-deployed bar ·
+C6 profile viewer · SEC-M1 per-wallet mutex · M3 HTTP rate limiting · M6 CORS tightening ·
+M7 stale chain reads.
 
 None are blocked; I ran out of context, not options. `MEGA_QUEUE.md` has them ordered.
 

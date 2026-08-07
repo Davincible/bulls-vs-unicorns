@@ -44,7 +44,7 @@ tests for each hostile input.
 
 ## Tier 3 — Money correctness (backlog, highest user impact)
 
-### A3 · In-ring size reads $0 while staked · **PENDING**
+### A3 · In-ring size reads $0 while staked · **DONE**
 **Accept:** shows the live staked amount after a mid-round join or reconnect.
 
 ### A4 · Wire `/standings` into the Leaderboard tab · **DONE**
@@ -64,10 +64,10 @@ Engine already derives survivorship-free standings; UI still reads live balances
 ### B3 · Sub-cent damage visible on screen · **PENDING**
 **Accept:** `$0.001` renders in floaters and standings rather than `$0.00`.
 
-### B4/B5 · Auto-deploy reliable, always at round start · **PENDING**
+### B4/B5 · Auto-deploy reliable, always at round start · **DONE**
 **Accept:** fires exactly once per round while enabled, at lobby open.
 
-### B6 · Reactive whale response · **PENDING**
+### B6 · Reactive whale response · **DONE**
 Bots match only at the moment a player enters; they should keep watching and raise if a whale
 enters later. Overage is refunded by the matched book, so over-committing is free.
 **Accept:** a late large entry triggers additional bot stake in the same lobby.
@@ -121,11 +121,11 @@ published format, so worth Max confirming before there is history worth preservi
 
 ## Run summary (see EXECUTION_REPORT.md)
 
-DONE: SEC-C1, SEC-C2, SEC-H2, SEC-H3, SEC-H4, SEC-M2, A4, C1, C2, C3, D1, plus token-denominated
-P&L (raised mid-run). SEC-H1 mitigated and asserted — no upstream fix exists.
+DONE: SEC-C1, SEC-C2, SEC-H2, SEC-H3, SEC-H4, SEC-M2, A3, A4, B4, B5, B6, C1, C2, C3, D1, plus
+token-denominated P&L (raised mid-run). SEC-H1 mitigated and asserted — no upstream fix exists.
 
 BLOCKED: fee-payer keypair, mainnet canary, added float, full memo seed — all need Max.
 
-NOT REACHED (not blocked, ran out of context): B4-B8, A3, A5, C4-C6, SEC-M1/M3/M6/M7.
+NOT REACHED (not blocked, ran out of context): A5, B2, B3, B7, B8, C4-C6, SEC-M1/M3/M6/M7.
 
-Tests 201 -> 233, green at every commit.
+Tests 201 -> 236, green at every commit.
