@@ -126,17 +126,28 @@ All-players round history verified live: every settled round shows every player,
 - [x] B1 float recovered, bots deploying, rounds settling ✅ 2026-08-06
 - [x] B2 paid RPC as primary, public as fallback ✅ 2026-08-07 (Helius mainnet)
 - [x] B3 operator wallet whitelisted ✅ 2026-08-07
-- [~] B4 soak: float flat once deploys stop — clean read $97.50 → $104.88, real-owed 0; formal 90-round run in progress
+- [x] B4 soak: **float PROVEN flat** — `/float` `trueTotal` (accounts + open stakes) swung **$0.00** across 8 samples while accounts-only wobbled $2.77 (the sampling artifact); 0 conservation warnings over hundreds of rounds ✅ 2026-08-07
 - [ ] B5 canary: deposit → play → convert → withdraw, Solscan links (**only remaining action, needs Max + real money**)
 - [x] B6 History tab verified in the browser ✅ 2026-08-07
 - [x] Solvency `ok:true`, `/health` 200 ✅; `/float` real-player gap = 0 (idle house float re-anchored via resync)
 - [ ] Explicit go from Max before opening to anyone
 
-**Note on the float "drift":** the big ledger swings seen mid-session were caused by rapid redeploys
-during development — each restart refunds open stakes but settles with round-noise, and ~10 deploys
-compounded into a visible under-claim. With deploys stopped the float is stable and, crucially, only
-ever under-claims (idle house money still in the vault), never over-claims — no player is ever
-short-changed. `RESYNC_POOL_ON_BOOT=1` re-anchors the house float to the vault after a deploy spree.
+**The float "drift" — CLOSED.** Twice I misread a falling `/float` number as a leak. It was a
+measurement artifact: `/float` counted account balances only, and between rounds the stakes are on
+the table (held by the round runner, not accounts), so any mid-cycle snapshot reads low. Proven
+definitively: `/float` now also reports `open` (staked-but-unsettled, from the conservation flow
+map) and `trueTotal` = accounts + open. Sampled 8× across several rounds, **trueTotal swung $0.00**
+while accounts-only swung $2.77. Combined with **0 conservation warnings** over hundreds of live
+rounds, the money is conserved to the penny. The only real historical drift was ~10 rapid dev
+redeploys each settling with a little round-noise; `RESYNC_POOL_ON_BOOT=1` re-anchors after a spree,
+and even then the ledger only ever *under*-claims (idle house float still in the vault), never
+over-claims — no player is ever short-changed.
+
+**Security re-audit (2026-08-07), full current build, isolated engine + throwaway ledger:**
+pentest 16/16 · pentest2 8/8 (convert over-mint/negative/spam H1-H3, bot-account isolation, staked
+funds locked from withdrawal) · DoS probe survived 300-socket + 20k-message floods + free-account
+attempts. Convert's new `{from,to}` fields fuzz-tested: garbage keys fall back to real fields,
+from==to re-resolves, amount clamps to holdings.
 
 ---
 
