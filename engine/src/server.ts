@@ -278,7 +278,17 @@ function newBot(aid: string, side: Side): Account | null {
   ledger.set(id, a); created[arenaEco(aid)]++; return a;
 }
 function seedBots(aid: string, n: number) { for (let i=0;i<n;i++) if (!newBot(aid, i%2 ? "uwu":"bull")) break; }
-const botsFor = (aid: string) => [...ledger.values()].filter(a => a.isBot && !(a as any).retired && a.id.startsWith(aid+":"));
+// Rotate the scan order. Every selection path — funding, matching, the per-side minimum — walked
+// this list front to back, so the same handful of bots were always chosen and everything behind them
+// stayed idle. Combined with returnBank dumping into one wallet, 3 of 21 wallets ended up holding
+// 82% of the stake. A rotating offset spreads participation without changing any economics.
+let botScanOffset = 0;
+const botsFor = (aid: string) => {
+  const all = [...ledger.values()].filter(a => a.isBot && !(a as any).retired && a.id.startsWith(aid + ":"));
+  if (all.length < 2) return all;
+  const k = botScanOffset++ % all.length;
+  return all.slice(k).concat(all.slice(0, k));
+};
 
 // ---- clients ----
 const clients = new Set<WebSocket>();

@@ -89,8 +89,18 @@ export function takeExact(field: Field, amount: number): boolean {
 /** Give money back to the pool (a bot being pruned, or handing back an unused bank). */
 export function returnBank(field: Field, amount: number): void {
   if (!(amount > 0)) return;
-  const a = poolAccounts()[0];
-  if (a) a[field] += amount;
+  const accts = poolAccounts();
+  if (!accts.length) return;
+  // SPREAD IT. Returning everything to poolAccounts()[0] funnelled the entire float into one wallet:
+  // every bust, every unused bank and every fee came back to the same address, and since bot funding
+  // scans the pool in order that wallet then supplied most of the stake too. Measured live: the top
+  // 3 wallets held 82% of all stake and the top 5 held 99%, out of 21 funded wallets.
+  //
+  // Give it to whichever wallet currently holds the LEAST of this token, so the pool self-levels
+  // instead of concentrating. O(n) over ~21 wallets, which is nothing.
+  let target = accts[0];
+  for (const a of accts) if ((a[field] || 0) < (target[field] || 0)) target = a;
+  target[field] = (target[field] || 0) + amount;
 }
 
 /** True once at least one funded wallet exists — otherwise bots have to fall back to fake banks. */

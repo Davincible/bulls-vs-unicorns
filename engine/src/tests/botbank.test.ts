@@ -163,3 +163,36 @@ test("a bust threshold below the stake minimum strands money — the bug, reprod
   // under the corrected rule every one of them is returned to the pool
   assert.equal(bots.filter(b => b < MIN_STAKE).length, bots.length);
 });
+
+// CONCENTRATION. returnBank gave everything to poolAccounts()[0], so every bust, unused bank and fee
+// came back to one address — and because funding scans the pool in order, that same wallet then
+// supplied most of the stake. Measured live: 3 of 21 wallets held 82% of all stake, top 5 held 99%.
+test("returned money goes to the emptiest wallet, not always the first", () => {
+  const pool = [{ uwu: 100 }, { uwu: 5 }, { uwu: 60 }];
+  const give = (amount: number) => {
+    let t = pool[0];
+    for (const a of pool) if (a.uwu < t.uwu) t = a;
+    t.uwu += amount;
+  };
+  give(20);
+  assert.equal(pool[1].uwu, 25, "the emptiest wallet received it");
+  assert.equal(pool[0].uwu, 100, "not the first one");
+});
+
+test("repeated returns level the pool instead of concentrating it", () => {
+  const pool = [{ uwu: 100 }, { uwu: 0 }, { uwu: 0 }, { uwu: 0 }];
+  const give = (amount: number) => { let t = pool[0];
+    for (const a of pool) if (a.uwu < t.uwu) t = a; t.uwu += amount; };
+  for (let i = 0; i < 12; i++) give(10);
+  const vals = pool.map(p => p.uwu);
+  const spread = Math.max(...vals) - Math.min(...vals);
+  assert.ok(spread <= 100, `spread ${spread} — the pool levels rather than piling up`);
+  assert.ok(Math.min(...vals) > 0, "no wallet is left empty");
+});
+
+test("a rotating scan order shares participation", () => {
+  const bots = ["a", "b", "c", "d"];
+  const seen = new Set<string>();
+  for (let k = 0; k < bots.length; k++) seen.add(bots.slice(k).concat(bots.slice(0, k))[0]);
+  assert.equal(seen.size, 4, "every wallet gets to be first, so none stays idle");
+});
