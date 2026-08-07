@@ -81,8 +81,12 @@
     if (!assets || !assets.length) { $("assets").innerHTML = '<div class="card"><div class="cover">No assets reported yet — the first reconciliation runs moments after boot.</div></div>'; return; }
     $("assets").innerHTML = assets.map(a => {
       const label = ASSET_LABEL[a.asset] || a.asset.toUpperCase();
-      const cover = a.liability > 0 ? Math.min(1, a.holdings / a.liability) : 1;
-      const pct = Math.round(cover * 100);
+      // Show the TRUE ratio. Clamping at 100% turned "backed nine times over" into a flat "100%",
+      // which on a proof-of-reserves page hides the strongest fact on it — and reads like a number
+      // that was rounded up to look adequate.
+      const cover = a.liability > 0 ? a.holdings / a.liability : Infinity;
+      const pct = a.liability > 0 ? Math.round(cover * 100) : null;
+      const barPct = Math.min(100, a.liability > 0 ? cover * 100 : 100);   // the BAR still caps at full
       const cls = a.unpriced ? "warn" : a.ok ? "ok" : "bad";
       const pill = a.unpriced ? "Price unavailable" : a.ok ? "Fully backed" : "Shortfall " + fmt(a.shortfall);
       const note = a.unpriced ? "The price feed is momentarily unavailable, so this asset can't be priced right now. It is not counted as a shortfall."
@@ -93,9 +97,9 @@
         <div class="nums">
           <div><span>Owed to players</span><b>${a.unpriced ? "—" : fmt(a.liability)}</b></div>
           <div><span>Held in vault</span><b>${fmt(a.holdings)}</b></div>
-          <div><span>Coverage</span><b>${a.unpriced ? "—" : a.liability > 0 ? pct + "%" : "∞"}</b></div>
+          <div><span>Coverage</span><b>${a.unpriced ? "—" : pct === null ? "fully backed" : pct.toLocaleString() + "%"}</b></div>
         </div>
-        <div class="bar"><i style="width:${a.unpriced ? 100 : Math.max(2, pct)}%"></i></div>
+        <div class="bar"><i style="width:${a.unpriced ? 100 : Math.max(2, barPct)}%"></i></div>
         <div class="cover">${note}</div>
       </div>`;
     }).join("");

@@ -431,17 +431,22 @@
   // token art (Ansem bull / UwU unicorn) embedded as data URIs
   const IMG={bull:new Image(),uwu:new Image()},imgOK={bull:false,uwu:false};
   // SOL fighters get the Solana mark so a three-army map has three distinct faces
+  // Solana's mark, drawn rather than fetched: three skewed bars, brand gradient purple -> green.
+  // Drawing it keeps the arena self-contained — no external image request that can fail or leak a
+  // referrer, and it stays sharp at any fighter radius.
   const SOLART=(()=>{
-    const c=document.createElement("canvas"); c.width=c.height=128; const x=c.getContext("2d");
-    x.fillStyle="#0b0b14"; x.fillRect(0,0,128,128);
-    const g=x.createLinearGradient(20,20,108,108); g.addColorStop(0,"#9945FF"); g.addColorStop(1,"#14F195");
+    const c=document.createElement("canvas"); c.width=c.height=256; const x=c.getContext("2d");
+    x.fillStyle="#131320"; x.fillRect(0,0,256,256);
+    const g=x.createLinearGradient(36,60,220,196);
+    g.addColorStop(0,"#9945FF"); g.addColorStop(0.5,"#7962E7"); g.addColorStop(1,"#14F195");
     x.fillStyle=g;
-    const bar=(y,dir)=>{ x.beginPath();
-      const sk=16, w=76, h=15, x0=26;
+    // top and bottom bars lean right, the middle one leans left — that alternation is the logo
+    const bar=(y,dir)=>{ const sk=30, w=168, h=34, x0=44;
+      x.beginPath();
       if(dir>0){ x.moveTo(x0+sk,y); x.lineTo(x0+w,y); x.lineTo(x0+w-sk,y+h); x.lineTo(x0,y+h); }
-      else { x.moveTo(x0,y); x.lineTo(x0+w-sk,y); x.lineTo(x0+w,y+h); x.lineTo(x0+sk,y+h); }
+      else     { x.moveTo(x0,y);    x.lineTo(x0+w-sk,y); x.lineTo(x0+w,y+h);  x.lineTo(x0+sk,y+h); }
       x.closePath(); x.fill(); };
-    bar(30,1); bar(56,-1); bar(82,1);
+    bar(62,1); bar(111,-1); bar(160,1);
     return c;
   })();
   IMG.bull.onload=()=>{imgOK.bull=true;}; IMG.uwu.onload=()=>{imgOK.uwu=true;};
@@ -1662,7 +1667,18 @@
   // ---- X identity: handle -> name + avatar (unavatar, no OAuth needed) ----
   const AVCACHE={};
   window.avatarImg=avatarImg;
-  function avatarImg(url){ if(!url)return null; let o=AVCACHE[url];
+  // Twitter's own CDN (pbs.twimg.com) blocks cross-origin image loads, so an X avatar stored as a
+  // raw twimg URL never rendered on a fighter even though it displayed fine in an <img> elsewhere.
+  // unavatar serves the same picture with permissive headers, so normalise to it.
+  function avatarSrc(url){
+    const u = String(url || "");
+    if (!u) return "";
+    const m = u.match(/pbs\.twimg\.com\/profile_images\/(\d+)\//);
+    if (m) { try { const h = JSON.parse(localStorage.getItem("bvu_x")||"null")?.h;
+                   if (h) return "https://unavatar.io/x/" + h; } catch(e){} }
+    return u;
+  }
+  function avatarImg(url){ url = avatarSrc(url); if(!url)return null; let o=AVCACHE[url];
     if(!o){
       // No crossOrigin: we only DRAW this image, never read pixels back, so a tainted canvas costs
       // us nothing — whereas requesting CORS meant any host that omits the header failed silently
