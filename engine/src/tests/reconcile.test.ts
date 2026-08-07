@@ -55,3 +55,25 @@ test("non-finite liability/holdings are coerced to 0, not emitted as null", () =
   assert.equal(bull.ok, false);          // owe 10, hold 0 -> real shortfall still caught
   assert.ok(Number.isFinite(bull.shortfall));
 });
+
+// ── unit labelling ────────────────────────────────────────────────────────────────────────────
+// The SOL row is the one that bites: the ledger holds SOL as USD, the vault holds SOL, so the
+// row is converted before evaluate() sees it. Comparing an unlabelled liability to an unlabelled
+// holding is how a ~75x misread happens, so assert the label survives the pure layer.
+test("evaluate carries the unit label through to the report", () => {
+  const r = evaluate([
+    { asset: "sol", liability: 0.04, holdings: 0.9, unit: "SOL" },
+    { asset: "uwu", liability: 148, holdings: 1866, unit: "UWU" },
+  ]);
+  assert.equal(r.assets[0].unit, "SOL");
+  assert.equal(r.assets[1].unit, "UWU");
+  assert.equal(r.ok, true);
+});
+
+test("an unpriced row keeps its unit too", () => {
+  const r = evaluate([{ asset: "sol", liability: 12, holdings: 0.9, unpriced: true, unit: "SOL" }]);
+  assert.equal(r.assets[0].unit, "SOL");
+  assert.equal(r.assets[0].unpriced, true);
+  assert.equal(r.assets[0].liability, 0);   // indeterminate, not a breach
+  assert.equal(r.ok, true);
+});

@@ -15,7 +15,10 @@ const ENFORCE =
   : process.env.RECONCILE_ENFORCE === "1" ? true
   : !IS_TEST_CHAIN;
 
-export interface AssetRecon { asset: string; liability: number; holdings: number; ok: boolean; shortfall: number; unpriced?: boolean }
+// `unit` is the denomination BOTH liability and holdings are expressed in. It is not decoration:
+// the ledger keeps SOL in USD while the vault holds SOL, so these rows are converted before they
+// get here and an unlabelled number is genuinely ambiguous to anyone reading the endpoint.
+export interface AssetRecon { asset: string; liability: number; holdings: number; ok: boolean; shortfall: number; unpriced?: boolean; unit?: string }
 export interface ReconReport { at: number; ok: boolean; assets: AssetRecon[]; skipped?: string }
 
 // A tiny tolerance absorbs float dust and rounding; a real breach is far larger than this.
@@ -24,17 +27,17 @@ const EPS = 1e-4;
 /** Pure solvency comparison. Each entry is one asset's [liability, holdings] in the SAME unit.
  *  An `unpriced` row is INDETERMINATE (e.g. SOL owed but the price feed is down): it can't be
  *  compared, so it never counts as a breach — a price outage must not read as insolvency. */
-export function evaluate(rows: Array<{ asset: string; liability: number; holdings: number; unpriced?: boolean }>, at = Date.now()): ReconReport {
+export function evaluate(rows: Array<{ asset: string; liability: number; holdings: number; unpriced?: boolean; unit?: string }>, at = Date.now()): ReconReport {
   const assets: AssetRecon[] = rows.map(r => {
     if (r.unpriced) {
       const holdings = Number.isFinite(r.holdings) ? r.holdings : 0;
-      return { asset: r.asset, liability: 0, holdings, ok: true, shortfall: 0, unpriced: true };
+      return { asset: r.asset, liability: 0, holdings, ok: true, shortfall: 0, unpriced: true, unit: r.unit };
     }
     // guard: never let a NaN/undefined slip through as a fake shortfall
     const liability = Number.isFinite(r.liability) ? r.liability : 0;
     const holdings = Number.isFinite(r.holdings) ? r.holdings : 0;
     const shortfall = Math.max(0, liability - holdings);
-    return { asset: r.asset, liability, holdings, ok: shortfall <= EPS, shortfall };
+    return { asset: r.asset, liability, holdings, ok: shortfall <= EPS, shortfall, unit: r.unit };
   });
   return { at, ok: assets.every(a => a.ok), assets };
 }
@@ -53,20 +56,20 @@ export function latest(): ReconReport | null { return last; }
 export async function runOnce(getLiabilities: () => Liabilities, solPrice: () => number): Promise<ReconReport> {
   try {
     const L = getLiabilities();
-    const rows: Array<{ asset: string; liability: number; holdings: number; unpriced?: boolean }> = [];
+    const rows: Array<{ asset: string; liability: number; holdings: number; unpriced?: boolean; unit?: string }> = [];
     // native SOL: ledger tracks USD units, the vault holds SOL — convert liability to SOL to compare.
     // If SOL is actually owed but the price feed is down, solvency is INDETERMINATE (mark unpriced)
     // rather than faking 0 (false "solvent") or NaN (false "shortfall") — and never freeze on it.
     const px = solPrice();
     const solHoldings = await solBalance(vaultPubkey());
     if (L.solUsd > 0 && !(px > 0)) {
-      rows.push({ asset: "sol", liability: L.solUsd, holdings: solHoldings, unpriced: true });
+      rows.push({ asset: "sol", liability: L.solUsd, holdings: solHoldings, unpriced: true, unit: "SOL" });
     } else {
-      rows.push({ asset: "sol", liability: px > 0 ? L.solUsd / px : 0, holdings: solHoldings });
+      rows.push({ asset: "sol", liability: px > 0 ? L.solUsd / px : 0, holdings: solHoldings, unit: "SOL" });
     }
     if (chainReady()) {
-      rows.push({ asset: "bull", liability: L.bull, holdings: await vaultTokenBalance("bull") });
-      rows.push({ asset: "uwu", liability: L.uwu, holdings: await vaultTokenBalance("uwu") });
+      rows.push({ asset: "bull", liability: L.bull, holdings: await vaultTokenBalance("bull"), unit: "BULL" });
+      rows.push({ asset: "uwu", liability: L.uwu, holdings: await vaultTokenBalance("uwu"), unit: "UWU" });
     }
     const report = evaluate(rows);
     last = report;

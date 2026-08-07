@@ -1134,9 +1134,24 @@ const httpServer = createServer((req, res) => {
       return { pool, bots, real, treasury: tre, total: accounts, open, trueTotal: accounts + open,
                usd: (accounts + open) * usdPerUnitSafe(f) };
     };
-    const out = { at: Date.now(), price: { bull: usdPerUnitSafe("bull"), uwu: usdPerUnitSafe("uwu") },
-                  bull: per("bull"), uwu: per("uwu"), sol: per("sol"),
-                  chain: { uwu: lastChain.uwu, bull: lastChain.bull, sol: lastChain.sol } };
+    // UNITS. These blocks are NOT all in the same denomination and the numbers alone do not say so:
+    // the ledger keeps bull/uwu in whole tokens but SOL in USD, while `chain` is what the vault
+    // literally holds — so chain.sol is SOL while sol.pool is dollars. Both are correct; reading one
+    // as the other is a ~75x error. Every block now states its own unit rather than relying on the
+    // reader knowing the ledger's internal convention.
+    const solPx = solUsd();   // real $/SOL — via the helper, so SOL_USD_FIXED is respected
+    const s = per("sol");
+    const out = { at: Date.now(), price: { bull: usdPerUnitSafe("bull"), uwu: usdPerUnitSafe("uwu"), sol: solPx || null },
+                  units: { bull: "BULL tokens", uwu: "UWU tokens", sol: "USD", chain: "native units held by the vault" },
+                  bull: { ...per("bull"), unit: "BULL" }, uwu: { ...per("uwu"), unit: "UWU" },
+                  // sol is ledger-USD; also give the SOL-denominated view so it can be compared to
+                  // chain.sol and to /solvency without the reader doing the conversion themselves
+                  sol: { ...s, unit: "USD",
+                         sol: solPx > 0 ? { pool: s.pool / solPx, bots: s.bots / solPx, real: s.real / solPx,
+                                            treasury: s.treasury / solPx, open: s.open / solPx,
+                                            trueTotal: s.trueTotal / solPx, unit: "SOL" } : null },
+                  chain: { uwu: lastChain.uwu, bull: lastChain.bull, sol: lastChain.sol,
+                           units: { uwu: "UWU", bull: "BULL", sol: "SOL" } } };
     res.writeHead(200, cors); return res.end(JSON.stringify(out));
   }
   if (url === "/solvency") {
