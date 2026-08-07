@@ -24,14 +24,20 @@
        line 1  arena picker, mode, wallet (hard right)
        line 2  view nav, treasury, arena tag, fair badge
      Below 720px the break is released so it collapses to a normal wrap instead of two cramped rows. */
+  /* Line 1 is the arena/mode pickers; line 2 is nav + status + wallet. The wallet sat alone at the
+     far right of line 1 with nothing beside it, which read as a broken stray dot rather than as
+     "pinned top-right". It belongs next to the things it relates to. */
   #pairSel{order:1}
   .hstats > .modes:not(#pairSel){order:2}
-  #profWrap{order:3;margin-left:auto}      /* wallet pinned top-right, never stranded mid-row */
-  .hbreak{order:4;flex-basis:100%;height:0;margin:0}
-  .hstats > .nav{order:5}
-  .hstats > .pill{order:6}
-  .hstats > #infoBtn{order:7}
+  .hbreak{order:3;flex-basis:100%;height:0;margin:0}
+  .hstats > .nav{order:4}
+  .hstats > .pill{order:5}
+  .hstats > #infoBtn{order:6}
+  #profWrap{order:7;margin-left:auto}      /* right edge of line TWO, beside the status pills */
   @media(max-width:720px){ .hbreak{display:none} #profWrap{margin-left:0} }
+  /* the header was five stacked bands before the game even started — tighten them */
+  header{padding:8px 0}
+  .ticker{margin-top:4px}
   .pill{font-family:var(--sans);font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:7px 12px;display:flex;flex-direction:column;line-height:1.3;min-width:76px}
   .pill b{font-size:15px;font-family:var(--mono);letter-spacing:-.01em} .pill .g{color:var(--gold)} .pill span{color:var(--ink-faint);font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;margin-top:1px} .pill .brk{color:var(--ink-soft);font-size:10px;letter-spacing:0;text-transform:none}
   .nav,.modes{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:11px;overflow:hidden}
@@ -43,7 +49,11 @@
   .ficon{background:var(--panel);border:1px solid var(--line);border-radius:11px;color:var(--ink-soft);cursor:pointer;font-size:14px;padding:8px 11px;transition:color .15s,border-color .15s} .ficon:hover{color:var(--gold);border-color:var(--gold)}
   .ticker{margin-top:6px;background:linear-gradient(90deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:12px;height:34px;overflow:hidden;position:relative;display:flex;align-items:center;isolation:isolate;z-index:0}
   .ticker .lbl{flex:none;font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--gold);padding:0 14px;border-right:1px solid var(--line);height:100%;display:flex;align-items:center;background:rgba(255,192,72,.06)}
-  .ticker .track{display:flex;gap:26px;white-space:nowrap;padding-left:16px} .ticker .win{font-family:var(--mono);font-size:12px;display:flex;align-items:center;gap:6px} .ticker .win b{color:var(--gold)} .ticker .win .mult{color:var(--crit);font-weight:700}
+  /* The label shared a flex row with the scrolling track and had no background, so the marquee
+     text slid straight THROUGH it - two strings on the same pixels, which is the overlap in the
+     ticker. Give it an opaque backing and its own layer so the track passes cleanly behind. */
+  .ticker .lbl{position:relative;z-index:2;background:var(--panel);flex:none}
+  .ticker .track{display:flex;gap:26px;white-space:nowrap;padding-left:16px;position:relative;z-index:1;min-width:0} .ticker .win{font-family:var(--mono);font-size:12px;display:flex;align-items:center;gap:6px} .ticker .win b{color:var(--gold)} .ticker .win .mult{color:var(--crit);font-weight:700}
   .view{display:none} .view.on{display:block}
   .arena-grid{display:grid;grid-template-columns:196px 1fr 196px;gap:12px;margin-top:12px}
   .team{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px;display:flex;flex-direction:column;gap:8px;box-shadow:var(--shadow)}
@@ -874,7 +884,13 @@
       ctx.lineWidth=p.isUser?3:1.4;ctx.strokeStyle=p.isUser?"#ffc048":"rgba(255,255,255,.35)";if(p.id===w.hoverId){ctx.strokeStyle="#fff";ctx.lineWidth=3;}ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,7);ctx.stroke();
       if(p.r>15){ctx.fillStyle="rgba(0,0,0,.7)";ctx.font="700 "+Math.min(12,p.r*0.55)+"px ui-monospace,monospace";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText("$"+(ring(p)|0),p.x,p.y);}
       if(p.isUser){ctx.fillStyle="#ffc048";ctx.font="800 11px system-ui";ctx.textAlign="center";ctx.fillText("▼ YOU",p.x,p.y-p.r-9);}}
-    for(let i=w.floaters.length-1;i>=0;i--){const f=w.floaters[i];f.life-=0.018;f.y-=0.7;if(f.life<=0){w.floaters.splice(i,1);continue;}ctx.globalAlpha=Math.max(0,f.life);ctx.fillStyle=f.col;ctx.font=(f.big?"800 22px ":"700 14px ")+"system-ui";ctx.textAlign="center";ctx.fillText(f.txt,f.x,f.y);}ctx.globalAlpha=1;
+    // HUD_GUARD — the score bar and round chips are DOM sitting over the top of the canvas.
+    // Floaters drift upward, so they used to sail straight under it and collide visually with the
+    // numbers there. Retire one once it reaches that strip instead of letting it cross.
+    const HUD_GUARD=52;
+    for(let i=w.floaters.length-1;i>=0;i--){const f=w.floaters[i];f.life-=0.018;f.y-=0.7;
+      if(f.y<HUD_GUARD)f.life=Math.min(f.life,0.25);
+      if(f.life<=0){w.floaters.splice(i,1);continue;}ctx.globalAlpha=Math.max(0,f.life);ctx.fillStyle=f.col;ctx.font=(f.big?"800 22px ":"700 14px ")+"system-ui";ctx.textAlign="center";ctx.fillText(f.txt,f.x,f.y);}ctx.globalAlpha=1;
     for(let i=w.particles.length-1;i>=0;i--){const p=w.particles[i];p.x+=p.vx;p.y+=p.vy;p.vy+=0.15;p.life-=0.02;if(p.life<=0){w.particles.splice(i,1);continue;}ctx.globalAlpha=p.life;ctx.fillStyle=p.c;ctx.fillRect(p.x,p.y,3,3);}ctx.globalAlpha=1;ctx.restore();
     const ban=$("#banner");if(w.bannerA>0){ban.textContent=w.bannerTxt;ban.style.opacity=w.bannerA;ban.style.color=w.bannerWin==="bull"?"#18e08a":"#c46bff";}else ban.style.opacity=0;
     const hud=$("#myhud");
