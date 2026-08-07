@@ -58,8 +58,9 @@ Engine already derives survivorship-free standings; UI still reads live balances
 
 ## Tier 4 — Gameplay
 
-### B2 · Verify normal engagement after the self-target fix · **PENDING**
-**Accept:** fighters from *different* wallets still converge and clash; test asserts hits occur.
+### B2 · Verify normal engagement after the self-target fix · **DONE**
+5 tests. The risk was an over-broad owner check silently disarming everyone — a battle where
+nothing connects still settles, still conserves, and still passes every other test.
 
 ### B3 · Sub-cent damage visible on screen · **PENDING**
 **Accept:** `$0.001` renders in floaters and standings rather than `$0.00`.
@@ -84,7 +85,12 @@ enters later. Overage is refunded by the matched book, so over-committing is fre
 
 ### C1 previous rounds under the arena · C2 expandable rows · C3 Solscan link + timestamp — **DONE**
 ### Remaining:
-### C4 X share on one line · C5 stolen-vs-deployed bar · C6 profile viewer — all **PENDING**
+### C4 arena-aware share text · **DONE** — hardcoded $BULL/$UWU went out publicly on a UWU/SOL win
+### C5 raided-vs-deployed bar · **DONE**
+### C6 profile viewer — **PENDING**
+### Hall of Legends one line · **DONE** (and removed the dead #hof list)
+### Two-line top bar + wallet pinned top-right · **DONE**
+### Ticker stacking · **VERIFIED** — isolation:isolate confirmed computed, was previously unproven
 
 ---
 
