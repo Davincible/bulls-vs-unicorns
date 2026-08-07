@@ -376,10 +376,10 @@
       </div>
       <div class="card"><h2>Dashboard <span style="font-family:var(--mono);font-size:12px;color:var(--ink-faint)" id="dashMode"></span></h2>
         <div class="dgrid" style="margin-top:8px">
-          <div class="stat b"><div class="v" id="dDepBull">$0</div><div class="n">Total deployed · Bulls</div></div>
-          <div class="stat u"><div class="v" id="dDepUni">$0</div><div class="n">Total deployed · Unicorns</div></div>
-          <div class="stat b"><div class="v" id="dWinBull">0</div><div class="n">Match wins · Bulls</div></div>
-          <div class="stat u"><div class="v" id="dWinUni">0</div><div class="n">Match wins · Unicorns</div></div>
+          <div class="stat b"><div class="v" id="dDepBull">$0</div><div class="n" id="dDepBullN">Total deployed · Bulls</div></div>
+          <div class="stat u"><div class="v" id="dDepUni">$0</div><div class="n" id="dDepUniN">Total deployed · Unicorns</div></div>
+          <div class="stat b"><div class="v" id="dWinBull">0</div><div class="n" id="dWinBullN">Match wins · Bulls</div></div>
+          <div class="stat u"><div class="v" id="dWinUni">0</div><div class="n" id="dWinUniN">Match wins · Unicorns</div></div>
         </div>
         <div class="dgrid" style="margin-top:12px">
           <div class="stat b"><div class="v" id="dDmgBull">$0</div><div class="n">Total damage · Bulls</div></div>
@@ -1334,7 +1334,24 @@
     }
   }
   function syncDashboard(){renderDashArenas();renderBattleReport();const w=W();$("#dashMode").textContent="· "+MODE[w.mode].cap;
-    $("#dDepBull").textContent=fmt(w.online?(w.engDepBull||0):w.dep.bull);$("#dDepUni").textContent=fmt(w.online?(w.engDepUwu||0):w.dep.unicorn);$("#dWinBull").textContent=w.matchWins.bull;$("#dWinUni").textContent=w.matchWins.unicorn;
+    // ONE LEDGER. These tiles used to read w.dep / w.matchWins - browser counters that persist in
+    // localStorage across arenas and modes, which is why the dashboard showed stale figures and
+    // "Bulls" while the live arena was UWU vs SOL. The engine keeps a per-arena record (statsA);
+    // use it, and take the LABELS from the live arena too, so neither can drift.
+    {
+      const _st=(window.__ST&&window.__ST.arenas&&window.__ST.arenas[PAIRING+"-"+w.mode]||{}).stats;
+      const _A=metaA(),_B=metaB();
+      const lbl=(id,txt)=>{const e=document.getElementById(id);if(e)e.textContent=txt;};
+      // deployed is ALREADY engine-sourced (house.depBull/depUwu, from the engine's depSide, which
+      // is credited at every site). Wins were not - they came from a localStorage counter that
+      // persists across arenas and modes, which is the stale figure on the dashboard.
+      $("#dDepBull").textContent=fmt(w.online?(w.engDepBull||0):w.dep.bull);
+      $("#dDepUni").textContent=fmt(w.online?(w.engDepUwu||0):w.dep.unicorn);
+      if(_st){ $("#dWinBull").textContent=_st.winsA||0; $("#dWinUni").textContent=_st.winsB||0; }
+      else { $("#dWinBull").textContent=w.matchWins.bull; $("#dWinUni").textContent=w.matchWins.unicorn; }
+      lbl("dDepBullN","Total deployed · "+_A.team); lbl("dDepUniN","Total deployed · "+_B.team);
+      lbl("dWinBullN","Match wins · "+_A.team);     lbl("dWinUniN","Match wins · "+_B.team);
+    }
     $("#dDmgBull").textContent=fmt(w.dmgBull);$("#dDmgUni").textContent=fmt(w.dmgUni);
     const house=treasTotal(w),deployed=w.online?(w.engDeployed||0):(w.dep.bull+w.dep.unicorn);
     $("#dHouse").textContent=fmt(house);$("#dHousePct").textContent=(deployed>0?(house/deployed*100).toFixed(2):0)+"%";

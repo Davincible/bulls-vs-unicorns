@@ -20,10 +20,31 @@ test("a fighter short of its own token plays the one it actually holds", () => {
   assert.equal(sideFor("uwu", { bull: 40, uwu: 0 }), "bull");
 });
 
-test("a funded fighter never switches — it is not chasing, just solvent", () => {
-  assert.equal(sideFor("bull", { bull: 20, uwu: 40 }), "bull");
-  assert.equal(sideFor("uwu", { bull: 99, uwu: 5 }), "uwu");
+// Nobody is a loyalist. Switching ONLY when broke is its own tell: a wallet that never changes army
+// until the exact round it runs dry reads as a rule, not a person. Where both are affordable the
+// choice is genuinely free.
+test("holding both coins, side is a free choice — not fixed, not only-when-broke", () => {
+  const seen = new Set<string>();
+  for (let i = 0; i < 200; i++) seen.add(freeSide({ bull: 30, uwu: 30 }));
+  assert.equal(seen.size, 2, "a solvent fighter must be able to appear on either side");
 });
+
+test("affordability is the only hard constraint", () => {
+  for (let i = 0; i < 50; i++) {
+    assert.equal(freeSide({ bull: 30, uwu: 0 }), "bull");
+    assert.equal(freeSide({ bull: 0, uwu: 30 }), "uwu");
+  }
+});
+
+/** Both affordable -> free choice, leaning to the heavier bag but never deterministic. */
+function freeSide(held: { bull: number; uwu: number }) {
+  const okA = held.bull >= MIN, okB = held.uwu >= MIN;
+  if (okA && okB) {
+    const p = held.bull + held.uwu > 0 ? held.bull / (held.bull + held.uwu) : 0.5;
+    return Math.random() < (0.25 + 0.5 * p) ? "bull" : "uwu";
+  }
+  return okA ? "bull" : okB ? "uwu" : "bull";
+}
 
 test("a fighter with nothing anywhere simply sits out", () => {
   assert.equal(sideFor("bull", { bull: 0, uwu: 0 }), "bull");   // stays put, then fails the min check

@@ -1049,12 +1049,27 @@ function botsEnter(aid: string) {
     // whoever is holding it is who plays. Refilling a wallet from a house reservoir is the single
     // most obvious tell that it is not a person, so we do not do it.
     {
-      const own = a.side === "bull" ? tokA : tokB, other = a.side === "bull" ? tokB : tokA;
-      const minOwn = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(FIELD[own] as Field, BOT_STAKE_USD_MIN);
-      const minOther = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(FIELD[other] as Field, BOT_STAKE_USD_MIN);
-      if (!((a[FIELD[own]] || 0) >= minOwn) && (a[FIELD[other]] || 0) >= minOther) {
-        a.side = a.side === "bull" ? "uwu" : "bull";
-      }
+      // NOBODY IS A LOYALIST. Side is a per-round choice, not an identity. A real player holding
+      // both coins picks whichever they feel like that round, so these do the same: any side they
+      // can afford is eligible, and where both are affordable it is a genuine coin-flip weighted
+      // by what they are actually holding. Only affordability constrains it.
+      //
+      // Switching ONLY when broke would have been its own tell - a wallet that never changes army
+      // until the exact round it runs dry reads as a rule, not a person.
+      const canPlay = (t: typeof tokA) => {
+        const f = FIELD[t] as Field;
+        const min = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(f, BOT_STAKE_USD_MIN);
+        return (a[f] || 0) >= min;
+      };
+      const okA = canPlay(tokA), okB = canPlay(tokB);
+      if (okA && okB) {
+        // both affordable: lean toward the heavier bag, but never deterministically
+        const vA = (a[FIELD[tokA]] || 0) * usdPerUnitSafe(FIELD[tokA] as Field);
+        const vB = (a[FIELD[tokB]] || 0) * usdPerUnitSafe(FIELD[tokB] as Field);
+        const pA = vA + vB > 0 ? vA / (vA + vB) : 0.5;
+        a.side = Math.random() < (0.25 + 0.5 * pA) ? "bull" : "uwu";
+      } else if (okA) a.side = "bull";
+      else if (okB) a.side = "uwu";
     }
     const myTok = a.side === "bull" ? tokA : tokB;
     // Bots do NOT convert. This used to move raw units 1:1 between the two sides' tokens, so
