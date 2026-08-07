@@ -508,12 +508,18 @@ function botsEnterN(aid: string) {
   }
 }
 
+// RESTORE FIRST. The runners below are seeded from roundsByArena, and restore() is what fills it.
+// It used to run three lines AFTER them, so every runner was seeded from an empty record and
+// started at 0+1 - the round counter reset to #1 on every single deploy, exactly the behaviour the
+// comment below says this is here to prevent. The intent was right; the ordering defeated it.
+// Nothing between here and the runners touches the ledger, so this is a pure move.
+restore();
+
 const runners: Record<string, RoundRunner> = {};
 // start each arena where it left off, so a redeploy never resets the match history
 for (const aid of ARENA_IDS) runners[aid] = new RoundRunner(arenaEco(aid), (r, s) => onSettle(aid, r, s), (roundsByArena[aid] || 0) + 1);
 const runnersN: Record<string, RoundRunnerN> = {};
 for (const aid of NARENA_IDS) runnersN[aid] = new RoundRunnerN(NARENAS[aid].eco, NARENAS[aid].teams, (r, s) => onSettleN(aid, r as any, s as any), (roundsByArena[aid] || 0) + 1);
-restore();
 // One-off float repair, BEFORE the bot bank reads balances and before anything can persist over it.
 // Running the standalone CLI against a live engine loses the race: it writes the snapshot file and
 // the running process overwrites it from stale memory on the next save.
