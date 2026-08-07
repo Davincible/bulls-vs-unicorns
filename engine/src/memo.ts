@@ -14,9 +14,10 @@ import { RPC, loadVaultKeypair } from "./chain.ts";
 const MEMO_PROGRAM = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 const ON = process.env.MEMO_ON_CHAIN === "1";
 const BATCH = Math.max(1, Number(process.env.MEMO_BATCH || 1));
-// A legacy transaction is ~1232 bytes all-in. Staying well under it leaves room for the signature,
-// blockhash and program ids without ever risking an oversized-transaction rejection.
-const MAX_MEMO_BYTES = 700;
+// A legacy transaction is ~1232 bytes all-in and our overhead is ~170 (one signature, header,
+// two account keys, blockhash, instruction framing). 900 leaves a comfortable margin while giving
+// the readable layout room for a full lobby; anything larger degrades to the summary.
+const MAX_MEMO_BYTES = Number(process.env.MEMO_MAX_BYTES || 900);
 
 export interface AnchorPlayer {
   id: string;        // wallet (or bot id)
@@ -68,27 +69,36 @@ const TOKENS: Record<string, [string, string]> = {
 function encodeRound(r: RoundAnchor, withPlayers: boolean): string {
   const pair = r.arena.split("-")[0];
   const [tokA, tokB] = TOKENS[pair] || ["A", "B"];
-  const mode = r.arena.includes("extraction") ? "extraction" : "mayhem";
+  const mode = r.arena.includes("extraction") ? "EXTRACTION" : "MAYHEM";
   const win = r.winner === "bull" ? tokA : tokB;
 
-  const lines = [
-    `Bulls vs Unicorns | Round ${r.round} | ${tokA} vs ${tokB} ${mode}`,
-    `Winner: ${win} | Pot: $${n(r.pot)} | Players: ${r.players.length}`,
-    `Provably fair -- commit(before): ${r.seedHash.slice(0, 16)} | seed(revealed): ${r.seed.slice(0, 16)}`,
+  const L = [
+    `BULLS vs UNICORNS  --  ROUND ${r.round}  (${tokA} vs ${tokB}, ${mode})`,
+    ``,
+    `WINNER    ${win}`,
+    `POT       $${n(r.pot)}   across ${r.players.length} wallet(s)`,
+    ``,
+    `PROVABLY FAIR`,
+    `  commit (published before deploys opened):  ${r.seedHash.slice(0, 16)}`,
+    `  seed   (revealed at fight start):          ${r.seed.slice(0, 16)}`,
   ];
   if (withPlayers && r.players.length) {
-    lines.push(r.players.map(f => {
+    L.push(``, `RESULTS  (USD -- a raider exits holding BOTH coins)`);
+    for (const f of r.players) {
       const army = f.side === "bull" ? tokA : tokB;
       const out = (f.outA || 0) + (f.outB || 0);
-      return `${shortId(f.id)}(${army}) $${n(f.inTok)}>$${n(out)}`;
-    }).join(" | "));
+      const net = out - (f.inTok || 0);
+      const sign = net >= 0 ? "+" : "-";
+      L.push(`  ${shortId(f.id).padEnd(7)} ${army.padEnd(5)} in $${n(f.inTok).padStart(7)}  out $${n(out).padStart(7)}  ${sign}$${n(Math.abs(net))}`);
+    }
   }
-  lines.push("verify: bulls-arena-engine.fly.dev/fair");
-  return lines.join(NL);
+  L.push(``, `verify: bulls-arena-engine.fly.dev/fair`);
+  return L.join(NL);
 }
 
+/** Several rounds in one memo, separated by a rule. BATCH=1 means one round per transaction. */
 function encode(rows: RoundAnchor[], withPlayers: boolean): string {
-  return rows.map(r => encodeRound(r, withPlayers)).join(NL + "---" + NL);
+  return rows.map(r => encodeRound(r, withPlayers)).join(NL + "==========" + NL);
 }
 
 /** Queue a settled round. Never throws and never blocks settlement — anchoring is best-effort. */

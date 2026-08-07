@@ -50,11 +50,11 @@ export const treasury: Record<Mode, number> = { normal: 0, extraction: 0 };
 // The HOUSE's own account. Fees are tokens, not an abstraction: they have to land somewhere or the
 // ledger stops adding up to what the vault holds. This account is house money (never a player
 // liability) and is what the operator actually withdraws revenue from.
-export const TREASURY_ID = "__house_treasury__";
+export const TREASURY_ID = "__versus_treasury__";
 export function treasuryAcct(): Account {
   let a = ledger.get(TREASURY_ID);
   if (!a) {
-    a = { id: TREASURY_ID, name: "house", side: "bull", bull: 0, uwu: 0, sol: 0,
+    a = { id: TREASURY_ID, name: "Versus Treasury", side: "bull", bull: 0, uwu: 0, sol: 0,
           isBot: true, dep: 0, ret: 0, games: 0, wins: 0 } as Account;
     ledger.set(TREASURY_ID, a);
   }
@@ -191,6 +191,11 @@ export function persist() {
 
 /** Wipe lifetime P&L counters. Balances are NEVER touched — dep/ret/games/wins/raided/best are
  *  display statistics, and theirs were accumulated in mixed units before the USD fix. */
+/** A retired account keeps its record: balances go back to the pool, but games/wins/dep/ret stay so
+ *  the board is not a survey of survivors. Deleting them is what made "nobody is profitable" true
+ *  no matter how the game actually went. */
+export function isRetired(a: Account): boolean { return (a as any).retired === true; }
+
 export function resetLifetimeStats(): number {
   let n = 0;
   for (const a of ledger.values()) {

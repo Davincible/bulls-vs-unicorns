@@ -216,7 +216,10 @@ function retireBot(a: Account): void {
     const left = a[f] || 0;
     if (left > 0) { returnBank(f, left); a[f] = 0; }
   }
-  ledger.delete(a.id);
+  // KEEP THE RECORD. Deleting the account returned its money correctly but threw away its lifetime
+  // stats, so the leaderboard only ever saw whoever had not busted yet — a survey of survivors,
+  // which skews negative by construction and is why nothing ever looked profitable.
+  (a as any).retired = true;
 }
 
 // accountUsd lives in ledger.ts — ONE definition, because two copies of "what is this worth" is
@@ -243,7 +246,7 @@ function newBot(aid: string, side: Side): Account | null {
   ledger.set(id, a); created[arenaEco(aid)]++; return a;
 }
 function seedBots(aid: string, n: number) { for (let i=0;i<n;i++) if (!newBot(aid, i%2 ? "uwu":"bull")) break; }
-const botsFor = (aid: string) => [...ledger.values()].filter(a => a.isBot && a.id.startsWith(aid+":"));
+const botsFor = (aid: string) => [...ledger.values()].filter(a => a.isBot && !(a as any).retired && a.id.startsWith(aid+":"));
 
 // ---- clients ----
 const clients = new Set<WebSocket>();
