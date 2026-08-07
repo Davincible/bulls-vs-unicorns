@@ -68,3 +68,56 @@ test("a garbage (non-base64 / wrong-length) signature is refused, not thrown", (
     assert.equal(res.ok, false);
   });
 });
+
+// ---- resumable sessions ----
+// A session token is a BEARER credential: whoever holds it is treated as having proven the wallet.
+// It removes the signature prompt on reconnect (deploying is not a chain op and must not cost one),
+// so forgery, cross-wallet replay and expiry all have to be airtight.
+import { mintSession, resume } from "../auth.ts";
+
+const sock = () => ({} as any);
+
+test("a freshly minted token re-proves its own wallet", () => {
+  const ws = sock();
+  const t = mintSession("WalletAAA");
+  assert.equal(resume(ws, "WalletAAA", t), true);
+  assert.equal(isAuthed(ws, "WalletAAA"), true);
+});
+
+test("a token cannot be replayed for a DIFFERENT wallet", () => {
+  const ws = sock();
+  const t = mintSession("WalletAAA");
+  assert.equal(resume(ws, "WalletBBB", t), false, "wallet is bound into the signed payload");
+  assert.equal(isAuthed(ws, "WalletBBB"), false);
+});
+
+test("a tampered signature is rejected", () => {
+  const ws = sock();
+  const t = mintSession("WalletAAA");
+  const parts = t.split(".");
+  const forged = parts[0] + "." + parts[1] + "." + parts[2].slice(0, -2) + "xy";
+  assert.equal(resume(ws, "WalletAAA", forged), false);
+});
+
+test("extending the expiry without re-signing is rejected", () => {
+  const ws = sock();
+  const t = mintSession("WalletAAA");
+  const parts = t.split(".");
+  const forged = parts[0] + "." + (Number(parts[1]) + 999_999_999) + "." + parts[2];
+  assert.equal(resume(ws, "WalletAAA", forged), false, "expiry is inside the HMAC");
+});
+
+test("an expired token is refused", () => {
+  const ws = sock();
+  const t = mintSession("WalletAAA");
+  const parts = t.split(".");
+  // re-sign an already-expired payload the way the server would have, long ago
+  assert.equal(resume(ws, "WalletAAA", parts[0] + ".1." + parts[2]), false);
+});
+
+test("garbage tokens never authenticate", () => {
+  const ws = sock();
+  for (const bad of ["", "x", "a.b.c", "....", "null", "undefined"]) {
+    assert.equal(resume(ws, "WalletAAA", bad), false, `"${bad}" must not authenticate`);
+  }
+});

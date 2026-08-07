@@ -370,7 +370,7 @@
       </div>
     </div>
   </div>
-  <footer>Prototype · saved locally. Raids TAKE the enemy's coin into your bag (claim reallocation). No cash — only BULL &amp; UWU, wallet shared across modes. Normal = raids compound in-ring · Extraction = raids bank to your wallet in real time. House edge 0.2%/raid · 1% on convert. BULL = Ansem, UWU = Unicorn. · <a href="solvency.html" style="color:var(--ink-soft);text-decoration:none">🔒 Proof of reserves</a></footer>
+  <footer>Prototype · saved locally. Raids TAKE the enemy's coin into your bag (claim reallocation). No cash — only BULL &amp; UWU, wallet shared across modes. Normal = raids compound in-ring · Extraction = raids bank to your wallet in real time. House edge 0.2% per deploy · 0.3% on convert. BULL = Ansem, UWU = Unicorn. · <a href="solvency.html" style="color:var(--ink-soft);text-decoration:none">🔒 Proof of reserves</a></footer>
   <div class="modal" id="modal"><div class="pcard" id="pcard"></div></div>
 </div>
 
@@ -1259,8 +1259,11 @@
       const gm=Math.sqrt(sRing(a)*sRing(b))*base;
       // both sides risk the same: cap is a share of the SMALLER position (finisher below ratio)
       const small=Math.min(sRing(a),sRing(b));
+      // ENDGAME duel escalation — mirrors engine/src/game.ts
+      const duel=bulls.length===1&&unis.length===1;
+      const duelBoost=duel?1+3*(s.t/s.steps):1;
       const lateGame=s.t>s.steps*0.5;   // finisher only in the back half (matches engine)
-      const capFor=(def,atk)=>(lateGame&&sRing(def)<sRing(atk)*FINISH_RATIO)?sRing(def):small*cfg.hitCapFrac;
+      const capFor=(def,atk)=>(lateGame&&sRing(def)<sRing(atk)*FINISH_RATIO)?sRing(def):Math.min(sRing(def),small*cfg.hitCapFrac*duelBoost);
       const edgeA=sRing(a)<sRing(b)?SMALL_EDGE:1, edgeB=sRing(b)<sRing(a)?SMALL_EDGE:1;
       const dAB=Math.min(gm*roll()*edgeA,capFor(b,a));
       const dBA=Math.min(gm*roll()*edgeB,capFor(a,b));
@@ -1705,7 +1708,7 @@
         // resume the existing session first — a reconnect should be invisible to the player
         let resumed=false;
         try{
-          const tok=sessionStorage.getItem("bvu_sess_"+PK);
+          const tok=localStorage.getItem("bvu_sess_"+PK);
           if(tok) resumed=await new Promise(res=>{
             const on=ev=>{ let m; try{m=JSON.parse(ev.data);}catch(e){return;}
               if(m.t==="authResult"&&m.resumed){ ws.removeEventListener("message",on); AUTHED=!!m.ok; res(!!m.ok); } };
@@ -1939,7 +1942,7 @@
           } else if(m.t==="authResult"){ ws.removeEventListener("message",onMsg); AUTHED=!!m.ok;
             // keep the session so reconnects don't re-prompt. Deploying is not a chain op and must
             // never cost a signature.
-            try{ if(m.ok&&m.token)sessionStorage.setItem("bvu_sess_"+PK,m.token); }catch(e){}
+            try{ if(m.ok&&m.token){ localStorage.setItem("bvu_sess_"+PK,m.token); localStorage.setItem("bvu_lastwallet",PK); } }catch(e){}
             if(!m.ok)note("Sign-in failed."+(m.msg?" "+m.msg:"")); fin(!!m.ok); }
         };
         ws.addEventListener("message",onMsg);
@@ -2120,8 +2123,29 @@
     setTimeout(()=>{ let m2=localStorage.getItem("bvu_wmeth");
       // anyone still flagged for the removed burner wallet gets reset to Phantom
       if(m2==="dev"){ try{localStorage.removeItem("bvu_wmeth");localStorage.removeItem("bvu_devwallet");}catch(e){} m2=null; }
-      // deliberately NOT auto-connecting: opening the site should never touch a wallet.
-      // The player clicks Connect when they want to.
+      // Still never auto-CONNECTING (opening the site must not touch a wallet), but if we hold a
+      // valid session token we can restore the login silently — no Phantom prompt, no signature.
+      try{
+        const last=localStorage.getItem("bvu_lastwallet");
+        const tok=last&&localStorage.getItem("bvu_sess_"+last);
+        if(last&&tok&&ws&&ws.readyState===1){
+          PK=last; MYWALLET=last;
+          const on=ev=>{ let m; try{m=JSON.parse(ev.data);}catch(e){return;}
+            if(m.t==="authResult"&&m.resumed){ ws.removeEventListener("message",on);
+              AUTHED=!!m.ok;
+              if(m.ok){
+                $("#chainOff").style.display="none"; $("#chainOn").style.display="block";
+                $("#chainAddr").textContent=PK.slice(0,4)+"…"+PK.slice(-4)+"  ·  mainnet";
+                if($("#refLink"))$("#refLink").textContent=location.origin+location.pathname+"?ref="+PK;
+                send({t:"chainBalance",wallet:PK}); send({t:"getBalance",wallet:PK});
+                note("Welcome back — session restored.");
+              } else { PK=null; MYWALLET=null; try{localStorage.removeItem("bvu_sess_"+last);}catch(e){} }
+            } };
+          ws.addEventListener("message",on);
+          send({t:"authResume",wallet:last,token:tok});
+          setTimeout(()=>ws.removeEventListener("message",on),8000);
+        }
+      }catch(e){}
       // re-apply X identity after connect
       setTimeout(()=>{try{const x=JSON.parse(localStorage.getItem("bvu_x")||"null");
         if(x&&PK)send({t:"setName",wallet:PK,name:"@"+x.h,avatar:x.av});}catch(e){}},2500);

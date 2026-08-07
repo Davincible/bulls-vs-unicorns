@@ -5,46 +5,59 @@
 import { WebSocket } from "ws";
 import { PublicKey } from "@solana/web3.js";
 import nacl from "tweetnacl";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 const authed = new Map<WebSocket, Set<string>>();   // ws -> wallets it has proven ownership of
 const nonces = new Map<WebSocket, string>();         // ws -> the current challenge awaiting a signature
 
-// RESUMABLE SESSIONS. Auth was per-socket and dropped on disconnect, so every reconnect (and every
-// page refresh) demanded a fresh wallet signature — players were signing just to deploy into a
-// round, which is not a chain operation at all. A signature now mints a bearer token the client can
-// replay to re-prove the same wallet without another prompt. Signing stays mandatory for the FIRST
-// proof; tokens are random 32-byte values, expire, and are bound to one wallet.
-const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 12 * 60 * 60 * 1000);
-const sessions = new Map<string, { wallet: string; exp: number }>();
+// RESUMABLE SESSIONS (stateless). Auth was per-socket and dropped on disconnect, so every reconnect
+// and every page refresh demanded a fresh wallet signature — players were signing just to deploy
+// into a round, which is not a chain operation at all.
+//
+// Tokens are HMAC-signed rather than stored: "<walletB64>.<expMs>.<sig>". That means they survive an
+// engine restart, which an in-memory table would not — and this engine redeploys often, so a stored
+// table would log everyone out several times a day. Nothing secret lives in the token; the HMAC is
+// what makes it unforgeable, and the wallet is bound into the signed payload so a token for one
+// wallet cannot be replayed for another.
+//
+// Signing is still mandatory for the FIRST proof of ownership. This only avoids re-proving it.
+const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 30 * 24 * 60 * 60 * 1000);
+// A stable per-deployment secret. SESSION_SECRET if provided, else derived from the vault key so it
+// is consistent across restarts without adding another secret to manage.
+const SESSION_SECRET = createHash("sha256")
+  .update(String(process.env.SESSION_SECRET || process.env.VAULT_SECRET_KEY || "bulls-arena-dev-secret"))
+  .digest();
 
-function sweepSessions(now = Date.now()) {
-  if (sessions.size < 512) return;                    // cheap: only tidy when it actually grows
-  for (const [t, v] of sessions) if (v.exp <= now) sessions.delete(t);
-}
+const signPayload = (payload: string) =>
+  createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
 
 /** Mint a session token for a wallet that has just proven ownership by signature. */
 export function mintSession(wallet: string): string {
-  const token = randomBytes(32).toString("base64url");
-  sessions.set(token, { wallet, exp: Date.now() + SESSION_TTL_MS });
-  sweepSessions();
-  return token;
+  const payload = Buffer.from(wallet).toString("base64url") + "." + (Date.now() + SESSION_TTL_MS);
+  return payload + "." + signPayload(payload);
 }
 
 /** Re-prove a wallet on a NEW socket using a token from a previous signature. */
 export function resume(ws: WebSocket, wallet: string, token: string): boolean {
-  const rec = sessions.get(String(token || ""));
-  if (!rec) return false;
-  if (rec.exp <= Date.now()) { sessions.delete(String(token)); return false; }
-  // constant-time compare so a token cannot be guessed a character at a time
-  const a = Buffer.from(rec.wallet), b = Buffer.from(String(wallet || ""));
-  if (a.length !== b.length || !timingSafeEqual(a, b)) return false;
-  (authed.get(ws) ?? authed.set(ws, new Set()).get(ws)!).add(rec.wallet);
-  return true;
+  try {
+    const parts = String(token || "").split(".");
+    if (parts.length !== 3) return false;
+    const payload = parts[0] + "." + parts[1];
+    const expect = signPayload(payload);
+    const got = Buffer.from(parts[2]);
+    const want = Buffer.from(expect);
+    // constant-time compare so a token cannot be brute-forced a character at a time
+    if (got.length !== want.length || !timingSafeEqual(got, want)) return false;
+    if (!(Number(parts[1]) > Date.now())) return false;                 // expired
+    const signedWallet = Buffer.from(parts[0], "base64url").toString();
+    if (signedWallet !== String(wallet || "")) return false;            // bound to one wallet
+    (authed.get(ws) ?? authed.set(ws, new Set()).get(ws)!).add(signedWallet);
+    return true;
+  } catch { return false; }
 }
 
-/** Invalidate a token (explicit sign-out). */
-export function endSession(token: string): void { sessions.delete(String(token || "")); }
+/** Stateless tokens cannot be revoked individually; rotating SESSION_SECRET invalidates all. */
+export function endSession(_token: string): void { /* no server-side state to clear */ }
 
 // Operations that move or reveal money. Every one requires a proven wallet on the socket.
 export const GUARDED = new Set([

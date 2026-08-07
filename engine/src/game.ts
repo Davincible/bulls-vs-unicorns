@@ -212,11 +212,15 @@ export function stepSim(s: SimState): HitLog[] {
     // real money - tiny stakes returned ~+290% ROI against the whale's -26%.
     // Below FINISH_RATIO the cap lifts so hopeless stragglers actually die.
     const small = Math.min(ring(a), ring(b));
+    // ENDGAME: a 1v1 escalates so the last two fighters actually finish it
+    const duel = bulls.length === 1 && unis.length === 1;
+    const duelBoost = duel ? 1 + 3 * (s.t / s.steps) : 1;
     // The finisher only switches on in the back half of the round. Applying it from the start
     // meant a small stake was deleted on contact, which made small play a trap (-58% ROI).
     const lateGame = s.t > s.steps * 0.5;
     const capFor = (def: Fighter, atk: Fighter) =>
-      (lateGame && ring(def) < ring(atk) * FINISH_RATIO) ? ring(def) : small * cfg.hitCapFrac;
+      (lateGame && ring(def) < ring(atk) * FINISH_RATIO) ? ring(def)
+                                                          : Math.min(ring(def), small * cfg.hitCapFrac * duelBoost);
     const edgeA = ring(a) < ring(b) ? SMALL_EDGE : 1;   // the smaller fighter punches up
     const edgeB = ring(b) < ring(a) ? SMALL_EDGE : 1;
     const dAB = Math.min(gm * roll() * edgeA, capFor(b, a));
