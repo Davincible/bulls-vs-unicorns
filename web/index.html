@@ -982,8 +982,32 @@
       const maxV=Math.max(1,...rows.map(r=>Math.abs(r.staked||0)));
       $("#lbRows").innerHTML=rows.map((r,i)=>{
         const pnl=r.pnl||0, mine=MYWALLET&&r.id===MYWALLET;
-        return `<div class="lbRow ${mine?'you':''}" data-name="${esc(r.name)}"><span class="rk">${i+1}</span><span class="who">${mine?'<span class="youtag">YOU</span> ':''}<span class="nmx">${esc(r.name)}</span><div class="pct" style="color:var(--ink-faint)">${r.wins}W / ${r.rounds} rounds</div></span>${compBar(pnl>=0?(r.staked||0):0,pnl>=0?0:(r.staked||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}$${Math.abs(pnl).toFixed(2)}<div class="pct">staked $${(r.staked||0).toFixed(2)}</div></span><span class="rd" style="color:${pnl>=0?'var(--gold)':'var(--danger)'}">${tokLine(r.tokNet)||'—'}<div class="pct" style="color:var(--ink-faint)">${r.rounds?Math.round(100*(r.wins||0)/r.rounds)+'% win rate':''}</div></span></div>`;
+        return `<div class="lbRow ${mine?'you':''}" data-name="${esc(r.name)}" data-prof="${i}" style="cursor:pointer" title="View record"><span class="rk">${i+1}</span><span class="who">${mine?'<span class="youtag">YOU</span> ':''}<span class="nmx">${esc(r.name)}</span><div class="pct" style="color:var(--ink-faint)">${r.wins}W / ${r.rounds} rounds</div></span>${compBar(pnl>=0?(r.staked||0):0,pnl>=0?0:(r.staked||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}$${Math.abs(pnl).toFixed(2)}<div class="pct">staked $${(r.staked||0).toFixed(2)}</div></span><span class="rd" style="color:${pnl>=0?'var(--gold)':'var(--danger)'}">${tokLine(r.tokNet)||'—'}<div class="pct" style="color:var(--ink-faint)">${r.rounds?Math.round(100*(r.wins||0)/r.rounds)+'% win rate':''}</div></span></div>`;
       }).join("");
+      // C6 — profile viewer. Built from the SAME /standings row the leaderboard drew, so a profile
+      // can never disagree with the board it was opened from; that mismatch is exactly what was
+      // reported before, when the profile recomputed its own figures from live balances.
+      $("#lbRows").querySelectorAll("[data-prof]").forEach(el=>{
+        el.onclick=()=>{
+          const r=rows[+el.dataset.prof]; if(!r)return;
+          const pnl=r.pnl||0, roi=r.roi||0, w2=r.wins||0, n=r.rounds||0;
+          const sign=pnl>=0?"+":"-", col=pnl>=0?"var(--green)":"var(--red)";
+          const tok=tokLine(r.tokNet)||"";
+          $("#pcard").innerHTML=
+            `<h2 style="margin:0 0 2px">${esc(r.name)}</h2>`+
+            `<div class="cap" style="margin-bottom:12px">Record from settled rounds, on-chain anchored</div>`+
+            `<div class="dgrid">`+
+            `<div class="stat"><div class="v" style="color:${col}">${sign}$${Math.abs(pnl).toFixed(2)}</div><div class="n">Net P/L</div></div>`+
+            `<div class="stat"><div class="v" style="color:${col}">${(roi*100).toFixed(1)}%</div><div class="n">ROI</div></div>`+
+            `<div class="stat"><div class="v">${n}</div><div class="n">Rounds played</div></div>`+
+            `<div class="stat"><div class="v">${w2}/${n}</div><div class="n">Won · ${n?((w2/n)*100).toFixed(0):0}%</div></div>`+
+            `<div class="stat"><div class="v">$${(r.staked||0).toFixed(2)}</div><div class="n">Deployed all-time</div></div>`+
+            `<div class="stat"><div class="v">$${(r.returned||0).toFixed(2)}</div><div class="n">Returned all-time</div></div>`+
+            `</div>`+
+            (tok?`<div class="note" style="margin-top:12px">Per-coin net: ${tok}<br><span class="cap">Dollars alone conflate winning rounds with the coin moving. The coin figure is the honest one.</span></div>`:"");
+          $("#modal").classList.add("on");
+        };
+      });
       return;}
     setParts("lbColBar",["Wallet size (",{t:"ansem"},"/",{t:"uwu"}," split)"]);$("#lbColRd").textContent="Raided";
     $("#rnav").style.visibility="visible";
@@ -995,7 +1019,14 @@
     $("#lbRows").innerHTML=rows.map((r,i)=>{const size=r.bull+r.uwu,pl=size-r.dep,pct=r.dep>0?pl/r.dep*100:0;
       return `<div class="lbRow ${r.dead?'dead':''} ${r.you?'you':''}" data-name="${esc(r.name)}"><span class="rk">${i+1}</span><span class="who">${r.dead?'💀':'<span class="aliveDot"></span>'} <span class="dot ${r.side==="bull"?"bull":"uni"}"></span>${r.you?'<span class="youtag">YOU</span> ':''}<span class="nmx">${esc(r.name)}</span></span>${compBar(r.bull,r.uwu,maxV)}<span class="wl ${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}<div class="pct">${pct>=0?'+':''}${pct.toFixed(0)}%</div></span><span class="rd">${fmt(r.raided)}</span></div>`;}).join("")||'<div class="note">No fighters.</div>';
   }
-  $("#lbRows").addEventListener("click",e=>{const row=e.target.closest(".lbRow");if(!row)return;const w=W();const nm=row.dataset.name;
+  $("#lbRows").addEventListener("click",e=>{const row=e.target.closest(".lbRow");if(!row)return;
+    // A standings row carries data-prof and has its own handler, which renders from the SAME
+    // /standings record the board drew. This older path rebuilds a profile from local w.players,
+    // and for an all-time row that lookup MISSES - it then synthesises a zeroed player and renders
+    // blanks straight over the real figures. That is the profile-vs-leaderboard mismatch: two
+    // different sources answering the same question, with the wrong one running last.
+    if(row.dataset.prof!==undefined)return;
+    const w=W();const nm=row.dataset.name;
     let p=w.players.find(x=>x.name===nm&&alive(x)); if(!p){const a=w.accounts.find(x=>x.name===nm)||{side:"bull"};p={name:nm,side:a.side,bull:0,uwu:0,sBull:0,sUwu:0,deposited:0,raided:0,dmgDealt:0,dmgTaken:0,dead:true,isUser:false};}
     openProfile(w,p);});
 

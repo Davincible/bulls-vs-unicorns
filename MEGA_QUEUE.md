@@ -87,7 +87,10 @@ enters later. Overage is refunded by the matched book, so over-committing is fre
 ### Remaining:
 ### C4 arena-aware share text · **DONE** — hardcoded $BULL/$UWU went out publicly on a UWU/SOL win
 ### C5 raided-vs-deployed bar · **DONE**
-### C6 profile viewer — **PENDING**
+### C6 profile viewer · **DONE** — and it closed the profile-vs-leaderboard ROI mismatch
+### SEC-L1 `resync` · **ASSESSED, NO CHANGE** — not an endpoint; boot-only, before any round exists,
+so openStakes is 0 and the mid-round sampling flaw cannot apply.
+### B8 server-side auto-deploy — **PENDING, deliberately not rushed** (stakes real money unattended)
 ### Hall of Legends one line · **DONE** (and removed the dead #hof list)
 ### Two-line top bar + wallet pinned top-right · **DONE**
 ### Ticker stacking · **VERIFIED** — isolation:isolate confirmed computed, was previously unproven
