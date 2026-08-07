@@ -16,6 +16,7 @@ import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildD
 import { priceUSD, startPriceLoop, allPrices, refreshPrices } from "./prices.ts";
 import { RPC, loadVaultKeypair } from "./chain.ts";
 import { swapExact } from "./swap.ts";
+import { anchorRound, memoStats } from "./memo.ts";
 import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, forget as authForget,
          mintSession, resume as authResume } from "./auth.ts";
 import { isAllowed as walletAllowed } from "./allowlist.ts";
@@ -27,7 +28,7 @@ import { getFloatRecoveredAt, markFloatRecovered } from "./ledger.ts";
 import { poolPubkeys } from "./bot-wallets.ts";
 import { vaultTokenBalance } from "./chain-ops.ts";
 import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, totalDeployed, depSide,
-         created, bustedCount, getConvFees, addConvFees, persist, restore, flush,
+         created, bustedCount, getConvFees, addConvFees, persist, restore, flush, bankFee, TREASURY_ID,
          acct, balPayload, leadersFor, cleanDisplayName, cleanAvatarUrl } from "./ledger.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
 import { type Tok, FIELD, PAIRINGS, ARENA_IDS, arenaTokens, arenaEco, NARENAS, NARENA_IDS,
@@ -276,6 +277,20 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   // round, and the population target creeps up over time — while still throttling down as
   // real players fill the arena, so bots never crowd out humans.
   auditRound(aid, s.round);
+  // Anchor the round on-chain: seed commitment, revealed seed, winner, and every wallet's entry and
+  // exit in both tokens. Best-effort and non-blocking — settlement must never wait on the network.
+  try {
+    const pot = s.entries.reduce((t: number, e: any) => t + (e.stake || 0) / (1 - FEE), 0);
+    anchorRound({
+      arena: aid, round: s.round, seedHash: s.seedHashPublished || "", seed: s.seed || "",
+      winner: r.winner, pot,
+      players: s.entries.map((e: any) => {
+        const bal = (r.settlement as any)[e.id] || {};
+        return { id: String(e.id).split("|")[0], side: e.side, bot: String(e.id).includes(":bot:"),
+                 inTok: (e.stake || 0) / (1 - FEE), outA: bal.bull || 0, outB: bal.uwu || 0 };
+      }),
+    });
+  } catch { /* anchoring must never break a settlement */ }
   const realPlaying = s.entries.filter(e => !e.id.includes(":bot:")).length;
   let busted = 0;
   // Busted = can no longer afford the minimum stake, so it can never deploy again.
@@ -556,12 +571,12 @@ function botsEnter(aid: string) {
     const usdN = stake * pxForRound(aid, rn.state.round, FIELD[myTok] as Field);
     if (!(usdN > 0)) { a[FIELD[myTok]] += stake; continue; }   // no price -> undo the debit, sit out
     flow(aid, rn.state.round, FIELD[myTok] as Field).out += stake;
-    // The house does NOT charge itself. Bot money IS the float, so skimming 0.2% of every bot
-    // stake into the treasury counter was the house farming its own bankroll ~9 rounds a minute -
-    // measured as the books sliding 1520 -> ~700 UWU in half an hour with zero real players.
-    // The fee tokens go straight back to the pool; treasury only ever grows on real-player fees.
+    // Bots pay the fee exactly like a real player — they are meant to behave identically, and the
+    // treasury is real revenue on their volume too. This is only safe because the fee now lands in
+    // a real treasury ACCOUNT: as a bare counter it deleted the tokens and drained the float.
     const feeTok = stake * FEE;
-    returnBank(FIELD[myTok] as Field, feeTok);
+    bankFee(FIELD[myTok] as Field, feeTok);
+    treasury[mode] += feeTok * pxForRound(aid, rn.state.round, FIELD[myTok] as Field);
     flow(aid, rn.state.round, FIELD[myTok] as Field).in += feeTok;
     a.dep += stake; totalDeployed[mode] += usdN;
     stat(aid).deployed += usdN; depSide[mode][a.side] += usdN;
@@ -685,6 +700,7 @@ const httpServer = createServer((req, res) => {
   // /solvency deliberately ignores house accounts (bot money is ours, not a player liability), so
   // it stayed green while a mispriced bot swap was inventing SOL out of UWU. This is the view that
   // would have caught it: every token, ledger-side vs chain-side, with the gap named.
+  if (url === "/memo") { res.writeHead(200, cors); return res.end(JSON.stringify(memoStats())); }
   if (url === "/float") {
     const per = (f: Field) => {
       let pool = 0, bots = 0, real = 0;
@@ -693,12 +709,15 @@ const httpServer = createServer((req, res) => {
         const v = a[f] || 0;
         if (poolSet.has(a.id)) pool += v; else if (a.isBot) bots += v; else real += v;
       }
+      // the treasury is house money too, but break it out: if fees are not landing there, the
+      // ledger quietly stops adding up to the vault and that is invisible in a single total
+      const tre = (ledger.get(TREASURY_ID) as any)?.[f] || 0;
       const accounts = pool + bots + real;
       const open = openStakes(f);                       // staked in unsettled rounds — still ours
       // `total` is accounts-only (kept for back-compat); `trueTotal` adds money on the table, which
       // is what should be compared against chain holdings. A mid-round snapshot of accounts alone
       // reads low because the stakes are out — that is sampling, not a leak.
-      return { pool, bots, real, total: accounts, open, trueTotal: accounts + open,
+      return { pool, bots, real, treasury: tre, total: accounts, open, trueTotal: accounts + open,
                usd: (accounts + open) * usdPerUnitSafe(f) };
     };
     const out = { at: Date.now(), price: { bull: usdPerUnitSafe("bull"), uwu: usdPerUnitSafe("uwu") },
@@ -843,6 +862,7 @@ wss.on("connection", (ws, req) => {
           pushBalance(a.refBy);
         }
         const eco = arenaEco(aid);
+        bankFee(FIELD[myTok] as Field, fee - refCut);          // the tokens, not just the number
         treasury[eco] += (fee - refCut) * usdP; totalDeployed[eco] += stakeUsd;
         depSide[eco][m.side as Side] += stakeUsd;
         stat(aid).deployed += stakeUsd; stat(aid).take += fee * usdP;
@@ -888,6 +908,7 @@ wss.on("connection", (ws, req) => {
         if (usdE < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: "Insufficient balance for that arena's token." }));
         a[FIELD[tok]] -= stake; a.dep += stake;
         const eco = def.eco;
+        bankFee(FIELD[tok] as Field, stake * FEE);
         treasury[eco] += usdE * FEE; totalDeployed[eco] += usdE;
         stat(aid).deployed += usdE; stat(aid).take += usdE * FEE;
         rn.enter(`${m.wallet}|${team}`, team, usdE * (1 - FEE));

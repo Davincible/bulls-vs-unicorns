@@ -26,6 +26,26 @@ export const statsA: Record<string, { deployed: number; take: number; matches: n
 export const stat = (aid: string) => (statsA[aid] ||= { deployed: 0, take: 0, matches: 0, winsA: 0, winsB: 0 });
 // house take: the 0.2% skimmed on every deploy, tracked per mode
 export const treasury: Record<Mode, number> = { normal: 0, extraction: 0 };
+
+// The HOUSE's own account. Fees are tokens, not an abstraction: they have to land somewhere or the
+// ledger stops adding up to what the vault holds. This account is house money (never a player
+// liability) and is what the operator actually withdraws revenue from.
+export const TREASURY_ID = "__house_treasury__";
+export function treasuryAcct(): Account {
+  let a = ledger.get(TREASURY_ID);
+  if (!a) {
+    a = { id: TREASURY_ID, name: "house", side: "bull", bull: 0, uwu: 0, sol: 0,
+          isBot: true, dep: 0, ret: 0, games: 0, wins: 0 } as Account;
+    ledger.set(TREASURY_ID, a);
+  }
+  return a;
+}
+/** Bank a fee, in TOKENS of `field`. Keeps the books whole; `treasury` stays as the USD readout. */
+export function bankFee(field: "bull" | "uwu" | "sol", tokens: number): void {
+  if (!(tokens > 0)) return;
+  const t = treasuryAcct();
+  t[field] = (t[field] || 0) + tokens;
+}
 export const totalDeployed: Record<Mode, number> = { normal: 0, extraction: 0 };
 export const depSide: Record<Mode, { bull: number; uwu: number }> = { normal: { bull: 0, uwu: 0 }, extraction: { bull: 0, uwu: 0 } };
 export const created: Record<Mode, number> = { normal: 0, extraction: 0 };

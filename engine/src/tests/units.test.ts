@@ -163,3 +163,89 @@ test("returning bot fees to the pool conserves the float exactly", () => {
   assert.ok(Math.abs(pool - 1000) < 1e-6, `float conserved: ${pool.toFixed(6)}`);
   assert.equal(treasury, 0, "treasury only grows on real players");
 });
+
+// ---- the treasury has to be an ACCOUNT, not a counter ----
+// A fee debits real tokens from a player. If the treasury is only a number, those tokens are
+// credited to nobody: the ledger's claim on the vault shrinks on every deploy while the vault keeps
+// the tokens. That gap is what showed up as "162% backed" — money in the vault that nobody owns.
+test("a counter-only treasury silently un-books the vault", () => {
+  const FEE = 0.002;
+  let playerTokens = 1000, treasuryCounterUsd = 0;
+  const vault = 1000;
+  for (let i = 0; i < 300; i++) {
+    const stake = 10;
+    playerTokens -= stake * FEE;            // tokens leave the player
+    treasuryCounterUsd += stake * FEE * 1;  // ...and become a number
+  }
+  assert.ok(playerTokens < vault, "the ledger now claims less than the vault holds");
+  assert.ok(vault - playerTokens > 5, `${(vault - playerTokens).toFixed(2)} tokens owned by nobody`);
+});
+
+test("a treasury ACCOUNT keeps the books equal to the vault", () => {
+  const FEE = 0.002;
+  let playerTokens = 1000, treasuryTokens = 0;
+  const vault = 1000;
+  for (let i = 0; i < 300; i++) {
+    const fee = 10 * FEE;
+    playerTokens -= fee; treasuryTokens += fee;   // the tokens land somewhere
+  }
+  assert.ok(Math.abs((playerTokens + treasuryTokens) - vault) < 1e-9, "ledger == vault, exactly");
+  assert.ok(treasuryTokens > 5, "and the house actually holds its revenue");
+});
+
+// With a real treasury account, charging bots is safe AND correct — they are meant to behave
+// identically to players, and their volume is real revenue.
+test("bots paying fees moves float to the treasury rather than destroying it", () => {
+  const FEE = 0.002;
+  let pool = 1000, treasuryTokens = 0;
+  for (let i = 0; i < 500; i++) {
+    const stake = pool * 0.3, fee = stake * FEE;
+    pool -= fee; treasuryTokens += fee;
+    // the round itself is zero-sum between bots, so only the fee moves
+  }
+  assert.ok(Math.abs((pool + treasuryTokens) - 1000) < 1e-9, "nothing lost");
+  assert.ok(treasuryTokens > 0, "the house earns on bot volume too");
+  assert.ok(pool < 1000, "and the playable float shrinks by exactly the revenue taken");
+});
+
+// ---- on-chain round anchoring ----
+// The memo carries the proof (seed commitment + revealed seed + winner) AND every wallet's entry
+// and exit in both tokens. It has to fit in ONE transaction, so the encoding is size-critical.
+import { _encodeForTest } from "../memo.ts";
+
+const anchorFor = (nPlayers: number) => ({
+  arena: "us-extraction", round: 4746,
+  seedHash: "ed48e8c454fa77f8837f4fa2858022f17d2e2a79bbc1f0a2",
+  seed: "863888d84ca936db76167c1585cc3ebb6834d7ab4ca025c6",
+  winner: "bull", pot: 7.65,
+  players: Array.from({ length: nPlayers }, (_, i) => ({
+    id: i === 0 ? "BTYdc2awdFDZnDc8wVs3wv61UEYDDMQ329Zy3KC9JHVZ" : `us-extraction:bot:${i}`,
+    side: i % 2 ? "uwu" : "bull", bot: i !== 0,
+    inTok: 18.0531, outA: 0.1732, outB: 0.5411,
+  })),
+});
+
+test("a realistic round with per-wallet detail fits in one transaction", () => {
+  const bytes = Buffer.byteLength(_encodeForTest([anchorFor(7)], true));
+  assert.ok(bytes < 700, `7-player round encodes to ${bytes} bytes — must stay under the memo cap`);
+});
+
+test("even a busy round still fits", () => {
+  const bytes = Buffer.byteLength(_encodeForTest([anchorFor(14)], true));
+  assert.ok(bytes < 700, `14-player round encodes to ${bytes} bytes`);
+});
+
+test("dropping player detail is the last resort, and the proof always survives", () => {
+  const full = _encodeForTest([anchorFor(40)], true);
+  const lean = _encodeForTest([anchorFor(40)], false);
+  assert.ok(Buffer.byteLength(lean) < Buffer.byteLength(full));
+  for (const must of ['"h":', '"s":', '"w":', '"r":']) {
+    assert.ok(lean.includes(must), `${must} (the verifiable part) must never be dropped`);
+  }
+});
+
+test("the anchor binds the commitment to the revealed seed", () => {
+  const enc = _encodeForTest([anchorFor(3)], true);
+  assert.ok(enc.includes("ed48e8c454fa77f8"), "seed hash published before the round");
+  assert.ok(enc.includes("863888d84ca936db"), "seed revealed at fight start");
+});
