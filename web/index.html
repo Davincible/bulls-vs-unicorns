@@ -322,6 +322,11 @@
           <div id="fairHash" style="margin-top:8px;font-family:var(--mono);font-size:10px;color:var(--ink-faint);word-break:break-all">commit: —</div>
           <button class="abtn ghost" id="btnVerify2" style="width:100%;margin-top:8px">🔐 Verify last round</button>
           <div class="note" id="fairOut" style="margin-top:8px">Waiting for a round to finish…</div>
+          <!-- BRIEF 5.2 — recomputing locally proves the round is internally consistent, but it
+               proves it against numbers WE served. The anchor is the part a sceptic needs: the
+               commit, seed and results hash were published to Solana before anyone could know the
+               outcome, so the round cannot have been chosen after the fact. -->
+          <div class="note" id="anchorOut" style="margin-top:6px">Anchors: —</div>
         </div>
         <div class="panelC">
           <h3>Deploy this round <span class="youtag" id="depMode">NORMAL</span></h3>
@@ -1072,6 +1077,24 @@
     }catch(e){ /* leave the last reading rather than claiming a state we cannot see */ }
   }
   fetchBacking(); setInterval(()=>{ if(document.visibilityState!=="hidden") fetchBacking(); }, 30000);
+
+  // BRIEF 5.2 — surface the on-chain anchor beside the local verifier. Local recomputation shows
+  // the round is self-consistent; the anchor shows it was COMMITTED before the outcome was known,
+  // which is the half that does not require trusting us.
+  async function fetchAnchors(){
+    const el=$("#anchorOut"); if(!el)return;
+    try{
+      const r=await fetch("/memo",{cache:"no-store"}); if(!r.ok)return;
+      const m=await r.json();
+      const posted=m.posted||0, failed=m.failed||0, sig=m.lastSig;
+      el.innerHTML = sig
+        ? `⛓ <b>${posted}</b> round${posted===1?"":"s"} anchored on Solana`
+          + (failed?` · <span style="color:var(--danger)">${failed} failed</span>`:"")
+          + ` · <a href="https://solscan.io/tx/${encodeURIComponent(sig)}" target="_blank" rel="noopener noreferrer" style="color:var(--gold)">view latest anchor ↗</a>`
+        : `⛓ Anchors: none posted yet${failed?` · <span style="color:var(--danger)">${failed} failed</span>`:""}`;
+    }catch(e){ /* leave the last reading */ }
+  }
+  fetchAnchors(); setInterval(()=>{ if(document.visibilityState!=="hidden") fetchAnchors(); }, 45000);
 
   let lbTab="round", lbIdx=0;
   function renderLB(){
