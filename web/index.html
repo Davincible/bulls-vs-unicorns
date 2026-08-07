@@ -887,7 +887,12 @@
         if(sub) sub.textContent = amt;
         el.title = amt;
       };
-      cell("#wBull",fa); cell("#wUwu",fb); cell("#wSol","sol");
+      // The third cell must not repeat one of the arena's own tokens. In UWU/SOL, side B IS sol, so
+      // painting sol again showed the same balance twice. Show whichever token is NOT in this arena.
+      const spare=["bull","uwu","sol"].find(f=>f!==fa&&f!==fb)||"sol";
+      cell("#wBull",fa); cell("#wUwu",fb); cell("#wSol",spare);
+      const sn=document.querySelector("#wSol")?.parentElement?.querySelector(".n");
+      if(sn)sn.textContent=(spare==="bull"?"🐂 ANSEM":spare==="uwu"?"🦄 UWU":"◎ SOL")+" (other)";
     }
     $("#myStake").textContent=fmt(w.userCircles.reduce((s,c)=>s+ring(c),0));
     const ap=userWorth()-INVESTED,apE=$("#myPnl");apE.textContent=(ap>=0?"+":"−")+"$"+Math.abs(ap).toFixed(2);apE.className="v "+(ap>=0?"pos":"neg");
@@ -1229,6 +1234,7 @@
       let tgt=null,td=1e18;
       const rp=Math.max(0.01,sRing(p));
       for(const q of A){ if(q.side===p.side)continue;
+        if(String(q.id).split("|")[0]===String(p.id).split("|")[0])continue;  // never hunt your own fighter
         const dx=q.x-p.x,dy=q.y-p.y,d=Math.sqrt(dx*dx+dy*dy);
         const rq=Math.max(0.01,sRing(q));
         const ratio=Math.min(rp>rq?rp/rq:rq/rp,8);

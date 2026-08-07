@@ -144,6 +144,10 @@ export function stepSim(s: SimState): HitLog[] {
     const rp = Math.max(0.01, ring(p));
     for (const q of A) {
       if (q.side === p.side) continue;
+      // ...and never HUNT your own wallet's other fighter. The clash was already harmless (the
+      // friendly-fire rule keys on the wallet), but without this they still chased each other
+      // around the arena, which looks exactly like self-dealing whether or not money moves.
+      if (q.id.split("|")[0] === p.id.split("|")[0]) continue;
       const dx = q.x - p.x, dy = q.y - p.y, d = Math.sqrt(dx * dx + dy * dy);
       const rq = Math.max(0.01, ring(q));
       const ratio = Math.min(rp > rq ? rp / rq : rq / rp, 8);       // 1 = same size

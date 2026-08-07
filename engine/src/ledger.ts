@@ -111,10 +111,17 @@ export function acct(wallet: string, side: Side): Account {
 
 /** The wire shape of a wallet's balance push. Pure over the ledger. */
 /** USD value of one unit of a field. `sol` is stored in USD units already, so it is 1. */
+// Remember the last good price. priceUSD returns null once a quote is 5 minutes old, and returning
+// 0 for a token valued a whole balance at NOTHING: a wallet holding $3.68 of UWU reported $0, and
+// the P/L that subtracted a real cost basis from it showed -$8.17 instead of -$0.78. A stale price
+// is a far better answer than pretending the money is not there. The engine already does this for
+// settlement (usdPerUnitSafe); the ledger must too, or the two disagree.
+const lastGood: Record<string, number> = {};
 function usdPer(field: "bull" | "uwu" | "sol"): number {
   if (field === "sol") return 1;
   const px = priceUSD(field === "bull" ? "ansem" : "uwu");
-  return px && px > 0 ? px : 0;
+  if (px && px > 0) { lastGood[field] = px; return px; }
+  return lastGood[field] || 0;
 }
 /** What an account is actually WORTH, in dollars. Never sum the raw fields: two of them are token
  *  counts and one is dollars, so a bare `bull + uwu + sol` is meaningless. */
