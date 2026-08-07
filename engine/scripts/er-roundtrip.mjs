@@ -132,16 +132,22 @@ async function send(conn, payer, ixs, label) {
     const record = delegationRecordPdaFromDelegatedAccount(roundPda);
     const metadata = delegationMetadataPdaFromDelegatedAccount(roundPda);
 
+    // ACCOUNT ORDER IS NOT A GUESS — it is read out of the #[delegate] macro's source
+    // (ephemeral-rollups-sdk-attribute-delegate-0.16.2). For each field marked `del`, the macro
+    // injects buffer / delegation_record / delegation_metadata IMMEDIATELY BEFORE the field itself,
+    // then appends owner_program, delegation_program, system_program at the end. My first attempt
+    // interleaved them differently and devnet answered with ConstraintSeeds on buffer_round_pda —
+    // it had been handed the round PDA where the buffer belonged.
     await send(conn, payer, [new TransactionInstruction({
       programId: PROGRAM_ID,
       keys: [
         { pubkey: payer.publicKey, isSigner: true, isWritable: true },
         { pubkey: arenaPda, isSigner: false, isWritable: false },
-        { pubkey: roundPda, isSigner: false, isWritable: true },
-        { pubkey: PROGRAM_ID, isSigner: false, isWritable: false },
         { pubkey: buffer, isSigner: false, isWritable: true },
         { pubkey: record, isSigner: false, isWritable: true },
         { pubkey: metadata, isSigner: false, isWritable: true },
+        { pubkey: roundPda, isSigner: false, isWritable: true },
+        { pubkey: PROGRAM_ID, isSigner: false, isWritable: false },      // owner_program
         { pubkey: DELEGATION_PROGRAM, isSigner: false, isWritable: false },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],

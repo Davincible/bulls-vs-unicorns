@@ -28,7 +28,7 @@ use ephemeral_rollups_sdk::anchor::{commit, delegate, ephemeral};
 use ephemeral_rollups_sdk::cpi::DelegateConfig;
 use ephemeral_rollups_sdk::ephem::MagicIntentBundleBuilder;
 
-declare_id!("BWhnLnryRJpLbRkpybSQvpr68HfnNDsZha7kgouJJ8Dc"); // devnet program keypair: .devnet/program-keypair.json
+declare_id!("53FcrjzZEhVNExp9TtNcjKZy6dHqbrEPxXHJnKRF7hj8"); // devnet program keypair: .devnet/program-keypair.json
 
 pub const ARENA_SEED: &[u8] = b"arena";
 pub const ROUND_SEED: &[u8] = b"round";

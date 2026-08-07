@@ -14,6 +14,16 @@ members = ["programs/bulls-arena"]
 resolver = "2"
 
 [profile.release]
+# SIZE MATTERS HERE FOR A CONCRETE REASON: program-data rent on Solana is proportional to the
+# binary, and the devnet payer is capped by a rate-limited faucet. At 331 KB the upgrade needs
+# ~2.31 SOL; the payer holds 0.88, so the binary has to come in under ~122 KB to deploy at all.
+#
+# overflow-checks stays ON despite the size cost. This program moves value, and a silent wrap in
+# stake arithmetic is exactly the class of bug that has already bitten this codebase repeatedly.
+# Paying bytes for that is not a trade worth making.
 overflow-checks = true
 lto = "fat"
 codegen-units = 1
+opt-level = "z"      # optimise for size, not speed — the hot path is the ER, not the BPF loader
+panic = "abort"      # unwinding tables are dead weight; a Solana program aborts anyway
+strip = true
