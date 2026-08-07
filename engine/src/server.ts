@@ -602,6 +602,17 @@ const AUTO_REBALANCE = process.env.AUTO_REBALANCE !== "0";
 // it and then sat there permanently — 149 UWU ($4.05) and 0.061 SOL ($4.50), each individually
 // below the bar, together nearly a tenth of the float owned by nobody. A threshold that a leak can
 // hide beneath is not a safety margin, it is a blind spot.
+// PAUSE. Stopping the machine pauses the game too, but takes the whole site down with it — no
+// withdrawals, no proof of reserves, no way for anyone holding a balance to see their money.
+// PAUSED=1 halts the ROUNDS only: no lobby opens, no bot enters, no fee is taken, nothing moves.
+// Everything a player needs in order to inspect or withdraw stays up.
+//
+// Declared here, above every reader. My first attempt put it next to the round loop at ~1190 while
+// autoRebalance reads it at ~647 — a module-level const read before its declaration, which is a TDZ
+// crash on boot. That is the exact rule the client test enforces, and I broke it in the engine
+// twenty minutes after writing the test for it.
+export const PAUSED = process.env.PAUSED === "1";
+
 const REBALANCE_MIN_GAP_USD = Number(process.env.REBALANCE_MIN_GAP_USD || 1);
 async function autoRebalance(): Promise<void> {
   if (!AUTO_REBALANCE || !chainReady() || isFrozen()) return;
@@ -644,7 +655,7 @@ async function autoRebalance(): Promise<void> {
     }
   } catch (e) { console.error("auto-rebalance failed:", redact((e as Error).message)); }
 }
-setInterval(() => { void autoRebalance(); }, Number(process.env.REBALANCE_MS || 5 * 60_000)).unref?.();
+setInterval(() => { if (!PAUSED) void autoRebalance(); }, Number(process.env.REBALANCE_MS || 5 * 60_000)).unref?.();
 
 // WHY IT CLUMPS, AND WHAT TO DO ABOUT IT.
 //
@@ -1186,6 +1197,7 @@ const nameFor = (key: string) => {
 // ---- tick loop ----
 const lastPhase: Record<string, string> = {};
 setInterval(async () => {
+  if (PAUSED) return;                      // no rounds while paused
   for (const aid of ARENA_IDS) {
     const mode = arenaEco(aid);
     const rn = runners[aid];
@@ -1324,7 +1336,7 @@ const httpServer = createServer((req, res) => {
   // NOTE: "/" is deliberately NOT handled here — it must fall through to the static game page.
   if (url === "/health") {
     // 200 only when solvent — a frozen book is unhealthy so a host can page on it
-    const body = { ok: !isFrozen(), chain: chainReady(), vault: chainReady() ? vaultPubkey() : null,
+    const body = { ok: !isFrozen(), paused: PAUSED, chain: chainReady(), vault: chainReady() ? vaultPubkey() : null,
                    arenas: ARENA_IDS.length + NARENA_IDS.length, frozen: isFrozen(),
                    uptimeSec: Math.floor((Date.now() - bootAt) / 1000) };
     res.writeHead(isFrozen() ? 503 : 200, cors); return res.end(JSON.stringify(body));

@@ -34,12 +34,22 @@ pub const ARENA_SEED: &[u8] = b"arena";
 pub const ROUND_SEED: &[u8] = b"round";
 
 /// Hard ceiling on fighters in one round. Sized so the whole round is ONE account and therefore one
-/// atomic commit: 40 × 56 B ≈ 2.2 KB, trivially under the ER's 10 MiB account limit.
+/// atomic commit.
+///
+/// 40 was the first choice — well under the ER's 10 MiB ACCOUNT limit. It blew the 4 KB STACK
+/// instead: `Account<'info, Round>` deserialises onto the stack, and 40 fighters is a ~2.45 KB
+/// struct that overflows once Anchor's own frame is added. Devnet reported it as
+/// "Access violation reading 8 bytes at address 0x18", which names neither the stack nor the size.
+///
+/// 16 fits comfortably (~937 B) and matches what the live arena actually fields — the lobby-sizing
+/// work settled it at 10-17 per round. Going back above ~24 needs `zero_copy` + `AccountLoader`,
+/// which avoids the stack copy entirely; that is the right fix if the cap ever needs to rise, and
+/// it is a bigger change than this round-trip should carry.
 ///
 /// One account per fighter was the alternative. Rejected: 40 delegations and 40 commits per round,
 /// the round stops being atomic, and a partial commit leaves a round half-settled with no obvious
 /// way to tell which half is real.
-pub const MAX_FIGHTERS: usize = 40;
+pub const MAX_FIGHTERS: usize = 16;
 
 /// Basis points denominator, matching the off-chain engine's FEE = 0.002 (20 bps).
 pub const BPS: u64 = 10_000;

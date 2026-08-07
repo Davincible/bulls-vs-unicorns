@@ -37,7 +37,7 @@ export interface ERRound {
 }
 
 export const BPS = 10_000n;
-export const MAX_FIGHTERS = 40;
+export const MAX_FIGHTERS = 16;   // mirrors the Rust — see the stack-limit note there
 
 /** Below this, a fighter is finished off rather than left to decay.
  *

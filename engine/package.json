@@ -17,6 +17,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@magicblock-labs/ephemeral-rollups-sdk": "^0.16.2",
     "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.98.4",
     "tsx": "^4.19.0",
