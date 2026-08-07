@@ -9,13 +9,13 @@ Status: `PENDING` · `IN_PROGRESS` · `DONE` · `BLOCKED`
 
 ## Tier 1 — Critical security
 
-### SEC-C1 · Redact secrets from public error surfaces · **PENDING**
+### SEC-C1 · Redact secrets from public error surfaces · **DONE**
 `/memo` returns `lastError` verbatim on a public, `CORS *` endpoint; Node fetch errors embed the
 full RPC URL, which carries our Helius API key.
 **Accept:** a URL with `?api-key=…` passed through the redactor emits no key; test asserts no
 `api-key`/`token=`/`key=` survives; applied at both source and sink.
 
-### SEC-C2 · Constrain `relayTx` to genuine deposits · **PENDING**
+### SEC-C2 · Constrain `relayTx` to genuine deposits · **DONE**
 Currently broadcasts arbitrary signed bytes through our paid RPC.
 **Accept:** deserialise before broadcast; require fee-payer == authenticated wallet AND a transfer
 to the vault; reject everything else. Tests: a foreign fee-payer is rejected, a non-vault
@@ -25,17 +25,17 @@ destination is rejected, a real deposit still relays.
 
 ## Tier 2 — High security
 
-### SEC-H1 · Upgrade vulnerable dependencies · **PENDING**
+### SEC-H1 · Upgrade vulnerable dependencies · **MITIGATED (no upstream fix exists)**
 3 high / 5 moderate. `bigint-buffer` overflow reachable via spl-token; `uuid` via web3.js.
 **Accept:** `npm audit` shows 0 high; full suite green. If unfixable upstream, document the pin.
 
-### SEC-H2 · Gate `convert` on the solvency freeze · **PENDING**
+### SEC-H2 · Gate `convert` on the solvency freeze · **DONE**
 **Accept:** convert refuses while frozen, with a test.
 
-### SEC-H3 · Add `faucet` to GUARDED · **PENDING**
+### SEC-H3 · Add `faucet` to GUARDED · **DONE**
 **Accept:** unauthenticated faucet is refused; test.
 
-### SEC-H4 · `finiteAmount()` at every money boundary · **PENDING**
+### SEC-H4 · `finiteAmount()` at every money boundary · **DONE**
 `Number("Infinity") || 0` is `Infinity`, which reaches transaction construction.
 **Accept:** one helper rejecting NaN/±Infinity/negative, used at every `Number(m.*)` money site;
 tests for each hostile input.
@@ -47,7 +47,7 @@ tests for each hostile input.
 ### A3 · In-ring size reads $0 while staked · **PENDING**
 **Accept:** shows the live staked amount after a mid-round join or reconnect.
 
-### A4 · Wire `/standings` into the Leaderboard tab · **PENDING**
+### A4 · Wire `/standings` into the Leaderboard tab · **DONE**
 Engine already derives survivorship-free standings; UI still reads live balances.
 **Accept:** Leaderboard renders from `/standings`; winners appear; a retired winner still counts.
 
@@ -82,14 +82,15 @@ enters later. Overage is refunded by the matched book, so over-committing is fre
 
 ## Tier 5 — UI
 
-### C1 Previous rounds under the arena · C2 expandable history rows · C3 Solscan link + timestamp ·
+### C1 previous rounds under the arena · C2 expandable rows · C3 Solscan link + timestamp — **DONE**
+### Remaining:
 ### C4 X share on one line · C5 stolen-vs-deployed bar · C6 profile viewer — all **PENDING**
 
 ---
 
 ## Tier 6 — Operational + Medium/Low security
 
-### D1 · Auto-rebalance the pool when the vault's token mix changes · **PENDING**
+### D1 · Auto-rebalance the pool when the vault's token mix changes · **DONE**
 Has needed a manual `RESYNC_POOL_ON_BOOT` three times. Most fragile thing left.
 **Accept:** detects ledger-vs-chain divergence and re-anchors automatically, with the same
 "never write down an over-claiming ledger" guard.
@@ -114,3 +115,17 @@ The real Jupiter swap has never run with real money. Only Max can spend funds.
 ### BLK-4 · Full seed in memo (D3) · **BLOCKED-ish**
 Currently 16 hex chars — anchors but cannot recompute. ~48 bytes/round more. Cheap, but changes the
 published format, so worth Max confirming before there is history worth preserving.
+
+
+---
+
+## Run summary (see EXECUTION_REPORT.md)
+
+DONE: SEC-C1, SEC-C2, SEC-H2, SEC-H3, SEC-H4, SEC-M2, A4, C1, C2, C3, D1, plus token-denominated
+P&L (raised mid-run). SEC-H1 mitigated and asserted — no upstream fix exists.
+
+BLOCKED: fee-payer keypair, mainnet canary, added float, full memo seed — all need Max.
+
+NOT REACHED (not blocked, ran out of context): B4-B8, A3, A5, C4-C6, SEC-M1/M3/M6/M7.
+
+Tests 201 -> 233, green at every commit.
