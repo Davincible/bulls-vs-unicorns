@@ -379,6 +379,8 @@
 (function(){
   "use strict";
   const $=s=>document.querySelector(s), rand=(a,b)=>a+Math.random()*(b-a), pick=a=>a[(Math.random()*a.length)|0], clamp=(v,a,b)=>v<a?a:v>b?b:v;
+  // USD price of ONE unit of a ledger field. `sol` is already stored in USD units, so it is 1.
+  const tokPx=f=>f==="sol"?1:((window.__PX||{})[f==="bull"?"ansem":f]||0);
   // Defence in depth: the engine already sanitises player-supplied names/avatars, but every
   // render below builds HTML strings, so escape on OUTPUT too. Any future user-controlled
   // field then cannot become markup just because someone forgot to clean it server-side.
@@ -418,7 +420,10 @@
   document.addEventListener("click",e=>{const h=e.target.closest(".arHead");if(!h)return;
     const body=h.nextElementSibling; if(body)body.style.display=body.style.display==="none"?"block":"none";});
   const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-  const fmt=n=>{n=Math.max(0,n);return "$"+(n>=1000?n.toLocaleString("en-US",{maximumFractionDigits:0}):n.toLocaleString("en-US",{maximumFractionDigits:n<10?2:0}));};
+  const fmt=n=>{n=Math.max(0,n);
+    // below a cent, 2dp collapses every small raid to "$0.00" — show 3dp so the hit is visible
+    if(n>0&&n<0.01)return "$"+n.toFixed(3);
+    return "$"+(n>=1000?n.toLocaleString("en-US",{maximumFractionDigits:0}):n.toLocaleString("en-US",{maximumFractionDigits:n<10?2:0}));};
   const NAMES=["degenDan","sol_sniper","0xViper","moonboy","rugproof","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","vibecheck","noReentry","gigaGwei","turboTina","elayne","copetrader","sendit","wenLambo","paperhandz","diamondD","fomoFrank","sizzle","nakamotto","zkZoe","based_bri","yeetard","hodlorbe","greenwick","stampede","hornsUp","glitter","prancer","charge","maxbid","alphaleak","serSlippy","tendieTom","voidwalker"];
   const EDGE=0.002, START=100, DUST=1.2, PER_SIDE=12, CAP=100, LOBBY_MS=7000, BATTLE_MS=32000, IMB=90, FEE=0.01;
   const COMBAT={speed:112,accel:300,base:0.085,hitCd:380,knock:46, roll:()=>{const u=Math.random();return u<0.88?rand(0.2,1.5):u<0.97?rand(1.5,4):rand(4,13);}};
@@ -510,7 +515,7 @@
   function userWorth(){let s=WALLET.bull+WALLET.uwu;for(const m in worlds)for(const c of worlds[m].userCircles)s+=tot(c);return s;}
   function rollMult(w){const u=Math.random();w.multiplier=u<0.7?1:u<0.85?2:u<0.93?4:u<0.97?6:u<0.99?8:10;}
   function ev(w,txt,kind){w.events.push({txt,kind,life:1.4});if(w.events.length>9)w.events.shift();}
-  function pushWin(w,atk,dmg,mult){if(dmg<0.5)return;const _to=(atk.bull||0)+(atk.uwu||0)+(atk.sBull||0)+(atk.sUwu||0);w.wins.unshift({name:atk.name,side:atk.side,amt:dmg,mult,you:atk.isUser,from:atk.deposited||0,to:_to});if(w.wins.length>18)w.wins.pop();}
+  function pushWin(w,atk,dmg,mult){if(dmg<0.005)return;const _to=(atk.bull||0)+(atk.uwu||0)+(atk.sBull||0)+(atk.sUwu||0);w.wins.unshift({name:atk.name,side:atk.side,amt:dmg,mult,you:atk.isUser,from:atk.deposited||0,to:_to});if(w.wins.length>18)w.wins.pop();}
   function burst(w,x,y){for(let i=0;i<22;i++)w.particles.push({x,y,vx:rand(-4,4),vy:rand(-5,2),life:1,c:Math.random()<.5?"#ffe14d":"#fff"});}
 
   function strike(w,atk,def,dmg){
@@ -605,10 +610,15 @@
       }
       const meta=side==="bull"?metaA():metaB(), tk=({ANSEM:"bull",UWU:"uwu",SOL:"sol"})[meta.label];
       if(WALLET[tk]<0.01){$("#walletNote").textContent="No "+meta.label+" in your game wallet — use Faucet (or fundMe) first.";return;}
-      const stake=Math.min(amt,WALLET[tk],CAP);
+      // `amt` is DOLLARS (the selector reads $5/$20/$50/$100); the ledger holds tokens.
+      const _px=tokPx(tk);
+      if(!(_px>0)){$("#walletNote").textContent="Price feed loading — try again in a second.";return;}
+      const stake=Math.min(amt/_px, WALLET[tk], CAP/_px);
+      const stakeUsd=stake*_px;
+      if(stakeUsd<0.01){$("#walletNote").textContent="That's below the $0.01 minimum.";return;}
       w.lastSide=side; (w.playedSides=w.playedSides||{})[side]=true;
       if(window.__sendEngine)window.__sendEngine({t:"enter",wallet:MYWALLET,arena:PAIRING+"-"+w.mode,mode:w.mode,side:cSide(side),stake,ref:window.__REF||undefined});
-      $("#walletNote").textContent="Deploying "+fmt(stake)+" "+tk.toUpperCase()+" to "+(side==="bull"?metaA().team:metaB().team)+"…";
+      $("#walletNote").textContent="Deploying $"+stakeUsd.toFixed(2)+" ("+stake.toFixed(stake>=100?0:2)+" "+tk.toUpperCase()+") to "+(side==="bull"?metaA().team:metaB().team)+"…";
       return;
     }
     if(w.phase!=="lobby"){$("#walletNote").textContent="⛔ Deposits closed — fight's on. Next lobby soon.";return;}
@@ -969,7 +979,9 @@
     const aid=PAIRING+"-"+w.mode;
     const tok=PAIRING==="ffa"?"bull":["bull","uwu","sol"][team];
     if(WALLET[tok]<0.01){$("#walletNote").textContent="No balance in that army's token \u2014 fund it in the wallet.";return;}
-    const stake=Math.min(room,WALLET[tok]);
+    const _pxN=tokPx(tok);
+    if(!(_pxN>0)){$("#walletNote").textContent="Price feed loading — try again in a second.";return;}
+    const stake=Math.min(room/_pxN, WALLET[tok], CAP/_pxN);   // `room` is dollars, ledger is tokens
     if(window.__sendEngine)window.__sendEngine({t:"enterN",wallet:MYWALLET,arena:aid,team,stake});
     $("#walletNote").textContent="Deploying "+fmt(stake)+" to "+(PAIRING==="ffa"?"the pit":"army "+(team+1))+"\u2026";
   }

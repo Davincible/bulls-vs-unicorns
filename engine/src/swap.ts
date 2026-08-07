@@ -53,7 +53,11 @@ export async function quote(inputMint: string, outputMint: string, rawAmount: nu
 export async function swapExact(
   vault: Keypair, inputMint: string, outputMint: string, whole: number, decimals: number,
   oracle?: { from: PriceToken; to: PriceToken },
+  outDecimals?: number,          // defaults to `decimals`; MUST be passed when the mints differ
 ): Promise<SwapResult> {
+  // SOL is 9dp and our SPL tokens are 6dp. Using one figure for both legs under-credited the
+  // player by 1000x on a SOL->token swap, so the two are now explicit.
+  const outDp = outDecimals ?? decimals;
   // ---- test chain: no Jupiter liquidity exists, so price it off the live oracle instead ----
   if (IS_TEST_CHAIN) {
     let rate = 1;
@@ -99,7 +103,7 @@ export async function swapExact(
     if (conf.value.err) throw new Error("swap tx failed on-chain: " + JSON.stringify(conf.value.err));
 
     // Credit what the route actually promised after fees/slippage, not a nominal rate.
-    return { ok: true, outAmount: Number(q.outAmount) / 10 ** decimals, priceImpactPct: impact, simulated: false, sig };
+    return { ok: true, outAmount: Number(q.outAmount) / 10 ** outDp, priceImpactPct: impact, simulated: false, sig };
   } catch (e) {
     return { ok: false, outAmount: 0, priceImpactPct: 0, simulated: false, error: (e as Error).message };
   }

@@ -121,3 +121,32 @@ test("convert: a negative or NaN amount converts nothing", () => {
     assert.ok(proceeds ? amt > 0 : true, "never a negative debit");
   }
 });
+
+// A REAL mainnet swap under-credited a player 1000x. swapExact took ONE `decimals` and applied it
+// to both legs, but SOL is 9dp and our SPL tokens are 6dp: the output was divided by 10^9 instead
+// of 10^6. The swap itself executed correctly on-chain — the vault received the full proceeds —
+// so the money was not lost, just never credited. Cross-decimal pairs must be explicit.
+test("cross-decimal swaps: output uses the DESTINATION decimals", () => {
+  const rawOut = 296_000_000;          // 296 UWU in raw units (6dp)
+  const inDp = 9, outDp = 6;           // SOL -> UWU
+  const wrong = rawOut / 10 ** inDp;   // what the bug produced
+  const right = rawOut / 10 ** outDp;
+  assert.equal(right, 296);
+  assert.ok(Math.abs(right / wrong - 1000) < 1e-6, "the bug was exactly 1000x on this pair");
+});
+
+test("same-decimal pairs are unaffected (ANSEM <-> UWU, both 6dp)", () => {
+  const rawOut = 1_500_000, dp = 6;
+  assert.equal(rawOut / 10 ** dp, 1.5);
+});
+
+test("a SOL->UWU convert credits the dollar value that went in", () => {
+  const solPx = 72.6, uwuPx = 0.0277, CONVERT_FEE = 0.003;
+  const usdIn = 8.35;
+  const solTokens = usdIn / solPx;                 // ledger USD units -> SOL tokens
+  const uwuOut = (solTokens * solPx) / uwuPx;      // what the route should return, in UWU
+  const credited = uwuOut * (1 - CONVERT_FEE);
+  assert.ok(Math.abs(credited * uwuPx - usdIn * (1 - CONVERT_FEE)) < 1e-6,
+            "dollars in == dollars out, less the house fee");
+  assert.ok(credited > 290 && credited < 305, `expected ~301 UWU, got ${credited.toFixed(2)}`);
+});

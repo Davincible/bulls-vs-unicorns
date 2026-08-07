@@ -1020,7 +1020,7 @@ wss.on("connection", (ws, req) => {
         try {
           res = (fromMint && toMint)
             ? await swapExact(vaultKeypair(), fromMint, toMint, amtTokens, decOf(from),
-                              { from: priceTokOf(from), to: priceTokOf(to) })
+                              { from: priceTokOf(from), to: priceTokOf(to) }, decOf(to))
             : { ok: false, outAmount: 0, priceImpactPct: 0, simulated: false, error: "mints not configured" };
         } catch (e) {
           res = { ok: false, outAmount: 0, priceImpactPct: 0, simulated: false, error: (e as Error).message };
