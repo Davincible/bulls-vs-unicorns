@@ -8,7 +8,8 @@
 //
 // Cost: one signature, 5,000 lamports (~$0.0004 at SOL $73). At ~45s per round that is ~$0.65/day
 // with MEMO_BATCH=1 (every round anchored individually).
-import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction,
+         ComputeBudgetProgram } from "@solana/web3.js";
 import { RPC, loadVaultKeypair } from "./chain.ts";
 
 const MEMO_PROGRAM = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
@@ -18,6 +19,15 @@ const BATCH = Math.max(1, Number(process.env.MEMO_BATCH || 1));
 // two account keys, blockhash, instruction framing). 900 leaves a comfortable margin while giving
 // the readable layout room for a full lobby; anything larger degrades to the summary.
 const MAX_MEMO_BYTES = Number(process.env.MEMO_MAX_BYTES || 900);
+// The Memo program costs compute PER BYTE and the default budget is 200k CU — a ~490 byte memo
+// already burned 135k, so a 625 byte one failed with "Program failed to complete". Every memo now
+// asks for a raised limit; it costs a negligible amount and is why 14 anchors were silently lost.
+const MEMO_CU_LIMIT = Number(process.env.MEMO_CU_LIMIT || 350_000);
+// Memo fees come out of the VAULT, which also holds players' SOL. Never spend so much that a
+// withdrawal could fail: stop anchoring if the vault's SOL is not comfortably above what is owed.
+const MEMO_MIN_VAULT_SOL = Number(process.env.MEMO_MIN_VAULT_SOL || 0.05);
+let paused = false;
+export const memoPause = (why: boolean) => { paused = why; };
 
 export interface AnchorPlayer {
   id: string;        // wallet (or bot id)
@@ -131,11 +141,14 @@ export function anchorRound(a: RoundAnchor): void {
 }
 
 export async function flushMemos(): Promise<void> {
-  if (!ON || sending || !queue.length) return;
+  if (!ON || sending || !queue.length || paused) return;
   const kp = signer();
   if (!kp) return;
   sending = true;
   try {
+    // Keep going until the queue is empty. Posting one batch per call meant a confirm that ran
+    // longer than a round left the next round waiting for the 60s timer — visible as gaps.
+    while (queue.length) {
     // Take a batch and make it fit: first shrink the batch, then — only if a single round is still
     // too large — drop the per-wallet detail rather than dropping the round entirely. The proof
     // (seed, commitment, winner) always lands; the breakdown is what degrades.
@@ -153,16 +166,25 @@ export async function flushMemos(): Promise<void> {
 
     lastBytes = Buffer.byteLength(text);
     const conn = new Connection(RPC, "confirmed");
-    const tx = new Transaction().add(new TransactionInstruction({
-      keys: [], programId: MEMO_PROGRAM, data: Buffer.from(text, "utf8"),
-    }));
+    // guard the players' SOL: an anchor is never worth risking a withdrawal
+    const bal = await conn.getBalance(kp.publicKey).catch(() => 0);
+    if (bal / 1e9 < MEMO_MIN_VAULT_SOL) {
+      lastError = `paused — vault SOL ${(bal / 1e9).toFixed(4)} below the ${MEMO_MIN_VAULT_SOL} reserve`;
+      return;
+    }
+    const tx = new Transaction()
+      .add(ComputeBudgetProgram.setComputeUnitLimit({ units: MEMO_CU_LIMIT }))
+      .add(new TransactionInstruction({
+        keys: [], programId: MEMO_PROGRAM, data: Buffer.from(text, "utf8"),
+      }));
     tx.feePayer = kp.publicKey;
     tx.recentBlockhash = (await conn.getLatestBlockhash("confirmed")).blockhash;
     tx.sign(kp);
     const sig = await conn.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
     await conn.confirmTransaction(sig, "confirmed");
     queue.splice(0, take);                       // only drop rows once they are really on-chain
-    posted += take; lastSig = sig;
+    posted += take; lastSig = sig; lastError = null;
+    }
   } catch (e) {
     failed++;
     lastError = String((e as Error)?.message || e).slice(0, 220);
