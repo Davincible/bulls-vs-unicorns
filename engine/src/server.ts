@@ -77,6 +77,12 @@ const OTC_MAX_FRACTION = Number(process.env.OTC_MAX_FRACTION || 0.25);
 // How much of a player's stake the opposing army answers with. 1.0 = match it exactly, which keeps
 // the matched book full so the player's whole entry is live rather than mostly refunded.
 const MATCH_RATIO = Number(process.env.MATCH_RATIO || 1.0);
+// How many fighters the house spreads a matched position across. Numbers are the house's edge:
+// SMALL_EDGE tilts play toward smaller positions, so a swarm beats one whale holding the same total.
+const SWARM_SIZE = Number(process.env.SWARM_SIZE || 8);
+// What share of its bank a fighter commits per round. The old 18-55% produced dust in a thin arena.
+const BOT_COMMIT_MIN = Number(process.env.BOT_COMMIT_MIN || 0.35);
+const BOT_COMMIT_MAX = Number(process.env.BOT_COMMIT_MAX || 0.85);
 const otcFeeFor = (a: Field, b: Field) => (a === "sol" || b === "sol") ? OTC_FEE_SOL : OTC_FEE_TOKEN;
 const lastConvertAt = new Map<string, number>();
 // load once - the vault signs every swap
@@ -645,16 +651,27 @@ function matchPlayerStake(aid: string, playerSide: Side, stakeUsd: number): void
   // from what bots happened to be holding meant a $7.60 entry drew a $4.53 answer and the rest went
   // unmatched — the player's money sat idle and the round was smaller than it should have been.
   // The float exists to take this action, so draw on it directly, capped by what it really holds.
-  for (const b of botsFor(aid)) {
+  // SWARM MATCHING. Filling one bot to the cap answered the stake but produced a single fat
+  // counterparty, which is both boring to fight and fragile: that one fighter carries the whole
+  // position. Spreading the same money over many fighters at VARIED sizes gives the house the
+  // numbers advantage it should have — SMALL_EDGE tilts play toward smaller positions, so a swarm
+  // of modest fighters beats one whale holding the identical total.
+  const roster = botsFor(aid).filter(b => !rn.state.entries.some(e => e.id === `${b.id}|${foe}`));
+  const spread = Math.max(1, Math.min(roster.length, SWARM_SIZE));
+  let idx = 0;
+  for (const b of roster) {
     if (need <= MIN_ENTRY) break;
-    if (b.side !== foe) continue;
+    // uneven slices so the book does not look machine-generated: each takes 60%-140% of a fair share
+    const left = spread - idx;
+    const fair = need / Math.max(1, left);
+    const want = Math.min(need, fair * (0.6 + Math.random() * 0.8));
+    idx++;
     let have = (b[f] || 0) * px;
-    if (have < need) {
-      const shortBy = Math.min(need - have, CAP);
-      const drawn = drawBank(f, shortBy / px, 1);   // spread=1: this is the house answering, not funding a bot
+    if (have < want) {
+      const drawn = drawBank(f, (want - have) / px, 1);   // the house answering, not funding a bot
       if (drawn > 0) { b[f] = (b[f] || 0) + drawn; have += drawn * px; }
     }
-    const give = Math.min(need, have, CAP);
+    const give = Math.min(want, have, CAP);
     if (give < MIN_ENTRY) continue;
     const tokens = give / px;
     b[f] -= tokens;
@@ -748,9 +765,13 @@ function botsEnter(aid: string) {
     const bankroll = a[FIELD[myTok]];
     // minimum stake is a DOLLAR amount converted to this token, so every army can afford to play
     const minStake = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(FIELD[myTok] as Field, BOT_STAKE_USD_MIN);
+    // Fight with real size. Staking 18-55% of a small bank meant cent-sized fighters that could not
+    // hurt anyone and made every round look like dust. The house's edge comes from NUMBERS
+    // (SMALL_EDGE favours smaller positions), so it can afford to commit a large share of each
+    // bank — the swarm still out-positions a single large opponent.
     const stake = BOT_STAKE_MAX > 0
       ? Math.min(minStake + Math.random() * (BOT_STAKE_MAX - minStake), bankroll)
-      : Math.min(Math.max(minStake, bankroll * (0.18 + Math.random()*0.37)), CAP, bankroll);
+      : Math.min(Math.max(minStake, bankroll * (BOT_COMMIT_MIN + Math.random() * (BOT_COMMIT_MAX - BOT_COMMIT_MIN))), CAP, bankroll);
     if (!(minStake > 0) || stake < minStake) continue;
     a[FIELD[myTok]] -= stake;
     const mode = arenaEco(aid);

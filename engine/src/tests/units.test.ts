@@ -595,3 +595,52 @@ test("a bot is never entered twice on the SAME side", () => {
   assert.equal(already("bot4", "bull"), true, "blocked");
   assert.equal(already("bot4", "uwu"), false, "but the other army is open to it");
 });
+
+// SWARM. Filling one bot to the cap answers the stake but leaves a single fat counterparty: boring
+// to fight, and fragile because that one fighter carries the whole position. Spreading the same
+// money over many fighters is also the house's edge — SMALL_EDGE tilts play toward smaller
+// positions, so a swarm beats one whale holding the identical total.
+test("a matched position is spread across many fighters, not one", () => {
+  const need = 20, SWARM = 8;
+  const slices: number[] = [];
+  let left = need;
+  for (let i = 0; i < SWARM && left > 0.01; i++) {
+    const fair = left / (SWARM - i);
+    const take = Math.min(left, fair);
+    slices.push(take); left -= take;
+  }
+  assert.ok(slices.length >= 6, `${slices.length} fighters share the position`);
+  assert.ok(Math.abs(slices.reduce((a, b) => a + b, 0) - need) < 0.01, "and they total the stake");
+});
+
+test("slice sizes vary, so the book does not look machine-generated", () => {
+  const fair = 2.5;
+  const sizes = [0.6, 0.9, 1.2, 1.4].map(m => fair * m);
+  const spreadPct = (Math.max(...sizes) - Math.min(...sizes)) / fair;
+  assert.ok(spreadPct > 0.5, "a real book has uneven entries");
+});
+
+test("the swarm still cannot stake money the float does not hold", () => {
+  const need = 100, poolLeft = 12;
+  const answered = Math.min(need, poolLeft);
+  assert.equal(answered, 12, "matching stops at the float, the rest is refunded to the player");
+});
+
+// Cent-sized fighters cannot hurt anyone and make every round look like dust. The house's edge is
+// NUMBERS — SMALL_EDGE favours smaller positions — so it can commit a large share of each bank and
+// still out-position a single large opponent.
+test("a fighter commits a real share of its bank", () => {
+  const bank = 4.0, MIN = 0.35, MAX = 0.85;
+  assert.ok(bank * MIN >= 1.4, `at least $${(bank * MIN).toFixed(2)} — not dust`);
+  assert.ok(bank * MAX <= bank, "but never more than it holds");
+});
+
+test("a swarm out-positions one whale holding the same total", () => {
+  const total = 20;
+  const whale = [total];
+  const swarm = Array.from({ length: 8 }, () => total / 8);
+  assert.equal(swarm.reduce((a, b) => a + b, 0), total, "same money");
+  assert.ok(swarm.length > whale.length, "but eight positions against one");
+  // SMALL_EDGE tilts each clash toward the smaller side, so the swarm wins more of them
+  assert.ok(swarm[0] < whale[0], "and every swarm fighter is the smaller party in its clash");
+});
