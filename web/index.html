@@ -361,7 +361,7 @@
           <label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px;color:var(--ink-soft);cursor:pointer"><input type="checkbox" id="autoTick" style="accent-color:var(--gold)"> <b>Repeat every round</b></label>
           <div class="seg" id="autobuy" style="margin-top:6px"><button data-pct="0" class="on">Fixed $</button><button data-pct="0.05">5% of wallet</button><button data-pct="0.1">10%</button><button data-pct="0.25">25%</button></div>
           <div id="autoside" style="display:none"><button data-side="both" class="on"></button></div>
-          <div class="toggle" id="autoConv"><span class="sw"></span><span>Auto-convert raids → my coin <small style="opacity:.6">(real swap · 0.3% fee · $5+)</small></span></div>
+          <div class="note" style="margin-top:6px">Raided coin is yours to keep — deploy whichever side you are holding, or withdraw it directly. Converting is optional and costs 0.3% plus swap slippage.</div>
 
           <div class="row2" id="deploy2" style="margin-top:8px"><button class="abtn jb" id="joinBull">Deploy ANSEM <span class="tico" data-tok="ansem"></span></button><button class="abtn ju" id="joinUni">Deploy UWU <span class="tico" data-tok="uwu"></span></button></div>
           <div id="deployN" style="display:none;margin-top:8px"></div>
@@ -501,7 +501,7 @@
     </div>
   </div>
   <footer><b style="color:var(--gold)">Live on Solana mainnet · real funds.</b> Balances are custodial: the engine holds them against an on-chain vault, and you can withdraw at any time.
-  <b style="color:var(--ink)">The house plays too.</b> Some fighters are funded by the house from its own float — they are funded between rounds, never mid-fight, and they win and lose on the same rules and the same published seed as everyone else.
+  <b style="color:var(--ink)">The operator plays too.</b> Some fighters are funded from the operator's own wallets, as a participant — they are funded between rounds, never mid-fight, and they win and lose on the same rules and the same published seed as everyone else. Fee revenue is held separately and never funds a fighter.
   Raids TAKE the enemy's coin into your bag (claim reallocation). Arenas run on ANSEM, UWU and SOL; your wallet is shared across modes. Normal = raids compound in-ring · Extraction = raids bank to your wallet in real time. House fee 0.2% per deploy · 0.3% on convert. · <a href="solvency.html" style="color:var(--ink-soft);text-decoration:none">🔒 Proof of reserves</a></footer>
   <div class="modal" id="modal"><div class="pcard" id="pcard"></div></div>
 </div>
@@ -1792,9 +1792,7 @@
   setStake(5);
   $("#autobuy").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;W().autoPct=+b.dataset.pct;document.querySelectorAll("#autobuy button").forEach(x=>x.classList.toggle("on",x===b));$("#walletNote").textContent=+b.dataset.pct>0?("Repeat will use "+(+b.dataset.pct*100)+"% of your wallet each round."):"Repeat will use the fixed amount above.";});
   // side selection now comes from the deploy buttons themselves (SEL), so there is no separate picker
-  $("#autoConv").classList.toggle("on",!!W().autoConvOn);
-  if($("#autoConv"))$("#autoConv").classList.toggle("on",!!W().autoConvOn);
-  $("#autoConv").addEventListener("click",()=>{const w=W();w.autoConvOn=!w.autoConvOn;w.userCircles.forEach(c=>c.autoConv=w.autoConvOn);$("#autoConv").classList.toggle("on",w.autoConvOn);});
+  // the auto-convert toggle was removed — guard rather than assume the element exists
   const SEL={bull:false,unicorn:false};
   function paintSel(){[["bull","joinBull","joinBull2"],["unicorn","joinUni","joinUni2"]].forEach(([sd,...ids])=>ids.forEach(id=>{const el=$("#"+id);if(el)el.classList.toggle("selGold",SEL[sd]);}));}
   function deploySide(sd){SEL[sd]=true;paintSel();deposit(W(),sd,room);syncDOM();}
@@ -1843,7 +1841,7 @@
   });
   document.querySelectorAll(".modes button").forEach(b=>{if(b.closest("#pairSel"))return;b.onclick=()=>{activeMode=b.dataset.mode;document.querySelectorAll(".modes button").forEach(x=>x.classList.toggle("on",x===b));
     W().floaters.length=0;W().particles.length=0;W().shake=0;   // start the newly-shown mode clean (no flood)
-    $("#autoConv").classList.toggle("on",!!W().autoConvOn);document.querySelectorAll("#autobuy button").forEach(x=>x.classList.toggle("on",+x.dataset.pct===(W().autoPct||0)));document.querySelectorAll("#autoside button").forEach(x=>x.classList.toggle("on",x.dataset.side===W().autoSide));
+    document.querySelectorAll("#autobuy button").forEach(x=>x.classList.toggle("on",+x.dataset.pct===(W().autoPct||0)));document.querySelectorAll("#autoside button").forEach(x=>x.classList.toggle("on",x.dataset.side===W().autoSide));
     $("#helpbar").textContent=activeMode==="extraction"?"💰 EXTRACTION — raids bank to your SHARED wallet in real time (survive death with winnings). Separate saved game.":"MAYHEM — raids compound in your at-risk ring (circle grows & changes colour). Separate saved game.";
     // Switching mode shows a DIFFERENT world. Without asking the engine for that mode's in-flight
     // round it sits empty until the next lobby opens - which reads as "the battle didn't load".
@@ -2662,24 +2660,20 @@
         // AUTO-CONVERT only makes sense for a single-side player: it converts the whole
         // off-side balance, so if you deploy BOTH sides it would nuke one of your stacks
         // every settle (and charge 0.3% for the privilege). Skip when playing both.
-        if(aw.online&&aw.autoConvOn&&PK){
-          const played=aw.playedSides||{};
-          const both=played.bull&&played.unicorn;
-          const mySide=!both?(aw.lastSide||((aw.autoSide&&aw.autoSide!=="both")?aw.autoSide:null)):null;
-          if(mySide){
-            // arena-token aware: side "bull"/"unicorn" is slot A/B, mapped to THIS arena's tokens,
-            // so on UWU/SOL it auto-swaps raided SOL back to UWU rather than a token not in play
-            const [fa,fb]=arenaFields(); const tk2=mySide==="bull"?fa:fb, off=mySide==="bull"?fb:fa;
-            // A REAL SWAP COSTS REAL MONEY. This fired on ">1 unit" of the off-side token, which
-            // for SOL — held in USD units — meant any raid over a dollar triggered an on-chain
-            // Jupiter swap: 0.3% convert fee plus ~0.6% round-trip friction on a $1 position. The
-            // friction is a far bigger share of a small balance than of a large one, so the
-            // threshold has to be a DOLLAR amount, not a unit count.
-            const _px=tokPx(off)||0, _usd=(WALLET[off]||0)*_px;
-            const _min=Number(window.__AUTOCONV_MIN_USD||5);
-            if(_usd>=_min&&!window.__convBusy){window.__convBusy=true;setTimeout(()=>window.__convBusy=false,5000);
-              send({t:"convert",wallet:PK,to:tk2,from:off});}}
-        }
+        // AUTO-CONVERT REMOVED — it was solving a problem that does not exist.
+        //
+        // Raided coin never needs converting. You can deploy whichever side matches what you are
+        // holding (the deploy path only checks you HAVE that token), and withdraw takes a side, so
+        // you can cash out either token directly. Nothing in the game requires you to hold one
+        // particular coin.
+        //
+        // So converting a raid back to "your" coin took a position you could have played for free
+        // and charged 0.3% plus swap slippage to turn it into a different position you could also
+        // have played for free. Automatically, on a real Jupiter swap, with no click. A fee on a
+        // step nobody needed to take is exactly the kind of thing that reads as extraction rather
+        // than a house edge, and it fired unattended for real money.
+        //
+        // Manual convert stays available for anyone who genuinely wants to change their holding.
         // the engine computes both in dollars — depIn/wOut are mixed units and must not be subtracted raw
         if(m.inRingUsd!=null)window.__INRING_USD=m.inRingUsd;
         if(m.valueUsd!=null)WORTH_USD=m.valueUsd;
