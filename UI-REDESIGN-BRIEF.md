@@ -163,6 +163,24 @@ rebuild against numbers that are about to be replaced, so this comes FIRST.
 | `w.raidCount` | 4 | round record |
 | `userWorth()` | 3 | `/standings.pnl` |
 
+**STATUS — substantially done, with one honest qualification.**
+
+Every money and record figure on the ONLINE path now derives from an engine endpoint: P/L, ROI,
+rounds and wins from `/standings`; Hall of Legends from `/hall`; match wins and stolen from the
+per-arena record; float from `/float`; backing from `/solvency`; anchors from `/memo`. Verified by
+cross-check — engine float $93.37, Band A $93.37, Band C $93.37, agreeing to the cent.
+
+What REMAINS of `w.accounts` / `w.dep` is not a parallel ledger any more. Online, `w.accounts` is
+explicitly the engine's leaderboard cache (never persisted); `w.dep` is only read behind
+`w.online ? engine : local`. Both still back the OFFLINE demo sim, which is a legitimate use — the
+demo has no engine to ask. Deleting them outright would remove offline play, not remove a second
+source of truth.
+
+The rule to hold going forward: an online figure must never silently fall back to client state. A
+fallback is fine while the engine value has not ARRIVED yet, and it must say so (the profile card
+drops "(saved)" when it has the engine record) — but it must never be a second opinion presented as
+the first.
+
 **Acceptance:** no money or record figure is computed in the browser. Every one traces to an engine
 endpoint. Two panels showing the same fact must read the same field, not merely agree today.
 
