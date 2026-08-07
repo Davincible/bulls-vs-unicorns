@@ -361,7 +361,7 @@
           <label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px;color:var(--ink-soft);cursor:pointer"><input type="checkbox" id="autoTick" style="accent-color:var(--gold)"> <b>Repeat every round</b></label>
           <div class="seg" id="autobuy" style="margin-top:6px"><button data-pct="0" class="on">Fixed $</button><button data-pct="0.05">5% of wallet</button><button data-pct="0.1">10%</button><button data-pct="0.25">25%</button></div>
           <div id="autoside" style="display:none"><button data-side="both" class="on"></button></div>
-          <div class="toggle" id="autoConv"><span class="sw"></span><span>Auto-convert raids → my coin</span></div>
+          <div class="toggle" id="autoConv"><span class="sw"></span><span>Auto-convert raids → my coin <small style="opacity:.6">(real swap · 0.3% fee · $5+)</small></span></div>
 
           <div class="row2" id="deploy2" style="margin-top:8px"><button class="abtn jb" id="joinBull">Deploy ANSEM <span class="tico" data-tok="ansem"></span></button><button class="abtn ju" id="joinUni">Deploy UWU <span class="tico" data-tok="uwu"></span></button></div>
           <div id="deployN" style="display:none;margin-top:8px"></div>
@@ -769,7 +769,7 @@
   }
   function makeWorld(mode){
     const w={mode,treasury:{bull:0,uwu:0},roundNo:1,roundT:0,phase:"lobby",phaseT:0,multiplier:1,players:[],wins:[],floaters:[],particles:[],shake:0,pairCd:new Map(),events:[],hoverId:null,bannerTxt:"",bannerA:0,
-      dep:{bull:0,unicorn:0},matchWins:{bull:0,unicorn:0},matches:[],legends:[],history:[],userRounds:[],autoPct:0,autoSide:"both",autoConvOn:true,userCircles:[],
+      dep:{bull:0,unicorn:0},matchWins:{bull:0,unicorn:0},matches:[],legends:[],history:[],userRounds:[],autoPct:0,autoSide:"both",autoConvOn:false,userCircles:[],
       accounts:[],acctSeq:0,acctCreated:0,acctBusted:0,dmgBull:0,dmgUni:0,
       stolen:{bull:0,uwu:0,sol:0},stolenAll:{bull:0,uwu:0,sol:0},raidCount:0};
     loadSave(w);
@@ -2670,7 +2670,14 @@
             // arena-token aware: side "bull"/"unicorn" is slot A/B, mapped to THIS arena's tokens,
             // so on UWU/SOL it auto-swaps raided SOL back to UWU rather than a token not in play
             const [fa,fb]=arenaFields(); const tk2=mySide==="bull"?fa:fb, off=mySide==="bull"?fb:fa;
-            if(WALLET[off]>1&&!window.__convBusy){window.__convBusy=true;setTimeout(()=>window.__convBusy=false,5000);
+            // A REAL SWAP COSTS REAL MONEY. This fired on ">1 unit" of the off-side token, which
+            // for SOL — held in USD units — meant any raid over a dollar triggered an on-chain
+            // Jupiter swap: 0.3% convert fee plus ~0.6% round-trip friction on a $1 position. The
+            // friction is a far bigger share of a small balance than of a large one, so the
+            // threshold has to be a DOLLAR amount, not a unit count.
+            const _px=tokPx(off)||0, _usd=(WALLET[off]||0)*_px;
+            const _min=Number(window.__AUTOCONV_MIN_USD||5);
+            if(_usd>=_min&&!window.__convBusy){window.__convBusy=true;setTimeout(()=>window.__convBusy=false,5000);
               send({t:"convert",wallet:PK,to:tk2,from:off});}}
         }
         // the engine computes both in dollars — depIn/wOut are mixed units and must not be subtracted raw
