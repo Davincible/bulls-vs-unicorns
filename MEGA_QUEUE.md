@@ -194,3 +194,33 @@ BLOCKED: fee-payer keypair, mainnet canary, added float, full memo seed — all 
 NOT REACHED (not blocked, ran out of context): A5, B2, B3, B7, B8, C4-C6, SEC-M1/M3/M6/M7.
 
 Tests 201 -> 236, green at every commit.
+
+---
+
+## Ledger correction — APPLIED 2026-08-07
+
+**Question that prompted it:** how can the ledger claim more than the vault holds, when it is our
+own money circulating with only fees removed?
+
+**Answer: it cannot, and it did not.** Nothing left the vault. Measured on-chain across all 641
+vault transactions, network fees total 0.0032 SOL and no token-account rent was ever paid. (I had
+guessed ATA rent was the cause; the chain disproved that.) Circulation is conservative — zero
+CONSERVATION warnings, aggregate reconciling at exactly -0.200% = the fee.
+
+The gap was ledger balance that never had coin behind it. The pre-fix auto-rebalance sampled the
+books mid-round, when open stakes had left the accounts but the coin was still in the vault, so it
+read live stakes as unowned float and credited the house a second time for money already on the
+table: +211.28 UWU and +0.128 SOL in one cycle, no chain movement behind either.
+
+**Applied** via one-shot WRITEDOWN_OVERCLAIM=1, then immediately disarmed:
+
+    writedown: uwu 1751.6129 -> 1674.2750  (wrote off 77.3379)
+    writedown: bull skipped — no chain reading
+    writedown: sol   70.8982 ->   64.7307  (wrote off 6.1675 USD)
+
+    UWU delta  +76.875   -> +0.465
+    SOL delta  +0.082647 -> +0.000041
+    NET        +$8.26    -> +$0.02
+
+Players fully backed throughout: 191.92 UWU owed against 1866.20 held, 0.0245 SOL against 0.9022.
+Residual $0.02 is rounds settling between correction and measurement.
