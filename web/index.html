@@ -16,6 +16,20 @@
   /* Hall of Legends — one line per row: rank, name, deposit -> final, round, return. */
   /* Band A hero — one figure, large, because the brief asks for a single number a player reads
      first. Everything else on the dashboard is supporting detail. */
+  /* BRIEF PART 3 — floating Deploy and Wallet. The controls a player touches every round sat
+     furthest from the arena they are watching. Floated they follow the eye; docked they behave
+     exactly as before, which is the fallback when the viewport is too narrow to float safely. */
+  .floatP{position:fixed;z-index:40;width:322px;max-height:76vh;overflow:auto;
+          box-shadow:0 18px 50px rgba(0,0,0,.55);border:1px solid var(--line2);border-radius:14px;
+          background:rgba(14,14,24,.94);backdrop-filter:blur(10px)}
+  .floatP .fpBar{display:flex;align-items:center;gap:8px;cursor:move;user-select:none;
+                 padding:7px 10px;border-bottom:1px solid var(--line);font-family:var(--mono);
+                 font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-faint)}
+  .floatP .fpBar .fpT{flex:1}
+  .fpBtn{background:none;border:0;color:var(--ink-faint);cursor:pointer;font-family:var(--mono);
+         font-size:12px;line-height:1;padding:3px 6px;border-radius:6px}
+  .fpBtn:hover{color:var(--gold);background:rgba(255,255,255,.07)}
+  .floatP.min > *:not(.fpBar){display:none}
   .bandHero{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
   .bandHero span{font-size:34px;font-weight:700;font-family:var(--mono);letter-spacing:-.02em;color:var(--ink)}
   .bandHero small{font-size:12px;color:var(--ink-faint);font-family:var(--mono)}
@@ -401,6 +415,32 @@
           <div class="stat"><div class="v" id="baBack">—</div><div class="n" id="baBackN">Backing</div></div>
         </div>
       </div>
+      <!-- BAND B — your position. Only rendered when a wallet is connected. Every figure comes from
+           /standings filtered to that wallet, so it can never disagree with the leaderboard: that
+           disagreement is exactly what produced three different P/L numbers for one wallet. -->
+      <div class="card" id="bandB" style="margin-bottom:14px;display:none">
+        <h2>◆ Your position <span style="font-family:var(--mono);font-size:12px;color:var(--ink-faint)" id="bbWho"></span></h2>
+        <div class="dgrid">
+          <div class="stat"><div class="v" id="bbPnl">—</div><div class="n">Net P/L · dollars</div></div>
+          <div class="stat"><div class="v" id="bbTok">—</div><div class="n">Net · coins</div></div>
+          <div class="stat"><div class="v" id="bbRounds">—</div><div class="n" id="bbRoundsN">Rounds played</div></div>
+          <div class="stat"><div class="v" id="bbRing">—</div><div class="n">In the ring</div></div>
+        </div>
+        <div class="note" style="margin-top:8px">Dollars alone conflate winning rounds with the coin moving. The coin figure is the honest one.</div>
+      </div>
+
+      <!-- BAND C — the house. Split by the LIVE tokens, never hardcoded, and the two raided
+           columns are different currencies: they are never summed. -->
+      <div class="card" id="bandC" style="margin-bottom:14px">
+        <h2>▣ The house</h2>
+        <div class="dgrid">
+          <div class="stat"><div class="v" id="bcTre">—</div><div class="n" id="bcTreN">Treasury · fees taken</div></div>
+          <div class="stat"><div class="v" id="bcRate">0.2% / 0.3%</div><div class="n">Fee · deploy / convert</div></div>
+          <div class="stat"><div class="v" id="bcAnchor">—</div><div class="n">Rounds anchored on-chain</div></div>
+          <div class="stat"><div class="v" id="bcFloat">—</div><div class="n">House float backing the arena</div></div>
+        </div>
+      </div>
+
       <div id="dashArenas" style="max-width:1200px;margin:0 auto 14px"></div>
       <div class="card" style="margin-bottom:14px">
         <h2>⚔ Battle report <span style="font-family:var(--mono);font-size:12px;color:var(--ink-faint)" id="brArena"></span></h2>
@@ -1106,6 +1146,7 @@
       const r=await fetch("/memo",{cache:"no-store"}); if(!r.ok)return;
       const m=await r.json();
       const posted=m.posted||0, failed=m.failed||0, sig=m.lastSig;
+      window.__ANCHORS=posted;
       el.innerHTML = sig
         ? `⛓ <b>${posted}</b> round${posted===1?"":"s"} anchored on Solana`
           + (failed?` · <span style="color:var(--danger)">${failed} failed</span>`:"")
@@ -1114,6 +1155,103 @@
     }catch(e){ /* leave the last reading */ }
   }
   fetchAnchors(); setInterval(()=>{ if(document.visibilityState!=="hidden") fetchAnchors(); }, 45000);
+
+  // BRIEF PART 3 — FLOATING DEPLOY / WALLET.
+  //
+  // Draggable, snapping to edges, position remembered per player. The brief also requires a
+  // keyboard-accessible fallback, because a drag-only affordance is unusable without a mouse — so
+  // every panel carries real <button> controls to dock and to collapse, and dragging is an
+  // enhancement on top rather than the only way to work with them.
+  //
+  // Docked is the fallback below 1101px: floating over a narrow viewport covers the fight.
+  (function floatingPanels(){
+    const KEY="bvu_panels";
+    let st={}; try{ st=JSON.parse(localStorage.getItem(KEY)||"{}"); }catch(e){}
+    const save=()=>{ try{ localStorage.setItem(KEY,JSON.stringify(st)); }catch(e){} };
+    const panels=[...document.querySelectorAll(".dock > .panelC")].map(el=>{
+      const h=el.querySelector("h3");
+      const t=(h?h.textContent:"").toLowerCase();
+      const id = t.includes("wallet") ? "wallet" : t.includes("deploy") ? "deploy" : null;
+      return id?{id,el,title:(h?h.textContent.trim():id)}:null;
+    }).filter(Boolean);
+    if(!panels.length) return;
+
+    const wide=()=>window.innerWidth>1100;
+    const clamp=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+
+    function place(p){
+      const s2=st[p.id]||{};
+      if(!wide()||!s2.float){ undock(p); return; }
+      const el=p.el, w=el.offsetWidth||322, h=el.offsetHeight||300;
+      // default: Wallet top-right, Deploy bottom-right — never over the centre of the arena
+      let x=s2.x, y=s2.y;
+      if(x==null||y==null){
+        x=window.innerWidth-w-18;
+        y=p.id==="wallet"?96:Math.max(96,window.innerHeight-h-24);
+      }
+      el.style.left=clamp(x,6,Math.max(6,window.innerWidth-w-6))+"px";
+      el.style.top =clamp(y,6,Math.max(6,window.innerHeight-46))+"px";
+    }
+    function dock(p){
+      p.el.classList.add("floatP");
+      if(!p.el.querySelector(".fpBar")) p.el.prepend(mkBar(p));
+      st[p.id]=Object.assign({},st[p.id],{float:true}); save(); place(p);
+    }
+    function undock(p){
+      p.el.classList.remove("floatP","min");
+      p.el.style.left=p.el.style.top="";
+      const b=p.el.querySelector(".fpBar"); if(b) b.remove();
+    }
+    function mkBar(p){
+      const bar=document.createElement("div"); bar.className="fpBar";
+      const t=document.createElement("span"); t.className="fpT"; t.textContent=p.title;
+      const mn=document.createElement("button"); mn.className="fpBtn"; mn.type="button";
+      mn.setAttribute("aria-label","Collapse "+p.title); mn.textContent="—";
+      mn.onclick=e=>{ e.stopPropagation(); p.el.classList.toggle("min"); };
+      const dk=document.createElement("button"); dk.className="fpBtn"; dk.type="button";
+      dk.setAttribute("aria-label","Dock "+p.title+" back into the page"); dk.textContent="⤓";
+      dk.onclick=e=>{ e.stopPropagation(); st[p.id]=Object.assign({},st[p.id],{float:false}); save(); undock(p); };
+      bar.append(t,mn,dk);
+      // drag — pointer events so it works with mouse, pen and touch alike
+      let sx=0,sy=0,ox=0,oy=0,drag=false;
+      bar.addEventListener("pointerdown",e=>{
+        if(e.target.closest(".fpBtn"))return;
+        drag=true; sx=e.clientX; sy=e.clientY;
+        const r=p.el.getBoundingClientRect(); ox=r.left; oy=r.top;
+        bar.setPointerCapture(e.pointerId);
+      });
+      bar.addEventListener("pointermove",e=>{
+        if(!drag)return;
+        const w=p.el.offsetWidth, h=p.el.offsetHeight;
+        let x=ox+(e.clientX-sx), y=oy+(e.clientY-sy);
+        // snap to an edge when close, so panels line up instead of floating askew
+        if(x<24)x=6; if(x+w>window.innerWidth-24)x=window.innerWidth-w-6;
+        if(y<24)y=6;
+        p.el.style.left=clamp(x,6,Math.max(6,window.innerWidth-w-6))+"px";
+        p.el.style.top =clamp(y,6,Math.max(6,window.innerHeight-46))+"px";
+      });
+      const end=()=>{ if(!drag)return; drag=false;
+        const r=p.el.getBoundingClientRect();
+        st[p.id]=Object.assign({},st[p.id],{float:true,x:r.left,y:r.top}); save(); };
+      bar.addEventListener("pointerup",end); bar.addEventListener("pointercancel",end);
+      return bar;
+    }
+
+    // a control to float them, reachable without a mouse
+    for(const p of panels){
+      const h=p.el.querySelector("h3");
+      if(h && !h.querySelector(".fpBtn")){
+        const b=document.createElement("button");
+        b.className="fpBtn"; b.type="button"; b.style.float="right";
+        b.setAttribute("aria-label","Float "+p.title+" over the arena"); b.textContent="⤢";
+        b.onclick=e=>{ e.stopPropagation(); if(!wide())return; dock(p); };
+        h.appendChild(b);
+      }
+      if(st[p.id]&&st[p.id].float&&wide()) dock(p);
+    }
+    window.addEventListener("resize",()=>{ for(const p of panels){ if(st[p.id]&&st[p.id].float){ if(wide())place(p); else undock(p);} } });
+    window.__PANELS={dock,undock,panels,state:()=>st};
+  })();
 
   let lbTab="round", lbIdx=0;
   function renderLB(){
@@ -1520,7 +1658,43 @@
   }
   fetchFloat(); setInterval(()=>{ if(document.visibilityState!=="hidden") fetchFloat(); }, 25000);
 
-  function syncDashboard(){renderBandA();renderDashArenas();renderBattleReport();const w=W();$("#dashMode").textContent="· "+MODE[w.mode].cap;
+  function renderBandBC(){
+    const set=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
+    const B=document.getElementById("bandB");
+    // BAND B — only from /standings, so it cannot disagree with the leaderboard.
+    const me=(window.__STANDINGS||[]).find(r=>MYWALLET&&r.id===MYWALLET);
+    if(B){
+      if(!MYWALLET){ B.style.display="none"; }
+      else{
+        B.style.display="";
+        set("bbWho","· "+(me&&me.name?me.name:shortWallet(MYWALLET)));
+        if(me){
+          const pnl=me.pnl||0;
+          const el=document.getElementById("bbPnl");
+          if(el){ el.textContent=(pnl>=0?"+":"−")+"$"+Math.abs(pnl).toFixed(2); el.className="v "+(pnl>=0?"pos":"neg"); }
+          set("bbTok", tokLine(me.tokNet)? tokLine(me.tokNet).replace(/<[^>]+>/g,"") : "—");
+          set("bbRounds", me.rounds!=null?String(me.rounds):"—");
+          set("bbRoundsN","Rounds played · "+(me.wins||0)+" won");
+        } else {
+          // connected but no settled rounds yet — em dash, not a zero
+          set("bbPnl","—"); set("bbTok","—"); set("bbRounds","—"); set("bbRoundsN","Rounds played");
+        }
+        const w=W();
+        set("bbRing", (w.inRingUsd!=null&&w.inRingUsd>0)?("$"+Number(w.inRingUsd).toFixed(2)):"—");
+      }
+    }
+    // BAND C — the house, from engine figures only.
+    const w=W(), A=metaA(), Bm=metaB();
+    const tre=(w.treasury&&(w.treasury.bull||0))||0;
+    set("bcTre", tre?("$"+Number(tre).toFixed(2)):"—");
+    set("bcTreN","Treasury · fees taken ("+A.label+" / "+Bm.label+" arena)");
+    const F=window.__FLOAT;
+    set("bcFloat", F&&F.usd!=null?("$"+Number(F.usd).toFixed(2)):"—");
+    set("bcAnchor", window.__ANCHORS!=null?String(window.__ANCHORS):"—");
+  }
+  const shortWallet=(a)=>String(a||"").length>12?String(a).slice(0,5)+"…"+String(a).slice(-3):String(a||"");
+
+  function syncDashboard(){renderBandA();renderBandBC();renderDashArenas();renderBattleReport();const w=W();$("#dashMode").textContent="· "+MODE[w.mode].cap;
     // ONE LEDGER. These tiles used to read w.dep / w.matchWins - browser counters that persist in
     // localStorage across arenas and modes, which is why the dashboard showed stale figures and
     // "Bulls" while the live arena was UWU vs SOL. The engine keeps a per-arena record (statsA);
