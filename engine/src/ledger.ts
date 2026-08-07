@@ -28,7 +28,12 @@ export const roundsByArena: Record<string, number> = {};
 export interface RoundRecord {
   at: number; arena: string; round: number; winner: string; pot: number;
   seedHash: string; seed: string; sig?: string;          // sig = the memo tx, once it lands
-  players: Array<{ id: string; name: string; side: string; bot: boolean; inUsd: number; outUsd: number }>;
+  // USD is priced at the ROUND's frozen rate, so it measures game performance. Token amounts are
+  // recorded alongside because USD alone conflates two different things: whether you won rounds,
+  // and whether the coin moved. A memecoin doubling makes a losing player look like a winner.
+  players: Array<{ id: string; name: string; side: string; bot: boolean;
+                   inUsd: number; outUsd: number;
+                   tok?: string; inTok?: number; outTok?: number }>;
 }
 export const roundLog: RoundRecord[] = [];
 const ROUND_LOG_MAX = Number(process.env.ROUND_LOG_MAX || 200);
@@ -196,6 +201,10 @@ export function publicName(a: Account): string {
 export interface Standing {
   id: string; name: string; rounds: number; wins: number;
   staked: number; returned: number; pnl: number; roi: number; best: number;
+  // Per-token net, so game skill can be read separately from the coin's price action. `pnl` above is
+  // USD at each round's frozen price — already free of price drift WITHIN a round, but summing it
+  // across rounds still mixes in whatever the coin did between them.
+  tokNet: Record<string, number>;
 }
 export function standingsFromLog(arena?: string, limit = 40): Standing[] {
   const by = new Map<string, Standing>();
@@ -206,7 +215,7 @@ export function standingsFromLog(arena?: string, limit = 40): Standing[] {
       let row = by.get(p.id);
       if (!row) {
         row = { id: p.id, name: p.name || p.id, rounds: 0, wins: 0,
-                staked: 0, returned: 0, pnl: 0, roi: 0, best: 0 };
+                staked: 0, returned: 0, pnl: 0, roi: 0, best: 0, tokNet: {} };
         by.set(p.id, row);
       }
       row.rounds++;
@@ -215,6 +224,9 @@ export function standingsFromLog(arena?: string, limit = 40): Standing[] {
       row.returned += p.outUsd || 0;
       const net = (p.outUsd || 0) - (p.inUsd || 0);
       if (net > row.best) row.best = net;
+      if (p.tok && (p.inTok !== undefined || p.outTok !== undefined)) {
+        row.tokNet[p.tok] = (row.tokNet[p.tok] || 0) + ((p.outTok || 0) - (p.inTok || 0));
+      }
       if (p.name) row.name = p.name;                 // keep the freshest handle
     }
   }

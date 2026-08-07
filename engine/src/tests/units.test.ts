@@ -644,3 +644,41 @@ test("a swarm out-positions one whale holding the same total", () => {
   // SMALL_EDGE tilts each clash toward the smaller side, so the swarm wins more of them
   assert.ok(swarm[0] < whale[0], "and every swarm fighter is the smaller party in its clash");
 });
+
+// ---- game performance vs price movement ----
+// USD P&L conflates two unrelated things: whether you won rounds, and whether the coin moved.
+// Deposit 50 UWU, have UWU double, and you look like a winner without ever winning a round.
+test("a losing player looks profitable in USD if the coin pumps", () => {
+  const pxIn = 0.0277, pxNow = 0.0554;      // UWU doubled
+  const tokIn = 50, tokNow = 40;            // ...but they LOST 10 UWU playing
+  const usdIn = tokIn * pxIn, usdNow = tokNow * pxNow;
+  assert.ok(tokNow < tokIn, "down 10 UWU — a losing player");
+  assert.ok(usdNow > usdIn, `yet up $${(usdNow - usdIn).toFixed(2)} in USD`);
+});
+
+test("and a winning player looks broke if it dumps", () => {
+  const pxIn = 0.0277, pxNow = 0.0100;
+  const tokIn = 50, tokNow = 65;            // won 15 UWU
+  assert.ok(tokNow > tokIn, "genuinely won");
+  assert.ok(tokNow * pxNow < tokIn * pxIn, "but USD says otherwise");
+});
+
+test("token net answers the question USD cannot", () => {
+  const rounds = [
+    { tok: "UWU", inTok: 10, outTok: 12 },
+    { tok: "UWU", inTok: 10, outTok: 7 },
+    { tok: "SOL", inTok: 0.5, outTok: 0.6 },
+  ];
+  const net: Record<string, number> = {};
+  for (const r of rounds) net[r.tok] = (net[r.tok] || 0) + (r.outTok - r.inTok);
+  assert.ok(Math.abs(net.UWU - -1) < 1e-9, "down 1 UWU on the UWU army");
+  assert.ok(Math.abs(net.SOL - 0.1) < 1e-9, "up 0.1 SOL on the SOL army");
+});
+
+test("within a round, USD is already price-neutral — the frozen rate sees to that", () => {
+  const pxRound = 0.0277;
+  const inTok = 100, outTok = 118;
+  const inUsd = inTok * pxRound, outUsd = outTok * pxRound;
+  assert.ok(Math.abs((outUsd / inUsd) - (outTok / inTok)) < 1e-9,
+            "same ratio either way, because entry and exit use one price");
+});

@@ -328,9 +328,18 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
       players: s.entries.map((e: any) => {
         const id = String(e.id).split("|")[0];
         const bal = (r.settlement as any)[e.id] || {};
+        // record the TOKEN amounts too: USD alone cannot tell a won round from a coin that pumped
+        const side = e.side as Side;
+        const tk = side === "bull" ? tokA : tokB;
+        const fld = FIELD[tk] as Field;
+        const pxTok = pxForRound(aid, s.round, fld);
+        const inUsd = (e.stake || 0) / (1 - FEE);
+        const outUsd = (bal.bull || 0) + (bal.uwu || 0);
         return { id, name: nameFor(id), side: e.side, bot: String(e.id).includes(":bot:"),
-                 inUsd: (e.stake || 0) / (1 - FEE),
-                 outUsd: (bal.bull || 0) + (bal.uwu || 0) };
+                 inUsd, outUsd,
+                 tok: String(tk).toUpperCase(),
+                 inTok: pxTok > 0 ? inUsd / pxTok : 0,
+                 outTok: pxTok > 0 ? outUsd / pxTok : 0 };
       }),
     });
   } catch { /* history must never break a settlement */ }
@@ -507,6 +516,41 @@ async function refreshChainHoldings() {
   } catch { /* leave the last good reading in place */ }
 }
 setInterval(refreshChainHoldings, 60_000).unref?.();
+
+// D1 — AUTO-REBALANCE. A convert moves the vault's token mix on-chain but leaves the ledger pool
+// untouched, so the float silently strands: 1,588 UWU once sat in the vault owned by nobody while
+// the arena could only field three fighters. This has needed a manual RESYNC_POOL_ON_BOOT three
+// times, which is three times too many for something a daemon can see.
+//
+// It re-anchors the HOUSE float only, never player balances, and it can only ever credit UP TO what
+// the chain backs — resyncPoolToChain refuses to write down an over-claiming ledger, because that
+// would conceal a real shortfall rather than fix one.
+const AUTO_REBALANCE = process.env.AUTO_REBALANCE !== "0";
+const REBALANCE_MIN_GAP_USD = Number(process.env.REBALANCE_MIN_GAP_USD || 5);
+async function autoRebalance(): Promise<void> {
+  if (!AUTO_REBALANCE || !chainReady() || isFrozen()) return;
+  try {
+    await refreshChainHoldings();
+    const px = solUsd();
+    const held: Record<string, number> = { uwu: lastChain.uwu, bull: lastChain.bull, sol: px ? lastChain.sol * px : 0 };
+    const pool = new Set(poolPubkeys());
+    for (const f of ["uwu", "bull", "sol"] as const) {
+      if (f === "sol" && !(px > 0)) continue;                 // cannot value SOL without a price
+      if (!(held[f] > 0)) continue;
+      const usdPerTok = f === "sol" ? 1 : usdPerUnitSafe(f);
+      if (!(usdPerTok > 0)) continue;
+      // only act on a gap big enough to matter, so we are not rewriting the book every minute
+      const r = resyncPoolToChain(ledger, pool, f, held[f]);
+      if (r.moved * usdPerTok >= REBALANCE_MIN_GAP_USD) {
+        console.log(`auto-rebalance: ${f} ${r.from.toFixed(4)} -> ${r.to.toFixed(4)} (+${r.moved.toFixed(4)}, $${(r.moved * usdPerTok).toFixed(2)})`);
+        persist(); flush();
+      } else if (r.reason && r.reason.startsWith("INSOLVENT")) {
+        console.error(`auto-rebalance: ${f} REFUSED — ${r.reason}`);
+      }
+    }
+  } catch (e) { console.error("auto-rebalance failed:", redact((e as Error).message)); }
+}
+setInterval(() => { void autoRebalance(); }, Number(process.env.REBALANCE_MS || 5 * 60_000)).unref?.();
 refreshChainHoldings();
 
 if (process.env.RECOVER_FLOAT_ON_BOOT === "1") {

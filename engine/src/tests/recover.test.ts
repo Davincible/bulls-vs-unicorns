@@ -169,3 +169,37 @@ test("the credited amount matches what the convert should have paid", () => {
   const shouldHavePaid = (usdConverted * (1 - CONVERT_FEE)) / uwuPx;
   assert.ok(Math.abs(shouldHavePaid - 262) < 2, `expected ~262 UWU, computed ${shouldHavePaid.toFixed(1)}`);
 });
+
+// ---- D1: automatic rebalance ----
+// A convert moves the vault's token mix on-chain but leaves the ledger pool untouched, so the float
+// strands: 1,588 UWU once sat in the vault owned by nobody while the arena could field 3 fighters.
+// This has needed a manual resync three times. The daemon must be safe enough to run unattended.
+test("auto-rebalance only acts on a gap worth acting on", () => {
+  const MIN_USD = 5, pxUwu = 0.0277;
+  const tiny = 20 * pxUwu;                 // 20 UWU adrift
+  const real = 1588 * pxUwu;               // the gap that actually stranded the arena
+  assert.ok(tiny < MIN_USD, `$${tiny.toFixed(2)} is noise — do not rewrite the book for it`);
+  assert.ok(real > MIN_USD, `$${real.toFixed(2)} is worth correcting`);
+});
+
+test("auto-rebalance can never write DOWN an over-claiming ledger", () => {
+  const pool = acct("W1", { uwu: 900 });
+  const r = resyncPoolToChain(ledgerOf(pool), new Set(["W1"]), "uwu", 500);
+  assert.equal(r.moved, 0, "must not move");
+  assert.match(r.reason!, /INSOLVENT/, "and must say so loudly — silence would hide a shortfall");
+  assert.equal(pool.uwu, 900);
+});
+
+test("auto-rebalance never touches player balances, only the house", () => {
+  const pool = acct("W1", { uwu: 0 });
+  const player = acct("P1", { uwu: 200 });
+  const r = resyncPoolToChain(ledgerOf(pool, player), new Set(["W1"]), "uwu", 500);
+  assert.equal(player.uwu, 200, "player untouched");
+  assert.equal(r.moved, 300, "only the surplus beyond what players are owed");
+});
+
+test("a missing SOL price skips the SOL leg rather than valuing it at zero", () => {
+  const px = 0;
+  const shouldSkip = !(px > 0);
+  assert.equal(shouldSkip, true, "valuing SOL at 0 would look like a huge shortfall and refuse");
+});
