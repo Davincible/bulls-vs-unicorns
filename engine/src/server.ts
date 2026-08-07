@@ -28,6 +28,7 @@ import { recoverInPlace, resyncPoolToChain, writeDownOverclaim } from "./recover
 import { getFloatRecoveredAt, markFloatRecovered } from "./ledger.ts";
 import { poolPubkeys } from "./bot-wallets.ts";
 import { vaultTokenBalance } from "./chain-ops.ts";
+import { hallOfFame, walletHistory } from "./ledger.ts";
 import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, totalDeployed, depSide,
          created, bustedCount, getConvFees, addConvFees, persist, restore, flush, bankFee, TREASURY_ID,
          acct, balPayload, leadersFor, accountUsd, cleanDisplayName, cleanAvatarUrl,
@@ -1360,6 +1361,27 @@ const httpServer = createServer((req, res) => {
                            stale: chainStale(),
                            units: { uwu: "UWU", bull: "BULL", sol: "SOL" } } };
     res.writeHead(200, cors); return res.end(JSON.stringify(out));
+  }
+  // ONE LEDGER. The browser used to derive both of these itself and keep them in localStorage, so
+  // they reset on reload, carried local-sim rounds from before the engine existed, and could never
+  // include a round the tab was closed for. Served from the permanent round log they are the same
+  // kind of fact as the leaderboard: identical for every viewer and recomputable from the anchors.
+  // `url` is the PATH only (line 1250 strips the query), so params must come off req.url — parsing
+  // the stripped path silently gave every request the defaults, which is why ?limit=5 returned 20.
+  if (url === "/hall") {
+    const q = new URL(req.url || "/", "http://x").searchParams;
+    const arena = q.get("arena") || undefined;
+    const limit = Math.min(100, Math.max(1, Number(q.get("limit") || 20)));
+    res.writeHead(200, cors);
+    return res.end(JSON.stringify({ at: Date.now(), hall: hallOfFame(arena, limit) }));
+  }
+  if (url === "/history") {
+    const q = new URL(req.url || "/", "http://x").searchParams;
+    const id = q.get("id") || "";
+    if (!id) { res.writeHead(400, cors); return res.end('{"error":"id required"}'); }
+    const limit = Math.min(100, Math.max(1, Number(q.get("limit") || 40)));
+    res.writeHead(200, cors);
+    return res.end(JSON.stringify({ at: Date.now(), id, history: walletHistory(id, limit, q.get("arena") || undefined) }));
   }
   if (url === "/solvency") {
     res.writeHead(200, cors);

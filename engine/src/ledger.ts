@@ -345,3 +345,56 @@ export function restore() {
 
 /** Flush any pending snapshot synchronously — used on shutdown so nothing in flight is lost. */
 export function flush() { flushSnapshot(); }
+
+/** Wallet shown the way the leaderboard shows it, when the round record carries no name. */
+const shortId = (id: string) => { const w = String(id).split("|")[0]; return w.length > 12 ? w.slice(0, 5) + "…" + w.slice(-3) : w; };
+
+/** Best single-round returns across every wallet — the Hall of Legends, engine-side.
+ *
+ *  The browser built this itself from rounds it happened to witness, kept in localStorage, which
+ *  meant it reset on reload, carried local-sim rounds from before the engine existed, and could
+ *  never include a round the tab was closed for. Deriving it from the permanent round log makes it
+ *  the same kind of fact as the leaderboard: survivorship-free, identical for every viewer, and
+ *  recomputable by anyone from the on-chain anchors.
+ *
+ *  `minStake` keeps dust out: a $0.01 entry returning $0.02 is a 100% round and tells nobody
+ *  anything, so it must not outrank a real one.
+ */
+export function hallOfFame(arena?: string, limit = 20, minStake = 0.25): Array<{
+  id: string; name: string; round: number; arena: string; inAmt: number; outAmt: number;
+  roi: number; at: number; sig?: string;
+}> {
+  const out: any[] = [];
+  for (const r of roundLog) {
+    if (arena && r.arena !== arena) continue;
+    for (const p of r.players) {
+      // inUsd/outUsd — the same fields standingsFromLog reads. Using `in`/`out` matched nothing
+      // and returned a silently empty hall rather than failing loudly.
+      const inAmt = p.inUsd || 0, outAmt = p.outUsd || 0;
+      if (!(inAmt >= minStake) || !(outAmt > inAmt)) continue;
+      out.push({ id: p.id, name: p.name || shortId(p.id), round: r.round, arena: r.arena,
+                 inAmt, outAmt, roi: outAmt / inAmt, at: r.at, sig: r.sig });
+    }
+  }
+  out.sort((a, b) => b.roi - a.roi);
+  return out.slice(0, limit);
+}
+
+/** Every round one wallet actually played, newest first — their own history, from the round log. */
+export function walletHistory(id: string, limit = 40, arena?: string): Array<{
+  round: number; arena: string; at: number; side: string; in: number; out: number;
+  pnl: number; won: boolean; sig?: string;
+}> {
+  const out: any[] = [];
+  for (const r of roundLog) {
+    if (arena && r.arena !== arena) continue;
+    for (const p of r.players) {
+      if (p.id !== id) continue;
+      const inAmt = p.inUsd || 0, outAmt = p.outUsd || 0;
+      out.push({ round: r.round, arena: r.arena, at: r.at, side: p.side,
+                 in: inAmt, out: outAmt, pnl: outAmt - inAmt, won: p.side === r.winner, sig: r.sig });
+    }
+    if (out.length >= limit) break;
+  }
+  return out.slice(0, limit);
+}

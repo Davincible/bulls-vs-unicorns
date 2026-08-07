@@ -137,8 +137,45 @@ label in an arena those tokens are not in, "all session" figures captioned "all-
 
 ---
 
+## Part 0 — PREREQUISITE: one ledger, engine-side only
+
+The client carries a parallel ledger from the pre-engine local-sim era, persisted in localStorage
+and layered UNDER the engine data rather than replaced by it. That is what produced three different
+P/L figures for one wallet with three different round counts. Rebuilding the UI on top of it would
+rebuild against numbers that are about to be replaced, so this comes FIRST.
+
+**Engine endpoints — DONE, these were the blockers:**
+- `/standings` — per-wallet record (rounds, wins, staked, returned, pnl, roi, best, tokNet)
+- `/hall?limit=N` — best single-round returns across all wallets, dust-filtered
+- `/history?id=WALLET&limit=N` — every round one wallet played, with P/L and result
+- `/float`, `/solvency`, `/memo` — house float, backing, anchors
+
+**Client state to DELETE (ref counts at time of writing):**
+
+| symbol | refs | replace with |
+|---|---|---|
+| `w.accounts` | 14 | `/standings` |
+| `INVESTED` | 10 | `/standings.staked` |
+| `w.legends` | 8 | `/hall` |
+| `w.dep` | 8 | `house.depBull` / `house.depUwu` |
+| `w.stolenAll` | 5 | `statsA.stolenA/stolenB` |
+| `w.matchWins` | 5 | `statsA.winsA/winsB` |
+| `w.raidCount` | 4 | round record |
+| `userWorth()` | 3 | `/standings.pnl` |
+
+**Acceptance:** no money or record figure is computed in the browser. Every one traces to an engine
+endpoint. Two panels showing the same fact must read the same field, not merely agree today.
+
+**Note on testing this:** unit tests are not enough on their own here. I wrote `/hall` against
+`in`/`out` when the record carries `inUsd`/`outUsd`; it matched nothing and served an empty list,
+and the tests passed because the fixtures used the same wrong names. Cross-check every new reader
+against `standingsFromLog` over the same log — if the fields diverge, the totals disagree.
+
+---
+
 ## Part 7 — Order of work
 
+0. **One ledger (Part 0)** — prerequisite; everything below renders numbers that come from it
 1. Kill the wrong figures (labels, unit captions, dropped tiles) — cheap, and they are lies today
 2. Rebuild the dashboard to Part 4
 3. Two-line top bar, named arena picker, wallet top-right
