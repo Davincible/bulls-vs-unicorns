@@ -218,6 +218,12 @@ function floatUsd(): number {
 // every round (joined 50 / busted 49 / entries 0). Sizing the crowd to the money keeps each bot
 // solvent enough to actually play.
 const BOT_MIN_RUNWAY = Number(process.env.BOT_MIN_RUNWAY || 3);   // stakes a new bot should afford
+// How many fighters one funding draw is spread over. Not the whole theoretical population: dividing
+// by that starved every bot at birth (pool/79 on a $43 pool = $0.55 each).
+const BOT_FUND_SPREAD = Number(process.env.BOT_FUND_SPREAD || 8);
+// Share of the pool routine funding may never touch, held back so the house can still ANSWER a
+// player's bet. Matching is allowed to use the whole pool; only the routine top-up is limited.
+const POOL_RESERVE_FRAC = Number(process.env.POOL_RESERVE_FRAC || 0.35);
 function popAffordable(): number {
   // fake banks (test chains only) have no pool to afford anything from - population is uncapped
   // there, or dev arenas would seed once and never replace a busted bot
@@ -276,7 +282,12 @@ function newBot(aid: string, side: Side): Account | null {
     ? BOT_BANK_MIN + Math.random() * (BOT_BANK_MAX - BOT_BANK_MIN)
     : unitsForUsd(field, BOT_BANK_USD_MIN + Math.random() * (BOT_BANK_USD_MAX - BOT_BANK_USD_MIN));
   // spread the draw across the number of bots the float can support, not a fixed 40
-  a[field] = bankFor(field, want, Math.max(1, popAffordable()));
+  // A NEW BOT WAS BORN BROKE. The spread here divided the pool by how many bots the float could
+  // THEORETICALLY support (~79), so a new fighter drew pool/79 - roughly $0.55 out of a $43 pool -
+  // and then staked a fraction of that. It is the reason rounds looked like dust however much float
+  // we added. Spread across a realistic lobby instead, still bounded by the per-bot ceiling.
+  const spreadN = Math.max(1, Math.min(popAffordable(), BOT_FUND_SPREAD));
+  a[field] = bankFor(field, want, spreadN);
   // A bot that cannot afford one minimum stake is not a participant, it is churn: it busts on the
   // next settle and takes a respawn slot with it. Hand the money back and don't create it.
   const minStake = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(field, BOT_STAKE_USD_MIN);
@@ -629,6 +640,47 @@ setInterval(() => { void autoRebalance(); }, Number(process.env.REBALANCE_MS || 
 // above a ceiling back into the pool, where it funds new fighters. Pure house-internal reallocation:
 // no player balance is involved and the total is unchanged.
 const BOT_MAX_BANK_USD = Number(process.env.BOT_MAX_BANK_USD || 12);
+// THE MIRROR OF levelBots. That one skims a bot ABOVE a ceiling back to the pool; nothing ever
+// filled one UP TO a floor, because the pool only reached a bot when the bot was CREATED. So a bot
+// that lost a few rounds stayed permanently poor, and since a routine stake is a fraction of the
+// bank, poor bots field dust forever. The measured result: bots holding ~$6 UWU and ~$4 SOL while
+// the pool sat on $43 and $57 - about 90% of the float idle, and rounds worth ~$3 on a ~$100 book.
+//
+// This is house money moving between house wallets. It never touches a player balance, never
+// creates balance (every token comes out of the pool), and is bounded by BOT_MAX_BANK_USD, the
+// same ceiling levelBots enforces from the other direction.
+function topUpBots(aid: string): void {
+  if (!botBankReady()) return;
+  const floorUsd = Number(process.env.BOT_BANK_FLOOR_USD || BOT_MAX_BANK_USD * 0.5);
+  const pool = new Set(poolPubkeys());
+  const toppedUsd: Record<string, number> = {};
+  for (const a of botsFor(aid)) {
+    if (pool.has(a.id) || (a as any).retired) continue;
+    for (const f of ["bull", "uwu", "sol"] as const) {
+      const px = f === "sol" ? 1 : usdPerUnitSafe(f as Field);
+      if (!(px > 0)) continue;
+      const usd = (a[f] || 0) * px;
+      if (usd >= floorUsd) continue;
+      // KEEP A RESERVE. Filling every fighter to the floor drained the pool to $0, and the pool is
+      // exactly what matchPlayerStake draws on to answer a human bet - so topping up the routine
+      // book to the brim would have starved the one thing the player actually notices. Never spend
+      // the last RESERVE_FRAC of the pool on routine funding; matching may still use all of it.
+      const poolTok = poolBalance(f as Field);
+      const spendable = Math.max(0, poolTok - poolTok * POOL_RESERVE_FRAC);
+      if (!(spendable > 0)) continue;
+      const wantTok = Math.min((floorUsd - usd) / px, spendable);
+      const drawn = drawBank(f as Field, wantTok, 1);   // capped by what the pool really holds
+      if (drawn > 0) { a[f] = (a[f] || 0) + drawn; toppedUsd[f] = (toppedUsd[f] || 0) + drawn * px; }
+    }
+  }
+  const tot = Object.values(toppedUsd).reduce((n, v) => n + v, 0);
+  if (tot > 0.5 && Date.now() - lastTopLog > 60_000) {
+    lastTopLog = Date.now();
+    console.log(`top-up: ${Object.entries(toppedUsd).map(([f, v]) => `${f} $${v.toFixed(2)}`).join(", ")} into fighters`);
+  }
+}
+let lastTopLog = 0;
+
 function levelBots(): void {
   if (!botBankReady()) return;
   const pxOf = (f: Field) => (f === "sol" ? 1 : usdPerUnitSafe(f));
@@ -1008,6 +1060,10 @@ function ensureMinimumEntries(aid: string): void {
 }
 
 function botsEnter(aid: string) {
+  // Refill the fighters from the float BEFORE they size their stake. A routine stake is a fraction
+  // of the bank, so a starved bot fields dust no matter how generous that fraction is - which is
+  // why ~$100 of float was producing ~$3 rounds. House money between house wallets only.
+  topUpBots(aid);
   const rn = runners[aid]; if (rn.state.phase !== "lobby") return;
   const [tokA, tokB] = arenaTokens(aid);
   let pool = botsFor(aid);
