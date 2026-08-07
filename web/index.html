@@ -744,7 +744,19 @@
   function userCircle(w,side){return w.userCircles.find(c=>c.side===side);}
   function deposit(w,side,amt,auto){
     if(w.online){                                    // online: the ENGINE holds your balance and the round
-      if(w.phase!=="lobby"){$("#walletNote").textContent="⛔ Deposits closed — fight's on. Next lobby soon.";return;}
+      // B7 — a deploy asked for mid-fight is HELD, not thrown away. Rounds are ~40s, so refusing
+      // meant sitting and watching for the lobby to reopen and clicking at the right moment. The
+      // intent is recorded and replayed the instant the next lobby opens, which is what "next lobby
+      // soon" was already telling the player would happen.
+      if(w.phase!=="lobby"){
+        if(auto)return;                       // auto-deploy already fires at lobby open; never queue it
+        w.queued=(w.queued||[]).filter(q=>q.side!==side);   // one pending deploy per side, latest wins
+        w.queued.push({side,amt});
+        if(w.queued.length>4)w.queued.shift();
+        const _m=side==="bull"?metaA():metaB();
+        $("#walletNote").textContent="⏳ Queued $"+Number(amt).toFixed(2)+" → "+_m.team+" — deploys when the next lobby opens. Click again to change.";
+        return;
+      }
       // A refresh clears the session (we never auto-connect a wallet on load). Clicking Deploy is
       // an explicit intent to play, so reconnect+sign here instead of dead-ending the player.
       if(!MYWALLET){
@@ -1206,12 +1218,24 @@
     set("brRaids",w.raidCount||0);
     set("brTotal","$"+tot.toFixed(2));
 
-    const st=w.stolen||{}, all=w.stolenAll||{};
+    const st=w.stolen||{};
+    // A5 — ALL-TIME comes from the engine, which counts every round ever settled in this arena.
+    // w.stolenAll is a browser-local tally: it zeroes on reload and on every arena switch, and only
+    // ever counted hits this tab was open to see, so it was "this session" wearing an all-time
+    // label. Fall back to it only when the engine figure has not arrived yet.
+    const _ast=(window.__ST&&window.__ST.arenas&&window.__ST.arenas[PAIRING+"-"+w.mode]||{}).stats||{};
+    const _engAll=(_ast.stolenA!==undefined||_ast.stolenB!==undefined);
+    const all=w.stolenAll||{};
     // side A fights with token fa, so what gets stolen FROM them is fa (and vice versa)
     set("brStoleA",tokAmt(fa,st[fa]||0)); setTok("brStoleAN",A.tok,A.label+" taken  ("+money(fa,st[fa]||0)+")");
     set("brStoleB",tokAmt(fb,st[fb]||0)); setTok("brStoleBN",B.tok,B.label+" taken  ("+money(fb,st[fb]||0)+")");
-    set("brAllA",tokAmt(fa,all[fa]||0));  setTok("brAllAN",A.tok,A.label+" taken  ("+money(fa,all[fa]||0)+")");
-    set("brAllB",tokAmt(fb,all[fb]||0));  setTok("brAllBN",B.tok,B.label+" taken  ("+money(fb,all[fb]||0)+")");
+    if(_engAll){
+      set("brAllA","$"+(_ast.stolenA||0).toFixed(2)); setTok("brAllAN",A.tok,A.label+" taken · all-time");
+      set("brAllB","$"+(_ast.stolenB||0).toFixed(2)); setTok("brAllBN",B.tok,B.label+" taken · all-time");
+    } else {
+      set("brAllA",tokAmt(fa,all[fa]||0));  setTok("brAllAN",A.tok,A.label+" taken (this session)");
+      set("brAllB",tokAmt(fb,all[fb]||0));  setTok("brAllBN",B.tok,B.label+" taken (this session)");
+    }
   }
   function syncDashboard(){renderDashArenas();renderBattleReport();const w=W();$("#dashMode").textContent="· "+MODE[w.mode].cap;
     $("#dDepBull").textContent=fmt(w.online?(w.engDepBull||0):w.dep.bull);$("#dDepUni").textContent=fmt(w.online?(w.engDepUwu||0):w.dep.unicorn);$("#dWinBull").textContent=w.matchWins.bull;$("#dWinUni").textContent=w.matchWins.unicorn;
@@ -2062,6 +2086,13 @@
           // whichever ran first won and the other never fired. That is why it "worked sometimes".
           // The first also required a side to be manually selected, so with none selected it did
           // nothing at all, and neither de-duplicated against a reconnect mid-lobby.
+          // B7 — replay anything queued during the fight. Guarded on the round like auto-deploy, so
+          // a reconnect replaying the lobby snapshot cannot fire the same queued stake twice.
+          if(s.phase==="lobby" && MYWALLET && (w.queued||[]).length && w.queuedRound!==s.round){
+            w.queuedRound=s.round;
+            const pending=w.queued; w.queued=[];      // clear BEFORE deploying, so a failure cannot loop
+            for(const q of pending) deposit(w,q.side,q.amt,false);
+          }
           if(s.phase==="lobby" && MYWALLET && w.autoRound!==s.round){
             const on = ($("#autoTick")&&$("#autoTick").checked) || (w.autoPct||0)>0;
             if(on){

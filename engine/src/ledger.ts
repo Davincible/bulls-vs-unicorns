@@ -53,8 +53,12 @@ export function roundHistory(limit = 40, wallet?: string): RoundRecord[] {
   return rows.slice(0, limit);
 }
 // per-arena economics for the dashboard: deployed, house take, matches, slot wins
-export const statsA: Record<string, { deployed: number; take: number; matches: number; winsA: number; winsB: number }> = {};
-export const stat = (aid: string) => (statsA[aid] ||= { deployed: 0, take: 0, matches: 0, winsA: 0, winsB: 0 });
+// stolenA/stolenB are CUMULATIVE raided value per side, in USD, and they live here because this
+// record is already persisted and already shipped to the client. The browser kept its own copy,
+// which zeroed on reload and on every arena switch and only ever counted hits that browser happened
+// to witness - so "all-time stolen" was really "since you opened the tab, if you watched it all".
+export const statsA: Record<string, { deployed: number; take: number; matches: number; winsA: number; winsB: number; stolenA?: number; stolenB?: number }> = {};
+export const stat = (aid: string) => (statsA[aid] ||= { deployed: 0, take: 0, matches: 0, winsA: 0, winsB: 0, stolenA: 0, stolenB: 0 });
 // house take: the 0.2% skimmed on every deploy, tracked per mode
 export const treasury: Record<Mode, number> = { normal: 0, extraction: 0 };
 

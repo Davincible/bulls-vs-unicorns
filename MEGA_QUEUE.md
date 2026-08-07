@@ -107,7 +107,31 @@ Token bucket per IP off Fly's client-ip header, bounded table, /live exempt.
 Verified live: 80 concurrent -> 49x200 / 31x429; sequential traffic untouched.
 
 ### SEC-M2 validate `m.side` · **DONE**
-### SEC-M6 tighten CORS · SEC-M7 stale chain reads · SEC-L1 `resync` · SEC-L3 CSP — **PENDING**
+### SEC-M7 stale chain reads · **DONE**
+Reads committed as one snapshot (a mid-sequence failure used to leave one token fresh and two
+stale under the OLD timestamp), and auto-rebalance now refuses to spend on a reading older than
+5 min. /float publishes ageSec + stale.
+
+### SEC-L3 CSP · **DONE (with stated limits)**
+'unsafe-inline' is unavoidable while the app is one inline script, so this does not stop injected
+script running - it stops it exfiltrating (connect-src/img-src) or pulling more code (script-src).
+
+### SRI on the CDN script · **DONE** (not in the original audit — found while writing the CSP)
+@solana/web3.js was loaded from unpkg with no integrity check, on a page where people sign real
+mainnet transactions. Now pinned by sha384.
+
+### SEC-M6 tighten CORS · **ASSESSED, DELIBERATELY NOT CHANGED**
+All endpoints are GET-only unauthenticated public data, no cookies, /wallets already truncates.
+Tightening gains nothing curl cannot do. Rate limiting was the real control and it shipped.
+
+### SEC-L1 `resync` — **PENDING**
+
+### B7 queued deposits · **DONE**
+A deploy asked for mid-fight is held and replayed at the next lobby instead of refused.
+
+### A5 battle report all-time stolen · **DONE**
+Moved to the engine (per-arena, persisted, from the authoritative hit log). The browser tally
+zeroed on reload and on arena switch and only counted hits that tab witnessed.
 
 ### B3 sub-cent damage on screen · **DONE**
 Under a tenth of a cent now reads "<$0.001" rather than "$0.000".

@@ -308,6 +308,17 @@ function pushBalance(wallet: string) { const s = JSON.stringify(balPayload(walle
 async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   const mode = arenaEco(aid);
   const [tokA, tokB] = arenaTokens(aid);
+  // A5 — accumulate raided value per side, from the authoritative server-side hit log rather than
+  // from whatever a browser happened to see. `tk` names the side the value was taken FROM, and the
+  // sim runs in USD, so these are USD and are labelled as such at the point of display.
+  {
+    const st = stat(aid);
+    for (const h of (r.hits || [])) {
+      if (!(h.amt > 0)) continue;
+      if (h.tk === "bull") st.stolenA = (st.stolenA || 0) + h.amt;
+      else st.stolenB = (st.stolenB || 0) + h.amt;
+    }
+  }
   const touched = new Set<string>();
   for (const [key, bal] of Object.entries(r.settlement)) {
     const id = key.split("|")[0];
