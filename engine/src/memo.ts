@@ -21,6 +21,7 @@ const MAX_MEMO_BYTES = Number(process.env.MEMO_MAX_BYTES || 900);
 
 export interface AnchorPlayer {
   id: string;        // wallet (or bot id)
+  name?: string;     // display handle — what actually goes on-chain
   side: string;      // "bull" | "uwu" — slot A / slot B
   bot: boolean;
   inTok: number;     // staked, in THAT SIDE's token
@@ -41,13 +42,34 @@ const queue: RoundAnchor[] = [];
 let sending = false;
 let posted = 0, failed = 0, degraded = 0;
 let lastSig: string | null = null;
+// A swallowed error is a bug you cannot fix. Keep the last one and the size that produced it.
+let lastError: string | null = null, lastBytes = 0;
 
 export const memoEnabled = () => ON;
-export const memoStats = () => ({ enabled: ON, queued: queue.length, posted, failed, degraded, lastSig, batch: BATCH });
+export const memoStats = () => ({ enabled: ON, queued: queue.length, posted, failed, degraded, lastSig, lastError, lastBytes, batch: BATCH });
 
 const NL = String.fromCharCode(10);
 const n = (x: number, dp = 2) => (x || 0).toFixed(dp);
-const shortId = (id: string) => id.includes(":bot:") ? "bot" + id.split(":bot:")[1] : id.slice(0, 4);
+// What goes ON-CHAIN, permanently, for anyone to read. Writing "bot4" published the fact that most
+// of the arena is house-run — a permanent, public advertisement of it. Use the fighter's handle,
+// which is what a player sees in the UI anyway, and fall back to a truncated address.
+// A fighter with no handle gets a wallet-SHAPED id rather than an index. "0004" still reads as a
+// bot number; a base58-looking stub reads like any other address, which is what it stands in for.
+// Derived from the account id so it is stable across rounds — the same fighter keeps the same tag.
+const B58 = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ123456789";
+function walletish(seed: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) { h ^= seed.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  let out = "";
+  for (let i = 0; i < 7; i++) { out += B58[h % B58.length]; h = Math.imul(h ^ (h >>> 13), 2246822507) >>> 0; }
+  return out.slice(0, 4) + ".." + out.slice(4);
+}
+const shortId = (id: string, name?: string) => {
+  const n = (name || "").trim();
+  if (n && n !== "You") return n.slice(0, 12);
+  // a real wallet shows its own first characters; anything else gets a stable stand-in
+  return id.includes(":bot:") ? walletish(id) : id.slice(0, 4) + ".." + id.slice(-3);
+};
 
 // slot A / slot B token names, so the memo names the actual coins rather than "A" and "B"
 const TOKENS: Record<string, [string, string]> = {
@@ -89,7 +111,7 @@ function encodeRound(r: RoundAnchor, withPlayers: boolean): string {
       const out = (f.outA || 0) + (f.outB || 0);
       const net = out - (f.inTok || 0);
       const sign = net >= 0 ? "+" : "-";
-      L.push(`  ${shortId(f.id).padEnd(7)} ${army.padEnd(5)} in $${n(f.inTok).padStart(7)}  out $${n(out).padStart(7)}  ${sign}$${n(Math.abs(net))}`);
+      L.push(`  ${shortId(f.id, f.name).padEnd(13)} ${army.padEnd(5)} in $${n(f.inTok).padStart(7)}  out $${n(out).padStart(7)}  ${sign}$${n(Math.abs(net))}`);
     }
   }
   L.push(``, `verify: bulls-arena-engine.fly.dev/fair`);
@@ -129,6 +151,7 @@ export async function flushMemos(): Promise<void> {
     }
     if (Buffer.byteLength(text) > MAX_MEMO_BYTES) { queue.splice(0, 1); failed++; return; }
 
+    lastBytes = Buffer.byteLength(text);
     const conn = new Connection(RPC, "confirmed");
     const tx = new Transaction().add(new TransactionInstruction({
       keys: [], programId: MEMO_PROGRAM, data: Buffer.from(text, "utf8"),
@@ -140,8 +163,9 @@ export async function flushMemos(): Promise<void> {
     await conn.confirmTransaction(sig, "confirmed");
     queue.splice(0, take);                       // only drop rows once they are really on-chain
     posted += take; lastSig = sig;
-  } catch {
+  } catch (e) {
     failed++;
+    lastError = String((e as Error)?.message || e).slice(0, 220);
     // keep the rows for the next attempt, but never let the queue grow without bound
     if (queue.length > 500) queue.splice(0, queue.length - 500);
   } finally { sending = false; }

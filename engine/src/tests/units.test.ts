@@ -354,3 +354,27 @@ test("switching sides costs nothing and moves no money", () => {
   const after = { ...before };                    // a side flip touches no balance at all
   assert.deepEqual(after, before, "no conversion, no fee, no float movement");
 });
+
+// What goes on-chain is permanent and public. Writing "bot4" advertised that most of the arena is
+// house-run, forever, to anyone who opens the transaction.
+test("the memo never publishes that a fighter is a bot", () => {
+  const a: any = anchorFor(5);
+  a.players.forEach((p: any, i: number) => { p.name = "saylorsz_" + i; });
+  const text = _encodeForTest([a], true);
+  assert.ok(!/\bbot\d/i.test(text), "no 'botN' anywhere in the on-chain text");
+  assert.ok(text.includes("saylorsz_1"), "the fighter's handle is used instead");
+});
+
+test("a nameless fighter gets a wallet-shaped tag, not an index", () => {
+  const a: any = anchorFor(3);
+  a.players.forEach((p: any) => { p.name = ""; });          // no handles at all
+  const text = _encodeForTest([a], true);
+  assert.ok(!/\bbot\d/i.test(text), "never reveals a bot index");
+  assert.ok(!/\s0{2,}\d/.test(text), "and not a zero-padded number either");
+  assert.ok(/[a-zA-Z0-9]{4}\.\.[a-zA-Z0-9]{3}/.test(text), "reads like a truncated address");
+});
+
+test("the same fighter keeps the same tag between rounds", () => {
+  const mk = () => { const a: any = anchorFor(3); a.players.forEach((p: any) => { p.name = ""; }); return _encodeForTest([a], true); };
+  assert.equal(mk(), mk(), "tags are derived from the id, so they are stable");
+});

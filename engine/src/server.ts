@@ -311,7 +311,8 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
       winner: r.winner, pot,
       players: s.entries.map((e: any) => {
         const bal = (r.settlement as any)[e.id] || {};
-        return { id: String(e.id).split("|")[0], side: e.side, bot: String(e.id).includes(":bot:"),
+        const pid = String(e.id).split("|")[0];
+        return { id: pid, name: nameFor(pid), side: e.side, bot: String(e.id).includes(":bot:"),
                  inTok: (e.stake || 0) / (1 - FEE), outA: bal.bull || 0, outB: bal.uwu || 0 };
       }),
     });
