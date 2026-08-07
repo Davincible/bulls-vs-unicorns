@@ -22,7 +22,7 @@
   .nav button:hover,.modes button:hover{color:var(--ink)}
   .nav button.on{background:var(--panel2);color:var(--gold)} .modes button.on[data-mode=normal]{background:var(--bull);color:#052} .modes button.on[data-mode=extraction]{background:var(--gold);color:#241c00} #pairSel button.on{background:var(--gold);color:#241c00;border-color:var(--gold);box-shadow:0 0 10px rgba(255,192,72,.35)}
   .ficon{background:var(--panel);border:1px solid var(--line);border-radius:11px;color:var(--ink-soft);cursor:pointer;font-size:14px;padding:8px 11px;transition:color .15s,border-color .15s} .ficon:hover{color:var(--gold);border-color:var(--gold)}
-  .ticker{margin-top:6px;background:linear-gradient(90deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:12px;height:34px;overflow:hidden;position:relative;display:flex;align-items:center}
+  .ticker{margin-top:6px;background:linear-gradient(90deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:12px;height:34px;overflow:hidden;position:relative;display:flex;align-items:center;isolation:isolate;z-index:0}
   .ticker .lbl{flex:none;font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--gold);padding:0 14px;border-right:1px solid var(--line);height:100%;display:flex;align-items:center;background:rgba(255,192,72,.06)}
   .ticker .track{display:flex;gap:26px;white-space:nowrap;padding-left:16px} .ticker .win{font-family:var(--mono);font-size:12px;display:flex;align-items:center;gap:6px} .ticker .win b{color:var(--gold)} .ticker .win .mult{color:var(--crit);font-weight:700}
   .view{display:none} .view.on{display:block}
@@ -486,7 +486,9 @@
     const body=h.nextElementSibling; if(body)body.style.display=body.style.display==="none"?"block":"none";});
   const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const fmt=n=>{n=Math.max(0,n);
-    // below a cent, 2dp collapses every small raid to "$0.00" — show 3dp so the hit is visible
+    // below a cent, 2dp collapses every small raid to "$0.00" — show 3dp so the hit is visible.
+    // Below a TENTH of a cent even 3dp reads "$0.000", which is the same lie one digit later.
+    if(n>0&&n<0.001)return "<$0.001";
     if(n>0&&n<0.01)return "$"+n.toFixed(3);
     return "$"+(n>=1000?n.toLocaleString("en-US",{maximumFractionDigits:0}):n.toLocaleString("en-US",{maximumFractionDigits:n<10?2:0}));};
   const NAMES=["degenDan","sol_sniper","0xViper","moonboy","rugproof","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","vibecheck","noReentry","gigaGwei","turboTina","elayne","copetrader","sendit","wenLambo","paperhandz","diamondD","fomoFrank","sizzle","nakamotto","zkZoe","based_bri","yeetard","hodlorbe","greenwick","stampede","hornsUp","glitter","prancer","charge","maxbid","alphaleak","serSlippy","tendieTom","voidwalker"];
@@ -911,7 +913,15 @@
         return `<div class="lbRow" data-name="${esc(l.name)}"><span class="rk">${i+1}</span><span class="who"><span class="dot ${l.side==="bull"?"bull":"uni"}"></span><span class="nmx">${esc(l.name)}</span><div class="pct" style="color:var(--ink-faint)">round ${l.round} · ${l.mode||""}</div></span>${compBar(l.side==="bull"?(l.outAmt||0):0,l.side==="bull"?0:(l.outAmt||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}${fmt(Math.abs(pnl))}<div class="pct">${fmt(l.inAmt)} → ${fmt(l.outAmt)}</div></span><span class="rd" style="color:var(--gold)">${(l.roi*100).toFixed(0)}%</span><button class="abtn ghost" style="padding:2px 8px;font-size:10px" onclick="event.stopPropagation();window.__shareLegend&&__shareLegend(${i})">𝕏</button></div>`;
       }).join(""):'<div class="note">Best single-round returns will show here once rounds settle.</div>';
       return;}
-    if(lbTab==="alltime"){$("#rnav").style.visibility="hidden";$("#lbColBar").textContent="Staked (all-time)";$("#lbColRd").textContent="ROI";
+    if(lbTab==="alltime"){$("#rnav").style.visibility="hidden";$("#lbColBar").textContent="Staked (all-time)";$("#lbColRd").textContent="Net (coins)";
+      // ROI IS GONE FROM THIS BOARD, deliberately. It was computed against TOTAL STAKED, so a player
+      // who re-stakes $1 across fifty rounds shows "staked $50" and an ROI measured against that,
+      // not against the $1 ever actually at risk. The profile computed its own figure a different
+      // way, so the same player legitimately saw two different ROIs and neither was wrong.
+      //
+      // The replacement is the coin-denominated net, which is the honest number here: USD alone
+      // cannot separate "won rounds" from "the coin pumped", and across many rounds that is exactly
+      // the difference an all-time board is claiming to show.
       // FROM THE ROUND LOG, not from live balances. A balance board is a survey of SURVIVORS: a
       // fighter who won and later retired vanishes with their profit, so the aggregate can only ever
       // look negative — which is exactly why nobody appeared profitable. It also read ~0 for anyone
@@ -924,8 +934,8 @@
         return;}
       const maxV=Math.max(1,...rows.map(r=>Math.abs(r.staked||0)));
       $("#lbRows").innerHTML=rows.map((r,i)=>{
-        const pnl=r.pnl||0, roi=(r.roi||0)*100, mine=MYWALLET&&r.id===MYWALLET;
-        return `<div class="lbRow ${mine?'you':''}" data-name="${esc(r.name)}"><span class="rk">${i+1}</span><span class="who">${mine?'<span class="youtag">YOU</span> ':''}<span class="nmx">${esc(r.name)}</span><div class="pct" style="color:var(--ink-faint)">${r.wins}W / ${r.rounds} rounds</div></span>${compBar(pnl>=0?(r.staked||0):0,pnl>=0?0:(r.staked||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}$${Math.abs(pnl).toFixed(2)}<div class="pct">staked $${(r.staked||0).toFixed(2)}</div></span><span class="rd" style="color:${roi>=0?'var(--gold)':'var(--danger)'}">${roi>=0?'+':''}${roi.toFixed(1)}%<div class="pct" style="color:var(--ink-faint)">${tokLine(r.tokNet)}</div></span></div>`;
+        const pnl=r.pnl||0, mine=MYWALLET&&r.id===MYWALLET;
+        return `<div class="lbRow ${mine?'you':''}" data-name="${esc(r.name)}"><span class="rk">${i+1}</span><span class="who">${mine?'<span class="youtag">YOU</span> ':''}<span class="nmx">${esc(r.name)}</span><div class="pct" style="color:var(--ink-faint)">${r.wins}W / ${r.rounds} rounds</div></span>${compBar(pnl>=0?(r.staked||0):0,pnl>=0?0:(r.staked||0),maxV)}<span class="wl ${pnl>=0?'pos':'neg'}">${pnl>=0?'+':'−'}$${Math.abs(pnl).toFixed(2)}<div class="pct">staked $${(r.staked||0).toFixed(2)}</div></span><span class="rd" style="color:${pnl>=0?'var(--gold)':'var(--danger)'}">${tokLine(r.tokNet)||'—'}<div class="pct" style="color:var(--ink-faint)">${r.rounds?Math.round(100*(r.wins||0)/r.rounds)+'% win rate':''}</div></span></div>`;
       }).join("");
       return;}
     setParts("lbColBar",["Wallet size (",{t:"ansem"},"/",{t:"uwu"}," split)"]);$("#lbColRd").textContent="Raided";
@@ -978,7 +988,7 @@
   }
   // the Big Wins ticker belongs to every arena, not just the two-team path
   function renderTicker(w){
-    $("#tickerTrack").innerHTML=(w.wins.length?w.wins:[{name:"first blood soon…",side:"bull",amt:0,mult:1}]).map(x=>`<span class="win"><span class="dot ${x.side==="bull"?"bull":"uni"}"></span>${x.you?'<span class="youtag">YOU</span> ':''}${esc(x.name)} <span class="tkv">${x.from?stand(x.from,x.to):'raided '+fmt(x.amt)}</span>${x.mult>=1.8?' <span class="mult">'+x.mult.toFixed(1)+'×</span>':''}</span>`).join("");
+    $("#tickerTrack").innerHTML=(w.wins.length?w.wins:[{name:"first blood soon…",side:"bull",amt:0,mult:1}]).map(x=>`<span class="win"><span class="dot ${x.side==="bull"?"bull":"uni"}"></span>${x.you?'<span class="youtag">YOU</span> ':''}${esc(x.name)} <span class="tkv">raided ${fmt(x.amt)}${x.from&&x.to>x.from?' · '+stand(x.from,x.to):''}</span>${x.mult>=1.8?' <span class="mult">'+x.mult.toFixed(1)+'×</span>':''}</span>`).join("");
   }
   function syncArena(){
     const w=W();
@@ -1082,7 +1092,8 @@
     };
     const normal=eco("normal","MAYHEM"), extr=eco("extraction","EXTRACTION");
     el.innerHTML=`<div style="background:var(--panel2);border:1px solid var(--line2);border-radius:12px;padding:10px 14px;font-family:var(--mono);font-size:12px">
-      <b>ALL ARENAS</b> · deployed <b>${fmt(tDep)}</b> · total fees <b style="color:var(--gold)">${fmt(tTake)}</b> · matches <b>${tMatch}</b></div>`+normal+extr;
+      <b>ALL ARENAS</b> · volume <b>${fmt(tDep)}</b> · total fees <b style="color:var(--gold)">${fmt(tTake)}</b> · matches <b>${tMatch}</b>
+      <div style="color:var(--ink-faint);font-size:10px;margin-top:3px">volume is every stake ever placed across ${tMatch} rounds, bots included — the same capital re-staked, not money held</div></div>`+normal+extr;
   }
   // N-arena panels: team totals on the left, roster on the right
   function nArmyLabel(w,i){

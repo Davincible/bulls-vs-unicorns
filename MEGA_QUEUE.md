@@ -95,8 +95,43 @@ Has needed a manual `RESYNC_POOL_ON_BOOT` three times. Most fragile thing left.
 **Accept:** detects ledger-vs-chain divergence and re-anchors automatically, with the same
 "never write down an over-claiming ledger" guard.
 
-### SEC-M1 per-wallet mutex · SEC-M2 validate `m.side` · SEC-M3 HTTP rate limiting ·
-### SEC-M6 tighten CORS · SEC-M7 stale chain reads · SEC-L1 `resync` · SEC-L3 CSP — all **PENDING**
+### SEC-M1 · **DONE** — but not as scoped
+The audit guessed "per-wallet mutex". The withdraw/withdrawSol/convert paths already debit before
+their await, so the double-SPEND was covered. The real exposure was crediting: both deposit
+verifiers did check-then-act across an await, so one on-chain deposit could be credited TWICE by
+sending the same relayTx message twice. Signatures are now reserved before the await, released on
+failure so a retry still works.
+
+### SEC-M3 HTTP rate limiting · **DONE**
+Token bucket per IP off Fly's client-ip header, bounded table, /live exempt.
+Verified live: 80 concurrent -> 49x200 / 31x429; sequential traffic untouched.
+
+### SEC-M2 validate `m.side` · **DONE**
+### SEC-M6 tighten CORS · SEC-M7 stale chain reads · SEC-L1 `resync` · SEC-L3 CSP — **PENDING**
+
+### B3 sub-cent damage on screen · **DONE**
+Under a tenth of a cent now reads "<$0.001" rather than "$0.000".
+
+### Big-wins ticker showed losses · **DONE**
+It rendered deposited->current standing, which goes red when a raider is down overall. A raid is
+always a gain; the lifetime standing is a different number. Now shows the raid, and the standing
+only when it is actually up.
+
+### All-time leaderboard ROI · **DONE (removed)**
+ROI was measured against TOTAL STAKED, so re-staking $1 fifty times read as "staked $50". The
+profile computed it differently, so both figures were defensible and they disagreed. Replaced with
+the coin-denominated net + win rate.
+
+### "All-time total 9000" · **DONE (labelled)**
+Not wrong - cumulative deploy volume across ~480 rounds including bots. Now named as volume, with
+the basis stated, instead of reading as money that exists.
+
+### Round counter reset on every deploy · **DONE**
+restore() ran three lines AFTER the runners that read roundsByArena. Pure statement order.
+
+### Previous rounds unrelated/mislabelled · **DONE**
+Two renderers writing the same element from different histories; arena panel unfiltered; labels
+were literally "A"/"B" and resolved from the live picker rather than each round's own arena.
 
 ---
 
