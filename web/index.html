@@ -1663,7 +1663,16 @@
   const AVCACHE={};
   window.avatarImg=avatarImg;
   function avatarImg(url){ if(!url)return null; let o=AVCACHE[url];
-    if(!o){o={img:new Image(),ok:false};o.img.crossOrigin="anonymous";o.img.onload=()=>o.ok=true;o.img.src=url;AVCACHE[url]=o;}
+    if(!o){
+      // No crossOrigin: we only DRAW this image, never read pixels back, so a tainted canvas costs
+      // us nothing — whereas requesting CORS meant any host that omits the header failed silently
+      // and the player's X picture simply never appeared on their fighter.
+      o={img:new Image(),ok:false,tried:0};
+      o.img.onload=()=>{o.ok=true;};
+      o.img.onerror=()=>{ if(o.tried++===0){ o.img=new Image(); o.img.onload=()=>{o.ok=true;};
+        o.img.src="https://unavatar.io/"+encodeURIComponent(String(url).split("/").pop()||""); } };
+      o.img.src=url; AVCACHE[url]=o;
+    }
     return o.ok?o.img:null; }
   function applyX(){try{const x=JSON.parse(localStorage.getItem("bvu_x")||"null");
     if(x){const im=$("#xAvatar");if(im){im.src=x.av;im.style.display="block";}

@@ -768,7 +768,8 @@ setInterval(async () => {
 setInterval(() => {
   const snap = (aid: string) => { const mode = arenaEco(aid); const s = runners[aid].state; return { arena: aid, tokens: arenaTokens(aid), round: s.round, phase: s.phase, multiplier: s.multiplier, entries: s.entries.length, seedHash: s.seedHashPublished, closesInMs: Math.max(0, s.closesAt - Date.now()),
     // who's already in the lobby, so the arena shows fighters gathering instead of sitting empty
-    list: s.phase === "lobby" ? s.entries.slice(0, 40).map(e => ({ id: e.id, name: nameFor(e.id), side: e.side, stake: e.stake })) : [],
+    list: s.phase === "lobby" ? s.entries.slice(0, 40).map(e => ({ id: e.id, name: nameFor(e.id),
+              avatar: ledger.get(e.id.split("|")[0])?.avatar, side: e.side, stake: e.stake })) : [],
     leaders: leadersFor(aid),
     stats: stat(aid),
     house: { take: treasury[mode], conv: getConvFees(), deployed: totalDeployed[mode],
@@ -950,7 +951,11 @@ wss.on("connection", (ws, req) => {
     const s = runners[aid].state;
     if (s.phase === "battle" && s.result) ws.send(JSON.stringify({ t: "roundStart", arena: aid, mode, round: s.round, multiplier: s.multiplier,
       seed: s.seed, seedHash: s.seedHashPublished,
-      entries: s.entries.map(e => ({ id: e.id, wallet: e.id.split("|")[0], side: e.side, stake: e.stake, name: nameFor(e.id), bot: e.id.includes(":bot:") })),
+      // avatar was only on the RECONNECT payload, so a player's X picture never reached their
+      // fighter in a live round — it appeared only if you refreshed mid-battle
+      entries: s.entries.map(e => ({ id: e.id, wallet: e.id.split("|")[0], side: e.side, stake: e.stake,
+                                     name: nameFor(e.id), avatar: ledger.get(e.id.split("|")[0])?.avatar,
+                                     bot: e.id.includes(":bot:") })),
       cfg: newRoundConfig(mode, s.multiplier), hitCount: s.result.hits.length, winner: s.result.winner, settlement: s.result.settlement,
       startedAt: s.closesAt - (s.battleMs || newRoundConfig(mode, s.multiplier).battleMs),   // true start, so a joiner syncs mid-battle
       battleMs: s.battleMs || newRoundConfig(mode, s.multiplier).battleMs, resumed: true }));
