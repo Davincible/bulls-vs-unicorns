@@ -16,7 +16,7 @@ import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildD
 import { priceUSD, startPriceLoop, allPrices, refreshPrices } from "./prices.ts";
 import { RPC, loadVaultKeypair } from "./chain.ts";
 import { swapExact } from "./swap.ts";
-import { anchorRound, memoStats } from "./memo.ts";
+import { anchorRound, memoStats, resultsPayload, resultsHash } from "./memo.ts";
 import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, forget as authForget,
          mintSession, resume as authResume } from "./auth.ts";
 import { isAllowed as walletAllowed } from "./allowlist.ts";
@@ -306,7 +306,7 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   // exit in both tokens. Best-effort and non-blocking — settlement must never wait on the network.
   try {
     const pot = s.entries.reduce((t: number, e: any) => t + (e.stake || 0) / (1 - FEE), 0);
-    anchorRound({
+    const anchor = {
       arena: aid, round: s.round, seedHash: s.seedHashPublished || "", seed: s.seed || "",
       winner: r.winner, pot,
       players: s.entries.map((e: any) => {
@@ -315,7 +315,10 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
         return { id: pid, name: nameFor(pid), side: e.side, bot: String(e.id).includes(":bot:"),
                  inTok: (e.stake || 0) / (1 - FEE), outA: bal.bull || 0, outB: bal.uwu || 0 };
       }),
-    });
+    };
+    anchorRound(anchor);
+    lastAnchors.set(`${aid}:${s.round}`, anchor);
+    if (lastAnchors.size > 300) for (const k of [...lastAnchors.keys()].slice(0, 100)) lastAnchors.delete(k);
   } catch { /* anchoring must never break a settlement */ }
   const realPlaying = s.entries.filter(e => !e.id.includes(":bot:")).length;
   let busted = 0, switched = 0;
@@ -459,6 +462,8 @@ restore();
 // On-chain holdings, refreshed on a slow timer. /float reads this rather than hitting the RPC per
 // request - a public endpoint must not be a way to burn our rate limit.
 const lastChain = { uwu: 0, bull: 0, sol: 0, at: 0 };
+// the exact anchors we hashed, so /round can serve byte-identical data for verification
+const lastAnchors = new Map<string, any>();
 async function refreshChainHoldings() {
   if (!chainReady()) return;
   try {
@@ -750,6 +755,16 @@ const httpServer = createServer((req, res) => {
   // /solvency deliberately ignores house accounts (bot money is ours, not a player liability), so
   // it stayed green while a mispriced bot swap was inventing SOL out of UWU. This is the view that
   // would have caught it: every token, ledger-side vs chain-side, with the gap named.
+  // Serve the rows the on-chain `results` hash commits to. Anyone can re-hash this and check it
+  // matches what was anchored — which is what makes the proof complete for a 200-player lobby that
+  // could never fit in a transaction.
+  if (url.startsWith("/round/")) {
+    const key = url.slice("/round/".length);
+    const a = lastAnchors.get(key);
+    if (!a) { res.writeHead(404, cors); return res.end('{"error":"round not held"}'); }
+    res.writeHead(200, cors);
+    return res.end(JSON.stringify({ hash: resultsHash(a), payload: JSON.parse(resultsPayload(a)) }));
+  }
   if (url === "/memo") { res.writeHead(200, cors); return res.end(JSON.stringify(memoStats())); }
   if (url === "/float") {
     const per = (f: Field) => {

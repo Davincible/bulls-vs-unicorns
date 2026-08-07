@@ -233,9 +233,9 @@ test("a realistic round with per-wallet detail fits in one transaction", () => {
 test("the layout is readable: one fighter per line, aligned", () => {
   const text = _encodeForTest([anchorFor(4)], true);
   const lines = text.split(String.fromCharCode(10));
-  assert.ok(lines.length > 10, "laid out over lines, not crammed onto one");
+  assert.ok(lines.length >= 6, "laid out over lines, not crammed onto one");
   assert.ok(lines.some(l => l.startsWith("WINNER")), "labelled fields");
-  assert.ok(lines.some(l => l.includes("in $") && l.includes("out $")), "in/out per fighter");
+  assert.ok(lines.some(l => /\$[\d.]+>\$[\d.]+/.test(l)), "in>out per fighter");
 });
 
 // The memo is written for a HUMAN reading it on Solscan, not for a decoder. That is the whole point
@@ -243,11 +243,12 @@ test("the layout is readable: one fighter per line, aligned", () => {
 test("the memo reads as plain English on an explorer", () => {
   const text = _encodeForTest([anchorFor(4)], true);
   assert.ok(text.includes("BULLS vs UNICORNS"), "says what it is");
-  assert.ok(text.includes("ROUND 4746"), "says which round");
-  assert.ok(text.includes("UWU vs SOL"), "names the actual coins, not slot A/B");
-  assert.ok(/WINNER\s+(UWU|SOL)/.test(text), "names the winning army");
-  assert.ok(text.includes("published before deploys opened") && text.includes("revealed at fight start"),
-            "spells out what each half of the fairness proof IS, so a stranger knows what to check");
+  assert.ok(text.includes("R4746"), "says which round");
+  assert.ok(text.includes("UWU/SOL"), "names the actual coins, not slot A/B");
+  assert.ok(/WINNER (UWU|SOL)/.test(text), "names the winning army");
+  assert.ok(text.includes("commit ") && text.includes("(before deploys)")
+            && text.includes("seed ") && text.includes("(at fight start)"),
+            "labels each half of the fairness proof so a stranger knows what to check");
   assert.ok(text.includes("$"), "money is shown in dollars");
   assert.ok(!text.includes('{"a":'), "no raw JSON");
 });
@@ -266,7 +267,7 @@ test("dropping player detail is the last resort, and the proof always survives",
   const lean = _encodeForTest([anchorFor(40)], false);
   assert.ok(Buffer.byteLength(lean) < Buffer.byteLength(full));
   // whatever gets dropped, the part a stranger needs in order to VERIFY must always survive
-  for (const must of ["published before deploys opened", "revealed at fight start", "WINNER", "ROUND "]) {
+  for (const must of ["commit ", "seed ", "WINNER", "R4746"]) {
     assert.ok(lean.includes(must), `"${must}" (the verifiable part) must never be dropped`);
   }
 });
@@ -377,4 +378,28 @@ test("a nameless fighter gets a wallet-shaped tag, not an index", () => {
 test("the same fighter keeps the same tag between rounds", () => {
   const mk = () => { const a: any = anchorFor(3); a.players.forEach((p: any) => { p.name = ""; }); return _encodeForTest([a], true); };
   assert.equal(mk(), mk(), "tags are derived from the id, so they are stable");
+});
+
+// Per-player lines cannot scale: 200 wallets need ~6,000 bytes against a 1,232 byte transaction.
+// The memo commits to a hash of the full result set instead, so the proof is complete at any size.
+test("the anchor is constant-size no matter how big the lobby gets", () => {
+  const small = Buffer.byteLength(_encodeForTest([anchorFor(3)], false));
+  const huge = Buffer.byteLength(_encodeForTest([anchorFor(200)], false));
+  assert.ok(Math.abs(huge - small) < 20, `3 players ${small}B vs 200 players ${huge}B — must not grow`);
+  assert.ok(huge < 300, "and it comfortably fits a transaction");
+});
+
+test("the results hash changes if ANY row changes", () => {
+  const a: any = anchorFor(5);
+  const before = _encodeForTest([a], false);
+  a.players[2].outA += 0.01;                       // one player paid a cent differently
+  const after = _encodeForTest([a], false);
+  assert.notEqual(before, after, "a tampered payout must break the anchored hash");
+});
+
+test("row order cannot be shuffled to hide a change", () => {
+  const a: any = anchorFor(6), b: any = anchorFor(6);
+  b.players.reverse();                             // same data, different order
+  assert.equal(_encodeForTest([a], false), _encodeForTest([b], false),
+               "canonical sort means order is not part of the commitment");
 });

@@ -11,6 +11,7 @@
 import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction,
          ComputeBudgetProgram } from "@solana/web3.js";
 import { RPC, loadVaultKeypair } from "./chain.ts";
+import { createHash } from "node:crypto";
 
 const MEMO_PROGRAM = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 const ON = process.env.MEMO_ON_CHAIN === "1";
@@ -98,33 +99,45 @@ const TOKENS: Record<string, [string, string]> = {
  * Every figure is USD. A fighter exits holding BOTH tokens because raids take the enemy's coin, so
  * "out" is the sum of the two — which is why in and out balance to the 0.2% fee.
  */
+/** Canonical, stable serialisation of the results — this is what the on-chain hash commits to.
+ *  Order and formatting are fixed so anyone re-hashing the served data gets the same digest. */
+export function resultsPayload(r: RoundAnchor): string {
+  return JSON.stringify({
+    arena: r.arena, round: r.round, winner: r.winner, seedHash: r.seedHash, seed: r.seed,
+    players: r.players
+      .map(f => [f.id, f.side, +(f.inTok || 0).toFixed(6), +(f.outA || 0).toFixed(6), +(f.outB || 0).toFixed(6)])
+      .sort((x, y) => String(x[0]).localeCompare(String(y[0]))),
+  });
+}
+export const resultsHash = (r: RoundAnchor) =>
+  createHash("sha256").update(resultsPayload(r)).digest("hex");
+
 function encodeRound(r: RoundAnchor, withPlayers: boolean): string {
   const pair = r.arena.split("-")[0];
   const [tokA, tokB] = TOKENS[pair] || ["A", "B"];
-  const mode = r.arena.includes("extraction") ? "EXTRACTION" : "MAYHEM";
+  const mode = r.arena.includes("extraction") ? "EXT" : "MAY";
   const win = r.winner === "bull" ? tokA : tokB;
 
+  // SCALES TO ANY LOBBY SIZE. Per-player lines cannot: 200 wallets would need ~5,600 bytes against a
+  // 1,232 byte transaction. The memo therefore commits to a SHA-256 of the full result set and the
+  // engine serves the underlying rows at /round — anyone can re-hash them and check they match what
+  // was anchored, so the proof is complete no matter how big the lobby gets. Individual lines are a
+  // convenience for small rounds only, included while they fit.
   const L = [
-    `BULLS vs UNICORNS  --  ROUND ${r.round}  (${tokA} vs ${tokB}, ${mode})`,
-    ``,
-    `WINNER    ${win}`,
-    `POT       $${n(r.pot)}   across ${r.players.length} wallet(s)`,
-    ``,
-    `PROVABLY FAIR`,
-    `  commit (published before deploys opened):  ${r.seedHash.slice(0, 16)}`,
-    `  seed   (revealed at fight start):          ${r.seed.slice(0, 16)}`,
+    `BULLS vs UNICORNS  R${r.round}  ${tokA}/${tokB} ${mode}`,
+    `WINNER ${win} | POT $${n(r.pot)} | ${r.players.length} players`,
+    `commit ${r.seedHash.slice(0, 16)}  (before deploys)`,
+    `seed   ${r.seed.slice(0, 16)}  (at fight start)`,
+    `results ${resultsHash(r).slice(0, 32)}`,
   ];
   if (withPlayers && r.players.length) {
-    L.push(``, `RESULTS  (USD -- a raider exits holding BOTH coins)`);
     for (const f of r.players) {
       const army = f.side === "bull" ? tokA : tokB;
       const out = (f.outA || 0) + (f.outB || 0);
-      const net = out - (f.inTok || 0);
-      const sign = net >= 0 ? "+" : "-";
-      L.push(`  ${shortId(f.id, f.name).padEnd(13)} ${army.padEnd(5)} in $${n(f.inTok).padStart(7)}  out $${n(out).padStart(7)}  ${sign}$${n(Math.abs(net))}`);
+      L.push(`${shortId(f.id, f.name)} ${army} $${n(f.inTok)}>$${n(out)}`);
     }
   }
-  L.push(``, `verify: bulls-arena-engine.fly.dev/fair`);
+  L.push(`verify bulls-arena-engine.fly.dev/fair`);
   return L.join(NL);
 }
 
@@ -159,6 +172,7 @@ export async function flushMemos(): Promise<void> {
       take--; text = encode(queue.slice(0, take), withPlayers);
     }
     if (Buffer.byteLength(text) > MAX_MEMO_BYTES) {
+      // Drop the convenience lines, NOT the proof: `results` still commits to every player's row.
       withPlayers = false; degraded++;
       text = encode(queue.slice(0, take), withPlayers);
     }
