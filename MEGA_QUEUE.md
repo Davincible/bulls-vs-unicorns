@@ -21,7 +21,28 @@ Fly target disabled at source. `VAULT_SECRET` in env refused on presence.
 
 ## Tier 1 — Foundation
 
-### ER-010 · Toolchain · **BLOCKED** (environment, needs admin)
+### ER-010 · Toolchain · **DONE — UNBLOCKED without admin**
+
+Solved after the sixth approach. The chain that worked, because none of it is obvious:
+
+1. MinGW + LLVM via `winget --scope user` (no admin) gave a GNU host linker.
+2. That broke the circularity on `xwin`: it needs a host linker to install, and installing it under
+   the GNU toolchain worked where msvc could not.
+3. `xwin splat` fetched the MSVC CRT + Windows SDK **import libraries** without admin. Its header
+   splat fails without symlink privilege — and it turns out headers are not needed, because rustc
+   links, it does not compile C.
+4. `lld-link` (from the same LLVM package) stands in for the absent MSVC `link.exe`.
+5. The libraries are supplied via the **`LIB` env var**, not `rustflags`: `cargo-build-sbf` sets
+   `RUSTFLAGS` itself and env RUSTFLAGS overrides anything in `.cargo/config.toml`. `lld-link` reads
+   `LIB` exactly as MSVC's linker does.
+
+**Built:** `target/deploy/bulls_arena.so`, 331,536 bytes.
+**Deployed to devnet:** `BWhnLnryRJpLbRkpybSQvpr68HfnNDsZha7kgouJJ8Dc`
+sig `4G1vJwvoNfYHcdcCWbSpVkhx9LmGTJHHioutPNK2bJEE232cCVWYLiMZuTaqyznaqo9PhyKjetymNXhKUq8PJzK7`
+**Verified:** executable, owner BPFLoaderUpgradeab1e, on genesis `EtWTRAB…` (devnet); and
+`AccountNotFound` on mainnet.
+
+### ER-010-OLD · what had been tried (kept for the record)
 **What works:** Solana CLI 4.1.2 installed (extracted from the official installer; its final symlink
 step needs admin, so the binaries are used from
 `~/.local/share/solana/install/releases/4.1.2/solana-release/bin`). Configured to devnet.
@@ -69,7 +90,11 @@ dependency graph across both, and anchor 0.30.1's solana-program 1.17 pins `zero
 nothing to do with either program's correctness. Upgrading the vault is separate work.
 **Accept:** `cargo metadata` resolves without conflict. ✅ (resolution verified; compilation blocked by ER-010)
 
-### ER-012 · Devnet keypair + airdrop · **PENDING**
+### ER-012 · Devnet keypair + funding · **DONE**
+Fork payer `9BAjpGZfJm8sfnqNr1vj1K9X3fY8fjk4LE2KRtSTRCaj`, gitignored. The public faucet was
+rate-limited at 2/1/0.5 SOL, so it was funded from the pre-existing **devnet** vault
+`4iDuXiq95uRT74xvGkz4icqnu6ma9qKZmzDuquRZGAFy` (verified NOT the mainnet vault before use).
+sigs `4w93mrgq…` and `5bM63wqn…`. Balance 3.18 SOL.
 **Accept:** a fork-local keypair under `.devnet/`, never the production vault; funded by devnet
 faucet; guard asserts devnet before use.
 

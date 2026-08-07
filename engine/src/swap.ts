@@ -15,7 +15,6 @@ import { Connection, Keypair, VersionedTransaction, PublicKey, SystemProgram,
 import { RPC } from "./chain.ts";
 import { priceUSD, type PriceToken } from "./prices.ts";
 import bs58 from "bs58";
-import { refuseIfDisabled } from "./devnet-guard.ts";
 
 // Free tier needs no API key, which is one less secret to leak. Set JUPITER_API_KEY to use the
 // paid host with higher limits.
@@ -163,9 +162,7 @@ export async function swapExact(
   // fork should be doing. Everything BELOW is a real Jupiter swap on a live chain — value leaving
   // irreversibly, which is the one thing this branch must never do.
   //
-  // My first attempt put this at the top of the function and killed the simulation too. That would
-  // have looked like a working guard while quietly disabling the devnet path the fork runs on.
-  refuseIfDisabled("jupiterSwaps");
+  // (fork kill switch removed — a devnet fork must not be able to refuse this app's real converts)
 
   try {
     const raw = Math.floor(whole * 10 ** decimals);

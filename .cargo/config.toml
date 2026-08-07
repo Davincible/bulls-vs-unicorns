@@ -1,0 +1,5 @@
+# See EXECUTION_REPORT.md. lld-link stands in for MSVC link.exe (absent on this machine); the SDK
+# import libraries come from xwin and are supplied via the LIB env var, because cargo-build-sbf sets
+# RUSTFLAGS itself and env RUSTFLAGS overrides anything configured here.
+[target.x86_64-pc-windows-msvc]
+linker = "lld-link"

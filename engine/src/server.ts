@@ -16,11 +16,15 @@ import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildD
 // ER FORK: devnet-only. This asserts BEFORE anything else can initialise a connection, a vault or
 // a swap. Import order matters here — a guard that runs after the chain module has already picked
 // up a mainnet RPC is decoration.
-import { assertForkIsDevnetOnly } from "./devnet-guard.ts";
-{
-  const checked = assertForkIsDevnetOnly();
-  console.log(`⛓ ER FORK — devnet only. Verified: ${checked.length ? checked.join(", ") : "defaults (devnet)"}`);
-}
+// NO FORK COUPLING IN PRODUCTION.
+//
+// This file previously called assertForkIsDevnetOnly() at boot — a guard belonging to the MagicBlock
+// ER fork, which is devnet-only by construction. On this app, which runs on mainnet by design, it
+// threw on startup and the process exited code 1 in a restart loop until the machine gave up. The
+// live game was down until the image was rolled back.
+//
+// The guard is not wrong; it is simply not ours. A devnet fork's safety rail must never be able to
+// stop the mainnet product from booting, and the fork's own files stay untouched for its own use.
 import { priceUSD, startPriceLoop, allPrices, refreshPrices } from "./prices.ts";
 import { RPC, loadVaultKeypair } from "./chain.ts";
 import { swapExact } from "./swap.ts";

@@ -10,3 +10,16 @@ target/
 test-ledger/
 package-lock.json
 .devnet/
+
+# Build toolchains and vendored SDKs — enormous, machine-specific, and never source.
+# `git add -A` swept 6,496 files / 8.2M lines of Windows SDK headers into a commit once.
+.toolchain/
+.xwin-cache/
+target/
+
+# Toolchain artefacts fetched to make an MSVC-target build work without Visual Studio
+# (see EXECUTION_REPORT.md ER-010). Thousands of vendored Windows SDK files — reproducible with
+# `xwin splat`, and they have no business in the repo.
+.toolchain/
+.xwin-cache/
+target/

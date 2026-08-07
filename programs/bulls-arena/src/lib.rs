@@ -21,12 +21,14 @@
 // in a memo written after it.
 
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::hash::hash;
+// anchor 1.x no longer re-exports solana_program::hash — split crates now. hashv over slices also
+// avoids building a 40-byte scratch buffer by hand, one fewer place to get an offset wrong.
+use solana_sha256_hasher::hashv;
 use ephemeral_rollups_sdk::anchor::{commit, delegate, ephemeral};
 use ephemeral_rollups_sdk::cpi::DelegateConfig;
 use ephemeral_rollups_sdk::ephem::MagicIntentBundleBuilder;
 
-declare_id!("BuLLsArena11111111111111111111111111111111"); // replaced at deploy
+declare_id!("BWhnLnryRJpLbRkpybSQvpr68HfnNDsZha7kgouJJ8Dc"); // devnet program keypair: .devnet/program-keypair.json
 
 pub const ARENA_SEED: &[u8] = b"arena";
 pub const ROUND_SEED: &[u8] = b"round";
@@ -130,14 +132,15 @@ pub mod bulls_arena {
         let fee = stake.checked_mul(arena_fee).ok_or(ArenaError::MathOverflow)? / BPS;
         let net = stake.checked_sub(fee).ok_or(ArenaError::MathOverflow)?;
 
-        if let Some(f) = r.fighters[..r.fighter_count as usize]
+        let n = r.fighter_count as usize;   // read the count BEFORE borrowing fighters mutably
+        if let Some(f) = r.fighters[..n]
             .iter_mut()
             .find(|f| f.wallet == who && f.side == side)
         {
             f.stake = f.stake.checked_add(net).ok_or(ArenaError::MathOverflow)?;
             f.hp = f.hp.checked_add(net).ok_or(ArenaError::MathOverflow)?;
         } else {
-            let i = r.fighter_count as usize;
+            let i = n;
             r.fighters[i] = Fighter { wallet: who, side, stake: net, hp: net, banked: 0, dead: 0 };
             r.fighter_count += 1;
         }
@@ -162,10 +165,8 @@ pub mod bulls_arena {
 
             // Pick attacker and defender from the seed + cursor. Same construction as the engine's
             // xmur3/sfc32 stream in spirit: a hash chain, not a wall clock.
-            let mut pre = [0u8; 40];
-            pre[..32].copy_from_slice(&r.seed);
-            pre[32..].copy_from_slice(&cursor.to_le_bytes());
-            let h = hash(&pre).to_bytes();
+            // sha256(seed ++ le_u64(cursor)) — the TS mirror builds the identical preimage
+            let h = hashv(&[r.seed.as_ref(), cursor.to_le_bytes().as_ref()]).to_bytes();
 
             let a = (u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize) % n;
             let mut d = (u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize) % n;
@@ -200,7 +201,7 @@ pub mod bulls_arena {
     pub fn reveal(ctx: Context<Reveal>, seed: [u8; 32]) -> Result<()> {
         let r = &mut ctx.accounts.round;
         require!(r.phase == Phase::Lobby as u8, ArenaError::NotInLobby);
-        require!(hash(&seed).to_bytes() == r.seed_commit, ArenaError::SeedMismatch);
+        require!(hashv(&[seed.as_ref()]).to_bytes() == r.seed_commit, ArenaError::SeedMismatch);
         r.seed = seed;
         r.phase = Phase::Fight as u8;
         emit!(SeedRevealed { round_no: r.round_no, seed });
