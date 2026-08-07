@@ -12,6 +12,7 @@ import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction,
          ComputeBudgetProgram } from "@solana/web3.js";
 import { RPC, loadVaultKeypair } from "./chain.ts";
 import { createHash } from "node:crypto";
+import { redact } from "./redact.ts";
 
 const MEMO_PROGRAM = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 const ON = process.env.MEMO_ON_CHAIN === "1";
@@ -208,7 +209,8 @@ export async function flushMemos(): Promise<void> {
     }
   } catch (e) {
     failed++;
-    lastError = String((e as Error)?.message || e).slice(0, 220);
+    // redact at the SOURCE too: this string is surfaced on a public endpoint
+    lastError = redact((e as Error)?.message || e).slice(0, 220);
     // keep the rows for the next attempt, but never let the queue grow without bound
     if (queue.length > 500) queue.splice(0, queue.length - 500);
   } finally { sending = false; }

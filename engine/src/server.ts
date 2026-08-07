@@ -12,11 +12,12 @@ import { RoundRunner, newRoundConfig } from "./round.ts";
 import type { RoundResult, RoundState } from "./round.ts";
 import type { Mode, Side } from "./game.ts";
 import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildDepositTx, walletTokenBalance, airdropSol, solBalance, broadcastSigned,
-         buildSolDepositTx, verifySolDeposit, withdrawSol } from "./chain-ops.ts";
+         buildSolDepositTx, verifySolDeposit, withdrawSol, inspectRelayTx } from "./chain-ops.ts";
 import { priceUSD, startPriceLoop, allPrices, refreshPrices } from "./prices.ts";
 import { RPC, loadVaultKeypair } from "./chain.ts";
 import { swapExact } from "./swap.ts";
 import { anchorRound, memoStats, resultsPayload, resultsHash, setMemoFeeSink } from "./memo.ts";
+import { redact, redactDeep } from "./redact.ts";
 import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, forget as authForget,
          mintSession, resume as authResume } from "./auth.ts";
 import { isAllowed as walletAllowed } from "./allowlist.ts";
@@ -935,7 +936,8 @@ const httpServer = createServer((req, res) => {
       standings: standingsFromLog(q.get("arena") || undefined, Math.min(Number(q.get("limit")) || 40, 200)),
     }));
   }
-  if (url === "/memo") { res.writeHead(200, cors); return res.end(JSON.stringify(memoStats())); }
+  // redact at the SINK as well — a future field must not be able to leak by being added
+  if (url === "/memo") { res.writeHead(200, cors); return res.end(JSON.stringify(redactDeep(memoStats()))); }
   if (url === "/float") {
     const per = (f: Field) => {
       let pool = 0, bots = 0, real = 0;
@@ -1225,6 +1227,10 @@ wss.on("connection", (ws, req) => {
         // crediting still goes through the same verify* path that checks the vault actually received
         // the money, so a hostile client cannot get credit for a tx that did not pay us.
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
+        // Relaying is a capability of its own: refuse anything that is not a deposit into our vault
+        // from the wallet that authenticated. Otherwise this is an open relay on our paid RPC.
+        const bad = await inspectRelayTx(String(m.signedB64 || ""), String(m.wallet || ""));
+        if (bad) return ws.send(JSON.stringify({ t: "error", msg: "Refused to relay: " + bad }));
         let sig: string;
         try {
           sig = await broadcastSigned(String(m.signedB64 || ""));
@@ -1430,7 +1436,7 @@ wss.on("connection", (ws, req) => {
         if (!isAuthed(ws, m.wallet)) return;         // balances are private; only the owner may read
         ws.send(JSON.stringify(balPayload(m.wallet)));
       }
-    } catch (e) { ws.send(JSON.stringify({ t: "error", msg: (e as Error).message })); }
+    } catch (e) { ws.send(JSON.stringify({ t: "error", msg: redact((e as Error).message) })); }
   });
 });
 /** Give every open stake back before we die.

@@ -1,6 +1,7 @@
 // On-chain operations for the custodial devnet vault: faucet, deposit-verify, withdraw.
 // All amounts at this API are WHOLE TOKENS (numbers); base-unit conversion is internal.
-import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, Keypair } from "@solana/web3.js";
+import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, Keypair,
+         VersionedTransaction } from "@solana/web3.js";
 import {
   getOrCreateAssociatedTokenAccount, getAssociatedTokenAddress, mintTo, transfer,
   createAssociatedTokenAccountInstruction, createTransferCheckedInstruction, getAccount,
@@ -203,6 +204,66 @@ export async function transferFromVault(walletB58: string, side: "bull" | "uwu",
 // mainnet endpoint when they call sendRawTransaction directly, so the client hands us the signed
 // bytes and we broadcast via our keyed (Helius) endpoint, then confirm. We never sign here — the tx
 // is already fully signed by the user; the vault key is not involved.
+/** Assert a signed transaction is a DEPOSIT from `wallet` into our vault, before we relay it.
+ *
+ *  Broadcasting is a separate capability from crediting. Crediting was already safe — the verify*
+ *  path checks the vault actually received the money — but an unconstrained relay lets an
+ *  authenticated caller push ANY transaction through our paid RPC: spam, MEV, arbitrage, all at our
+ *  cost and under our endpoint's reputation. The allowlist limits who, not what.
+ *
+ *  Returns null when acceptable, or a reason to refuse.
+ *
+ *  Alternative considered: simulate the transaction and inspect balance deltas. That is stricter but
+ *  costs an RPC round trip on every deposit and still needs this structural check to decide what the
+ *  deltas should be, so it is not worth the latency here.
+ */
+const RELAY_OK_PROGRAMS = new Set([
+  SystemProgram.programId.toBase58(),
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",   // SPL Token
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",  // Associated Token Account
+  "ComputeBudget111111111111111111111111111111",
+]);
+
+/** Destinations a deposit is allowed to pay: the vault itself (native SOL) or its token accounts. */
+let _vaultTargets: Set<string> | null = null;
+async function vaultTargets(): Promise<Set<string>> {
+  if (_vaultTargets) return _vaultTargets;
+  const t = new Set<string>([vault.publicKey.toBase58()]);
+  if (cfg) for (const side of ["bull", "uwu"] as const) {
+    try { t.add((await getAssociatedTokenAddress(mintFor(cfg, side), vault.publicKey)).toBase58()); }
+    catch { /* a mint we cannot derive simply is not an allowed destination */ }
+  }
+  _vaultTargets = t;
+  return t;
+}
+
+export async function inspectRelayTx(signedB64: string, wallet: string): Promise<string | null> {
+  const raw = Buffer.from(signedB64, "base64");
+  if (!raw.length) return "empty transaction";
+  if (raw.length > 1500) return "transaction too large";
+
+  let tx: Transaction;
+  try { tx = Transaction.from(raw); }
+  catch { return "only legacy deposit transactions may be relayed"; }
+
+  // The fee payer must be the wallet we authenticated, so nobody can relay a third party's tx.
+  const owner = new PublicKey(wallet);
+  if (!tx.feePayer || !tx.feePayer.equals(owner)) return "fee payer is not the authenticated wallet";
+
+  // Only the programs our own deposit builder emits.
+  for (const ix of tx.instructions) {
+    if (!RELAY_OK_PROGRAMS.has(ix.programId.toBase58())) return "unexpected program in transaction";
+  }
+
+  // ...and it has to actually pay US. An SPL deposit targets the vault's ATA, not the vault itself,
+  // so checking for the vault pubkey alone would miss every token deposit.
+  const targets = await vaultTargets();
+  const paysVault = tx.instructions.some(ix => ix.keys.some(k => targets.has(k.pubkey.toBase58())));
+  if (!paysVault) return "transaction does not pay the vault";
+
+  return null;
+}
+
 export async function broadcastSigned(signedB64: string): Promise<string> {
   const conn = connection();
   const raw = Buffer.from(signedB64, "base64");
