@@ -566,7 +566,14 @@
   function deposit(w,side,amt,auto){
     if(w.online){                                    // online: the ENGINE holds your balance and the round
       if(w.phase!=="lobby"){$("#walletNote").textContent="⛔ Deposits closed — fight's on. Next lobby soon.";return;}
-      if(!MYWALLET){$("#walletNote").textContent="Connect Phantom first (Devnet wallet panel).";return;}
+      // A refresh clears the session (we never auto-connect a wallet on load). Clicking Deploy is
+      // an explicit intent to play, so reconnect+sign here instead of dead-ending the player.
+      if(!MYWALLET){
+        if(auto)return;                                        // never pop a wallet from auto-deploy
+        $("#walletNote").textContent="Connect and sign in Phantom to deploy…";
+        if(window.__reconnect)window.__reconnect().then(ok=>{ if(ok)deposit(w,side,amt,auto); });
+        return;
+      }
       const meta=side==="bull"?metaA():metaB(), tk=({ANSEM:"bull",UWU:"uwu",SOL:"sol"})[meta.label];
       if(WALLET[tk]<0.01){$("#walletNote").textContent="No "+meta.label+" in your game wallet — use Faucet (or fundMe) first.";return;}
       const stake=Math.min(amt,WALLET[tk],CAP);
@@ -797,7 +804,18 @@
     $("#strBull").style.width=(B.v/totv*100)+"%";$("#strUni").style.width=(U.v/totv*100)+"%";$("#strBull").textContent="🐂 "+fmt(B.v);$("#strUni").textContent=fmt(U.v)+" 🦄";
     // online the two treasury buckets are deploy-take and convert-fees, not per-token splits
     $("#treasury").textContent=fmt(treasTotal(w));$("#treasuryBrk").textContent=w.online?("deploys "+fmt(w.treasury.bull)+" · conv "+fmt(w.treasury.uwu)):("🐂"+fmt(w.treasury.bull)+" · 🦄"+fmt(w.treasury.uwu));$("#rtagMult").textContent=w.multiplier+"× round";
-    $("#wBull").textContent=fmt(WALLET.bull);$("#wUwu").textContent=fmt(WALLET.uwu);
+    {
+      const [fa,fb]=arenaFields();                       // this arena's two ledger fields
+      const usdOf=(f)=>{ const px=(window.__PX||{})[f==="bull"?"ansem":f];
+        return f==="sol" ? (WALLET.sol||0) : (px>0 ? (WALLET[f]||0)*px : null); };
+      const cell=(id,f)=>{ const el=$(id); if(!el)return;
+        const u=usdOf(f); const tokens=WALLET[f]||0;
+        // show dollars when we have a price, otherwise the honest token count
+        el.textContent = u==null ? fmt(tokens) : "$"+u.toFixed(2);
+        el.title = f==="sol" ? (tokens.toFixed(2)+" USD units of SOL") : (tokens.toFixed(2)+" "+f.toUpperCase());
+      };
+      cell("#wBull",fa); cell("#wUwu",fb);
+    }
     $("#myStake").textContent=fmt(w.userCircles.reduce((s,c)=>s+ring(c),0));
     const ap=userWorth()-INVESTED,apE=$("#myPnl");apE.textContent=(ap>=0?"+":"−")+"$"+Math.abs(ap).toFixed(2);apE.className="v "+(ap>=0?"pos":"neg");
     const cap=MODE[w.mode].cap,clr=MODE[w.mode].color;$("#modeTag").textContent=cap;$("#modeTag").style.color=clr;$("#roundbar").style.color=clr;$("#depMode").textContent=cap;
@@ -1750,6 +1768,7 @@
         saveWallet(); syncDOM(); }
       else if(m.t==="entered"){ const w=worlds[m.mode]; if(w)ev(w,"You deployed "+fmt(m.stake)+" "+cSide(eSide(m.side)).toUpperCase()+" to "+(m.side==="bull"?"🐂":"🦄"),"you");
         $("#walletNote").textContent="✅ Deployed "+fmt(m.stake)+" to "+(m.side==="bull"?"Bulls":"Unicorns")+" — you're in round "+(worlds[m.mode]||{}).roundNo+"."; }
+      else if(m.t==="prices"){ window.__PX=Object.fromEntries(Object.entries(m.prices||{}).map(([k,v])=>[k,v&&v.usd])); }
       else if(m.t==="chain"){ CHAIN=m;
         if(m.rpc){ const r=$("#rpcUrl"); if(r)r.textContent=m.rpc; }
         // Decide testnet vs mainnet from the engine's own RPC, not a hardcoded label. Faucets mint
@@ -1871,6 +1890,7 @@
         note(document.body.classList.contains("is-testnet")?"Signed in. Faucet some test tokens, then Deposit.":"Signed in. Enter an amount and Deposit to start playing.");
       }catch(e){ note("Connection rejected."); }
     }
+    window.__reconnect=async()=>{ try{ await connect(); return !!(MYWALLET&&AUTHED); }catch(e){ return false; } };
     function guard(){ if(!PK){note("Connect Phantom first.");return false;} if(!CHAIN||!CHAIN.ready){note("Devnet vault not funded yet — one moment.");return false;} return true; }
 
     // wire buttons
@@ -1985,6 +2005,9 @@
         if(x&&PK)send({t:"setName",wallet:PK,name:"@"+x.h,avatar:x.av});}catch(e){}},2500);
     },1800);
     setInterval(()=>{ if(PK&&ws&&ws.readyState===1){send({t:"chainBalance",wallet:PK});send({t:"solBalance",wallet:PK});} },9000);
+    // prices drive the wallet's USD figures; without them a token count gets rendered as dollars
+    setInterval(()=>{ if(ws&&ws.readyState===1)send({t:"prices"}); },15000);
+    setTimeout(()=>{ if(ws&&ws.readyState===1)send({t:"prices"}); },1200);
   })();
   // =================================================================================
 
