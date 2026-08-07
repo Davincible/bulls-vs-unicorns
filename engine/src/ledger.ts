@@ -6,6 +6,7 @@
 // Balances: bull/uwu are whole tokens; sol is USD units (the vault holds native SOL, converted at
 // the live price). dep/ret are play-money P&L; depIn/wOut are REAL on-chain money in/out.
 import type { Side, Mode } from "./game.ts";
+import { priceUSD } from "./prices.ts";
 import { loadSnapshot, saveSnapshot, flushSnapshot } from "./store.ts";
 
 export interface Account {
@@ -90,11 +91,35 @@ export function acct(wallet: string, side: Side): Account {
 }
 
 /** The wire shape of a wallet's balance push. Pure over the ledger. */
+/** USD value of one unit of a field. `sol` is stored in USD units already, so it is 1. */
+function usdPer(field: "bull" | "uwu" | "sol"): number {
+  if (field === "sol") return 1;
+  const px = priceUSD(field === "bull" ? "ansem" : "uwu");
+  return px && px > 0 ? px : 0;
+}
+/** What an account is actually WORTH, in dollars. Never sum the raw fields: two of them are token
+ *  counts and one is dollars, so a bare `bull + uwu + sol` is meaningless. */
+export function accountUsd(a: Account): number {
+  return (a.bull || 0) * usdPer("bull") + (a.uwu || 0) * usdPer("uwu") + (a.sol || 0);
+}
+
 export function balPayload(wallet: string) {
   const a = ledger.get(wallet);
+  // Dollar figures computed HERE, where the prices and the deposit split are known. depIn/wOut mix
+  // units by design (SPL deposits are token counts, SOL deposits are USD units), and depInSol tracks
+  // the SOL portion — so the token portion is the remainder, priced at the account's side token.
+  const sideField = ((a?.side === "bull" ? "bull" : "uwu")) as "bull" | "uwu";
+  const px = usdPer(sideField);
+  const solIn = a?.depInSol || 0, solOut = a?.wOutSol || 0;
+  const tokIn = Math.max(0, (a?.depIn || 0) - solIn), tokOut = Math.max(0, (a?.wOut || 0) - solOut);
+  const investedUsd = (tokIn * px + solIn) - (tokOut * px + solOut);
   return { t: "balance", wallet, bull: a?.bull || 0, uwu: a?.uwu || 0, sol: a?.sol || 0,
            depIn: a?.depIn || 0, wOut: a?.wOut || 0, refEarned: a?.refEarned || 0,
-           games: a?.games || 0, wins: a?.wins || 0 };
+           games: a?.games || 0, wins: a?.wins || 0,
+           // what the balance is WORTH and what it COST, both in dollars
+           valueUsd: a ? accountUsd(a) : 0,
+           investedUsd,
+           prices: { bull: usdPer("bull"), uwu: usdPer("uwu") } };
 }
 
 /** Has this account ever touched money? Anyone can authenticate a freshly generated keypair for
@@ -109,10 +134,22 @@ export function hasActivity(a: Account): boolean {
 // Leaderboard the engine owns, so real players actually appear on it (bots are scoped to the arena).
 export function leadersFor(aid: string) {
   const list = [...ledger.values()].filter(a => (a.isBot ? a.id.startsWith(aid + ":") : hasActivity(a)));
-  const rows = list.map(a => ({ id: a.id, name: a.name, avatar: a.avatar, side: a.side, value: a.bull + a.uwu + a.sol,
+  // Everything on this board is DOLLARS. dep/ret/raided are accumulated in token units by the
+  // settlement path, so they are converted with the account's own side token rather than shown raw.
+  const rows = list.map(a => {
+    const sideField = (a.side === "bull" ? "bull" : "uwu") as "bull" | "uwu";
+    const px = usdPer(sideField);
+    const value = accountUsd(a);
+    // dep/ret are already dollars (accumulated at the round's price) — do NOT re-price them
+    const depUsd = a.dep || 0, retUsd = a.ret || 0;
+    return { id: a.id, name: a.name, avatar: a.avatar, side: a.side, value,
       games: a.games, wins: a.wins, isBot: a.isBot,
-      dep: a.dep, ret: a.ret, raided: a.raided || 0, best: a.best || 0,
-      pnl: a.isBot ? a.ret - a.dep : (a.bull + a.uwu + a.sol) + (a.wOut || 0) - (a.depIn || 0) }))
+      dep: depUsd, ret: retUsd, raided: (a.raided || 0) * px, best: (a.best || 0) * px,
+      // a player's cost basis is what they DEPOSITED (depIn/wOut are token units of what they moved
+      // on-chain); a bot has no deposit, so its P/L is simply what it won against what it staked
+      pnl: a.isBot ? retUsd - depUsd
+                   : value + (a.wOut || 0) * px - (a.depIn || 0) * px };
+  })
     .sort((x, y) => y.pnl - x.pnl);          // board ranks by total P&L
   const top = rows.slice(0, 40).map((r, i) => ({ ...r, rank: i + 1 }));
   // real players always appear, even outside the top 40 — otherwise you can play a round and never see yourself

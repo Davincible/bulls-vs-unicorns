@@ -264,3 +264,49 @@ test("the anchor binds the commitment to the revealed seed", () => {
   assert.ok(enc.includes("ed48e8c454fa77f8"), "seed hash published before the round");
   assert.ok(enc.includes("863888d84ca936db"), "seed revealed at fight start");
 });
+
+// ---- THE UNIT-MIXING BUG CLASS ----
+// `bull` and `uwu` are TOKEN COUNTS; `sol` is already USD. Summing them raw is adding apples to
+// dollars, and it surfaced four different ways at once: a bot holding 150 UWU ($4.15) shown as
+// "$150" on the leaderboard, a player's P/L stuck at "-$57.04", dashboard totals nonsense, and the
+// battle report disagreeing with the wallet. One root cause, four symptoms.
+const PXB = 0.1763, PXU = 0.0277;
+const worthUsd = (a: {bull:number;uwu:number;sol:number}) => a.bull * PXB + a.uwu * PXU + a.sol;
+
+test("a raw field sum wildly misprices an account", () => {
+  const a = { bull: 0, uwu: 150, sol: 0 };
+  const raw = a.bull + a.uwu + a.sol;            // what the leaderboard printed
+  assert.equal(raw, 150);
+  assert.ok(Math.abs(worthUsd(a) - 4.155) < 0.001, "actually worth $4.16, shown as $150");
+  assert.ok(raw / worthUsd(a) > 30, "off by more than 30x");
+});
+
+test("mixing tokens with SOL is the worst case, because sol is already dollars", () => {
+  const a = { bull: 0, uwu: 100, sol: 7.27 };
+  const raw = a.bull + a.uwu + a.sol;
+  assert.ok(Math.abs(raw - 107.27) < 1e-9, "raw sum treats 100 UWU as $100");
+  assert.ok(Math.abs(worthUsd(a) - 10.04) < 0.01, "really $10.04");
+});
+
+test("P/L must compare dollars to dollars, and must not drop SOL", () => {
+  const wallet = { bull: 0, uwu: 203, sol: 0 };
+  const investedUsd = 8.66;                       // 50 UWU + 0.1 SOL, at deposit time
+  const bad = (wallet.bull + wallet.uwu) - investedUsd;   // old client maths
+  const good = worthUsd(wallet) - investedUsd;
+  assert.ok(bad > 190, `old maths reported ${bad.toFixed(2)} — a token count minus dollars`);
+  assert.ok(Math.abs(good - (-3.04)) < 0.05, "real P/L is a couple of dollars, not a hundred");
+});
+
+test("mid-round, staked money must still count toward worth", () => {
+  // the stake leaves the account and sits in the round; ignoring it made worth read ~0
+  const wallet = { bull: 0, uwu: 0.2, sol: 0 }, inRingUsd = 5.4, investedUsd = 8.66;
+  const withoutRing = worthUsd(wallet) - investedUsd;
+  const withRing = worthUsd(wallet) + inRingUsd - investedUsd;
+  assert.ok(withoutRing < -8, `${withoutRing.toFixed(2)} — looks like everything was lost`);
+  assert.ok(withRing > -4, "counting the stake on the table gives the true position");
+});
+
+test("a bot's P/L is winnings against stake, not against a deposit it never made", () => {
+  const bot = { dep: 12.5, ret: 14.0 };
+  assert.ok(Math.abs((bot.ret - bot.dep) - 1.5) < 1e-9);
+});

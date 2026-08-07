@@ -29,7 +29,7 @@ import { poolPubkeys } from "./bot-wallets.ts";
 import { vaultTokenBalance } from "./chain-ops.ts";
 import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, totalDeployed, depSide,
          created, bustedCount, getConvFees, addConvFees, persist, restore, flush, bankFee, TREASURY_ID,
-         acct, balPayload, leadersFor, cleanDisplayName, cleanAvatarUrl } from "./ledger.ts";
+         acct, balPayload, leadersFor, accountUsd, cleanDisplayName, cleanAvatarUrl } from "./ledger.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
 import { type Tok, FIELD, PAIRINGS, ARENA_IDS, arenaTokens, arenaEco, NARENAS, NARENA_IDS,
          FEE, CAP, CONVERT_FEE, MIN_ENTRY } from "./arenas.ts";
@@ -218,9 +218,8 @@ function retireBot(a: Account): void {
   ledger.delete(a.id);
 }
 
-function accountUsd(a: Account): number {
-  return (a.bull || 0) * usdPerUnit("bull") + (a.uwu || 0) * usdPerUnit("uwu") + (a.sol || 0);
-}
+// accountUsd lives in ledger.ts — ONE definition, because two copies of "what is this worth" is
+// precisely how the leaderboard came to disagree with the wallet.
 const walletish = () => { let s=""; for(let i=0;i<4;i++) s += B58[(Math.random()*B58.length)|0]; return s + "…" + B58[(Math.random()*B58.length)|0] + B58[(Math.random()*B58.length)|0] + B58[(Math.random()*B58.length)|0]; };
 let seq = 0;
 function newBot(aid: string, side: Side): Account | null {
@@ -265,7 +264,11 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
     // price the stake went in at, so the round cannot mint or burn tokens on a price move
     const retA = unitsAtRound(aid, s.round, FIELD[tokA] as Field, bal.bull);
     const retB = unitsAtRound(aid, s.round, FIELD[tokB] as Field, bal.uwu);
-    a[FIELD[tokA]] += retA; a[FIELD[tokB]] += retB; a.games++; a.ret += retA + retB;
+    a[FIELD[tokA]] += retA; a[FIELD[tokB]] += retB; a.games++;
+    // ret/dep are lifetime P&L accumulators so they must be DOLLARS. Adding retA (slot A's token)
+    // to retB (slot B's) added two different currencies and made every bot's P/L fiction.
+    a.ret += retA * pxForRound(aid, s.round, FIELD[tokA] as Field)
+           + retB * pxForRound(aid, s.round, FIELD[tokB] as Field);
     flow(aid, s.round, FIELD[tokA] as Field).in += retA;
     flow(aid, s.round, FIELD[tokB] as Field).in += retB;
     if (a.side === r.winner) a.wins++;
@@ -336,7 +339,8 @@ async function onSettleN(aid: string, r: any, s: any) {
     const tok = def.teams === 0 ? def.toks[0] : def.toks[teamIdx] || def.toks[0];
     // the N sim runs in USD too - credit the team's own token at the round's frozen price
     const ret = unitsAtRound(aid, s.round, FIELD[tok] as Field, amount as number);
-    a[FIELD[tok]] += ret; a.games++; a.ret += ret;
+    a[FIELD[tok]] += ret; a.games++;
+    a.ret += ret * pxForRound(aid, s.round, FIELD[tok] as Field);   // dollars, to match dep
     if (!a.isBot) touched.add(wallet);
   }
   const realPlaying = s.entries.filter((e: any) => !String(e.id).includes(":bot:")).length;
@@ -400,7 +404,7 @@ function botsEnterN(aid: string) {
     const usdA = stake * pxForRound(aid, rn.state.round, FIELD[tok] as Field);
     if (!(usdA > 0)) { a[FIELD[tok]] += stake; continue; }   // no price -> undo the debit, sit out
     returnBank(FIELD[tok] as Field, stake * FEE);            // house does not charge itself
-    a.dep += stake; totalDeployed[eco] += usdA;
+    a.dep += usdA; totalDeployed[eco] += usdA;      // dollars, to match ret
     stat(aid).deployed += usdA;
     rn.enter(`${a.id}|${def.teams === 0 ? 0 : team}`, def.teams === 0 ? 0 : team, usdA * (1 - FEE));
   }
@@ -578,7 +582,7 @@ function botsEnter(aid: string) {
     bankFee(FIELD[myTok] as Field, feeTok);
     treasury[mode] += feeTok * pxForRound(aid, rn.state.round, FIELD[myTok] as Field);
     flow(aid, rn.state.round, FIELD[myTok] as Field).in += feeTok;
-    a.dep += stake; totalDeployed[mode] += usdN;
+    a.dep += usdN; totalDeployed[mode] += usdN;     // dollars, to match ret
     stat(aid).deployed += usdN; depSide[mode][a.side] += usdN;
     // Enter in USD, not token counts. Handing the sim 49.7 UWU for one side and 1.6 USD for the
     // other made army size depend on a token's unit price: the cheaper coin fielded a ~30x larger
@@ -850,7 +854,7 @@ wss.on("connection", (ws, req) => {
         a[FIELD[myTok]] -= stake;                                      // debit the arena token
         flow(aid, rn.state.round, FIELD[myTok] as Field).out += stake;
         flow(aid, rn.state.round, FIELD[myTok] as Field).fee += stake * FEE;   // real revenue, kept
-        a.dep += stake; a.side = m.side;
+        a.dep += stakeUsd; a.side = m.side;         // dollars, to match ret
         if (m.ref && !a.refBy && m.ref !== m.wallet) a.refBy = String(m.ref).slice(0, 64);
         const fee = stake * FEE;
         let refCut = 0;
@@ -906,7 +910,7 @@ wss.on("connection", (ws, req) => {
         const stake = Math.min(Number(m.stake) || 0, bank, Math.max(0, CAP - already) / usdE1);
         const usdE = stake * usdE1;
         if (usdE < MIN_ENTRY) return ws.send(JSON.stringify({ t: "error", msg: "Insufficient balance for that arena's token." }));
-        a[FIELD[tok]] -= stake; a.dep += stake;
+        a[FIELD[tok]] -= stake; a.dep += usdE;      // dollars, to match ret
         const eco = def.eco;
         bankFee(FIELD[tok] as Field, stake * FEE);
         treasury[eco] += usdE * FEE; totalDeployed[eco] += usdE;

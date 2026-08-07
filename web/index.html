@@ -516,7 +516,20 @@
   const worlds={normal:makeWorld("normal"),extraction:makeWorld("extraction")};
   const W=()=>worlds[activeMode];
   const treasTotal=w=>w.treasury.bull+w.treasury.uwu;
-  function userWorth(){let s=WALLET.bull+WALLET.uwu;for(const m in worlds)for(const c of worlds[m].userCircles)s+=tot(c);return s;}
+  // Worth in DOLLARS. Summing WALLET.bull + WALLET.uwu added two different token counts and dropped
+  // SOL on the floor; mid-round, with the tokens staked, that read ~0 against a real cost basis and
+  // produced a permanent "-$57.04". Online the engine sends the authoritative figure.
+  let WORTH_USD=null, INVESTED_USD=null;
+  function userWorth(){
+    if(WORTH_USD!=null){
+      let s=WORTH_USD;
+      for(const m in worlds)for(const c of worlds[m].userCircles)s+=tot(c);   // plus what is on the table
+      return s;
+    }
+    let s=(WALLET.bull||0)*tokPx("bull")+(WALLET.uwu||0)*tokPx("uwu")+(WALLET.sol||0);
+    for(const m in worlds)for(const c of worlds[m].userCircles)s+=tot(c);
+    return s;
+  }
   function rollMult(w){const u=Math.random();w.multiplier=u<0.7?1:u<0.85?2:u<0.93?4:u<0.97?6:u<0.99?8:10;}
   function ev(w,txt,kind){w.events.push({txt,kind,life:1.4});if(w.events.length>9)w.events.shift();}
   function pushWin(w,atk,dmg,mult){if(dmg<0.005)return;const _to=(atk.bull||0)+(atk.uwu||0)+(atk.sBull||0)+(atk.sUwu||0);w.wins.unshift({name:atk.name,side:atk.side,amt:dmg,mult,you:atk.isUser,from:atk.deposited||0,to:_to});if(w.wins.length>18)w.wins.pop();}
@@ -1888,7 +1901,10 @@
             if(WALLET[off]>1&&!window.__convBusy){window.__convBusy=true;setTimeout(()=>window.__convBusy=false,5000);
               send({t:"convert",wallet:PK,to:tk2,from:off});}}
         }
-        INVESTED=(m.depIn||0)-(m.wOut||0);          // real cost basis: deposited minus withdrawn
+        // the engine computes both in dollars — depIn/wOut are mixed units and must not be subtracted raw
+        if(m.valueUsd!=null)WORTH_USD=m.valueUsd;
+        if(m.investedUsd!=null){INVESTED_USD=m.investedUsd; INVESTED=m.investedUsd;}
+        else INVESTED=(m.depIn||0)-(m.wOut||0);
         saveWallet(); syncDOM(); }
       else if(m.t==="entered"){ const w=worlds[m.mode];
         const _mt=m.side==="bull"?metaA():metaB();
