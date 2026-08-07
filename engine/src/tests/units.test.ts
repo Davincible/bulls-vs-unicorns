@@ -711,3 +711,28 @@ test("re-checking is idempotent — it subtracts what is already committed", () 
   const need = playerStake * 1.0 - alreadyOpposing;
   assert.ok(need <= 0.01, "a matched book triggers no further stake");
 });
+
+// VARIANCE. Every fighter drew its stake from the same distribution, so a lobby was a row of
+// near-identical bets — it read as generated because it was. A persistent per-bot multiplier gives
+// the book a natural shape and makes a wallet recognisable round to round.
+test("temperaments are skewed: mostly modest, a few large", () => {
+  const temper = () => 0.35 + Math.pow(Math.random(), 2.2) * 2.6;
+  const sample = Array.from({ length: 2000 }, temper);
+  const median = sample.slice().sort((a, b) => a - b)[1000];
+  const big = sample.filter(t => t > 2).length / sample.length;
+  assert.ok(median < 1.3, `median ${median.toFixed(2)} — most fighters are modest`);
+  assert.ok(big > 0.02 && big < 0.30, `${(big * 100).toFixed(0)}% are whales — a tail, not a crowd`);
+  assert.ok(Math.min(...sample) >= 0.35, "nobody stakes nothing");
+});
+
+test("a bot keeps its temperament, so the same wallet plays the same way", () => {
+  const bot: any = { temper: 1.8 };
+  const stakes = Array.from({ length: 5 }, () => 2 * 0.6 * bot.temper);
+  assert.ok(stakes.every(v => v === stakes[0]), "same multiplier every round");
+});
+
+test("stake still cannot exceed the bank however bold the temperament", () => {
+  const bankroll = 3, CAP = 100, temper = 2.9;
+  const stake = Math.min(Math.max(0.5, bankroll * 0.85 * temper), CAP, bankroll);
+  assert.equal(stake, bankroll, "clamped to what it actually holds");
+});

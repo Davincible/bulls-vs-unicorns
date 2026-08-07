@@ -263,6 +263,12 @@ function newBot(aid: string, side: Side): Account | null {
   // a third of newcomers show up as raw addresses — fresh wallets, no handle yet
   const name = Math.random() < 0.34 ? walletish() : NAMES[(Math.random()*NAMES.length)|0] + "_" + seq;
   const a: Account = { id, name, side, bull: 0, uwu: 0, sol: 0, isBot: true, dep: 0, ret: 0, games: 0, wins: 0 };
+  // TEMPERAMENT. Every fighter drew its stake from the same distribution, so a lobby was a row of
+  // near-identical bets — it read as generated, because it was. A persistent per-bot multiplier
+  // gives the book a natural shape: a few whales, a long tail of minnows, and the same wallet
+  // recognisably playing the same way round after round.
+  (a as any).temper = 0.35 + Math.pow(Math.random(), 2.2) * 2.6;   // skewed: most modest, few large
+  (a as any).skip = Math.random() * 0.30;                          // some sit rounds out
   // bank in the arena's token for this bot's slot, drawn from real deposited money
   const toks = arenaTokens(aid) || (["ansem", "uwu"] as [Tok, Tok]);
   const field = FIELD[toks[side === "bull" ? 0 : 1]] as Field;
@@ -561,6 +567,37 @@ async function autoRebalance(): Promise<void> {
   } catch (e) { console.error("auto-rebalance failed:", redact((e as Error).message)); }
 }
 setInterval(() => { void autoRebalance(); }, Number(process.env.REBALANCE_MS || 5 * 60_000)).unref?.();
+
+// WHY IT CLUMPS, AND WHAT TO DO ABOUT IT.
+//
+// Fixing returnBank stopped the float being FUNNELLED into one wallet, but it does not stop
+// clumping on its own, because a bot that WINS keeps its winnings in its own account. In a zero-sum
+// game variance alone concentrates: the lucky few accumulate, the unlucky bust and recycle. Left
+// running, a handful of fat bots end up holding everything and the arena has nothing to field.
+//
+// A player's winnings are theirs and are never touched. But the house's bots are OUR capital, and
+// we want it working across many fighters rather than parked in three. So skim anything a bot holds
+// above a ceiling back into the pool, where it funds new fighters. Pure house-internal reallocation:
+// no player balance is involved and the total is unchanged.
+const BOT_MAX_BANK_USD = Number(process.env.BOT_MAX_BANK_USD || 12);
+function levelBots(): void {
+  if (!botBankReady()) return;
+  const pxOf = (f: Field) => (f === "sol" ? 1 : usdPerUnitSafe(f));
+  for (const a of ledger.values()) {
+    if (!a.isBot || (a as any).retired) continue;
+    if (poolPubkeys().includes(a.id)) continue;          // pool wallets ARE the reservoir
+    for (const f of ["bull", "uwu", "sol"] as const) {
+      const px = pxOf(f as Field);
+      if (!(px > 0)) continue;
+      const usd = (a[f] || 0) * px;
+      if (usd <= BOT_MAX_BANK_USD) continue;
+      const skimTok = (usd - BOT_MAX_BANK_USD) / px;
+      a[f] -= skimTok;
+      returnBank(f as Field, skimTok);                   // goes to the emptiest wallet
+    }
+  }
+}
+setInterval(levelBots, Number(process.env.LEVEL_MS || 30_000)).unref?.();
 
 // B6 — KEEP WATCHING THE BOOK. matchPlayerStake fires the moment a player enters, which answers
 // that entry but nothing after it: a whale arriving later in the same lobby faced whatever the
@@ -870,7 +907,8 @@ function botsEnter(aid: string) {
     pool = [...pick("bull"), ...pick("uwu")];
   }
   for (const a of pool) {
-    if (PLAY_MAX === 0 && Math.random() < 0.25) continue;   // legacy behaviour when uncapped
+    // each fighter has its own appetite for sitting out, rather than one flat 25% for everyone
+    if (PLAY_MAX === 0 && Math.random() < ((a as any).skip ?? 0.25)) continue;
     const myTok = a.side === "bull" ? tokA : tokB;
     // Bots do NOT convert. This used to move raw units 1:1 between the two sides' tokens, so
     // swapping 100 UWU ($2.95) produced 100 `sol` units ($100) - a ~34x mint that drained the UWU
@@ -888,7 +926,7 @@ function botsEnter(aid: string) {
     // bank — the swarm still out-positions a single large opponent.
     const stake = BOT_STAKE_MAX > 0
       ? Math.min(minStake + Math.random() * (BOT_STAKE_MAX - minStake), bankroll)
-      : Math.min(Math.max(minStake, bankroll * (BOT_COMMIT_MIN + Math.random() * (BOT_COMMIT_MAX - BOT_COMMIT_MIN))), CAP, bankroll);
+      : Math.min(Math.max(minStake, bankroll * (BOT_COMMIT_MIN + Math.random() * (BOT_COMMIT_MAX - BOT_COMMIT_MIN)) * ((a as any).temper ?? 1)), CAP, bankroll);
     if (!(minStake > 0) || stake < minStake) continue;
     a[FIELD[myTok]] -= stake;
     const mode = arenaEco(aid);
@@ -1053,6 +1091,29 @@ const httpServer = createServer((req, res) => {
     }));
   }
   // redact at the SINK as well — a future field must not be able to leak by being added
+  // Per-wallet float. "Is it fairly spread?" is not answerable from a total, and the answer drives
+  // whether the arena can field a crowd or just a couple of fat bots.
+  if (url === "/wallets") {
+    const poolSet = new Set(poolPubkeys());
+    const px = { bull: usdPerUnitSafe("bull"), uwu: usdPerUnitSafe("uwu"), sol: 1 };
+    const rows: any[] = [];
+    for (const a of ledger.values()) {
+      if (!poolSet.has(a.id)) continue;
+      const usd = (a.bull || 0) * px.bull + (a.uwu || 0) * px.uwu + (a.sol || 0);
+      rows.push({ id: a.id.slice(0, 6) + "…" + a.id.slice(-4), bull: +(a.bull || 0).toFixed(4),
+                  uwu: +(a.uwu || 0).toFixed(2), sol: +(a.sol || 0).toFixed(4), usd: +usd.toFixed(2) });
+    }
+    rows.sort((x, y) => y.usd - x.usd);
+    const total = rows.reduce((t, r) => t + r.usd, 0);
+    const top3 = rows.slice(0, 3).reduce((t, r) => t + r.usd, 0);
+    res.writeHead(200, cors);
+    return res.end(JSON.stringify({
+      wallets: rows.length, totalUsd: +total.toFixed(2),
+      top3SharePct: total > 0 ? +(100 * top3 / total).toFixed(1) : 0,
+      emptyWallets: rows.filter(r => r.usd < 0.01).length,
+      rows,
+    }));
+  }
   if (url === "/memo") { res.writeHead(200, cors); return res.end(JSON.stringify(redactDeep(memoStats()))); }
   if (url === "/float") {
     const per = (f: Field) => {

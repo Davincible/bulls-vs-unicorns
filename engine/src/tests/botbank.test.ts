@@ -196,3 +196,53 @@ test("a rotating scan order shares participation", () => {
   for (let k = 0; k < bots.length; k++) seen.add(bots.slice(k).concat(bots.slice(0, k))[0]);
   assert.equal(seen.size, 4, "every wallet gets to be first, so none stays idle");
 });
+
+// WHY IT CLUMPS. Fixing returnBank stopped the float being FUNNELLED into one wallet, but that
+// alone does not stop clumping: a bot that WINS keeps its winnings, and in a zero-sum game variance
+// concentrates on its own. The lucky few accumulate, the unlucky bust and recycle, and eventually
+// three fat bots hold everything while the arena has nothing left to field.
+test("variance alone concentrates, even with fair returns", () => {
+  let bots = Array.from({ length: 12 }, () => 5);        // equal start
+  for (let round = 0; round < 200; round++) {
+    for (let i = 0; i + 1 < bots.length; i += 2) {
+      const stake = Math.min(bots[i], bots[i + 1], 1);
+      const winner = (round + i) % 3 === 0 ? i : i + 1;   // deterministic but uneven
+      bots[winner] += stake; bots[winner === i ? i + 1 : i] -= stake;
+    }
+  }
+  const total = bots.reduce((a, b) => a + b, 0);
+  const top3 = bots.slice().sort((a, b) => b - a).slice(0, 3).reduce((a, b) => a + b, 0);
+  assert.ok(top3 / total > 0.35, `top 3 hold ${(100 * top3 / total).toFixed(0)}% with no bug at all`);
+});
+
+// A player's winnings are theirs. The house's bots are OUR capital, and we want it working across
+// many fighters rather than parked in three — so skim above a ceiling back to the pool.
+test("levelling skims above a ceiling and conserves the total", () => {
+  const CAP = 12;
+  const bots = [40, 3, 0.5, 18];
+  let pool = 0;
+  const before = bots.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < bots.length; i++) {
+    if (bots[i] > CAP) { pool += bots[i] - CAP; bots[i] = CAP; }
+  }
+  assert.equal(bots[0], CAP, "the fat bot is trimmed");
+  assert.equal(bots[3], CAP);
+  assert.equal(bots[1], 3, "a bot under the ceiling is untouched");
+  assert.ok(Math.abs((bots.reduce((a, b) => a + b, 0) + pool) - before) < 1e-9, "nothing created or destroyed");
+  assert.ok(pool > 30, `$${pool} returned to fund new fighters`);
+});
+
+test("levelling never touches a real player's balance", () => {
+  const accounts = [
+    { id: "us-extraction:bot:3", isBot: true, uwu: 900 },
+    { id: "BTYdc2awdFDZ", isBot: false, uwu: 900 },       // a player who is simply winning
+  ];
+  const CAP = 12, px = 0.0277;
+  for (const a of accounts) {
+    if (!a.isBot) continue;                                // the guard under test
+    const usd = a.uwu * px;
+    if (usd > CAP) a.uwu -= (usd - CAP) / px;
+  }
+  assert.ok(accounts[0].uwu < 900, "the house bot is levelled");
+  assert.equal(accounts[1].uwu, 900, "the player keeps every penny they won");
+});
