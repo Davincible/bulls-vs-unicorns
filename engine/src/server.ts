@@ -30,7 +30,8 @@ import { vaultTokenBalance } from "./chain-ops.ts";
 import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, totalDeployed, depSide,
          created, bustedCount, getConvFees, addConvFees, persist, restore, flush, bankFee, TREASURY_ID,
          acct, balPayload, leadersFor, accountUsd, cleanDisplayName, cleanAvatarUrl,
-         pushRound, roundHistory, resetLifetimeStats, treasuryAcct, standingsFromLog } from "./ledger.ts";
+         pushRound, roundHistory, resetLifetimeStats, treasuryAcct, standingsFromLog,
+         publicName } from "./ledger.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
 import { type Tok, FIELD, PAIRINGS, ARENA_IDS, arenaTokens, arenaEco, NARENAS, NARENA_IDS,
          FEE, CAP, CONVERT_FEE, MIN_ENTRY } from "./arenas.ts";
@@ -714,8 +715,15 @@ function botsEnter(aid: string) {
 }
 
 // name lookup so clients can label fighters
-const nameFor = (key: string) => { const id = key.split("|")[0];
-  return ledger.get(id)?.name || (id.length > 8 ? id.slice(0,4)+"…"+id.slice(-4) : id); };
+// ONE naming rule everywhere — arena, standings, history and the on-chain memo. A fighter shows an
+// X handle only if they connected one; otherwise a shortened address, which is what they are.
+// Invented handles like "liqLarry_3" read as house bots the moment anyone looks twice.
+const nameFor = (key: string) => {
+  const id = key.split("|")[0];
+  const a = ledger.get(id);
+  if (a) return publicName(a);
+  return id.length > 8 ? id.slice(0, 4) + "…" + id.slice(-4) : id;
+};
 
 // ---- tick loop ----
 const lastPhase: Record<string, string> = {};
