@@ -649,52 +649,6 @@ const BOT_MAX_BANK_USD = Number(process.env.BOT_MAX_BANK_USD || 12);
 // This is house money moving between house wallets. It never touches a player balance, never
 // creates balance (every token comes out of the pool), and is bounded by BOT_MAX_BANK_USD, the
 // same ceiling levelBots enforces from the other direction.
-/** What the fighters of this arena are holding in one token — the other half of the house float. */
-function botsHolding(aid: string, f: Field): number {
-  const pool = new Set(poolPubkeys());
-  let n = 0;
-  for (const a of botsFor(aid)) { if (!pool.has(a.id) && !(a as any).retired) n += a[f] || 0; }
-  return n;
-}
-
-function topUpBots(aid: string): void {
-  if (!botBankReady()) return;
-  const floorUsd = Number(process.env.BOT_BANK_FLOOR_USD || BOT_MAX_BANK_USD * 0.5);
-  const pool = new Set(poolPubkeys());
-  const toppedUsd: Record<string, number> = {};
-  for (const a of botsFor(aid)) {
-    if (pool.has(a.id) || (a as any).retired) continue;
-    for (const f of ["bull", "uwu", "sol"] as const) {
-      const px = f === "sol" ? 1 : usdPerUnitSafe(f as Field);
-      if (!(px > 0)) continue;
-      const usd = (a[f] || 0) * px;
-      if (usd >= floorUsd) continue;
-      // KEEP A RESERVE. Filling every fighter to the floor drained the pool to $0, and the pool is
-      // exactly what matchPlayerStake draws on to answer a human bet - so topping up the routine
-      // book to the brim would have starved the one thing the player actually notices. Never spend
-      // the last RESERVE_FRAC of the pool on routine funding; matching may still use all of it.
-      // The reserve must be a share of the TOTAL house float, not of the pool as it stands.
-      // Taking "65% of whatever is left" every pass just drains asymptotically to zero - which is
-      // exactly what happened: the rebalance handed 225 UWU back to the pool and the next top-up
-      // took it straight out again 40 seconds later. Measured against the whole float it is a real
-      // floor: once the pool is down to its share, routine funding stops drawing entirely.
-      const poolTok = poolBalance(f as Field);
-      const houseTok = poolTok + botsHolding(aid, f as Field);
-      const spendable = Math.max(0, poolTok - houseTok * POOL_RESERVE_FRAC);
-      if (!(spendable > 0)) continue;
-      const wantTok = Math.min((floorUsd - usd) / px, spendable);
-      const drawn = drawBank(f as Field, wantTok, 1);   // capped by what the pool really holds
-      if (drawn > 0) { a[f] = (a[f] || 0) + drawn; toppedUsd[f] = (toppedUsd[f] || 0) + drawn * px; }
-    }
-  }
-  const tot = Object.values(toppedUsd).reduce((n, v) => n + v, 0);
-  if (tot > 0.5 && Date.now() - lastTopLog > 60_000) {
-    lastTopLog = Date.now();
-    console.log(`top-up: ${Object.entries(toppedUsd).map(([f, v]) => `${f} $${v.toFixed(2)}`).join(", ")} into fighters`);
-  }
-}
-let lastTopLog = 0;
-
 function levelBots(): void {
   if (!botBankReady()) return;
   const pxOf = (f: Field) => (f === "sol" ? 1 : usdPerUnitSafe(f));
@@ -1074,10 +1028,6 @@ function ensureMinimumEntries(aid: string): void {
 }
 
 function botsEnter(aid: string) {
-  // Refill the fighters from the float BEFORE they size their stake. A routine stake is a fraction
-  // of the bank, so a starved bot fields dust no matter how generous that fraction is - which is
-  // why ~$100 of float was producing ~$3 rounds. House money between house wallets only.
-  topUpBots(aid);
   const rn = runners[aid]; if (rn.state.phase !== "lobby") return;
   const [tokA, tokB] = arenaTokens(aid);
   let pool = botsFor(aid);
@@ -1092,6 +1042,20 @@ function botsEnter(aid: string) {
   for (const a of pool) {
     // each fighter has its own appetite for sitting out, rather than one flat 25% for everyone
     if (PLAY_MAX === 0 && Math.random() < ((a as any).skip ?? 0.25)) continue;
+    // PLAY WHAT YOU HOLD. Side used to be fixed at creation, so a fighter sitting on SOL but
+    // assigned to the UWU army simply sat out - the float looked exhausted while the money was
+    // right there in the wrong pocket. A real player in that position switches sides, so these do
+    // too. This is also why no top-up is needed: the float does not run down, it moves, and
+    // whoever is holding it is who plays. Refilling a wallet from a house reservoir is the single
+    // most obvious tell that it is not a person, so we do not do it.
+    {
+      const own = a.side === "bull" ? tokA : tokB, other = a.side === "bull" ? tokB : tokA;
+      const minOwn = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(FIELD[own] as Field, BOT_STAKE_USD_MIN);
+      const minOther = BOT_STAKE_MIN > 0 ? BOT_STAKE_MIN : unitsForUsd(FIELD[other] as Field, BOT_STAKE_USD_MIN);
+      if (!((a[FIELD[own]] || 0) >= minOwn) && (a[FIELD[other]] || 0) >= minOther) {
+        a.side = a.side === "bull" ? "uwu" : "bull";
+      }
+    }
     const myTok = a.side === "bull" ? tokA : tokB;
     // Bots do NOT convert. This used to move raw units 1:1 between the two sides' tokens, so
     // swapping 100 UWU ($2.95) produced 100 `sol` units ($100) - a ~34x mint that drained the UWU

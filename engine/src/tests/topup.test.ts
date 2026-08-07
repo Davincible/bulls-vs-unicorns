@@ -1,109 +1,44 @@
-// levelBots skims a bot ABOVE a ceiling back to the pool. Nothing filled one UP TO a floor, because
-// the pool only ever reached a bot at CREATION — so a bot that lost a few rounds stayed poor
-// forever, and since a routine stake is a fraction of the bank, poor bots field dust indefinitely.
-// Measured live: bots holding ~$6 while the pool sat on $43, i.e. ~90% of the float idle.
+// Fighters are NOT refilled from a house reservoir. A wallet whose balance keeps replenishing from
+// nowhere does not look like a person, and looking like a person is the point: these are meant to
+// read as real deposits autoplaying, not as house plumbing. The float does not need topping up
+// because it does not run down - it MOVES. Whoever is holding it is who plays, and a fighter short
+// of its own side's token switches to the one it actually holds rather than sitting out.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-const FLOOR = 6, CEIL = 12;
-
-function topUp(bots: number[], pool: number, floor = FLOOR) {
-  const out = [...bots]; let left = pool;
-  for (let i = 0; i < out.length; i++) {
-    if (out[i] >= floor) continue;
-    const want = floor - out[i];
-    const drawn = Math.min(want, left);       // capped by what the pool really holds
-    out[i] += drawn; left -= drawn;
-  }
-  return { bots: out, pool: left };
+const MIN = 0.5;
+/** Which side does this fighter play, given what it holds? */
+function sideFor(side: "bull" | "uwu", held: { bull: number; uwu: number }) {
+  const own = side === "bull" ? held.bull : held.uwu;
+  const other = side === "bull" ? held.uwu : held.bull;
+  if (own < MIN && other >= MIN) return side === "bull" ? "uwu" : "bull";
+  return side;
 }
 
-test("starved bots are refilled from the idle float", () => {
-  const r = topUp([0.5, 1, 0.2], 43);
-  assert.deepEqual(r.bots, [6, 6, 6]);
-  assert.ok(Math.abs(r.pool - (43 - (5.5 + 5 + 5.8))) < 1e-9);
+test("a fighter short of its own token plays the one it actually holds", () => {
+  assert.equal(sideFor("bull", { bull: 0.1, uwu: 40 }), "uwu");
+  assert.equal(sideFor("uwu", { bull: 40, uwu: 0 }), "bull");
 });
 
-test("conserves value — every token comes out of the pool, none is created", () => {
-  const before = [1, 2, 0], pool = 20;
-  const r = topUp(before, pool);
-  const sumBefore = before.reduce((a, b) => a + b, 0) + pool;
-  const sumAfter = r.bots.reduce((a, b) => a + b, 0) + r.pool;
-  assert.ok(Math.abs(sumBefore - sumAfter) < 1e-9, "top-up must not mint balance");
+test("a funded fighter never switches — it is not chasing, just solvent", () => {
+  assert.equal(sideFor("bull", { bull: 20, uwu: 40 }), "bull");
+  assert.equal(sideFor("uwu", { bull: 99, uwu: 5 }), "uwu");
 });
 
-test("a thin pool fills who it can and stops — never goes negative", () => {
-  const r = topUp([0, 0, 0], 7);
-  assert.equal(r.pool, 0);
-  assert.ok(r.bots.every(b => b >= 0));
-  assert.equal(r.bots.reduce((a, b) => a + b, 0), 7, "exactly the pool, no more");
+test("a fighter with nothing anywhere simply sits out", () => {
+  assert.equal(sideFor("bull", { bull: 0, uwu: 0 }), "bull");   // stays put, then fails the min check
 });
 
-test("bots already at or above the floor are left alone", () => {
-  const r = topUp([6, 9, 20], 50);
-  assert.deepEqual(r.bots, [6, 9, 20]);
-  assert.equal(r.pool, 50, "nothing drawn");
+test("the float circulates rather than draining — a zero-sum round conserves it", () => {
+  // whatever one fighter loses, another holds; the total is unchanged, so nothing needs adding
+  const before = [10, 5, 0, 20];
+  const after = [6, 5, 4, 20];                                   // 4 moved from the first to the third
+  assert.equal(before.reduce((a, b) => a + b, 0), after.reduce((a, b) => a + b, 0));
 });
 
-test("the floor sits below levelBots' ceiling, so the two cannot fight", () => {
-  assert.ok(FLOOR < CEIL, "a floor above the ceiling would top up and skim forever");
-});
-
-// ── the reservoir ────────────────────────────────────────────────────────────────────────────
-// Filling every fighter to the floor drained the pool to $0 in live testing. The pool is exactly
-// what matchPlayerStake draws on to ANSWER a human bet, so a full routine top-up would starve the
-// one behaviour the player actually notices — the house going quiet when they deploy.
-const RESERVE = 0.35;
-function topUpReserved(bots: number[], pool: number, floor = FLOOR, frac = RESERVE) {
-  const out = [...bots]; let left = pool;
-  for (let i = 0; i < out.length; i++) {
-    if (out[i] >= floor) continue;
-    const spendable = Math.max(0, left - pool * frac);   // never touch the reserve
-    if (spendable <= 0) break;
-    const drawn = Math.min(floor - out[i], spendable);
-    out[i] += drawn; left -= drawn;
-  }
-  return { bots: out, pool: left };
-}
-
-test("routine top-up never spends the reserve the house answers bets with", () => {
-  const r = topUpReserved([0, 0, 0, 0, 0, 0], 43);
-  assert.ok(r.pool >= 43 * RESERVE - 1e-9, `pool fell to ${r.pool}, below the reserve`);
-});
-
-test("it still funds fighters properly — the reserve is a floor, not a freeze", () => {
-  const r = topUpReserved([0, 0], 43);
-  assert.deepEqual(r.bots, [FLOOR, FLOOR], "two starved bots should still fill");
-});
-
-test("still conserves — the reserve does not create or destroy value", () => {
-  const before = [1, 0, 2], pool = 30;
-  const r = topUpReserved(before, pool);
-  const a = before.reduce((x, y) => x + y, 0) + pool;
-  const b = r.bots.reduce((x, y) => x + y, 0) + r.pool;
-  assert.ok(Math.abs(a - b) < 1e-9);
-});
-
-// The reserve has to be measured against the WHOLE house float. Against the pool as it stands,
-// "spend all but 35% of what is left" drains asymptotically — live, the rebalance handed 225 UWU
-// back and the next top-up removed it again 40s later.
-function drainRepeatedly(poolStart, botTotal, frac, passes, ofFloat) {
-  let pool = poolStart, bots = botTotal;
-  for (let i = 0; i < passes; i++) {
-    // the float is CONSERVED — what leaves the pool arrives in the fighters
-    const reserve = ofFloat ? (pool + bots) * frac : pool * frac;
-    const spendable = Math.max(0, pool - reserve);
-    pool -= spendable; bots += spendable;   // a hungry lobby takes everything it is allowed
-  }
-  return pool;
-}
-
-test("a reserve measured against the pool drains to nothing over repeated passes", () => {
-  const left = drainRepeatedly(100, 0, 0.35, 12, false);
-  assert.ok(left < 1, `pool held ${left} — expected it to bleed away`);
-});
-
-test("measured against the whole float it is a real floor", () => {
-  const left = drainRepeatedly(100, 0, 0.35, 12, true);
-  assert.ok(left >= 100 * 0.35 - 1e-6, `pool fell to ${left}, below its share of the float`);
+test("a busted fighter is not refilled — it waits until it holds something again", () => {
+  const held = { bull: 0, uwu: 0 };
+  const side = sideFor("bull", held);
+  assert.equal(held.bull, 0, "no reservoir touched it");
+  assert.equal(side, "bull");
 });
