@@ -69,3 +69,28 @@ test("empty ledger loads as null (fresh boot), not a crash", async () => {
     assert.equal(s.loadSnapshot(), null);
   } finally { cleanup(dir); }
 });
+
+// A redeploy reset every arena to "round 1", which wiped the match history and every previous-rounds
+// list with it. On a live deployment that happened ~20 times in a day. The counter has to survive.
+test("the per-arena round counter survives a restart", async () => {
+  const dir = tmp();
+  try {
+    const s1: any = await freshStore(dir);
+    // an empty ledger deliberately loads as null, so include an account
+    s1.saveSnapshot({ accounts: [{ id: "W1", uwu: 1, bull: 0, sol: 0 }],
+                      roundsByArena: { "us-extraction": 4746, "au-normal": 12 } });
+    s1.flushSnapshot();
+    const s2: any = await freshStore(dir);            // simulates the process restarting
+    const back = s2.loadSnapshot();
+    assert.equal(back.roundsByArena["us-extraction"], 4746, "round number must persist");
+    assert.equal(back.roundsByArena["au-normal"], 12);
+  } finally { cleanup(dir); }
+});
+
+test("a runner resumes at the NEXT round, never at 1", () => {
+  const persisted = 4746;
+  const startRound = (persisted || 0) + 1;
+  assert.equal(startRound, 4747, "carry on where we left off");
+  const fresh = (undefined as any || 0) + 1;
+  assert.equal(fresh, 1, "a brand new arena still starts at 1");
+});

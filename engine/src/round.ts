@@ -33,9 +33,11 @@ export class RoundRunner {
   mode: Mode;
   private onSettle: (r: RoundResult, s: RoundState) => Promise<void>;
   private seed = "";
-  constructor(mode: Mode, onSettle: (r: RoundResult, s: RoundState) => Promise<void>) {
+  constructor(mode: Mode, onSettle: (r: RoundResult, s: RoundState) => Promise<void>, startRound = 1) {
     this.mode = mode; this.onSettle = onSettle;
-    this.state = this.freshLobby(1);
+    // Resume the round number across restarts. It used to start at 1 on every boot, so a
+    // redeploy silently reset the match history and every "previous rounds" list with it.
+    this.state = this.freshLobby(startRound);
   }
 
   private rollMultiplier(): number {

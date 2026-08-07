@@ -26,9 +26,10 @@ export class RoundRunnerN {
   mode: "normal" | "extraction";
   private onSettle: (r: ResultN, s: StateN) => Promise<void>;
   private seed = "";
-  constructor(mode: "normal" | "extraction", teams: number, onSettle: (r: ResultN, s: StateN) => Promise<void>) {
+  constructor(mode: "normal" | "extraction", teams: number, onSettle: (r: ResultN, s: StateN) => Promise<void>, startRound = 1) {
     this.mode = mode; this.teams = teams; this.onSettle = onSettle;
-    this.state = this.freshLobby(1);
+    // resume across restarts — see round.ts
+    this.state = this.freshLobby(startRound);
   }
   private rollMultiplier(): number {
     const u = Math.random(); return u < 0.7 ? 1 : u < 0.85 ? 2 : u < 0.93 ? 4 : u < 0.97 ? 6 : u < 0.99 ? 8 : 10;

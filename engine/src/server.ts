@@ -411,9 +411,10 @@ function botsEnterN(aid: string) {
 }
 
 const runners: Record<string, RoundRunner> = {};
-for (const aid of ARENA_IDS) runners[aid] = new RoundRunner(arenaEco(aid), (r, s) => onSettle(aid, r, s));
+// start each arena where it left off, so a redeploy never resets the match history
+for (const aid of ARENA_IDS) runners[aid] = new RoundRunner(arenaEco(aid), (r, s) => onSettle(aid, r, s), (roundsByArena[aid] || 0) + 1);
 const runnersN: Record<string, RoundRunnerN> = {};
-for (const aid of NARENA_IDS) runnersN[aid] = new RoundRunnerN(NARENAS[aid].eco, NARENAS[aid].teams, (r, s) => onSettleN(aid, r as any, s as any));
+for (const aid of NARENA_IDS) runnersN[aid] = new RoundRunnerN(NARENAS[aid].eco, NARENAS[aid].teams, (r, s) => onSettleN(aid, r as any, s as any), (roundsByArena[aid] || 0) + 1);
 restore();
 // One-off float repair, BEFORE the bot bank reads balances and before anything can persist over it.
 // Running the standalone CLI against a live engine loses the race: it writes the snapshot file and

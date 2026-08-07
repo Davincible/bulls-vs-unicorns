@@ -166,7 +166,7 @@ export function persist() {
   // to one acct() would recreate on demand, so dropping it is lossless for balances (it only forgets
   // a cosmetic display name) — and it stops free account creation from bloating the ledger forever.
   saveSnapshot({ accounts: [...ledger.values()].filter(hasActivity), treasury, totalDeployed, depSide, created,
-                 busted: bustedCount, convFees, rounds, statsA, floatRecoveredAt } as any);
+                 busted: bustedCount, convFees, rounds, roundsByArena, statsA, floatRecoveredAt } as any);
 }
 
 /** Load the last snapshot on boot, then write off any SOL liability not backed by a real deposit. */
@@ -184,6 +184,7 @@ export function restore() {
   Object.assign(created, snap.created || {});
   Object.assign(bustedCount, snap.busted || {});
   Object.assign(rounds, snap.rounds || {});
+  Object.assign(roundsByArena, (snap as any).roundsByArena || {});
   convFees = snap.convFees || 0;
   floatRecoveredAt = (snap as any).floatRecoveredAt || 0;
   Object.assign(statsA, (snap as any).statsA || {});
