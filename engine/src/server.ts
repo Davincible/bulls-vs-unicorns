@@ -11,7 +11,7 @@ import { fileURLToPath as toPath } from "node:url";
 import { RoundRunner, newRoundConfig } from "./round.ts";
 import type { RoundResult, RoundState } from "./round.ts";
 import type { Mode, Side } from "./game.ts";
-import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildDepositTx, walletTokenBalance, airdropSol, solBalance,
+import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildDepositTx, walletTokenBalance, airdropSol, solBalance, broadcastSigned,
          buildSolDepositTx, verifySolDeposit, withdrawSol } from "./chain-ops.ts";
 import { priceUSD, startPriceLoop, allPrices, refreshPrices } from "./prices.ts";
 import { RPC, loadVaultKeypair } from "./chain.ts";
@@ -907,6 +907,38 @@ wss.on("connection", (ws, req) => {
         ws.send(JSON.stringify({ t: "prices", prices: allPrices(), solUsd: solUsd() }));
       } else if (m.t === "solvency") {          // public proof-of-reserves: last reconciliation report
         ws.send(JSON.stringify({ t: "solvency", frozen: isFrozen(), report: reconLatest() }));
+      } else if (m.t === "relayTx") {
+        // { wallet, signedB64, kind:'deposit'|'depositSol', side? } -> broadcast + credit in one go.
+        //
+        // The browser used to submit the signed tx itself, but public mainnet RPCs return 403 to
+        // browser origins, so every real deposit died with "Access forbidden" AFTER the user had
+        // already approved it in Phantom. The engine has a working keyed endpoint, so it relays.
+        // We only BROADCAST bytes the user already signed — the vault key is never involved, and
+        // crediting still goes through the same verify* path that checks the vault actually received
+        // the money, so a hostile client cannot get credit for a tx that did not pay us.
+        if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
+        let sig: string;
+        try {
+          sig = await broadcastSigned(String(m.signedB64 || ""));
+        } catch (e) {
+          return ws.send(JSON.stringify({ t: "error", msg: "Broadcast failed: " + (e as Error).message.slice(0, 160) }));
+        }
+        if (m.kind === "depositSol") {
+          const px = solUsd();
+          if (!px) return ws.send(JSON.stringify({ t: "error", msg: "SOL price unavailable — deposit not credited yet, retry shortly.", sig }));
+          const sol = await verifySolDeposit(sig);
+          if (sol > 0) { const a = acct(m.wallet, "bull"); const units = sol * px;
+            a.sol += units; a.depIn = (a.depIn || 0) + units; a.depInSol = (a.depInSol || 0) + units; persist(); }
+          ws.send(JSON.stringify({ t: "depositSolDone", sol, priceUsd: px, credited: sol * px, sig }));
+        } else {
+          const side: Side = m.side === "bull" ? "bull" : "uwu";
+          const credited = await verifyDeposit(sig, side);
+          if (credited > 0) { const a = acct(m.wallet, side);
+            if (side === "bull") a.bull += credited; else a.uwu += credited;
+            a.depIn = (a.depIn || 0) + credited; persist(); }
+          ws.send(JSON.stringify({ t: "depositDone", side, credited, sig }));
+        }
+        pushBalance(m.wallet);
       } else if (m.t === "buildDeposit") {                  // → unsigned tx for Phantom to sign
         if (!chainReady()) return ws.send(JSON.stringify({ t: "error", msg: "chain not configured" }));
         const txB64 = await buildDepositTx(m.wallet, m.side, m.amount);

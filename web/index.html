@@ -63,7 +63,13 @@
   .tip{position:absolute;pointer-events:none;z-index:20;background:rgba(12,12,22,.97);border:1px solid var(--line2);border-radius:10px;padding:9px 11px;min-width:160px;opacity:0;box-shadow:0 10px 30px -12px #000}
   .tip .nm{font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;margin-bottom:5px} .tip .r{display:flex;justify-content:space-between;gap:14px;font-family:var(--mono);font-size:11.5px;color:var(--ink-soft)} .tip .r b{color:var(--ink)} .pos{color:var(--bull)} .neg{color:var(--danger)}
   .dot{width:8px;height:8px;border-radius:50%;flex:none} .dot.bull{background:var(--bull)} .dot.uni{background:var(--uni)}
-  #profDrop{display:none;position:absolute;right:0;top:42px;z-index:60;width:330px;max-height:76vh;overflow:auto;background:var(--panel);border:1px solid var(--line2);border-radius:14px;padding:14px;box-shadow:0 12px 40px rgba(0,0,0,.55)}
+  #profDrop{display:none;position:absolute;right:0;left:auto;top:46px;z-index:60;width:min(380px,calc(100vw - 24px));max-height:78vh;overflow:auto;background:var(--panel);border:1px solid var(--line2);border-radius:14px;padding:14px;box-shadow:0 12px 40px rgba(0,0,0,.55)}
+  @media(max-width:520px){#profDrop{position:fixed;right:12px;top:64px}}
+  /* faucet + devnet copy: only ever shown on a test chain (toggled from the engine's chain msg) */
+  .testnet-only{display:none}
+  body.is-testnet .testnet-only{display:block}
+  body.is-testnet .mainnet-only{display:none!important}
+  body.is-mainnet .mainnet-only{display:block!important}
   #profDrop.on{display:block}
   .selGold{box-shadow:0 0 0 2px var(--gold),0 0 14px rgba(255,192,72,.45)}
   #nBar .s{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;height:100%;transition:width .35s}
@@ -130,9 +136,10 @@
           <button class="ficon" id="profBtn" title="Wallet & profile">👛</button>
           <div id="profDrop">
         <div class="panelC" id="chainPanel">
-          <h3>Devnet wallet <span class="youtag" id="chainNet" style="background:#9945FF">SOLANA</span></h3>
+          <h3><span id="walletPanelTitle">Wallet</span> <span class="youtag" id="chainNet" style="background:#9945FF">SOLANA</span></h3>
           <div id="chainOff">
-            <div class="note"><b style="color:var(--gold)">Step 1 — put Phantom on Devnet.</b><br>Phantom → ⚙ Settings → Developer Settings → <b>Testnet Mode ON</b>, then pick <b>Solana Devnet</b>. If Phantom is on Mainnet, connecting appears to do nothing and balances read zero.</div>
+            <div class="note testnet-only"><b style="color:var(--gold)">Step 1 — put Phantom on Devnet.</b><br>Phantom → ⚙ Settings → Developer Settings → <b>Testnet Mode ON</b>, then pick <b>Solana Devnet</b>. If Phantom is on Mainnet, connecting appears to do nothing and balances read zero.</div>
+            <div class="note mainnet-only" style="display:none"><b style="color:var(--gold)">Real funds.</b> This arena settles in real ANSEM, UWU and SOL on Solana mainnet. Connect the wallet holding your tokens — Phantom should be on <b>Mainnet</b> (its default).</div>
             <div class="note" style="margin-top:6px;font-size:10.5px;color:var(--ink-faint)">Advanced: the network this game uses (you do <i>not</i> need to paste this into Phantom)</div>
             <div style="margin-top:6px;display:flex;gap:6px;align-items:center">
               <code id="rpcUrl" style="flex:1;font-family:var(--mono);font-size:11px;background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">http://127.0.0.1:8899</code>
@@ -147,9 +154,11 @@
               <div class="cell u"><div class="v" id="ocUwu">0</div><div class="n">🦄 on-chain UWU</div></div>
             </div>
             <div class="cell" style="margin-top:6px"><div class="v" id="ocSol">0</div><div class="n">◎ SOL (for tx fees)</div></div>
-            <button class="abtn jb" id="btnFundMe" style="width:100%;margin-top:8px">🎁 Get test SOL + 500 BULL + 500 UWU</button>
-            <div class="row2" style="margin-top:6px"><button class="abtn ghost" id="fauBull">Faucet 🐂 500</button><button class="abtn ghost2" id="fauUwu">Faucet 🦄 500</button></div>
-            <button class="abtn ghost" id="fauSol" style="width:100%;margin-top:6px">◎ Get 500 SOL units (arena credit)</button>
+            <div class="testnet-only">
+              <button class="abtn jb" id="btnFundMe" style="width:100%;margin-top:8px">🎁 Get test SOL + 500 BULL + 500 UWU</button>
+              <div class="row2" style="margin-top:6px"><button class="abtn ghost" id="fauBull">Faucet 🐂 500</button><button class="abtn ghost2" id="fauUwu">Faucet 🦄 500</button></div>
+              <button class="abtn ghost" id="fauSol" style="width:100%;margin-top:6px">◎ Get 500 SOL units (arena credit)</button>
+            </div>
             <span class="wlabel" style="margin-top:10px">Amount</span>
             <input id="chainAmt" type="number" value="50" min="1" step="1" style="width:100%;background:var(--panel2);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:8px;font-family:var(--mono);font-size:14px">
             <span class="wlabel" style="margin-top:8px">On-chain → game wallet</span>
@@ -1743,6 +1752,16 @@
         $("#walletNote").textContent="✅ Deployed "+fmt(m.stake)+" to "+(m.side==="bull"?"Bulls":"Unicorns")+" — you're in round "+(worlds[m.mode]||{}).roundNo+"."; }
       else if(m.t==="chain"){ CHAIN=m;
         if(m.rpc){ const r=$("#rpcUrl"); if(r)r.textContent=m.rpc; }
+        // Decide testnet vs mainnet from the engine's own RPC, not a hardcoded label. Faucets mint
+        // unbacked credit and only exist on test chains; showing them (or "switch Phantom to
+        // Devnet") on a real-money page is misleading at best.
+        {
+          const test=/localhost|127\.0\.0\.1|devnet|testnet/i.test(String(m.rpc||""));
+          document.body.classList.toggle("is-testnet",test);
+          document.body.classList.toggle("is-mainnet",!test);
+          const t=$("#walletPanelTitle"); if(t)t.textContent=test?"Devnet wallet":"Wallet";
+          const n=$("#chainNet"); if(n){n.textContent=test?"DEVNET":"MAINNET";n.style.background=test?"#9945FF":"var(--gold)";n.style.color=test?"#fff":"#241c00";}
+        }
         if(!m.ready) banner("🟡 Chain not configured — rounds are live, but deposits are off.");
         else banner("🟢 Live on-chain at <b>"+(m.rpc||"?")+"</b> — point Phantom at this RPC. Rounds are engine-authoritative &amp; seed-verifiable."); }
       else if(m.t==="depositTx"){ signAndSend(m); }
@@ -1789,6 +1808,8 @@
     }
     window.__auth=authenticate;
 
+    // base64 of a signed tx, for handing to the engine to broadcast
+    const b64=(u8)=>{let s="";for(const b of u8)s+=String.fromCharCode(b);return btoa(s);};
     async function signAndSendSol(m){                 // native SOL: system transfer, same signing path
       try{
         if(!window.solanaWeb3){ note("⚠ Solana lib not loaded."); return; }
@@ -1796,11 +1817,10 @@
         const tx=window.solanaWeb3.Transaction.from(raw);
         note("Approve the SOL deposit in Phantom…");
         const signed=await window.solana.signTransaction(tx);
-        const sig=await rpcConn().sendRawTransaction(signed.serialize());
-        await rpcConn().confirmTransaction(sig,"confirmed");
-        note("SOL deposit confirmed, crediting…");
-        send({t:"depositSol",wallet:PK,sig});
-        refreshBalances();                     // pull the new balance instead of waiting for a push
+        // The ENGINE broadcasts. Public mainnet RPCs 403 browser origins, so submitting from here
+        // killed every real deposit AFTER the user had already approved it in Phantom.
+        note("Submitting…");
+        send({t:"relayTx",wallet:PK,kind:"depositSol",signedB64:b64(signed.serialize())});
       }catch(e){ note("⚠ SOL deposit failed: "+String(e.message||e).slice(0,80)); }
     }
     async function signAndSend(m){
@@ -1808,22 +1828,18 @@
         if(!window.solanaWeb3){ note("⚠ Solana lib not loaded (check connection)."); return; }
         const raw=Uint8Array.from(atob(m.txB64),c=>c.charCodeAt(0));
         const tx=window.solanaWeb3.Transaction.from(raw);
-        // Phantom signs; WE submit to the game's RPC so the tx lands on the chain the engine watches.
         note("Approve the deposit in Phantom…");
         const signed=await window.solana.signTransaction(tx);
+        // Phantom signs, the ENGINE broadcasts. Browsers get 403 ("Access forbidden") from public
+        // mainnet RPCs, which killed real deposits at the last step — after the user had approved.
+        // The engine relays through its keyed endpoint and credits via the same verify path.
         note("Submitting to the chain…");
-        const sig=await rpcConn().sendRawTransaction(signed.serialize());
-        await rpcConn().confirmTransaction(sig,"confirmed");
-        note("Deposit confirmed, crediting…");
-        send({t:"deposit",wallet:PK,side:m.side,sig});
-        refreshBalances();                     // pull the new balance instead of waiting for a push
+        send({t:"relayTx",wallet:PK,kind:"deposit",side:m.side,signedB64:b64(signed.serialize())});
       }catch(e){
         const msg=String(e.message||e);
-        if(/simulat|unsafe|blocked/i.test(msg)){
-          note("⚠ Phantom blocked the transaction. Make sure Phantom is set to Devnet (Settings → Developer Settings → Testnet Mode) and try again.");
-        } else if(/insufficient|not enough|0x1\b/i.test(msg)){
-          note("⚠ Not enough balance/SOL on "+((CHAIN&&CHAIN.rpc)||"the game's RPC")+". Hit \"🎁 Get test SOL + tokens\" first.");
-        } else note("⚠ Deposit failed: "+msg);
+        if(/User rejected|reject/i.test(msg)) note("Deposit cancelled in Phantom.");
+        else if(/insufficient|not enough|0x1\b/i.test(msg)) note("⚠ Not enough balance or SOL for fees.");
+        else note("⚠ Deposit failed: "+msg.slice(0,120));
       }
     }
 
@@ -1841,7 +1857,7 @@
         const r=await window.solana.connect();
         PK=(window.solana.publicKey||r.publicKey).toString();
         $("#chainOff").style.display="none"; $("#chainOn").style.display="block";
-        $("#chainAddr").textContent=PK.slice(0,4)+"…"+PK.slice(-4)+"  ·  devnet";
+        $("#chainAddr").textContent=PK.slice(0,4)+"…"+PK.slice(-4)+"  ·  "+(document.body.classList.contains("is-testnet")?"devnet":"mainnet");
         if($("#refLink"))$("#refLink").textContent=location.origin+location.pathname+"?ref="+PK;
         localStorage.setItem("bvu_wmeth","phantom");
         connectedOnce=true; MYWALLET=PK;
@@ -1852,7 +1868,7 @@
         const okA=await authenticate();
         if(!okA){ note("Sign-in required to play."); return; }
         refreshBalances();
-        note("Signed in. Faucet some test tokens, then Deposit.");
+        note(document.body.classList.contains("is-testnet")?"Signed in. Faucet some test tokens, then Deposit.":"Signed in. Enter an amount and Deposit to start playing.");
       }catch(e){ note("Connection rejected."); }
     }
     function guard(){ if(!PK){note("Connect Phantom first.");return false;} if(!CHAIN||!CHAIN.ready){note("Devnet vault not funded yet — one moment.");return false;} return true; }

@@ -199,6 +199,18 @@ export async function transferFromVault(walletB58: string, side: "bull" | "uwu",
   return transfer(conn, vault, vaultAta.address, userAta.address, vault, toBase(amount));
 }
 
+// Relay a Phantom-signed transaction through the ENGINE's RPC. Browsers get 403 from the public
+// mainnet endpoint when they call sendRawTransaction directly, so the client hands us the signed
+// bytes and we broadcast via our keyed (Helius) endpoint, then confirm. We never sign here — the tx
+// is already fully signed by the user; the vault key is not involved.
+export async function broadcastSigned(signedB64: string): Promise<string> {
+  const conn = connection();
+  const raw = Buffer.from(signedB64, "base64");
+  const sig = await withRpcRetry(() => conn.sendRawTransaction(raw, { maxRetries: 3, skipPreflight: false }));
+  await conn.confirmTransaction(sig, "confirmed");
+  return sig;
+}
+
 export async function vaultTokenBalance(side: "bull" | "uwu"): Promise<number> {
   if (!cfg) return 0;
   const mint = mintFor(cfg, side);

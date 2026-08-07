@@ -57,10 +57,13 @@ ws.onopen = async () => {
     step(3, "deposit 120 UWU on-chain (engine builds, we sign like Phantom)");
     send({ t: "buildDeposit", wallet: PK, side: "uwu", amount: 120 });
     const dep = await waitFor("depositTx", 40000);
-    const depSig = await signAndSend(dep.txB64);
-    log("   deposit tx", depSig.slice(0, 24) + "…");
-    send({ t: "deposit", wallet: PK, side: "uwu", sig: depSig });
-    const dd = await waitFor("depositDone", 40000);
+    // sign locally, let the ENGINE broadcast (the relay path browsers must use)
+    const rawTx = Buffer.from(dep.txB64, "base64");
+    let tx2; try { tx2 = VersionedTransaction.deserialize(rawTx); tx2.sign([kp]); }
+    catch { tx2 = Transaction.from(rawTx); tx2.partialSign(kp); }
+    send({ t: "relayTx", wallet: PK, kind: "deposit", side: "uwu", signedB64: Buffer.from(tx2.serialize()).toString("base64") });
+    const dd = await waitFor("depositDone", 60000);
+    log("   relayed tx", String(dd.sig||"").slice(0, 24) + "…");
     log("   credited:", dd.credited ?? dd.amount ?? "?", "UWU");
 
     step(4, "get balance");

@@ -12,7 +12,7 @@ const nonces = new Map<WebSocket, string>();         // ws -> the current challe
 // Operations that move or reveal money. Every one requires a proven wallet on the socket.
 export const GUARDED = new Set([
   "enter", "enterN", "withdraw", "withdrawSol", "convert",
-  "buildDeposit", "buildSolDeposit", "deposit", "depositSol", "setName", "fundMe",
+  "buildDeposit", "buildSolDeposit", "deposit", "depositSol", "setName", "fundMe", "relayTx",
 ]);
 
 /** Has this socket proven control of `wallet`? */
