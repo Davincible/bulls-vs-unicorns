@@ -195,6 +195,7 @@
         <div class="hbreak"></div>
         <button class="ficon" id="infoBtn" title="How the game works">ⓘ</button>
         <div class="pill"><b class="g" id="arenaTag">BULL vs UWU</b><span>arena</span></div>
+        <div class="pill" id="backPill" style="cursor:help" title="Loading backing…"><b class="g" id="backDot">●</b><span id="backTxt">backing</span></div>
         <div class="pill" id="fairPill" style="cursor:pointer" title="Provably fair: the engine publishes sha256(seed) before the lobby opens, then reveals the seed. Your browser recomputes the whole round from it — no trust required. Click to verify the last round."><b class="g">✓</b><span>fair</span></div>
         <div id="profWrap" style="position:relative">
           <button class="ficon" id="profBtn" title="Wallet & profile">👛</button>
@@ -1038,6 +1039,39 @@
       el.appendChild(b);
     });
   })();
+
+  // BRIEF 5.4 — BACKING, VISIBLE. Solvency existed only at /solvency, which no player will ever
+  // open. It is the single fact that distinguishes a custodial product that can pay out from one
+  // that cannot, so it belongs on screen next to the fairness badge. Shows coverage (what the vault
+  // holds against what players are owed) and turns red the moment the engine freezes withdrawals.
+  async function fetchBacking(){
+    try{
+      const r=await fetch("/solvency",{cache:"no-store"}); if(!r.ok)return;
+      const j=await r.json(); const rep=j.report||{}; const as=rep.assets||[];
+      const dot=$("#backDot"), txt=$("#backTxt"), pill=$("#backPill");
+      if(!dot||!txt||!pill)return;
+      // worst coverage across assets anyone is actually owed — one bad asset is a bad answer
+      let worst=Infinity, owedAny=false;
+      for(const a of as){
+        if(!(a.liability>0)) continue;
+        owedAny=true; worst=Math.min(worst, a.holdings/a.liability);
+      }
+      const ok=rep.ok!==false && !j.frozen;
+      if(j.frozen){
+        dot.textContent="●"; dot.className="neg"; txt.textContent="withdrawals frozen";
+        pill.title="The engine froze withdrawals because the books did not reconcile against the vault. This is the safety guard doing its job.";
+      } else if(!owedAny){
+        dot.textContent="●"; dot.className="g"; txt.textContent="fully backed";
+        pill.title="Nothing is currently owed to players; every balance is backed on-chain.";
+      } else {
+        const pct=worst>=100?"100+":(worst*100).toFixed(0);
+        dot.textContent="●"; dot.className=ok?"g":"neg";
+        txt.textContent=pct+"% backed";
+        pill.title="The vault holds "+pct+"% of what players are owed, checked against the chain every 15s. Above 100% means more is held than owed.";
+      }
+    }catch(e){ /* leave the last reading rather than claiming a state we cannot see */ }
+  }
+  fetchBacking(); setInterval(()=>{ if(document.visibilityState!=="hidden") fetchBacking(); }, 30000);
 
   let lbTab="round", lbIdx=0;
   function renderLB(){
