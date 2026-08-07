@@ -585,7 +585,12 @@ setInterval(refreshChainHoldings, 60_000).unref?.();
 // the chain backs — resyncPoolToChain refuses to write down an over-claiming ledger, because that
 // would conceal a real shortfall rather than fix one.
 const AUTO_REBALANCE = process.env.AUTO_REBALANCE !== "0";
-const REBALANCE_MIN_GAP_USD = Number(process.env.REBALANCE_MIN_GAP_USD || 5);
+// The deadband exists so the daemon is not rewriting the book over rounding dust. $5 was set when
+// the float was much larger; against ~$100 it is 5%, and stranded float accumulated to just UNDER
+// it and then sat there permanently — 149 UWU ($4.05) and 0.061 SOL ($4.50), each individually
+// below the bar, together nearly a tenth of the float owned by nobody. A threshold that a leak can
+// hide beneath is not a safety margin, it is a blind spot.
+const REBALANCE_MIN_GAP_USD = Number(process.env.REBALANCE_MIN_GAP_USD || 1);
 async function autoRebalance(): Promise<void> {
   if (!AUTO_REBALANCE || !chainReady() || isFrozen()) return;
   // NEVER sample the books mid-round. A stake leaves the account the moment it is placed but the
