@@ -595,8 +595,6 @@ async function autoRebalance(): Promise<void> {
   // log was full of "INSOLVENT" refusals that /solvency flatly contradicted - both were reading a
   // book caught mid-settlement, which is not a state the comparison is meaningful in. Between
   // rounds every stake is back in an account and the two sides are comparable again.
-  const staked = (["bull", "uwu", "sol"] as const).reduce((n, f) => n + openStakes(f), 0);
-  if (staked > 0) return;
   try {
     await refreshChainHoldings();
     // SEC-M7: if that read failed, lastChain still holds an OLDER snapshot. Crediting the house
@@ -616,7 +614,9 @@ async function autoRebalance(): Promise<void> {
       if (!(usdPerTok > 0)) continue;
       // only act on a gap big enough to matter, so we are not rewriting the book every minute.
       // The threshold is passed IN so the decision happens before the mutation, not after it.
-      const r = resyncPoolToChain(ledger, pool, f, held[f], REBALANCE_MIN_GAP_USD / usdPerTok);
+      // open stakes are passed in rather than skipped: they are subtracted from what the house may
+      // claim, so the comparison is valid mid-round and the daemon can actually run
+      const r = resyncPoolToChain(ledger, pool, f, held[f], REBALANCE_MIN_GAP_USD / usdPerTok, openStakes(f));
       if (r.moved > 0) {
         console.log(`auto-rebalance: ${f} ${r.from.toFixed(4)} -> ${r.to.toFixed(4)} (+${r.moved.toFixed(4)}, $${(r.moved * usdPerTok).toFixed(2)})`);
         persist(); flush();
@@ -649,6 +649,14 @@ const BOT_MAX_BANK_USD = Number(process.env.BOT_MAX_BANK_USD || 12);
 // This is house money moving between house wallets. It never touches a player balance, never
 // creates balance (every token comes out of the pool), and is bounded by BOT_MAX_BANK_USD, the
 // same ceiling levelBots enforces from the other direction.
+/** What the fighters of this arena are holding in one token — the other half of the house float. */
+function botsHolding(aid: string, f: Field): number {
+  const pool = new Set(poolPubkeys());
+  let n = 0;
+  for (const a of botsFor(aid)) { if (!pool.has(a.id) && !(a as any).retired) n += a[f] || 0; }
+  return n;
+}
+
 function topUpBots(aid: string): void {
   if (!botBankReady()) return;
   const floorUsd = Number(process.env.BOT_BANK_FLOOR_USD || BOT_MAX_BANK_USD * 0.5);
@@ -665,8 +673,14 @@ function topUpBots(aid: string): void {
       // exactly what matchPlayerStake draws on to answer a human bet - so topping up the routine
       // book to the brim would have starved the one thing the player actually notices. Never spend
       // the last RESERVE_FRAC of the pool on routine funding; matching may still use all of it.
+      // The reserve must be a share of the TOTAL house float, not of the pool as it stands.
+      // Taking "65% of whatever is left" every pass just drains asymptotically to zero - which is
+      // exactly what happened: the rebalance handed 225 UWU back to the pool and the next top-up
+      // took it straight out again 40 seconds later. Measured against the whole float it is a real
+      // floor: once the pool is down to its share, routine funding stops drawing entirely.
       const poolTok = poolBalance(f as Field);
-      const spendable = Math.max(0, poolTok - poolTok * POOL_RESERVE_FRAC);
+      const houseTok = poolTok + botsHolding(aid, f as Field);
+      const spendable = Math.max(0, poolTok - houseTok * POOL_RESERVE_FRAC);
       if (!(spendable > 0)) continue;
       const wantTok = Math.min((floorUsd - usd) / px, spendable);
       const drawn = drawBank(f as Field, wantTok, 1);   // capped by what the pool really holds

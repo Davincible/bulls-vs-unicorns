@@ -83,3 +83,27 @@ test("still conserves — the reserve does not create or destroy value", () => {
   const b = r.bots.reduce((x, y) => x + y, 0) + r.pool;
   assert.ok(Math.abs(a - b) < 1e-9);
 });
+
+// The reserve has to be measured against the WHOLE house float. Against the pool as it stands,
+// "spend all but 35% of what is left" drains asymptotically — live, the rebalance handed 225 UWU
+// back and the next top-up removed it again 40s later.
+function drainRepeatedly(poolStart, botTotal, frac, passes, ofFloat) {
+  let pool = poolStart, bots = botTotal;
+  for (let i = 0; i < passes; i++) {
+    // the float is CONSERVED — what leaves the pool arrives in the fighters
+    const reserve = ofFloat ? (pool + bots) * frac : pool * frac;
+    const spendable = Math.max(0, pool - reserve);
+    pool -= spendable; bots += spendable;   // a hungry lobby takes everything it is allowed
+  }
+  return pool;
+}
+
+test("a reserve measured against the pool drains to nothing over repeated passes", () => {
+  const left = drainRepeatedly(100, 0, 0.35, 12, false);
+  assert.ok(left < 1, `pool held ${left} — expected it to bleed away`);
+});
+
+test("measured against the whole float it is a real floor", () => {
+  const left = drainRepeatedly(100, 0, 0.35, 12, true);
+  assert.ok(left >= 100 * 0.35 - 1e-6, `pool fell to ${left}, below its share of the float`);
+});

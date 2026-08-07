@@ -236,3 +236,23 @@ test("resync still refuses to write down an over-claiming ledger", () => {
   assert.match(String(r.reason), /INSOLVENT/);
   assert.equal((led.get("p1") as any).uwu, 500);
 });
+
+// Open stakes have LEFT the accounts but are still in the vault. Ignoring them makes every live
+// stake look like unowned float (how the house once got credited twice for money on the table);
+// but REFUSING to run while anything is staked is not free either — rounds are near-continuous, so
+// the daemon then effectively never runs and stranded float stays stranded. Subtract, don't skip.
+test("resync subtracts open stakes so it stays correct mid-round", () => {
+  const pool = new Set(["P1"]);
+  const l = ledgerOf(acct("P1", { uwu: 100 }), acct("alice", { uwu: 50 }));
+  // chain 300, players 50, staked 150 -> house may own 100, already has 100 -> nothing to credit
+  const r = resyncPoolToChain(l as any, pool, "uwu", 300, 0, 150);
+  assert.equal(r.moved, 0, "a live stake must not be credited as free float");
+});
+
+test("resync still credits genuinely stranded float while a round is open", () => {
+  const pool = new Set(["P1"]);
+  const l = ledgerOf(acct("P1", { uwu: 100 }), acct("alice", { uwu: 50 }));
+  const r = resyncPoolToChain(l as any, pool, "uwu", 400, 0, 150);   // 400-50-150 = 200 vs 100
+  assert.equal(Math.round(r.moved), 100);
+  assert.equal((l.get("alice") as any).uwu, 50, "player untouched");
+});

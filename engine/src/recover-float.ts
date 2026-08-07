@@ -76,7 +76,7 @@ export async function recoverInPlace(
  *  quietly reverted it. Deciding before mutating keeps the two in step. */
 export function resyncPoolToChain(
   ledger: Map<string, any>, pool: Set<string>,
-  field: "bull" | "uwu" | "sol", chainHeld: number, minGap = 0,
+  field: "bull" | "uwu" | "sol", chainHeld: number, minGap = 0, openStake = 0,
 ): { moved: number; from: number; to: number; reason?: string } {
   let house = 0, player = 0;
   const poolAccts: any[] = [];
@@ -87,7 +87,12 @@ export function resyncPoolToChain(
     else player += v;
   }
   if (!poolAccts.length) return { moved: 0, from: house, to: house, reason: "no pool wallets" };
-  const target = chainHeld - player;                      // what the house may legitimately own
+  // openStake is money that has LEFT the accounts but is still sitting in the vault. Ignoring it
+  // makes every live stake look like unowned float, which is how the daemon once credited the house
+  // twice for money already on the table. Subtracting it lets this run mid-round instead of having
+  // to refuse - and refusing was not free: rounds are near-continuous, so a daemon that only acts
+  // when nothing is staked effectively never acts, and stranded float stays stranded.
+  const target = chainHeld - player - openStake;         // what the house may legitimately own
   if (!(target > 0)) return { moved: 0, from: house, to: house, reason: `chain holds ${chainHeld} but players are owed ${player}` };
   const gap = target - house;
   if (gap <= 0.0001) {
