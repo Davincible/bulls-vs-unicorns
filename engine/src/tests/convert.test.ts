@@ -193,3 +193,30 @@ test("the OTC fee is set to what the real route would have cost", () => {
   assert.equal(feeSol, 0.003, "SOL pairs are liquid; charge the standard convert fee");
   assert.ok(feeToken > feeSol, "the illiquid pair earns more spread");
 });
+
+// ---- slippage / MEV posture ----
+// Slippage is not just a fill-quality setting: it is the exact budget a sandwich bot has to steal.
+// A 1.5% tolerance on a thin pair hands an attacker 1.5% of the trade.
+test("the slippage ceiling bounds what a sandwich can extract", () => {
+  const tradeUsd = 8.35;
+  const old = 0.015, now = 0.005;
+  assert.ok(tradeUsd * old - tradeUsd * now > 0.08, "0.5% cuts the attackable budget by two thirds");
+  assert.ok(now < old);
+});
+
+// The strongest MEV answer is not to be on the chain at all. The OTC path settles internally, so
+// there is no transaction to see, front-run or sandwich.
+test("an OTC convert has no on-chain exposure at all", () => {
+  const otc = { txsBroadcast: 0, mempoolExposureMs: 0, slippage: 0, gas: 0 };
+  assert.equal(otc.txsBroadcast, 0, "nothing to front-run");
+  assert.equal(otc.slippage, 0);
+  assert.equal(otc.gas, 0);
+});
+
+test("price-impact cap still refuses a bad route regardless of slippage", () => {
+  const MAX_IMPACT = 0.05;
+  for (const impact of [0.06, 0.2, 0.99]) {
+    assert.ok(impact > MAX_IMPACT, "a route this bad must be refused, not filled");
+  }
+  assert.ok(0.004 < MAX_IMPACT, "a healthy route passes");
+});

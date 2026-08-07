@@ -463,7 +463,11 @@
   // ONLINE flips once the engine speaks. Online state persists to SEPARATE localStorage slots
   // ("...on") so the engine-driven session never clobbers the offline demo save, and vice versa.
   let ONLINE=false;
-  const WALLET={bull:START,uwu:START,sol:0}; let INVESTED=START*2;
+  // Real money by default: no seeded balance. Only the explicit offline demo (?demo=1) starts with
+  // play money, because showing a balance the vault does not back is indefensible on a live chain.
+  const _demoMode=(()=>{try{return new URLSearchParams(location.search).get("demo")==="1";}catch(e){return false;}})();
+  const _start=_demoMode?START:0;
+  const WALLET={bull:_start,uwu:_start,sol:0}; let INVESTED=_demoMode?_start*2:0;
   const walletKey=()=>ONLINE?"bvu13_wallet_on":"bvu13_wallet";
   function loadWallet(){try{const s=JSON.parse(localStorage.getItem(walletKey()));if(s){WALLET.bull=+s.bull||0;WALLET.uwu=+s.uwu||0;INVESTED=+s.invested||0;}}catch(e){}}
   function saveWallet(){try{localStorage.setItem(walletKey(),JSON.stringify({bull:WALLET.bull,uwu:WALLET.uwu,invested:INVESTED}));}catch(e){}}

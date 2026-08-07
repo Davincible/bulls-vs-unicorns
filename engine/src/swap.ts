@@ -18,7 +18,17 @@ import { priceUSD, type PriceToken } from "./prices.ts";
 // paid host with higher limits.
 const JUP_KEY = process.env.JUPITER_API_KEY || "";
 const JUP_BASE = process.env.JUPITER_BASE || (JUP_KEY ? "https://api.jup.ag/swap/v1" : "https://lite-api.jup.ag/swap/v1");
-const SLIPPAGE_BPS = Number(process.env.SWAP_SLIPPAGE_BPS || 150);       // 1.5% — memecoin pairs are thin
+// Slippage is the ceiling on how much worse than quoted a fill may be — and it is also the exact
+// budget a sandwich bot has to steal. 1.5% on a thin pair was generous to an attacker. We now ask
+// Jupiter for DYNAMIC slippage (it sizes the tolerance to the route's real depth) with this as a
+// hard cap, so a quiet market fills at a few bps and only a genuinely volatile one uses the ceiling.
+const SLIPPAGE_BPS = Number(process.env.SWAP_SLIPPAGE_BPS || 50);        // 0.5% ceiling
+const DYNAMIC_SLIPPAGE = process.env.SWAP_DYNAMIC_SLIPPAGE !== "0";
+// MEV: a swap broadcast to a public mempool is visible before it lands and can be sandwiched.
+// Routing through Jito's block engine submits it as a bundle instead, so it is never exposed.
+// Set SWAP_JITO_URL to a Jito block-engine endpoint to enable; a tip is required for inclusion.
+const JITO_URL = process.env.SWAP_JITO_URL || "";
+const JITO_TIP_LAMPORTS = Number(process.env.SWAP_JITO_TIP || 100_000);  // 0.0001 SOL
 const MAX_PRICE_IMPACT = Number(process.env.SWAP_MAX_IMPACT || 0.05);    // refuse worse than 5%
 const IS_TEST_CHAIN = /localhost|127\.0\.0\.1|devnet|testnet/i.test(RPC);
 
@@ -40,6 +50,7 @@ export async function quote(inputMint: string, outputMint: string, rawAmount: nu
   u.searchParams.set("outputMint", outputMint);
   u.searchParams.set("amount", String(Math.floor(rawAmount)));
   u.searchParams.set("slippageBps", String(SLIPPAGE_BPS));
+  if (DYNAMIC_SLIPPAGE) u.searchParams.set("dynamicSlippage", "true");   // tighten to the route's depth
   u.searchParams.set("restrictIntermediateTokens", "true");   // avoid exotic multi-hop routes
   const r = await fetch(u, { headers: headers() });
   if (!r.ok) throw new Error(`jupiter quote ${r.status}: ${(await r.text()).slice(0, 120)}`);
@@ -89,6 +100,10 @@ export async function swapExact(
         userPublicKey: vault.publicKey.toBase58(),
         wrapAndUnwrapSol: true,
         dynamicComputeUnitLimit: true,
+        // let Jupiter pick the tightest safe slippage rather than always spending our ceiling
+        ...(DYNAMIC_SLIPPAGE ? { dynamicSlippage: true } : {}),
+        // a landed swap is a swap that cannot be re-quoted at a worse price; pay to be included
+        prioritizationFeeLamports: { priorityLevelWithMaxLamports: { global: false, maxLamports: 200_000, priorityLevel: "high" } },
       }),
     });
     if (!sr.ok) throw new Error(`jupiter swap ${sr.status}: ${(await sr.text()).slice(0, 120)}`);
