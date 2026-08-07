@@ -968,12 +968,33 @@
   }
   $("#modal").addEventListener("click",e=>{if(e.target.id==="modal")$("#modal").classList.remove("on");});
 
+  // ONE LEDGER — Hall of Legends from the engine, not from this browser's memory.
+  // w.legends was built only from rounds this tab was open for, kept in localStorage, so it reset
+  // on reload, carried local-sim rounds from before the engine existed, and could never include a
+  // round you were away for. /hall derives the same list from the permanent round log, so every
+  // viewer sees the identical board and it can be recomputed from the on-chain anchors.
+  // Same-origin, so the CSP's connect-src 'self' already allows it.
+  window.__HALL=null; let hallAt=0, hallBusy=false;
+  async function fetchHall(force){
+    if(hallBusy) return; if(!force && Date.now()-hallAt < 15000) return;
+    hallBusy=true;
+    try{
+      const r=await fetch("/hall?limit=40",{cache:"no-store"});
+      if(r.ok){ const j=await r.json(); if(Array.isArray(j.hall)){ window.__HALL=j.hall; hallAt=Date.now(); } }
+    }catch(e){ /* keep the last good list rather than blanking the board */ }
+    finally{ hallBusy=false; }
+  }
+  setInterval(()=>{ if(document.visibilityState!=="hidden") fetchHall(); }, 20000);
+  fetchHall(true);
+
   let lbTab="round", lbIdx=0;
   function renderLB(){
     const w=W();
     if(lbTab==="legends"){
       $("#rnav").style.visibility="hidden";$("#lbColBar").textContent="Deposit → final";$("#lbColRd").textContent="Return";
-      const L=(w.legends||[]).slice(0,40);
+      // engine first; the local list is only a fallback before /hall has answered
+      const L=(window.__HALL&&window.__HALL.length)?window.__HALL.slice(0,40):(w.legends||[]).slice(0,40);
+      if(!window.__HALL) fetchHall(true);
       const maxV=Math.max(1,...L.map(l=>l.outAmt||0));
       $("#lbRows").innerHTML=L.length?L.map((l,i)=>{
         const pnl=(l.outAmt||0)-(l.inAmt||0);
@@ -1362,6 +1383,10 @@
     $("#dAcct").textContent=w.online?(w.engAccounts||0):w.accounts.length;$("#dCreated").textContent=w.acctCreated;$("#dBusted").textContent=w.acctBusted;
     $("#dTotDep").textContent=fmt(td);$("#dTotRet").textContent=fmt(tr);$("#dAcctBull").textContent=ab;$("#dAcctUni").textContent=au;
     const net=tr-td,ne=$("#dNetPnl");ne.textContent=(net>=0?"+":"−")+"$"+Math.abs(net).toFixed(0);ne.className="v "+(net>=0?"pos":"neg");
+    const _H=window.__HALL;
+    if(_H&&_H.length){
+      $("#legends").innerHTML=_H.slice(0,10).map((l,i)=>`<div class="li"><span style="color:var(--ink-faint);width:16px">${i+1}</span><span class="nm hofnm">${esc(l.name||"")}</span><span class="hofrun">${fmt(l.inAmt)} → ${fmt(l.outAmt)}</span><span class="hofrd">R${l.round}</span><span class="pct">${(l.roi*100).toFixed(0)}%</span></div>`).join("");
+    } else
     $("#legends").innerHTML=w.legends.length?w.legends.slice(0,10).map((l,i)=>`<div class="li"><span style="color:var(--ink-faint);width:16px">${i+1}</span><span class="dot ${l.side==="bull"?"bull":"uni"}"></span><span class="nm hofnm">${esc(l.name)}</span><span class="hofrun">${fmt(l.inAmt)} → ${fmt(l.outAmt)}</span><span class="hofrd">R${l.round}</span><span class="pct">${(l.roi*100).toFixed(0)}%</span></div>`).join(""):'<div class="note">Best plays show here.</div>';
     $("#matchHist").innerHTML=w.matches.length?w.matches.map(m=>`<div class="li"><span class="dot ${m.winner==="bull"?"bull":"uni"}"></span><span class="nm">Round ${m.round}</span><span class="sub">${m.mult}×</span><span class="v">${m.winner==="bull"?icoH("ansem")+" Bulls":icoH("uwu")+" Unicorns"}</span></div>`).join(""):'<div class="note">No finished rounds yet.</div>';
   }
@@ -1941,7 +1966,11 @@
     const buf=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s));
     return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,"0")).join("");
   }
-  window.__shareLegend=(i)=>{const w=W();const l=(w.legends||[])[i];if(!l)return;
+  window.__shareLegend=(i)=>{const w=W();
+    // index the SAME list that was rendered — the board now draws from /hall, so reading
+    // w.legends[i] here would share a different row than the one clicked.
+    const _src=(window.__HALL&&window.__HALL.length)?window.__HALL:(w.legends||[]);
+    const l=_src[i];if(!l)return;
     // The arena is not always Bulls vs Unicorns. This used to hardcode the bull/unicorn emoji and
     // $BULL/$UWU, so a win in the UWU/SOL arena was broadcast under the wrong two tokens entirely -
     // the same class of bug as the "BULL" label showing while playing SOL. Read the live arena.
