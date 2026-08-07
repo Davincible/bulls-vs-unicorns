@@ -164,3 +164,32 @@ for (const mode of ["normal", "extraction"] as const) {
               `${mode}: paid ${paid.toFixed(4)} vs staked ${staked.toFixed(4)}`);
   });
 }
+
+// A wallet deploying on BOTH armies had its two fighters treated as enemies: they attacked each
+// other, burning the player's own money on the house fee and giving them influence over both ends
+// of a clash. Friendly-fire was checked by side alone; ownership is what actually matters.
+test("one wallet on both sides never fights itself", () => {
+  const e: Entry[] = [
+    { id: "WALLET_A|bull", side: "bull", stake: 20 },
+    { id: "WALLET_A|uwu",  side: "uwu",  stake: 20 },   // same owner, opposite army
+    { id: "WALLET_B|uwu",  side: "uwu",  stake: 20 },
+  ];
+  const r = simulateRound("self-attack", e, cfg2("extraction"));
+  for (const h of r.hits) {
+    const atk = String(h.atk).split("|")[0], def = String(h.def).split("|")[0];
+    assert.notEqual(atk, def, `${h.atk} hit ${h.def} — a wallet must never be its own enemy`);
+  }
+});
+
+test("hedging both sides still conserves, it just cannot self-trade", () => {
+  const e: Entry[] = [
+    { id: "W1|bull", side: "bull", stake: 10 },
+    { id: "W1|uwu",  side: "uwu",  stake: 10 },
+    { id: "W2|uwu",  side: "uwu",  stake: 10 },
+    { id: "W3|bull", side: "bull", stake: 10 },
+  ];
+  const staked = sum(e.map(x => x.stake));
+  const r = simulateRound("hedge", e, cfg2("extraction"));
+  const paid = sum(Object.values(r.settlement).map(s => s.bull + s.uwu));
+  assert.ok(Math.abs(paid - staked) < 1e-3, `paid ${paid} vs staked ${staked}`);
+});

@@ -171,6 +171,48 @@ export function publicName(a: Account): string {
   return walletTag(a.id);
 }
 
+/** Standings computed from the ROUND LOG rather than from whoever still has an account.
+ *
+ *  A board built from live balances is a survey of survivors: a fighter who won, cashed out and
+ *  retired disappears along with their profit, so the aggregate can only ever look negative. It also
+ *  reads ~0 for anyone mid-round, because their stake has left their balance and sits in the round.
+ *
+ *  The log has neither problem. Every settled round is recorded permanently with each fighter's
+ *  entry and exit, and the same rows are committed to on-chain by the `results` hash — so these
+ *  standings are reconstructible by anyone from Solana plus /round, without trusting us. */
+export interface Standing {
+  id: string; name: string; rounds: number; wins: number;
+  staked: number; returned: number; pnl: number; roi: number; best: number;
+}
+export function standingsFromLog(arena?: string, limit = 40): Standing[] {
+  const by = new Map<string, Standing>();
+  for (const r of roundLog) {
+    if (arena && r.arena !== arena) continue;
+    const winSide = r.winner;
+    for (const p of r.players) {
+      let row = by.get(p.id);
+      if (!row) {
+        row = { id: p.id, name: p.name || p.id, rounds: 0, wins: 0,
+                staked: 0, returned: 0, pnl: 0, roi: 0, best: 0 };
+        by.set(p.id, row);
+      }
+      row.rounds++;
+      if (p.side === winSide) row.wins++;
+      row.staked += p.inUsd || 0;
+      row.returned += p.outUsd || 0;
+      const net = (p.outUsd || 0) - (p.inUsd || 0);
+      if (net > row.best) row.best = net;
+      if (p.name) row.name = p.name;                 // keep the freshest handle
+    }
+  }
+  const rows = [...by.values()];
+  for (const r of rows) {
+    r.pnl = r.returned - r.staked;
+    r.roi = r.staked > 0 ? r.pnl / r.staked : 0;
+  }
+  return rows.sort((a, b) => b.pnl - a.pnl).slice(0, limit);
+}
+
 export function leadersFor(aid: string) {
   const list = [...ledger.values()].filter(a => (a.isBot ? a.id.startsWith(aid + ":") : hasActivity(a)));
   // Everything on this board is DOLLARS. dep/ret/raided are accumulated in token units by the

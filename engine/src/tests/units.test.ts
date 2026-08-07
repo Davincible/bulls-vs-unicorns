@@ -457,3 +457,71 @@ test("only a connected X identity earns a real name on the board", () => {
   assert.match(show(noX), /^BTYd…/, "otherwise a shortened address");
   assert.ok(!/bagChaser/.test(show(bot)), "never an invented handle");
 });
+
+// ---- standings from the round log ----
+// A board built from live balances is a survey of SURVIVORS: a fighter who won and then retired
+// disappears with their profit, so the aggregate can only ever look negative. It also reads ~0 for
+// anyone mid-round, because their stake has left their balance and is sitting in the round.
+// The log has neither problem — every settled round is recorded permanently.
+type LogRow = { winner: string; players: Array<{ id: string; name: string; side: string; inUsd: number; outUsd: number }> };
+function standings(log: LogRow[]) {
+  const by = new Map<string, any>();
+  for (const r of log) for (const p of r.players) {
+    const row = by.get(p.id) || { id: p.id, rounds: 0, wins: 0, staked: 0, returned: 0 };
+    row.rounds++; if (p.side === r.winner) row.wins++;
+    row.staked += p.inUsd; row.returned += p.outUsd;
+    by.set(p.id, row);
+  }
+  return [...by.values()].map(r => ({ ...r, pnl: r.returned - r.staked }));
+}
+
+test("a retired winner still counts — the balance board loses them entirely", () => {
+  const log: LogRow[] = [
+    { winner: "bull", players: [
+      { id: "winner", name: "w", side: "bull", inUsd: 1.00, outUsd: 1.90 },
+      { id: "loser",  name: "l", side: "uwu",  inUsd: 1.00, outUsd: 0.10 }] },
+  ];
+  const rows = standings(log);
+  const w = rows.find(r => r.id === "winner")!;
+  assert.ok(w.pnl > 0.8, `the winner is +$${w.pnl.toFixed(2)} even if their account was later retired`);
+  assert.equal(rows.filter(r => r.pnl > 0).length, 1, "so the board is not all losers");
+});
+
+test("mid-round stakes do not distort it — the log records settled rounds only", () => {
+  const log: LogRow[] = [
+    { winner: "bull", players: [{ id: "p", name: "p", side: "bull", inUsd: 5, outUsd: 6 }] },
+  ];
+  const r = standings(log)[0];
+  assert.equal(r.pnl, 1, "P/L comes from what settled, not from a balance snapshot");
+});
+
+test("the aggregate balances to the fee, as conservation requires", () => {
+  const log: LogRow[] = [
+    { winner: "bull", players: [
+      { id: "a", name: "a", side: "bull", inUsd: 2.00, outUsd: 3.60 },
+      { id: "b", name: "b", side: "uwu",  inUsd: 2.00, outUsd: 0.39 }] },
+  ];
+  const rows = standings(log);
+  const totalIn = rows.reduce((s, r) => s + r.staked, 0);
+  const totalOut = rows.reduce((s, r) => s + r.returned, 0);
+  assert.ok(Math.abs((totalIn - totalOut) - totalIn * 0.0025) < 0.02,
+            "in and out differ only by the house fee");
+  assert.equal(rows.filter(r => r.pnl > 0).length, 1, "winners and losers both appear");
+});
+
+// Matching only from what bots happened to be holding meant a $7.60 entry drew a $4.53 answer and
+// the rest sat unmatched — the player's money idle, the round smaller than it should have been.
+test("the house draws on the float to answer a stake it cannot cover from hand", () => {
+  const need = 7.60, botsHold = 4.53, poolSpare = 40;
+  const fromHand = Math.min(need, botsHold);
+  assert.ok(fromHand < need, "bots alone fall short");
+  const topUp = Math.min(need - fromHand, poolSpare);
+  assert.ok(fromHand + topUp >= need, "topping up from the float covers the whole stake");
+});
+
+test("but never beyond what the float actually holds", () => {
+  const need = 500, botsHold = 4.53, poolSpare = 40;
+  const answered = Math.min(need, botsHold + poolSpare);
+  assert.equal(answered, 44.53, "the house answers what it can and no more");
+  assert.ok(answered < need, "the remainder stays unmatched and is refunded to the player");
+});

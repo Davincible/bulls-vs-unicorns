@@ -1268,6 +1268,8 @@
       // recoil — mirrors engine/src/game.ts; without it the replay diverges from the engine
       a.vx-=nx*SCOMBAT.knock;a.vy-=ny*SCOMBAT.knock;b.vx+=nx*SCOMBAT.knock;b.vy+=ny*SCOMBAT.knock;
       if(a.side===b.side)continue;
+      // one wallet on both armies must not fight itself — mirrors engine/src/game.ts
+      if(String(a.id).split("|")[0]===String(b.id).split("|")[0])continue;
       const key=a.id<b.id?a.id+"|"+b.id:b.id+"|"+a.id;
       const last=s.pairCd.has(key)?s.pairCd.get(key):-1e9;
       if(nowMs-last<SCOMBAT.hitCd/ramp)continue;

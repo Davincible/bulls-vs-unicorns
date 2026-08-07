@@ -201,6 +201,11 @@ export function stepSim(s: SimState): HitLog[] {
     a.vx -= nx * COMBAT.knock; a.vy -= ny * COMBAT.knock;
     b.vx += nx * COMBAT.knock; b.vy += ny * COMBAT.knock;
     if (a.side === b.side) continue;
+    // SAME OWNER, BOTH SIDES. Entry ids are "wallet|side", so one wallet deploying on both armies
+    // put two of its own fighters on opposite teams — they attacked each other, which burns the
+    // player's own money on the house fee and hands them influence over both ends of a clash.
+    // A wallet is never its own enemy.
+    if (a.id.split("|")[0] === b.id.split("|")[0]) continue;
 
     const key = a.id < b.id ? a.id + "|" + b.id : b.id + "|" + a.id;   // per-pair hit cooldown
     if (nowMs - (s.pairCd.get(key) ?? -1e9) < COMBAT.hitCd / ramp) continue;

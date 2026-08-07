@@ -30,7 +30,7 @@ import { vaultTokenBalance } from "./chain-ops.ts";
 import { type Account, ledger, rounds, roundsByArena, statsA, stat, treasury, totalDeployed, depSide,
          created, bustedCount, getConvFees, addConvFees, persist, restore, flush, bankFee, TREASURY_ID,
          acct, balPayload, leadersFor, accountUsd, cleanDisplayName, cleanAvatarUrl,
-         pushRound, roundHistory, resetLifetimeStats, treasuryAcct } from "./ledger.ts";
+         pushRound, roundHistory, resetLifetimeStats, treasuryAcct, standingsFromLog } from "./ledger.ts";
 import { RoundRunnerN, cfgN } from "./roundN.ts";
 import { type Tok, FIELD, PAIRINGS, ARENA_IDS, arenaTokens, arenaEco, NARENAS, NARENA_IDS,
          FEE, CAP, CONVERT_FEE, MIN_ENTRY } from "./arenas.ts";
@@ -631,11 +631,19 @@ function matchPlayerStake(aid: string, playerSide: Side, stakeUsd: number): void
   let need = stakeUsd * MATCH_RATIO - already;
   if (need <= MIN_ENTRY) return;
 
-  // spread the answer across bots that can afford it, newest first
+  // Spread the answer across bots, TOPPING THEM UP from the pool when they are short. Matching only
+  // from what bots happened to be holding meant a $7.60 entry drew a $4.53 answer and the rest went
+  // unmatched — the player's money sat idle and the round was smaller than it should have been.
+  // The float exists to take this action, so draw on it directly, capped by what it really holds.
   for (const b of botsFor(aid)) {
     if (need <= MIN_ENTRY) break;
     if (b.side !== foe) continue;
-    const have = (b[f] || 0) * px;
+    let have = (b[f] || 0) * px;
+    if (have < need) {
+      const shortBy = Math.min(need - have, CAP);
+      const drawn = drawBank(f, shortBy / px, 1);   // spread=1: this is the house answering, not funding a bot
+      if (drawn > 0) { b[f] = (b[f] || 0) + drawn; have += drawn * px; }
+    }
     const give = Math.min(need, have, CAP);
     if (give < MIN_ENTRY) continue;
     const tokens = give / px;
@@ -826,6 +834,16 @@ const httpServer = createServer((req, res) => {
     if (!a) { res.writeHead(404, cors); return res.end('{"error":"round not held"}'); }
     res.writeHead(200, cors);
     return res.end(JSON.stringify({ hash: resultsHash(a), payload: JSON.parse(resultsPayload(a)) }));
+  }
+  // Standings derived from the permanent round log — survivorship-free, restart-proof, and
+  // reconstructible from the on-chain `results` hashes plus /round by anyone who does not trust us.
+  if (url.startsWith("/standings")) {
+    const q = new URL(req.url || "/", "http://x").searchParams;
+    res.writeHead(200, cors);
+    return res.end(JSON.stringify({
+      source: "round-log", rounds: roundHistory(1000).length,
+      standings: standingsFromLog(q.get("arena") || undefined, Math.min(Number(q.get("limit")) || 40, 200)),
+    }));
   }
   if (url === "/memo") { res.writeHead(200, cors); return res.end(JSON.stringify(memoStats())); }
   if (url === "/float") {
@@ -1309,6 +1327,8 @@ wss.on("connection", (ws, req) => {
         // Deploying into a round is not a chain operation and must never cost the player a signature.
         const token = r.ok ? mintSession(m.wallet) : undefined;
         ws.send(JSON.stringify({ t: "authResult", ...r, token }));
+      } else if (m.t === "standings") {
+        ws.send(JSON.stringify({ t: "standings", standings: standingsFromLog(m.arena, Math.min(Number(m.limit) || 40, 200)) }));
       } else if (m.t === "roundHistory") {
         ws.send(JSON.stringify({ t: "roundHistory", rounds: roundHistory(Math.min(Number(m.limit) || 40, 200),
                                                                         m.mine ? String(m.wallet || "") : undefined) }));
