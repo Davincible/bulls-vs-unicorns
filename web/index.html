@@ -27,6 +27,11 @@
   /* Line 1 is the arena/mode pickers; line 2 is nav + status + wallet. The wallet sat alone at the
      far right of line 1 with nothing beside it, which read as a broken stray dot rather than as
      "pinned top-right". It belongs next to the things it relates to. */
+  /* BRIEF 1.3 — the picker was bare token glyphs at ~11px, several falling back to tofu boxes, so a
+     player could not tell which arena they were in without reading a pill elsewhere. Name them. */
+  .pairnm{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;margin-left:5px;white-space:nowrap}
+  .pairnm i{font-style:normal;opacity:.45;margin:0 3px}
+  #pairSel button{display:inline-flex;align-items:center;gap:2px}
   #pairSel{order:1}
   .hstats > .modes:not(#pairSel){order:2}
   .hbreak{order:3;flex-basis:100%;height:0;margin:0}
@@ -162,7 +167,7 @@
         <div class="pill" title="House take (0.2% of deploys + 0.3% converts)"><b class="g" id="treasury">$0</b><span class="brk" id="treasuryBrk"><span class="tico" data-tok="ansem"></span>$0 · <span class="tico" data-tok="uwu"></span>$0</span><span>House take</span></div>
         <div class="nav"><button data-view="arena" class="on">Arena</button><button data-view="leaderboard">Leaderboard</button><button data-view="dashboard">Dashboard</button><button data-view="referrals">Referrals</button><button data-view="history">History</button></div>
         <div class="modes"><button data-mode="normal" class="on">Mayhem</button><button data-mode="extraction">💰 Extraction</button></div>
-        <div class="modes" id="pairSel"><button data-pair="au" class="on" title="ANSEM vs UWU"><span class="tico" data-tok="ansem"></span>⚔<span class="tico" data-tok="uwu"></span></button><button data-pair="as" title="ANSEM vs SOL"><span class="tico" data-tok="ansem"></span>⚔<span class="tico" data-tok="sol"></span></button><button data-pair="us" title="UWU vs SOL"><span class="tico" data-tok="uwu"></span>⚔<span class="tico" data-tok="sol"></span></button><button data-pair="3w" title="3-WAY: all three armies"><span class="tico" data-tok="ansem"></span><span class="tico" data-tok="uwu"></span><span class="tico" data-tok="sol"></span></button><button data-pair="ffa" title="BULLS FFA: every fighter for themselves"><span class="tico" data-tok="ansem"></span><span class="tico" data-tok="ansem"></span><span class="tico" data-tok="ansem"></span></button></div>
+        <div class="modes" id="pairSel"><button data-pair="au" class="on" title="ANSEM vs UWU"><span class="tico" data-tok="ansem"></span><span class="pairnm">ANSEM<i>vs</i>UWU</span></button><button data-pair="as" title="ANSEM vs SOL"><span class="tico" data-tok="ansem"></span><span class="pairnm">ANSEM<i>vs</i>SOL</span></button><button data-pair="us" title="UWU vs SOL"><span class="tico" data-tok="uwu"></span><span class="pairnm">UWU<i>vs</i>SOL</span></button><button data-pair="3w" title="3-WAY: all three armies"><span class="tico" data-tok="ansem"></span><span class="tico" data-tok="uwu"></span><span class="tico" data-tok="sol"></span></button><button data-pair="ffa" title="BULLS FFA: every fighter for themselves"><span class="tico" data-tok="ansem"></span><span class="tico" data-tok="ansem"></span><span class="tico" data-tok="ansem"></span></button></div>
         <div class="hbreak"></div>
         <button class="ficon" id="infoBtn" title="How the game works">ⓘ</button>
         <div class="pill"><b class="g" id="arenaTag">BULL vs UWU</b><span>arena</span></div>
@@ -368,7 +373,7 @@
           <div class="stat"><div class="v" id="brStoleA">0</div><div class="n" id="brStoleAN">— taken</div></div>
           <div class="stat"><div class="v" id="brStoleB">0</div><div class="n" id="brStoleBN">— taken</div></div>
         </div>
-        <h3 style="margin:14px 0 6px;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);font-family:var(--mono)">Stolen all session</h3>
+        <h3 style="margin:14px 0 6px;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);font-family:var(--mono)">Stolen all time</h3>
         <div class="dgrid">
           <div class="stat"><div class="v" id="brAllA">0</div><div class="n" id="brAllAN">— taken</div></div>
           <div class="stat"><div class="v" id="brAllB">0</div><div class="n" id="brAllBN">— taken</div></div>
@@ -391,8 +396,6 @@
       <div class="card"><h2 style="font-size:15px">User base <span style="font-family:var(--mono);font-size:11px;color:var(--ink-faint)">— persistent accounts</span></h2>
         <div class="dgrid" style="margin-top:8px">
           <div class="stat"><div class="v" id="dAcct">0</div><div class="n">Active accounts</div></div>
-          <div class="stat"><div class="v" id="dCreated">0</div><div class="n">Accounts created</div></div>
-          <div class="stat"><div class="v" id="dBusted" style="color:var(--danger)">0</div><div class="n">Busted (went broke)</div></div>
           <div class="stat"><div class="v" id="dNetPnl">$0</div><div class="n">Players' net P/L (vs house)</div></div>
         </div>
         <div class="dgrid" style="margin-top:12px">
@@ -408,7 +411,9 @@
       </div>
     </div>
   </div>
-  <footer>Prototype · saved locally. Raids TAKE the enemy's coin into your bag (claim reallocation). No cash — only BULL &amp; UWU, wallet shared across modes. Normal = raids compound in-ring · Extraction = raids bank to your wallet in real time. House edge 0.2% per deploy · 0.3% on convert. BULL = Ansem, UWU = Unicorn. · <a href="solvency.html" style="color:var(--ink-soft);text-decoration:none">🔒 Proof of reserves</a></footer>
+  <footer><b style="color:var(--gold)">Live on Solana mainnet · real funds.</b> Balances are custodial: the engine holds them against an on-chain vault, and you can withdraw at any time.
+  <b style="color:var(--ink)">The house plays too.</b> Some fighters are funded by the house from its own float — they are funded between rounds, never mid-fight, and they win and lose on the same rules and the same published seed as everyone else. The matched book slightly favours smaller positions.
+  Raids TAKE the enemy's coin into your bag (claim reallocation). No cash — only BULL &amp; UWU, wallet shared across modes. Normal = raids compound in-ring · Extraction = raids bank to your wallet in real time. House edge 0.2% per deploy · 0.3% on convert. BULL = Ansem, UWU = Unicorn. · <a href="solvency.html" style="color:var(--ink-soft);text-decoration:none">🔒 Proof of reserves</a></footer>
   <div class="modal" id="modal"><div class="pcard" id="pcard"></div></div>
 </div>
 
@@ -1380,7 +1385,10 @@
     // the engine's own counters (house payload), not a sum over the visible slice.
     let td=0,tr=0,ab=0,au=0;for(const a of w.accounts){td+=a.dep;tr+=a.ret;if(a.side==="bull")ab++;else au++;}
     if(w.online){ td=w.engDeployed||0; tr=Math.max(0,td-(w.treasury.bull||0)); ab=w.engBulls!==undefined?w.engBulls:ab; au=w.engUnis!==undefined?w.engUnis:au; }
-    $("#dAcct").textContent=w.online?(w.engAccounts||0):w.accounts.length;$("#dCreated").textContent=w.acctCreated;$("#dBusted").textContent=w.acctBusted;
+    $("#dAcct").textContent=w.online?(w.engAccounts||0):w.accounts.length;
+    // dCreated/dBusted were removed (brief 1.7 — bot lifecycle noise shown as product stats).
+    // Guarded rather than deleted outright so a partially-cached page cannot throw here.
+    {const _c=$("#dCreated"),_b=$("#dBusted"); if(_c)_c.textContent=w.acctCreated; if(_b)_b.textContent=w.acctBusted;}
     $("#dTotDep").textContent=fmt(td);$("#dTotRet").textContent=fmt(tr);$("#dAcctBull").textContent=ab;$("#dAcctUni").textContent=au;
     const net=tr-td,ne=$("#dNetPnl");ne.textContent=(net>=0?"+":"−")+"$"+Math.abs(net).toFixed(0);ne.className="v "+(net>=0?"pos":"neg");
     const _H=window.__HALL;
