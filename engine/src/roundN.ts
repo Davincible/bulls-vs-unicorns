@@ -12,8 +12,8 @@ export interface StateN {
   multiplier: number; openedAt: number; closesAt: number; battleMs?: number;
 }
 
-const LOBBY_MS = Number(process.env.LOBBY_MS || 5_000);
-const BATTLE_MS = 60_000;
+const LOBBY_MS = Number(process.env.LOBBY_MS || 9_000);
+const BATTLE_MS = Number(process.env.BATTLE_MS || 40_000);
 
 export function cfgN(mode: "normal" | "extraction", teams: number, multiplier: number): CfgN {
   return { mode, teams, multiplier, base: 0.085, hitCapFrac: 0.25,

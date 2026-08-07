@@ -83,6 +83,11 @@
   .wcells{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:8px;margin-bottom:10px}
   /* the three balances must read as one line, so pin the columns and let the text shrink */
   .wcells.w3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .brBar{display:flex;height:22px;border-radius:8px;overflow:hidden;border:1px solid var(--line2);background:var(--panel2)}
+  .brBar .brA{background:linear-gradient(90deg,#2fd07a,#25a862);transition:width .4s}
+  .brBar .brB{background:linear-gradient(90deg,#a855f7,#7c3aed);transition:width .4s}
+  .brLegend{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);margin-top:4px}
+  .cell .sub{font-family:var(--mono);font-size:9.5px;color:var(--ink-faint);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .wcells.w3 .cell{padding:8px 6px;min-width:0}
   .wcells.w3 .cell .v{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .wcells.w3 .cell .n{font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis} .cell{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 10px} .cell .v{font-family:var(--mono);font-size:15px;font-weight:700} .cell .n{font-family:var(--mono);font-size:8px;color:var(--ink-faint);letter-spacing:.05em;text-transform:uppercase;margin-top:2px} .cell.b .v{color:var(--bull)} .cell.u .v{color:var(--uni)}
@@ -240,8 +245,8 @@
         <div class="panelC">
           <h3>My wallet <span class="youtag">SHARED</span></h3>
           <div class="wcells w3">
-            <div class="cell b"><div class="v" id="wBull">$0</div><div class="n">🐂 ANSEM</div></div>
-            <div class="cell u"><div class="v" id="wUwu">$0</div><div class="n">🦄 UWU</div></div><div class="cell"><div class="v" id="wSol">$0</div><div class="n">◎ SOL</div></div>
+            <div class="cell b"><div class="v" id="wBull">$0</div><div class="sub">—</div><div class="n">🐂 ANSEM</div></div>
+            <div class="cell u"><div class="v" id="wUwu">$0</div><div class="sub">—</div><div class="n">🦄 UWU</div></div><div class="cell"><div class="v" id="wSol">$0</div><div class="sub">—</div><div class="n">◎ SOL</div></div>
           </div>
           <div class="row2"><button class="abtn ghost" id="convBull">🦄→🐂 to BULL</button><button class="abtn ghost2" id="convUwu">🐂→🦄 to UWU</button></div>
           <button class="abtn ghost2" id="addFunds" style="margin-top:8px;width:100%">+ Add $100 BULL &amp; $100 UWU</button>
@@ -309,6 +314,28 @@
 </div></div>
     <div class="view" id="viewDashboard">
       <div id="dashArenas" style="max-width:1200px;margin:0 auto 14px"></div>
+      <div class="card" style="margin-bottom:14px">
+        <h2>⚔ Battle report <span style="font-family:var(--mono);font-size:12px;color:var(--ink-faint)" id="brArena"></span></h2>
+        <div class="note" style="margin-bottom:8px">Who is committing money, and which coin is actually changing hands. Raids TAKE the enemy's coin, so the two columns are different currencies.</div>
+        <div class="brBar" id="brBar"><div class="brA" id="brBarA"></div><div class="brB" id="brBarB"></div></div>
+        <div class="brLegend"><span id="brLegA">—</span><span id="brLegB">—</span></div>
+        <div class="dgrid" style="margin-top:12px">
+          <div class="stat b"><div class="v" id="brDepA">$0</div><div class="n" id="brDepAN">Deployed · side A</div></div>
+          <div class="stat u"><div class="v" id="brDepB">$0</div><div class="n" id="brDepBN">Deployed · side B</div></div>
+          <div class="stat"><div class="v" id="brRaids">0</div><div class="n">Raids landed (this round)</div></div>
+          <div class="stat"><div class="v" id="brTotal">$0</div><div class="n">Total on the table</div></div>
+        </div>
+        <h3 style="margin:14px 0 6px;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);font-family:var(--mono)">Stolen this round</h3>
+        <div class="dgrid">
+          <div class="stat"><div class="v" id="brStoleA">0</div><div class="n" id="brStoleAN">— taken</div></div>
+          <div class="stat"><div class="v" id="brStoleB">0</div><div class="n" id="brStoleBN">— taken</div></div>
+        </div>
+        <h3 style="margin:14px 0 6px;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);font-family:var(--mono)">Stolen all session</h3>
+        <div class="dgrid">
+          <div class="stat"><div class="v" id="brAllA">0</div><div class="n" id="brAllAN">— taken</div></div>
+          <div class="stat"><div class="v" id="brAllB">0</div><div class="n" id="brAllBN">— taken</div></div>
+        </div>
+      </div>
       <div class="card"><h2>Dashboard <span style="font-family:var(--mono);font-size:12px;color:var(--ink-faint)" id="dashMode"></span></h2>
         <div class="dgrid" style="margin-top:8px">
           <div class="stat b"><div class="v" id="dDepBull">$0</div><div class="n">Total deployed · Bulls</div></div>
@@ -394,7 +421,7 @@
   const fmt=n=>{n=Math.max(0,n);return "$"+(n>=1000?n.toLocaleString("en-US",{maximumFractionDigits:0}):n.toLocaleString("en-US",{maximumFractionDigits:n<10?2:0}));};
   const NAMES=["degenDan","sol_sniper","0xViper","moonboy","rugproof","apeQueen","gm_gary","liqLarry","chartchad","frenFred","bagChaser","pumpkin","vibecheck","noReentry","gigaGwei","turboTina","elayne","copetrader","sendit","wenLambo","paperhandz","diamondD","fomoFrank","sizzle","nakamotto","zkZoe","based_bri","yeetard","hodlorbe","greenwick","stampede","hornsUp","glitter","prancer","charge","maxbid","alphaleak","serSlippy","tendieTom","voidwalker"];
   const EDGE=0.002, START=100, DUST=1.2, PER_SIDE=12, CAP=100, LOBBY_MS=7000, BATTLE_MS=32000, IMB=90, FEE=0.01;
-  const COMBAT={speed:112,accel:250,base:0.085,hitCd:430, roll:()=>{const u=Math.random();return u<0.88?rand(0.2,1.5):u<0.97?rand(1.5,4):rand(4,13);}};
+  const COMBAT={speed:112,accel:300,base:0.085,hitCd:380,knock:46, roll:()=>{const u=Math.random();return u<0.88?rand(0.2,1.5):u<0.97?rand(1.5,4):rand(4,13);}};
   const MODE={ normal:{extract:false,cap:"MAYHEM",color:"var(--bull)"}, extraction:{extract:true,cap:"EXTRACTION",color:"var(--gold)"} };
   // token art (Ansem bull / UwU unicorn) embedded as data URIs
   const IMG={bull:new Image(),uwu:new Image()},imgOK={bull:false,uwu:false};
@@ -441,7 +468,7 @@
   const bullTot=p=>p.bull+(p.sBull||0), uwuTot=p=>p.uwu+(p.sUwu||0);
   const ownKey=p=>p.side==="bull"?"bull":"uwu", enemyKey=p=>p.side==="bull"?"uwu":"bull",
     alive=p=>!p.dead&&ring(p)>(p.dustLim!==undefined?p.dustLim:DUST);   // online: sim rule (3% of own stake), offline: legacy flat
-  const radiusFor=p=>clamp(7+1.7*Math.sqrt(ring(p)),7,26);
+  const radiusFor=p=>clamp(13+1.9*Math.sqrt(ring(p)),13,30);
 
   // ---- persistent NPC accounts (lasting wallets; deposit a stake each round, get winnings back, can go broke) ----
   function newAccount(w,side){w.acctSeq++;const a={id:w.acctSeq,name:pick(NAMES)+"_"+w.acctSeq,side,bankroll:rand(60,240),dep:0,ret:0,games:0,wins:0,raided:0,best:0,last:0};w.accounts.push(a);w.acctCreated++;return a;}
@@ -464,13 +491,15 @@
     if(w.online)return;
     w.online=true; w.players.length=0; w.userCircles.length=0; w.floaters.length=0; w.particles.length=0; w.byId=new Map();
     w.legends=[]; w.matches=[]; w.matchWins={bull:0,unicorn:0}; w.dep={bull:0,unicorn:0}; w.history=[]; w.userRounds=[]; w.dmgBull=0; w.dmgUni=0;
+    w.stolen={bull:0,uwu:0,sol:0}; w.stolenAll={bull:0,uwu:0,sol:0}; w.raidCount=0;
     w.treasury={bull:0,uwu:0}; w.accounts=[];
     loadOnlineSave(w);
   }
   function makeWorld(mode){
     const w={mode,treasury:{bull:0,uwu:0},roundNo:1,roundT:0,phase:"lobby",phaseT:0,multiplier:1,players:[],wins:[],floaters:[],particles:[],shake:0,pairCd:new Map(),events:[],hoverId:null,bannerTxt:"",bannerA:0,
       dep:{bull:0,unicorn:0},matchWins:{bull:0,unicorn:0},matches:[],legends:[],history:[],userRounds:[],autoPct:0,autoSide:"both",autoConvOn:true,userCircles:[],
-      accounts:[],acctSeq:0,acctCreated:0,acctBusted:0,dmgBull:0,dmgUni:0};
+      accounts:[],acctSeq:0,acctCreated:0,acctBusted:0,dmgBull:0,dmgUni:0,
+      stolen:{bull:0,uwu:0,sol:0},stolenAll:{bull:0,uwu:0,sol:0},raidCount:0};
     loadSave(w);
     if(w.accounts.length<8){for(let i=0;i<26;i++)newAccount(w,i%2?"unicorn":"bull");}  // seed a starting user base
     rollMult(w); return w;
@@ -533,7 +562,7 @@
     w.phase="over";w.phaseT=0;
     const win=winSide==="time"?(aggV(w,"bull")>=aggV(w,"unicorn")?"bull":"unicorn"):winSide;
     w.matchWins[win]++; w.matches.unshift({round:w.roundNo,winner:win,mult:w.multiplier}); if(w.matches.length>16)w.matches.pop();
-    w.bannerTxt=sideWinText(win); w.bannerA=1;
+    w.bannerTxt=sideWinText(win); w.bannerWin=win; w.bannerA=1;
     w.history.unshift(snapshot(w,win)); if(w.history.length>24)w.history.pop();
     // settle NPC fighters to their persistent accounts (winnings raise bankroll; deposits & losses accumulate)
     for(const p of w.players){ if(p.isUser||!p.acct)continue; const outv=tot(p), a=p.acct;
@@ -579,7 +608,7 @@
       const stake=Math.min(amt,WALLET[tk],CAP);
       w.lastSide=side; (w.playedSides=w.playedSides||{})[side]=true;
       if(window.__sendEngine)window.__sendEngine({t:"enter",wallet:MYWALLET,arena:PAIRING+"-"+w.mode,mode:w.mode,side:cSide(side),stake,ref:window.__REF||undefined});
-      $("#walletNote").textContent="Deploying "+fmt(stake)+" "+tk.toUpperCase()+" to "+(side==="bull"?"Bulls":"Unicorns")+"…";
+      $("#walletNote").textContent="Deploying "+fmt(stake)+" "+tk.toUpperCase()+" to "+(side==="bull"?metaA().team:metaB().team)+"…";
       return;
     }
     if(w.phase!=="lobby"){$("#walletNote").textContent="⛔ Deposits closed — fight's on. Next lobby soon.";return;}
@@ -607,7 +636,7 @@
     for(let i=0;i<A.length;i++)for(let j=i+1;j<A.length;j++){const a=A[i],b=A[j];if(a.dead||b.dead)continue;
       const dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy),m=a.r+b.r;
       if(d<m&&d>0){const nx=dx/d,ny=dy/d,ov=(m-d)/2;a.x-=nx*ov;a.y-=ny*ov;b.x+=nx*ov;b.y+=ny*ov;
-        const va=a.vx*nx+a.vy*ny,vb=b.vx*nx+b.vy*ny,diff=vb-va;a.vx+=nx*diff;a.vy+=ny*diff;b.vx-=nx*diff;b.vy-=ny*diff;
+        const va=a.vx*nx+a.vy*ny,vb=b.vx*nx+b.vy*ny,diff=vb-va;a.vx+=nx*diff;a.vy+=ny*diff;b.vx-=nx*diff;b.vy-=ny*diff;a.vx-=nx*COMBAT.knock;a.vy-=ny*COMBAT.knock;b.vx+=nx*COMBAT.knock;b.vy+=ny*COMBAT.knock;
         if(a.side!==b.side&&!noCombat)combat(w,a,b,now,ramp);}}   // online: the ENGINE decides hits, not the client
   }
 
@@ -621,6 +650,7 @@
   canvas.addEventListener("click",e=>{const r=canvas.getBoundingClientRect();const w=W();const h=hitCircle(w,(e.clientX-r.left)*(W2/r.width),(e.clientY-r.top)*(H2/r.height));if(h)openProfile(w,h);});
 
   function render(){
+    if(window.__arenaVisible&&!window.__arenaVisible()){ requestAnimationFrame(render); return; }
     const w=W(),now=performance.now(),pulse=0.5+0.5*Math.sin(now/220);
     ctx.clearRect(0,0,W2,H2);const sx=(Math.random()-0.5)*w.shake,sy=(Math.random()-0.5)*w.shake;w.shake*=0.86;if(w.shake<0.4)w.shake=0;ctx.save();ctx.translate(sx,sy);
     const nArena=!!w.isN;
@@ -651,7 +681,7 @@
       if(p.isUser){ctx.fillStyle="#ffc048";ctx.font="800 11px system-ui";ctx.textAlign="center";ctx.fillText("▼ YOU",p.x,p.y-p.r-9);}}
     for(let i=w.floaters.length-1;i>=0;i--){const f=w.floaters[i];f.life-=0.018;f.y-=0.7;if(f.life<=0){w.floaters.splice(i,1);continue;}ctx.globalAlpha=Math.max(0,f.life);ctx.fillStyle=f.col;ctx.font=(f.big?"800 22px ":"700 14px ")+"system-ui";ctx.textAlign="center";ctx.fillText(f.txt,f.x,f.y);}ctx.globalAlpha=1;
     for(let i=w.particles.length-1;i>=0;i--){const p=w.particles[i];p.x+=p.vx;p.y+=p.vy;p.vy+=0.15;p.life-=0.02;if(p.life<=0){w.particles.splice(i,1);continue;}ctx.globalAlpha=p.life;ctx.fillStyle=p.c;ctx.fillRect(p.x,p.y,3,3);}ctx.globalAlpha=1;ctx.restore();
-    const ban=$("#banner");if(w.bannerA>0){ban.textContent=w.bannerTxt;ban.style.opacity=w.bannerA;ban.style.color=w.bannerTxt.indexOf("BULLS")>=0?"#18e08a":"#c46bff";}else ban.style.opacity=0;
+    const ban=$("#banner");if(w.bannerA>0){ban.textContent=w.bannerTxt;ban.style.opacity=w.bannerA;ban.style.color=w.bannerWin==="bull"?"#18e08a":"#c46bff";}else ban.style.opacity=0;
     const hud=$("#myhud");
     if(w.userCircles.length){hud.style.display="block";
       // banked is split by token — you bank whatever you raided, which is mostly the ENEMY's coin.
@@ -663,11 +693,17 @@
       hud.textContent="▼ YOU · "+w.userCircles.map(x=>fmt(ring(x))+(x.side==="bull"?"🐂":"🦄")).join(" + ")+bank;
     }else hud.style.display="none";
     const hp=w.players.find(p=>p.id===w.hoverId&&alive(p)),tip=$("#tip");
-    if(hp){const bk=safeV(hp), pl=tot(hp)-hp.deposited;tip.innerHTML=`<div class="nm"><span class="dot ${hp.side==="bull"?"bull":"uni"}"></span>${hp.isUser?'<span class="youtag">YOU</span> ':''}${esc(hp.name)}</div><div class="r"><span>Ring size</span><b>${fmt(ring(hp))}</b></div><div class="r"><span>🐂 BULL held</span><b>${bullTot(hp).toFixed(1)}</b></div><div class="r"><span>🦄 UWU held</span><b>${uwuTot(hp).toFixed(1)}</b></div>${bk>0?`<div class="r"><span>banked (safe)</span><b style="color:var(--gold)">${fmt(hp.sBull||0)}🐂 + ${fmt(hp.sUwu||0)}🦄</b></div>`:''}<div class="r"><span>Raided</span><b>${fmt(hp.raided)}</b></div><div class="r"><span>Won/lost</span><b class="${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}</b></div><div class="r" style="color:var(--ink-faint);margin-top:3px">click for full profile</div>`;
+    if(hp){const bk=safeV(hp), pl=tot(hp)-hp.deposited;
+      // rebuild the tooltip only when something in it changed (was: every single frame)
+      const tipKey=hp.id+"|"+ring(hp).toFixed(2)+"|"+bk.toFixed(2)+"|"+pl.toFixed(2)+"|"+(hp.raided||0).toFixed(2);
+      if(tip.dataset.k!==tipKey){ tip.dataset.k=tipKey; tip.innerHTML=`<div class="nm"><span class="dot ${hp.side==="bull"?"bull":"uni"}"></span>${hp.isUser?'<span class="youtag">YOU</span> ':''}${esc(hp.name)}</div><div class="r"><span>Ring size</span><b>${fmt(ring(hp))}</b></div><div class="r"><span>🐂 BULL held</span><b>${bullTot(hp).toFixed(1)}</b></div><div class="r"><span>🦄 UWU held</span><b>${uwuTot(hp).toFixed(1)}</b></div>${bk>0?`<div class="r"><span>banked (safe)</span><b style="color:var(--gold)">${fmt(hp.sBull||0)}🐂 + ${fmt(hp.sUwu||0)}🦄</b></div>`:''}<div class="r"><span>Raided</span><b>${fmt(hp.raided)}</b></div><div class="r"><span>Won/lost</span><b class="${pl>=0?'pos':'neg'}">${pl>=0?'+':'−'}${fmt(Math.abs(pl))}</b></div><div class="r" style="color:var(--ink-faint);margin-top:3px">click for full profile</div>`; }
       const r=canvas.getBoundingClientRect();tip.style.opacity=1;let tx=hp.x*(r.width/W2)+18,ty=hp.y*(r.height/H2)-10;if(tx+180>r.width)tx=hp.x*(r.width/W2)-190;if(ty<44)ty=44;tip.style.left=tx+"px";tip.style.top=ty+"px";}else tip.style.opacity=0;
     requestAnimationFrame(render);
   }
   requestAnimationFrame(render);
+  // Cheap visibility gate: when the arena isn't on screen there is nothing to draw. Without this
+  // the canvas ran a full 60fps behind the History and Leaderboard views, and in background tabs.
+  window.__arenaVisible=()=>activeView==="arena"&&document.visibilityState!=="hidden";
 
   const teamOf=r=>(r.depB||0)>=(r.depU||0)?"bull":"unicorn";
   function compBar(bull,uwu,maxV){const t=bull+uwu||0.0001,wpct=clamp(t/maxV*100,5,100),gp=bull/t*100;
@@ -810,11 +846,16 @@
         return f==="sol" ? (WALLET.sol||0) : (px>0 ? (WALLET[f]||0)*px : null); };
       const cell=(id,f)=>{ const el=$(id); if(!el)return;
         const u=usdOf(f); const tokens=WALLET[f]||0;
-        // show dollars when we have a price, otherwise the honest token count
+        // Dollars are the headline (they are comparable across tokens), with the actual token
+        // amount underneath so it is obvious what you are deploying.
+        const sub=el.parentElement&&el.parentElement.querySelector(".sub");
         el.textContent = u==null ? fmt(tokens) : "$"+u.toFixed(2);
-        el.title = f==="sol" ? (tokens.toFixed(2)+" USD units of SOL") : (tokens.toFixed(2)+" "+f.toUpperCase());
+        const amt = f==="sol" ? (tokens>0? (tokens/((window.__PX||{}).sol||1)).toFixed(4)+" SOL" : "0 SOL")
+                              : tokens.toFixed(tokens>=100?0:2)+" "+f.toUpperCase();
+        if(sub) sub.textContent = amt;
+        el.title = amt;
       };
-      cell("#wBull",fa); cell("#wUwu",fb);
+      cell("#wBull",fa); cell("#wUwu",fb); cell("#wSol","sol");
     }
     $("#myStake").textContent=fmt(w.userCircles.reduce((s,c)=>s+ring(c),0));
     const ap=userWorth()-INVESTED,apE=$("#myPnl");apE.textContent=(ap>=0?"+":"−")+"$"+Math.abs(ap).toFixed(2);apE.className="v "+(ap>=0?"pos":"neg");
@@ -932,7 +973,40 @@
     if(window.__sendEngine)window.__sendEngine({t:"enterN",wallet:MYWALLET,arena:aid,team,stake});
     $("#walletNote").textContent="Deploying "+fmt(stake)+" to "+(PAIRING==="ffa"?"the pit":"army "+(team+1))+"\u2026";
   }
-  function syncDashboard(){renderDashArenas();const w=W();$("#dashMode").textContent="· "+MODE[w.mode].cap;
+  // Battle report — deployment split and per-currency theft, named for whatever arena you're in.
+  // A raid takes the ENEMY's coin, so "stolen" is only meaningful per token: in UWU vs SOL the
+  // Unicorn side loses UWU and the Solana side loses SOL, and those are not the same money.
+  function renderBattleReport(){
+    const w=W(); if(!document.getElementById("brBar"))return;
+    const A=metaA(), B=metaB();
+    const [fa,fb]=arenaFields();                       // ledger fields for side A / side B
+    const px=window.__PX||{};
+    const usd=(f,n)=>{ const p=f==="sol"?1:px[f==="bull"?"ansem":f]; return p>0?n*p:null; };
+    const money=(f,n)=>{ const u=usd(f,n); return u==null?fmt(n):"$"+u.toFixed(2); };
+    const tokAmt=(f,n)=>n.toFixed(n>=100?0:2)+" "+(f==="bull"?"ANSEM":f.toUpperCase());
+
+    const depA=w.online?(w.engDepBull||0):w.dep.bull, depB=w.online?(w.engDepUwu||0):w.dep.unicorn;
+    const tot=depA+depB, pa=tot>0?(depA/tot*100):50;
+    const set=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
+    const bar=(id,pct)=>{const e=document.getElementById(id); if(e)e.style.width=pct+"%";};
+
+    document.getElementById("brArena").textContent="· "+A.label+" vs "+B.label;
+    bar("brBarA",pa); bar("brBarB",100-pa);
+    set("brLegA",A.emoji+" "+A.label+" "+pa.toFixed(0)+"%");
+    set("brLegB",(100-pa).toFixed(0)+"% "+B.label+" "+B.emoji);
+    set("brDepA","$"+depA.toFixed(2)); set("brDepAN","Deployed · "+A.team);
+    set("brDepB","$"+depB.toFixed(2)); set("brDepBN","Deployed · "+B.team);
+    set("brRaids",w.raidCount||0);
+    set("brTotal","$"+tot.toFixed(2));
+
+    const st=w.stolen||{}, all=w.stolenAll||{};
+    // side A fights with token fa, so what gets stolen FROM them is fa (and vice versa)
+    set("brStoleA",tokAmt(fa,st[fa]||0)); set("brStoleAN",A.emoji+" "+A.label+" taken  ("+money(fa,st[fa]||0)+")");
+    set("brStoleB",tokAmt(fb,st[fb]||0)); set("brStoleBN",B.emoji+" "+B.label+" taken  ("+money(fb,st[fb]||0)+")");
+    set("brAllA",tokAmt(fa,all[fa]||0));  set("brAllAN",A.emoji+" "+A.label+" taken  ("+money(fa,all[fa]||0)+")");
+    set("brAllB",tokAmt(fb,all[fb]||0));  set("brAllBN",B.emoji+" "+B.label+" taken  ("+money(fb,all[fb]||0)+")");
+  }
+  function syncDashboard(){renderDashArenas();renderBattleReport();const w=W();$("#dashMode").textContent="· "+MODE[w.mode].cap;
     $("#dDepBull").textContent=fmt(w.online?(w.engDepBull||0):w.dep.bull);$("#dDepUni").textContent=fmt(w.online?(w.engDepUwu||0):w.dep.unicorn);$("#dWinBull").textContent=w.matchWins.bull;$("#dWinUni").textContent=w.matchWins.unicorn;
     $("#dDmgBull").textContent=fmt(w.dmgBull);$("#dDmgUni").textContent=fmt(w.dmgUni);
     const house=treasTotal(w),deployed=w.online?(w.engDeployed||0):(w.dep.bull+w.dep.unicorn);
@@ -949,6 +1023,8 @@
     $("#matchHist").innerHTML=w.matches.length?w.matches.map(m=>`<div class="li"><span class="dot ${m.winner==="bull"?"bull":"uni"}"></span><span class="nm">Round ${m.round}</span><span class="sub">${m.mult}×</span><span class="v">${m.winner==="bull"?"🐂 Bulls":"🦄 Unicorns"}</span></div>`).join(""):'<div class="note">No finished rounds yet.</div>';
   }
   function syncDOM(){syncArena();if(activeView==="leaderboard")renderLB();if(activeView==="dashboard")syncDashboard();}
+  // the battle report is a live read-out, so refresh it while it is on screen
+  setInterval(()=>{ if(activeView==="dashboard"&&document.visibilityState!=="hidden")renderBattleReport(); },1000);
 
   let last=performance.now(), saveT=0;
   setInterval(()=>{const now=performance.now();let dt=Math.min(now-last,120)/1000;last=now;saveT+=dt;
@@ -1076,11 +1152,11 @@
     a=b^(b>>>9);b=(c+(c<<3))|0;c=(c<<21)|(c>>>11);d=(d+1)|0;t=(t+d)|0;c=(c+t)|0;return(t>>>0)/4294967296;};}
   function rngFromSeed(seed){const s=xmur3(seed);return sfc32(s(),s(),s(),s());}
 
-  const ARENA={w:900,h:560}, SCOMBAT={speed:112,accel:250,hitCd:430}, FINISH_RATIO=0.08, SMALL_EDGE=1.03, DUST_FRAC=0.03, SIZE_WEIGHT=0.9;
+  const ARENA={w:900,h:560}, SCOMBAT={speed:112,accel:300,hitCd:380,knock:46}, FINISH_RATIO=0.08, SMALL_EDGE=1.03, DUST_FRAC=0.03, SIZE_WEIGHT=0.9;
   const sRing=f=>f.bull+f.uwu;
   const sDust=f=>Math.max(0.005,f.deposited*DUST_FRAC);   // knocked out at 3% of your own stake
   const sAlive=(f,dust)=>!f.dead&&sRing(f)>sDust(f);
-  const sRadius=f=>clamp(7+1.7*Math.sqrt(sRing(f)),7,26);
+  const sRadius=f=>clamp(13+1.9*Math.sqrt(sRing(f)),13,30);
 
   function createSimJS(seed,entries,cfg){
     const rnd=rngFromSeed(seed);
@@ -1160,6 +1236,8 @@
       a.x-=nx*ov;a.y-=ny*ov;b.x+=nx*ov;b.y+=ny*ov;
       const va=a.vx*nx+a.vy*ny, vb=b.vx*nx+b.vy*ny, diff=vb-va;
       a.vx+=nx*diff;a.vy+=ny*diff;b.vx-=nx*diff;b.vy-=ny*diff;
+      // recoil — mirrors engine/src/game.ts; without it the replay diverges from the engine
+      a.vx-=nx*SCOMBAT.knock;a.vy-=ny*SCOMBAT.knock;b.vx+=nx*SCOMBAT.knock;b.vy+=ny*SCOMBAT.knock;
       if(a.side===b.side)continue;
       const key=a.id<b.id?a.id+"|"+b.id:b.id+"|"+a.id;
       const last=s.pairCd.has(key)?s.pairCd.get(key):-1e9;
@@ -1197,12 +1275,12 @@
   }
 
   // ---- N-TEAM sim (3-WAY / FFA) — faithful port of engine/src/gameN.ts ----
-  const SCOMBAT_N={speed:112,accel:250,hitCd:430};
+  const SCOMBAT_N={speed:112,accel:300,hitCd:380,knock:46};
   const NFIN=0.08, NEDGE=1.03, NSIZE=0.9, NDUST=0.03;
   const nRing=f=>f.own+f.stolen.reduce((a,b)=>a+b,0);
   const nDust=f=>Math.max(0.005,f.deposited*NDUST);
   const nAlive=f=>!f.dead&&nRing(f)>nDust(f);
-  const nRadius=f=>clamp(7+1.7*Math.sqrt(nRing(f)),7,26);
+  const nRadius=f=>clamp(13+1.9*Math.sqrt(nRing(f)),13,30);
   function createSimN(seed,entries,cfg){
     const rnd=rngFromSeed(seed), rr=(a,b)=>a+rnd()*(b-a);
     const ffa=cfg.teams===0, nT=ffa?entries.length:cfg.teams;
@@ -1271,6 +1349,8 @@
       a.x-=nx*ov;a.y-=ny*ov;b.x+=nx*ov;b.y+=ny*ov;
       const va=a.vx*nx+a.vy*ny, vb=b.vx*nx+b.vy*ny, diff=vb-va;
       a.vx+=nx*diff;a.vy+=ny*diff;b.vx-=nx*diff;b.vy-=ny*diff;
+      // recoil — mirrors engine/src/gameN.ts
+      a.vx-=nx*SCOMBAT_N.knock;a.vy-=ny*SCOMBAT_N.knock;b.vx+=nx*SCOMBAT_N.knock;b.vy+=ny*SCOMBAT_N.knock;
       if(a.team===b.team)continue;
       const key=a.id<b.id?a.id+"|"+b.id:b.id+"|"+a.id;
       const last=s.pairCd.has(key)?s.pairCd.get(key):-1e9;
@@ -1359,6 +1439,9 @@
     const atk=w.byId.get(h.atk), def=w.byId.get(h.def); if(!atk||!def)return;
     const amt=h.amt, tk=h.tk;
     w[atk.side==="bull"?"dmgBull":"dmgUni"]+=amt;
+    // per-CURRENCY theft: h.tk is the coin actually taken off the defender
+    if(!w.stolen)w.stolen={bull:0,uwu:0,sol:0}; if(!w.stolenAll)w.stolenAll={bull:0,uwu:0,sol:0};
+    w.stolen[tk]=(w.stolen[tk]||0)+amt; w.stolenAll[tk]=(w.stolenAll[tk]||0)+amt; w.raidCount=(w.raidCount||0)+1;
     if(atk.isUser){(atk.hits=atk.hits||[]).push({dir:"out",who:def.name,amt,tk});if(atk.hits.length>80)atk.hits.shift();}
     if(def.isUser){(def.hits=def.hits||[]).push({dir:"in",who:atk.name,amt,tk});if(def.hits.length>80)def.hits.shift();}
     if(silent)return;
@@ -1466,6 +1549,13 @@
       for(const p of w.players)if(p.flash>0)p.flash-=dt*3;
       if(w.elapsed>=w.battleMs||(w.sim&&w.sim.done))finishEngineRound(w);
     } else if(w.phase==="lobby"){ lobbyDrift(w,dt); }
+    else if(w.phase==="over"){
+      // fade the win banner out. Without this the online path left it on screen indefinitely,
+      // because only the offline loop ever decayed bannerA.
+      w.phaseT=(w.phaseT||0)+dt*1000;
+      w.bannerA=Math.max(0,1-w.phaseT/2400);
+      lobbyDrift(w,dt);
+    }
   }
 
   function finishEngineRound(w){
@@ -1473,7 +1563,7 @@
     const win=eSide(w.eWinner||"bull");
     w.matchWins[win]=(w.matchWins[win]||0)+1;
     w.matches.unshift({round:w.roundNo,winner:win,mult:w.multiplier}); if(w.matches.length>16)w.matches.pop();
-    w.bannerTxt=sideWinText(win); w.bannerA=1;
+    w.bannerTxt=sideWinText(win); w.bannerWin=win; w.bannerA=1;
     w.history.unshift(snapshot(w,win)); if(w.history.length>24)w.history.pop();
     for(const c of w.userCircles){ const dep=c.deposited, out=ring(c)+safeV(c)+(c.unmatched||0);
       const outB=c.bull+(c.sBull||0)+(c.side==="bull"?(c.unmatched||0):0);
@@ -1599,7 +1689,21 @@
 
     function connectWS(){
       try{ws=new WebSocket(ENGINE);}catch(e){banner("⚠ Engine URL invalid: "+ENGINE);return;}
-      ws.onopen=async()=>{ if(PK){ AUTHED=false; await authenticate(); send({t:"chainBalance",wallet:PK}); } };
+      ws.onopen=async()=>{ if(PK){ AUTHED=false;
+        // resume the existing session first — a reconnect should be invisible to the player
+        let resumed=false;
+        try{
+          const tok=sessionStorage.getItem("bvu_sess_"+PK);
+          if(tok) resumed=await new Promise(res=>{
+            const on=ev=>{ let m; try{m=JSON.parse(ev.data);}catch(e){return;}
+              if(m.t==="authResult"&&m.resumed){ ws.removeEventListener("message",on); AUTHED=!!m.ok; res(!!m.ok); } };
+            ws.addEventListener("message",on);
+            send({t:"authResume",wallet:PK,token:tok});
+            setTimeout(()=>{ ws.removeEventListener("message",on); res(false); },6000);
+          });
+        }catch(e){}
+        if(!resumed) await authenticate();
+        send({t:"chainBalance",wallet:PK}); } };
       ws.onclose=()=>{ banner("🔴 Engine disconnected — reconnecting… (rounds are paused; nothing is simulated locally)"); setTimeout(connectWS,3000); };
       ws.onerror=()=>{};
       ws.onmessage=ev=>{ let m;try{m=JSON.parse(ev.data);}catch(e){return;} onMsg(m); };
@@ -1609,6 +1713,7 @@
         if(m.entries&&(PAIRING==="3w"||PAIRING==="ffa")&&m.arena.startsWith(PAIRING+"-")){ startNRound(m); syncDOM(); }
         return; }
       if(m.t==="roundStart"){ if(m.arena&&m.arena!==PAIRING+"-"+m.mode)return;
+        { const _w=worlds[m.mode]; if(_w){ _w.stolen={bull:0,uwu:0,sol:0}; _w.raidCount=0; } }
         // stash the full entry list so the settled handler can show EVERY player, not just you
         PENDING_ROUND[m.arena||m.mode]={round:m.round,arena:m.arena,mode:m.mode,entries:(m.entries||[]).slice()};
         startEngineRound(m.mode,m); if(m.mode===activeMode)syncDOM(); }
@@ -1766,8 +1871,10 @@
         }
         INVESTED=(m.depIn||0)-(m.wOut||0);          // real cost basis: deposited minus withdrawn
         saveWallet(); syncDOM(); }
-      else if(m.t==="entered"){ const w=worlds[m.mode]; if(w)ev(w,"You deployed "+fmt(m.stake)+" "+cSide(eSide(m.side)).toUpperCase()+" to "+(m.side==="bull"?"🐂":"🦄"),"you");
-        $("#walletNote").textContent="✅ Deployed "+fmt(m.stake)+" to "+(m.side==="bull"?"Bulls":"Unicorns")+" — you're in round "+(worlds[m.mode]||{}).roundNo+"."; }
+      else if(m.t==="entered"){ const w=worlds[m.mode];
+        const _mt=m.side==="bull"?metaA():metaB();
+        if(w)ev(w,"You deployed "+fmt(m.stake)+" "+_mt.label+" to "+_mt.emoji+" "+_mt.team,"you");
+        $("#walletNote").textContent="✅ Deployed "+fmt(m.stake)+" to "+_mt.team+" — you're in round "+(worlds[m.mode]||{}).roundNo+"."; }
       else if(m.t==="prices"){ window.__PX=Object.fromEntries(Object.entries(m.prices||{}).map(([k,v])=>[k,v&&v.usd])); }
       else if(m.t==="chain"){ CHAIN=m;
         if(m.rpc){ const r=$("#rpcUrl"); if(r)r.textContent=m.rpc; }
@@ -1818,6 +1925,9 @@
               send({t:"authVerify",wallet:PK,signature:b64});
             }catch(e){ note("Sign-in cancelled."); ws.removeEventListener("message",onMsg); fin(false); }
           } else if(m.t==="authResult"){ ws.removeEventListener("message",onMsg); AUTHED=!!m.ok;
+            // keep the session so reconnects don't re-prompt. Deploying is not a chain op and must
+            // never cost a signature.
+            try{ if(m.ok&&m.token)sessionStorage.setItem("bvu_sess_"+PK,m.token); }catch(e){}
             if(!m.ok)note("Sign-in failed."+(m.msg?" "+m.msg:"")); fin(!!m.ok); }
         };
         ws.addEventListener("message",onMsg);

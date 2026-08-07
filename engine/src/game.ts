@@ -36,7 +36,7 @@ export interface RoundResult {
 
 // virtual arena — fixed so the sim is identical everywhere; the client scales it to its canvas
 export const ARENA = { w: 900, h: 560 };
-export const COMBAT = { speed: 112, accel: 250, hitCd: 430 };
+export const COMBAT = { speed: 112, accel: 300, hitCd: 380, knock: 46 };
 // below this size ratio vs your attacker, the per-hit cap no longer protects you
 export const FINISH_RATIO = 0.08;   // and only late in the round (see below)
 // Fairness comes from a MATCHED BOOK, not from capping anyone: see createSim. Winnings are
@@ -77,7 +77,7 @@ export function seedHash(seed: string): string { return createHash("sha256").upd
 export const ring = (f: Fighter) => f.bull + f.uwu;
 const aliveF = (f: Fighter, _dust: number) => !f.dead && ring(f) > dustFor(f);
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
-export const radiusFor = (f: Fighter) => clamp(7 + 1.7 * Math.sqrt(ring(f)), 7, 26);
+export const radiusFor = (f: Fighter) => clamp(13 + 1.9 * Math.sqrt(ring(f)), 13, 30);
 
 export interface SimState {
   rnd: () => number; F: Fighter[]; byId: Map<string, Fighter>;
@@ -196,6 +196,10 @@ export function stepSim(s: SimState): HitLog[] {
     a.x -= nx * ov; a.y -= ny * ov; b.x += nx * ov; b.y += ny * ov;
     const va = a.vx * nx + a.vy * ny, vb = b.vx * nx + b.vy * ny, diff = vb - va;
     a.vx += nx * diff; a.vy += ny * diff; b.vx -= nx * diff; b.vy -= ny * diff;
+    // Recoil. Without it a pair sits welded together for the whole hit cooldown, orbiting instead
+    // of trading blows, because the seek acceleration instantly cancels the elastic bounce.
+    a.vx -= nx * COMBAT.knock; a.vy -= ny * COMBAT.knock;
+    b.vx += nx * COMBAT.knock; b.vy += ny * COMBAT.knock;
     if (a.side === b.side) continue;
 
     const key = a.id < b.id ? a.id + "|" + b.id : b.id + "|" + a.id;   // per-pair hit cooldown

@@ -32,7 +32,7 @@ export interface ResultN {
 }
 
 export const ARENA_N = { w: 900, h: 560 };
-const COMBAT = { speed: 112, accel: 250, hitCd: 430 };
+const COMBAT = { speed: 112, accel: 300, hitCd: 380, knock: 46 };
 const FINISH_RATIO = 0.08, SMALL_EDGE = 1.03, SIZE_WEIGHT = 0.9, DUST_FRAC = 0.03;
 
 function xmur3(str: string) {
@@ -52,7 +52,7 @@ const ring = (f: FighterN) => f.own + f.stolen.reduce((a, b) => a + b, 0);
 const dustFor = (f: FighterN) => Math.max(0.005, f.deposited * DUST_FRAC);
 const aliveF = (f: FighterN) => !f.dead && ring(f) > dustFor(f);
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
-const radiusFor = (f: FighterN) => clamp(7 + 1.7 * Math.sqrt(ring(f)), 7, 26);
+const radiusFor = (f: FighterN) => clamp(13 + 1.9 * Math.sqrt(ring(f)), 13, 30);
 
 export function simulateN(seed: string, entries: EntryN[], cfg: CfgN): ResultN {
   const rnd = rngFromSeed(seed);
@@ -145,6 +145,9 @@ export function simulateN(seed: string, entries: EntryN[], cfg: CfgN): ResultN {
       a.x -= nx * ov; a.y -= ny * ov; b.x += nx * ov; b.y += ny * ov;
       const va = a.vx * nx + a.vy * ny, vb = b.vx * nx + b.vy * ny, diff = vb - va;
       a.vx += nx * diff; a.vy += ny * diff; b.vx -= nx * diff; b.vy -= ny * diff;
+      // recoil so a pair cannot weld together during the hit cooldown (see game.ts)
+      a.vx -= nx * COMBAT.knock; a.vy -= ny * COMBAT.knock;
+      b.vx += nx * COMBAT.knock; b.vy += ny * COMBAT.knock;
       if (a.team === b.team) continue;
       const key = a.id < b.id ? a.id + "|" + b.id : b.id + "|" + a.id;
       if (nowMs - (pairCd.get(key) ?? -1e9) < COMBAT.hitCd / ramp) continue;

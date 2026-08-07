@@ -16,7 +16,8 @@ import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildD
 import { priceUSD, startPriceLoop, allPrices, refreshPrices } from "./prices.ts";
 import { RPC, loadVaultKeypair } from "./chain.ts";
 import { swapExact } from "./swap.ts";
-import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, forget as authForget } from "./auth.ts";
+import { GUARDED, isAuthed, challenge as authChallenge, verify as authVerify, forget as authForget,
+         mintSession, resume as authResume } from "./auth.ts";
 import { isAllowed as walletAllowed } from "./allowlist.ts";
 import { start as startReconcile, isFrozen, latest as reconLatest } from "./reconcile.ts";
 import { allowMessage, connectionAllowed, releaseConnection, LIMITS } from "./limits.ts";
@@ -987,6 +988,9 @@ wss.on("connection", (ws, req) => {
         // Debit first so the balance can't be spent twice while the swap is in flight.
         a[from] -= amt;
         pushBalance(m.wallet);
+        // Leave the vault enough SOL to keep paying transaction fees. Swapping the float down to
+        // nothing would strand every later withdrawal.
+        const SOL_FEE_RESERVE = Number(process.env.SOL_FEE_RESERVE || 0.02);
 
         // map a ledger field to its on-chain mint + price token. `sol` is native, swapped as wSOL.
         const mi = mints();
@@ -995,10 +999,27 @@ wss.on("connection", (ws, req) => {
         const priceTokOf = (f: Field) => (f === "bull" ? "ansem" : f) as "ansem" | "uwu" | "sol";
         const decOf = (f: Field) => f === "sol" ? 9 : (mi?.decimals ?? 6);   // wSOL 9 dp, our tokens 6
         const fromMint = mintOf(from), toMint = mintOf(to);
+        // LEDGER UNITS vs TOKENS. Every field except `sol` is held as whole tokens; `sol` is held in
+        // USD units. The swap deals in tokens, so cross the boundary here and back again below.
+        const solPx = priceUSD("sol") || 0;
+        if ((from === "sol" || to === "sol") && !(solPx > 0)) {
+          a[from] += amt; lastConvertAt.delete(m.wallet); pushBalance(m.wallet);
+          return ws.send(JSON.stringify({ t: "error", msg: "SOL price unavailable — try again in a moment." }));
+        }
+        let amtTokens = from === "sol" ? amt / solPx : amt;
+        if (from === "sol") {
+          const held = await solBalance(vaultPubkey()).catch(() => 0);
+          const spendable = Math.max(0, held - SOL_FEE_RESERVE);
+          if (amtTokens > spendable) {
+            a[from] += amt; lastConvertAt.delete(m.wallet); pushBalance(m.wallet); persist();
+            return ws.send(JSON.stringify({ t: "error",
+              msg: `Convert too large right now — the vault can swap up to ${(spendable * solPx).toFixed(2)} of SOL.` }));
+          }
+        }
         let res: Awaited<ReturnType<typeof swapExact>>;
         try {
           res = (fromMint && toMint)
-            ? await swapExact(vaultKeypair(), fromMint, toMint, amt, decOf(from),
+            ? await swapExact(vaultKeypair(), fromMint, toMint, amtTokens, decOf(from),
                               { from: priceTokOf(from), to: priceTokOf(to) })
             : { ok: false, outAmount: 0, priceImpactPct: 0, simulated: false, error: "mints not configured" };
         } catch (e) {
@@ -1015,8 +1036,10 @@ wss.on("connection", (ws, req) => {
 
         // The player receives what the swap ACTUALLY returned, so pool fees and slippage come out of
         // their amount rather than the vault's. Our house cut is taken on top of that.
-        const fee = res.outAmount * CONVERT_FEE;
-        const credited = Math.max(0, res.outAmount - fee);
+        // res.outAmount is whole TOKENS of `to`; convert back into that field's ledger units
+        const outUnits = to === "sol" ? res.outAmount * solPx : res.outAmount;
+        const fee = outUnits * CONVERT_FEE;
+        const credited = Math.max(0, outUnits - fee);
         a[to] += credited;
         addConvFees(fee * usdPerUnit(to));
         ws.send(JSON.stringify({ t: "converted", to, from, amount: amt, got: credited, fee,
@@ -1035,6 +1058,11 @@ wss.on("connection", (ws, req) => {
         ws.send(JSON.stringify({ t: "named", name: a.name }));
       } else if (m.t === "authChallenge") {          // { wallet } -> a nonce to sign
         ws.send(JSON.stringify({ t: "authChallenge", nonce: authChallenge(ws) }));
+      } else if (m.t === "authResume") {             // { wallet, token } -> no signature prompt
+        // Lets a reconnect or refresh restore a session that was already proven by signature.
+        const ok = authResume(ws, String(m.wallet || ""), String(m.token || ""));
+        ws.send(JSON.stringify({ t: "authResult", ok, resumed: true, msg: ok ? undefined : "session expired" }));
+        if (ok) pushBalance(String(m.wallet));
       } else if (m.t === "authVerify") {             // { wallet, signature (base64) }
         // closed-beta gate: on a live chain, only whitelisted wallets may authenticate. Refuse
         // BEFORE checking the signature so a valid non-listed wallet still can't get in.
@@ -1042,7 +1070,10 @@ wss.on("connection", (ws, req) => {
           return ws.send(JSON.stringify({ t: "authResult", ok: false, wallet: m.wallet, msg: "This wallet isn't on the launch whitelist yet." }));
         }
         const r = authVerify(ws, m.wallet, m.signature);
-        ws.send(JSON.stringify({ t: "authResult", ...r }));
+        // Hand back a session token so reconnects and refreshes do NOT re-prompt for a signature.
+        // Deploying into a round is not a chain operation and must never cost the player a signature.
+        const token = r.ok ? mintSession(m.wallet) : undefined;
+        ws.send(JSON.stringify({ t: "authResult", ...r, token }));
       } else if (m.t === "getBalance") {
         if (!isAuthed(ws, m.wallet)) return;         // balances are private; only the owner may read
         ws.send(JSON.stringify(balPayload(m.wallet)));
