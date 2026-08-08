@@ -50,6 +50,18 @@ logged out) and for the Helius RPC URL in `SOLANA_RPC` (re-obtainable from the H
 
 ## 1. What is in the archive
 
+**File:** `bulls-arena-MAINNET-LIVE-KEYS-migration-2026-08-08.zip` — 5.21 MB, 181 entries
+**sha256:** `29514E56441217FEE57488BCABF18620B8EE5DED7383A229E069AEEF4B854571`
+
+The name says MAINNET and LIVE KEYS deliberately: this is not the devnet fork's archive, and it is
+not safe to leave lying in a Downloads folder. Verify the hash after transferring — a truncated copy
+of a repo containing wallet keys is worse than no copy, because it looks like a backup.
+
+Verified before shipping: extracted to a clean directory, `git log` works from the restore, all key
+files present, and the production test suite runs **343 passing / 0 failing** out of the extracted
+tree.
+
+
 **Included** — everything not rebuildable:
 
 - All source: `engine/src/`, `web/`, `programs/`
