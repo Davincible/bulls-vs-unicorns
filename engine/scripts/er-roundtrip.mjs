@@ -197,6 +197,22 @@ ${c.y}driving the round inside the ER…${c.x}`);
       data: Buffer.concat([ixDisc("enter"), Buffer.from([0]), u64(1_000_000)]),
     })], "enter side A");
 
+    // A SECOND FIGHTER, ON THE OTHER SIDE. Without one, tick breaks immediately on `n < 2` and
+    // tick_count stays 0 — which looks like the ER silently dropped the transactions and is
+    // actually the program correctly declining to run a fight with nobody to fight.
+    //
+    // Same wallet on both sides is fine for this test: the program refuses to let a wallet damage
+    // ITSELF, but the tick loop still runs and increments, which is what we are proving here.
+    await erSend([new TransactionInstruction({
+      programId: PROGRAM_ID,
+      keys: [
+        { pubkey: arenaPda, isSigner: false, isWritable: false },
+        { pubkey: roundPda, isSigner: false, isWritable: true },
+        { pubkey: payer.publicKey, isSigner: true, isWritable: false },
+      ],
+      data: Buffer.concat([ixDisc("enter"), Buffer.from([1]), u64(1_000_000)]),
+    })], "enter side B");
+
     // reveal — the seed must hash to the commitment published before entries opened
     await erSend([new TransactionInstruction({
       programId: PROGRAM_ID,
