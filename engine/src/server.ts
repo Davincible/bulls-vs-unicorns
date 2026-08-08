@@ -375,7 +375,7 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
     pushRound({
       at: Date.now(), arena: aid, round: s.round, winner: r.winner,
       pot: s.entries.reduce((t: number, e: any) => t + (e.stake || 0) / (1 - FEE), 0),
-      seedHash: s.seedHashPublished || "", seed: s.seed || "",
+      seedHash: s.seedHashPublished || "", seed: s.seed || "", secret: (s as any).secretRevealed || "",
       players: s.entries.map((e: any) => {
         const id = String(e.id).split("|")[0];
         const bal = (r.settlement as any)[e.id] || {};
@@ -399,7 +399,7 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
   try {
     const pot = s.entries.reduce((t: number, e: any) => t + (e.stake || 0) / (1 - FEE), 0);
     const anchor = {
-      arena: aid, round: s.round, seedHash: s.seedHashPublished || "", seed: s.seed || "",
+      arena: aid, round: s.round, seedHash: s.seedHashPublished || "", seed: s.seed || "", secret: (s as any).secretRevealed || "",
       winner: r.winner, pot,
       players: s.entries.map((e: any) => {
         const bal = (r.settlement as any)[e.id] || {};
@@ -455,7 +455,7 @@ async function onSettle(aid: string, r: RoundResult, s: RoundState) {
     joined++;
   }
   broadcast({ t: "roundLogged", round: roundHistory(1)[0] });
-  broadcast({ t: "settled", arena: aid, mode, round: s.round, winner: r.winner, seed: s.seed, seedHash: s.seedHashPublished,
+  broadcast({ t: "settled", arena: aid, mode, round: s.round, winner: r.winner, seed: s.seed, seedHash: s.seedHashPublished, secret: (s as any).secretRevealed, secret: (s as any).secretRevealed,
               settlement: r.settlement, hits: r.hits.length,
               community: { total: botsFor(aid).length + realPlaying, joined, busted, cap: popCap } });
   for (const w of touched) pushBalance(w);
@@ -492,7 +492,7 @@ async function onSettleN(aid: string, r: any, s: any) {
   let joined = 0;
   while (botsFor(aid).length < target) { if (!newBotN(aid)) break; joined++; }
   broadcast({ t: "roundStartN", phase: "settled", arena: aid, round: s.round, winnerTeam: r.winnerTeam,
-              winnerId: r.winnerId, seed: s.seed, seedHash: s.seedHashPublished, teamTotals: r.teamTotals });
+              winnerId: r.winnerId, seed: s.seed, seedHash: s.seedHashPublished, secret: (s as any).secretRevealed, teamTotals: r.teamTotals });
   for (const w of touched) pushBalance(w);
   persist();
 }
@@ -1209,7 +1209,7 @@ setInterval(async () => {
     if (was === "lobby" && rn.state.phase === "battle" && rn.state.result) {
       const s = rn.state;
       broadcast({ t: "roundStart", arena: aid, mode, round: s.round, multiplier: s.multiplier,
-        seed: s.seed, seedHash: s.seedHashPublished,
+        seed: s.seed, seedHash: s.seedHashPublished, secret: (s as any).secretRevealed,
         entries: s.entries.map(e => ({ id: e.id, wallet: e.id.split("|")[0], side: e.side, stake: e.stake, name: nameFor(e.id), avatar: ledger.get(e.id.split("|")[0])?.avatar, bot: e.id.includes(":bot:") })),
         cfg: newRoundConfig(mode, s.multiplier),
         hitCount: s.result.hits.length, winner: s.result.winner, settlement: s.result.settlement,
@@ -1559,7 +1559,7 @@ wss.on("connection", (ws, req) => {
     const mode = arenaEco(aid);
     const s = runners[aid].state;
     if (s.phase === "battle" && s.result) ws.send(JSON.stringify({ t: "roundStart", arena: aid, mode, round: s.round, multiplier: s.multiplier,
-      seed: s.seed, seedHash: s.seedHashPublished,
+      seed: s.seed, seedHash: s.seedHashPublished, secret: (s as any).secretRevealed,
       // avatar was only on the RECONNECT payload, so a player's X picture never reached their
       // fighter in a live round — it appeared only if you refreshed mid-battle
       entries: s.entries.map(e => ({ id: e.id, wallet: e.id.split("|")[0], side: e.side, stake: e.stake,

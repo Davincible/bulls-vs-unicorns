@@ -214,7 +214,6 @@
         <div class="hbreak"></div>
         <button class="ficon" id="infoBtn" title="How the game works">ⓘ</button>
         <div class="pill"><b class="g" id="arenaTag">ANSEM vs UWU</b><span>arena</span></div>
-        <div class="pill" id="backPill" style="cursor:help" title="Loading backing…"><b class="g" id="backDot">●</b><span id="backTxt">backing</span></div>
         <div class="pill" id="fairPill" style="cursor:pointer" title="Provably fair: the engine publishes sha256(seed) before the lobby opens, then reveals the seed. Your browser recomputes the whole round from it — no trust required. Click to verify the last round."><b class="g">✓</b><span>fair</span></div>
         <div id="profWrap" style="position:relative">
           <button class="ficon" id="profBtn" title="Wallet & profile">👛</button>
@@ -513,12 +512,11 @@
       <div style="font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--gold)">Paused</div>
       <h1 style="margin:8px 0 10px;font-size:26px;letter-spacing:-.01em">The arena is paused</h1>
       <p style="color:var(--ink-soft);font-size:14px;line-height:1.55;margin:0 0 18px">
-        No rounds are running and nothing is being staked. Every balance is untouched and still
-        backed on-chain — you can check the vault or withdraw at any time.
+        No rounds are running and nothing is being staked. Your balance is untouched — you can
+        withdraw at any time.
       </p>
       <div class="dgrid" style="margin-bottom:18px">
         <div class="stat"><div class="v" id="pzFloat">—</div><div class="n">Held in vault</div></div>
-        <div class="stat"><div class="v" id="pzBack">—</div><div class="n">Every balance</div></div>
       </div>
       <button class="abtn ghost" id="pzDismiss" style="width:100%">View wallet &amp; proof of reserves</button>
       <div class="note" style="margin-top:10px">Open stakes from the last round were refunded before the pause.</div>
@@ -1137,51 +1135,6 @@
   // open. It is the single fact that distinguishes a custodial product that can pay out from one
   // that cannot, so it belongs on screen next to the fairness badge. Shows coverage (what the vault
   // holds against what players are owed) and turns red the moment the engine freezes withdrawals.
-  async function fetchBacking(){
-    try{
-      const r=await fetch("/solvency",{cache:"no-store"}); if(!r.ok)return;
-      const j=await r.json(); const rep=j.report||{}; const as=rep.assets||[];
-      const dot=$("#backDot"), txt=$("#backTxt"), pill=$("#backPill");
-      if(!dot||!txt||!pill)return;
-      // worst coverage across assets anyone is actually owed — one bad asset is a bad answer
-      let worst=Infinity, owedAny=false;
-      const owedBits=[], heldBits=[];
-      const TICK={sol:"SOL",uwu:"UWU",bull:"ANSEM"};
-      for(const a of as){
-        if(!(a.liability>0)) continue;
-        owedAny=true; worst=Math.min(worst, a.holdings/a.liability);
-        const t=TICK[a.asset]||String(a.asset).toUpperCase();
-        owedBits.push((a.liability<1?a.liability.toFixed(4):a.liability.toFixed(2))+" "+t);
-        heldBits.push((a.holdings<1?a.holdings.toFixed(4):a.holdings.toFixed(2))+" "+t);
-      }
-      const owedTxt=owedBits.join(" + ")||"nothing", heldTxt=heldBits.join(" + ")||"nothing";
-      const ok=rep.ok!==false && !j.frozen;
-      if(j.frozen){
-        dot.textContent="●"; dot.className="neg"; txt.textContent="withdrawals frozen";
-        pill.title="The engine froze withdrawals because the books did not reconcile against the vault. This is the safety guard doing its job.";
-      } else if(!owedAny){
-        dot.textContent="●"; dot.className="g"; txt.textContent="fully backed";
-        pill.title="Nothing is currently owed to players; every balance is backed on-chain.";
-      } else if (worst >= 1) {
-        // ABOVE 100%, A COVERAGE RATIO SAYS NOTHING USEFUL. It is holdings / player liability, and
-        // player liability is small and volatile next to the operator's own float — so it swung
-        // 823% -> 1409% -> 2305% -> 3541% in an hour while nothing meaningful changed. A number
-        // that moves 4x for no reason reads as broken, or as spin. The fact that matters is binary:
-        // is every balance backed? Say that, and put the real amounts in the tooltip where someone
-        // checking can see them.
-        dot.textContent="●"; dot.className="g"; txt.textContent="fully backed";
-        pill.title="Every player balance is backed on-chain: "+owedTxt+" owed against "+heldTxt+
-                   " held in the vault, re-checked against the chain every 15s.";
-      } else {
-        // UNDER 100% is the only case where the ratio is worth showing — it is the shortfall.
-        const pct=(worst*100).toFixed(1);
-        dot.textContent="●"; dot.className="neg"; txt.textContent=pct+"% backed";
-        pill.title="SHORTFALL: the vault holds only "+pct+"% of what players are owed ("+owedTxt+
-                   " owed, "+heldTxt+" held). Withdrawals freeze automatically when this happens.";
-      }
-    }catch(e){ /* leave the last reading rather than claiming a state we cannot see */ }
-  }
-  fetchBacking(); setInterval(()=>{ if(document.visibilityState!=="hidden") fetchBacking(); }, 30000);
 
   // BRIEF 5.2 — surface the on-chain anchor beside the local verifier. Local recomputation shows
   // the round is self-consistent; the anchor shows it was COMMITTED before the outcome was known,
@@ -1312,11 +1265,9 @@
       // with an em dash next to it. checkPaused runs on load, before the float and backing fetches
       // have returned, so pull them now rather than showing placeholders until the next 20s tick.
       if(!window.__FLOAT&&typeof fetchFloat==="function") await fetchFloat();
-      if(typeof fetchBacking==="function"&&$("#backTxt")&&$("#backTxt").textContent==="backing") await fetchBacking();
-      const F=window.__FLOAT, bk=$("#backTxt");
+      const F=window.__FLOAT;
       const setv=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
       setv("pzFloat", F&&F.usd!=null?("$"+Number(F.usd).toFixed(2)):"—");
-      setv("pzBack", bk?bk.textContent:"—");
       const art=$("#pausedArt");
       if(art&&!art.dataset.done&&window.__ART){
         const a=window.__ART(); art.dataset.done="1";
@@ -1724,9 +1675,8 @@
     } else { set("baLast","—"); set("baLastN","Last round"); }
     const F=window.__FLOAT;
     set("baFloat", F&&F.usd!=null?("$"+Number(F.usd).toFixed(2)):"—");
-    const bk=document.getElementById("backTxt");
-    set("baBack", bk?bk.textContent:"—");
-    set("baBackN","Backing · vault vs owed");
+    set("baBack", window.__ANCHORS!=null?String(window.__ANCHORS):"—");
+    set("baBackN","Rounds anchored on-chain");
   }
   // house float for band A, from /float — the same figure the solvency guard uses
   window.__FLOAT=null;
@@ -2385,6 +2335,16 @@
   }
 
 
+  // Mirror of the engine's deriveSeed (engine/src/round.ts). Canonical form matters: sorted by the
+  // joined string, fixed field order, stake to 8dp. If this drifts from the engine by one character,
+  // every round reports a mismatch and the fairness claim looks broken rather than the code being.
+  async function deriveSeedJS(secret,entries){
+    const canon=(entries||[])
+      .map(e=>e.id+"|"+e.side+"|"+Number(e.stake).toFixed(8))
+      .sort()
+      .join(";");
+    return await sha256hex(secret+"|"+canon);
+  }
   async function sha256hex(s){
     const buf=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s));
     return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,"0")).join("");
@@ -2419,16 +2379,32 @@
     if(!R){ out.innerHTML="No completed round yet — wait for this one to finish."; return; }
     out.innerHTML="Recomputing "+R.hits.length+" hits from the seed…";
     try{
-      const hash=await sha256hex(R.seed);
+      // THE COMMITMENT CHAIN IS TWO STEPS NOW.
+      //
+      // The seed used to be drawn when the lobby opened, so sha256(seed) was the published commit.
+      // That meant the ENGINE knew the outcome while entries were still open — players could not
+      // see it, but "provably fair" cannot rest on the operator declining to use what it holds.
+      // The secret is committed at lobby open and the seed is DERIVED at lobby close from that
+      // secret plus the final entries, so the seed does not exist for anyone while anyone can still
+      // act on it.
+      //
+      // So verification checks both links: the secret matches what was committed, AND the seed
+      // follows from that secret and the entries. Checking only the old sha256(seed)===commit would
+      // now fail on every honest round, which is the worst possible way to be wrong about fairness.
+      const secret=R.secret||"";
+      const hash=secret?await sha256hex(secret):"";
+      const derived=secret?await deriveSeedJS(secret,R.entries):"";
       const mine=simulateRoundJS(R.seed,R.entries.map(e=>({id:e.id,side:e.side,stake:e.stake})),R.cfg);
-      const okHash=hash===R.seedHash;
+      const okHash=!!secret&&hash===R.seedHash;
+      const okDerive=!!secret&&derived===R.seed;
       const okWin=mine.winner===R.winner;
       const okCount=!R.hitCount||mine.hits.length===R.hitCount;
       const okSet=JSON.stringify(mine.settlement)===JSON.stringify(R.settlement);
-      const all=okHash&&okWin&&okCount&&okSet;
+      const all=okHash&&okDerive&&okWin&&okCount&&okSet;
       const y=b=>b?"<span style='color:var(--bull)'>✅</span>":"<span style='color:var(--danger)'>❌</span>";
       out.innerHTML="<b style='color:"+(all?"var(--bull)":"var(--danger)")+"'>"+(all?"✅ ROUND "+R.round+" VERIFIED":"❌ MISMATCH — do not trust")+"</b><br>"
-        +y(okHash)+" sha256(seed) = published commit<br>"
+        +y(okHash)+" sha256(secret) = the commit published before deploys opened<br>"
+        +y(okDerive)+" seed = sha256(secret + entries) — so it did not exist until entries locked<br>"
         +y(okCount)+" "+mine.hits.length+" hits recomputed here"+(R.hitCount?" (engine: "+R.hitCount+")":"")+"<br>"
         +y(okWin)+" winner: "+R.winner+"<br>"
         +y(okSet)+" every payout matches";

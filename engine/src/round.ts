@@ -3,6 +3,18 @@
 // simulate) → SETTLE (post net deltas on-chain, credit off-chain ledger) → repeat.
 import { randomBytes } from "crypto";
 import { simulateRound, seedHash } from "./game.ts";
+import { createHash } from "node:crypto";
+
+/** seed = sha256(secret || canonical(entries)). Canonical so a verifier reproduces it byte-for-byte:
+ *  sorted by id, fixed field order, stake to a fixed precision — otherwise map iteration order or a
+ *  float's tail decides whether verification passes, which is the same as it not verifying. */
+export function deriveSeed(secret: string, entries: Array<{ id: string; side: string; stake: number }>): string {
+  const canon = [...entries]
+    .map(e => `${e.id}|${e.side}|${Number(e.stake).toFixed(8)}`)
+    .sort()
+    .join(";");
+  return createHash("sha256").update(secret + "|" + canon).digest("hex");
+}
 import type { Entry, RoundConfig, RoundResult, Mode } from "./game.ts";
 
 export type Phase = "lobby" | "battle" | "settle";
@@ -10,7 +22,8 @@ export type Phase = "lobby" | "battle" | "settle";
 export interface RoundState {
   round: number; mode: Mode; phase: Phase;
   seedHashPublished: string;      // published at lobby start; seed hidden until reveal
-  seed?: string;                  // revealed after battle
+  seed?: string;                  // derived at lobby close, revealed with the result
+  secretRevealed?: string;        // the committed secret, published so the derivation can be checked
   entries: Entry[];
   result?: RoundResult;
   multiplier: number;
@@ -32,7 +45,8 @@ export class RoundRunner {
   state: RoundState;
   mode: Mode;
   private onSettle: (r: RoundResult, s: RoundState) => Promise<void>;
-  private seed = "";
+  private secret = "";   // committed at lobby open; the seed is derived from it at lobby close
+  private seed = "";     // only exists once entries are locked
   constructor(mode: Mode, onSettle: (r: RoundResult, s: RoundState) => Promise<void>, startRound = 1) {
     this.mode = mode; this.onSettle = onSettle;
     // Resume the round number across restarts. It used to start at 1 on every boot, so a
@@ -45,11 +59,26 @@ export class RoundRunner {
   }
 
   private freshLobby(round: number): RoundState {
-    this.seed = randomBytes(32).toString("hex");   // committed now, revealed after battle
+    // COMMIT-REVEAL, AND WHY THE SEED IS NOT SIMPLY DRAWN HERE.
+    //
+    // The obvious design draws the round's randomness when the lobby opens. Players never see it —
+    // only the hash is published — so it looks sound. It is not: the ENGINE then knows the outcome
+    // while entries are still open. Nothing in the code acts on that, but "provably fair" cannot
+    // rest on the operator choosing not to use knowledge it holds. The test is whether anyone,
+    // including us, CAN know the result while anyone can still act on it.
+    //
+    // So the secret is committed here and the seed is DERIVED at lobby close from that secret plus
+    // the final entry list. Until entries lock, the seed does not exist for anybody; the moment it
+    // does exist, nobody can enter, deploy or withdraw from the round any more.
+    //
+    // Verification is unchanged in shape and strictly stronger: we publish sha256(secret) before
+    // deploys open, then publish the secret and the entries afterwards. Anyone can check that
+    // sha256(secret) matches what was committed and that seed == sha256(secret || entries).
+    this.secret = randomBytes(32).toString("hex");
     const mult = this.rollMultiplier();
     const now = Date.now();
     return {
-      round, mode: this.mode, phase: "lobby", seedHashPublished: seedHash(this.seed),
+      round, mode: this.mode, phase: "lobby", seedHashPublished: seedHash(this.secret),
       entries: [], multiplier: mult, openedAt: now, closesAt: now + LOBBY_MS,
     };
   }
@@ -70,6 +99,10 @@ export class RoundRunner {
     const s = this.state;
     if (s.phase === "lobby" && now >= s.closesAt) {
       s.phase = "battle";
+      // DERIVE NOW, not at lobby open. Entries are locked on the line above, so from this instant
+      // the round is decidable — and from this instant nobody can act on it either.
+      this.seed = deriveSeed(this.secret, s.entries);
+      s.secretRevealed = this.secret;                       // so anyone can recompute the derivation
       s.seed = this.seed;                                   // REVEAL
       const cfg = newRoundConfig(s.mode, s.multiplier);
       s.result = simulateRound(this.seed, s.entries, cfg);

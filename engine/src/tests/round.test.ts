@@ -4,7 +4,7 @@
 // longer verify a round wasn't altered after seeing the bets.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { RoundRunner } from "../round.ts";
+import { RoundRunner, deriveSeed } from "../round.ts";
 import { RoundRunnerN } from "../roundN.ts";
 import { seedHash } from "../game.ts";
 import { seedHashN } from "../gameN.ts";
@@ -19,15 +19,44 @@ test("lobby commits a hash and hides the seed", () => {
   assert.equal(r.state.seed, undefined, "the seed must stay hidden while betting is open");
 });
 
-test("reveal: the revealed seed hashes to exactly the pre-committed value", async () => {
+// The commitment chain, end to end. The seed is no longer DRAWN at lobby open — if it were, the
+// engine would know the outcome while entries were still open, and "provably fair" cannot rest on
+// the operator choosing not to use knowledge it holds. The secret is committed at open; the seed is
+// derived from that secret plus the final entries at close. Verification is two steps now, and it
+// proves strictly more.
+test("reveal: the committed secret and the entries reproduce the seed exactly", async () => {
   const r = new RoundRunner("extraction", async () => {});
   const committed = r.state.seedHashPublished;
   r.enter("p1", "bull", 10); r.enter("p2", "uwu", 10); r.enter("p3", "bull", 5);
-  await r.tick(FUTURE());                                   // lobby -> battle (reveal + simulate)
+  await r.tick(FUTURE());                                   // lobby -> battle (derive + reveal + simulate)
   assert.equal(r.state.phase, "battle");
-  assert.ok(r.state.seed, "seed is revealed at battle start");
-  assert.equal(seedHash(r.state.seed!), committed, "revealed seed must match the commitment");
+  assert.ok(r.state.seed, "seed exists once entries are locked");
+  assert.ok(r.state.secretRevealed, "the committed secret is published so the chain can be checked");
+  // 1. the secret is the one committed before deploys opened
+  assert.equal(seedHash(r.state.secretRevealed!), committed, "secret must match the commitment");
+  // 2. the seed follows from that secret and the entries anyone can see
+  assert.equal(deriveSeed(r.state.secretRevealed!, r.state.entries), r.state.seed,
+    "seed must be reproducible from the published secret and entries");
   assert.ok(r.state.result, "a result is computed on reveal");
+});
+
+test("the seed does not exist while anyone can still act on it", () => {
+  const r = new RoundRunner("normal", async () => {});
+  r.enter("p1", "bull", 10);
+  assert.ok(r.state.seedHashPublished, "the commitment IS published during the lobby");
+  assert.ok(!r.state.seed, "but the seed itself must not exist yet — not to a player, not to us");
+  assert.ok(!r.state.secretRevealed, "and the secret stays hidden while entries are open");
+});
+
+test("the derivation binds the entries, so a fight cannot be replayed before they close", () => {
+  const secret = "a".repeat(64);
+  const two = [{ id: "p1", side: "bull", stake: 10 }, { id: "p2", side: "uwu", stake: 10 }];
+  const three = [...two, { id: "p3", side: "bull", stake: 3 }];
+  assert.notEqual(deriveSeed(secret, two), deriveSeed(secret, three),
+    "one more entry must change the seed — otherwise the round is decided before it closes");
+  // order must not matter: a verifier rebuilding the list must reach the same seed
+  assert.equal(deriveSeed(secret, two), deriveSeed(secret, [...two].reverse()),
+    "canonical ordering — otherwise verification depends on iteration order and fails at random");
 });
 
 test("settlement conserves the entered stakes (no value minted/destroyed)", async () => {
