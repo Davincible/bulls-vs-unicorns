@@ -18,7 +18,7 @@ idl-build = ["anchor-lang/idl-build"]
 
 [dependencies]
 anchor-lang = "1.0.2"   # init-if-needed was declared but never used; it costs bytes
-ephemeral-rollups-sdk = { version = "0.16.2", features = ["anchor"] }
+ephemeral-rollups-sdk = { version = "0.16.2", features = ["anchor", "vrf"] }
 # anchor 1.x no longer re-exports solana_program::hash — the ecosystem moved to split crates, so the
 # sha256 syscall wrapper is its own dependency now. Verified by reading anchor-lang 1.0.2's
 # re-export list rather than guessing at the path a second time.

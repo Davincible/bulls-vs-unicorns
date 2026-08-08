@@ -27,8 +27,10 @@ use solana_sha256_hasher::hashv;
 use ephemeral_rollups_sdk::anchor::{commit, delegate, ephemeral};
 use ephemeral_rollups_sdk::cpi::DelegateConfig;
 use ephemeral_rollups_sdk::ephem::MagicIntentBundleBuilder;
+use ephemeral_rollups_sdk::anchor::{vrf, vrf_callback};
+use ephemeral_rollups_sdk::vrf::instructions::{create_request_scoped_randomness_ix, RequestRandomnessParams};
 
-declare_id!("53FcrjzZEhVNExp9TtNcjKZy6dHqbrEPxXHJnKRF7hj8"); // devnet program keypair: .devnet/program-keypair.json
+declare_id!("FNYozykPcscfyQRmpcmKnXJe39ERospgRNCyZ9DJpoCS"); // devnet program keypair: .devnet/program-keypair.json
 
 pub const ARENA_SEED: &[u8] = b"arena";
 pub const ROUND_SEED: &[u8] = b"round";
@@ -203,18 +205,55 @@ pub mod bulls_arena {
         Ok(())
     }
 
-    /// Start the fight by revealing the seed.
+    /// Close the lobby and ASK THE ORACLE for the seed.
     ///
-    /// The reveal is checked against the commitment published in `open_round`. A seed that does not
-    /// hash to the commitment is rejected — that check is the entire fairness guarantee, and without
-    /// it the commitment is decoration.
-    pub fn reveal(ctx: Context<Reveal>, seed: [u8; 32]) -> Result<()> {
+    /// WHY THE REQUEST HAPPENS HERE AND NOT AT open_round.
+    ///
+    /// The obvious design is to draw randomness when the round opens. It is wrong: the seed would
+    /// then be readable on-chain while entries are still open, so anyone could replay the fight
+    /// before deciding which side to back. The round would be decided before it was played.
+    ///
+    /// Requesting AFTER the lobby closes means nobody — operator included — knows the seed while
+    /// anyone can still act on it.
+    ///
+    /// This also closes the one real weakness of the old commit-reveal. That scheme stopped the
+    /// operator seeing the book before choosing a seed, but nothing stopped grinding candidate
+    /// seeds offline against the EXPECTED lobby and committing to the most favourable one. With the
+    /// house fielding most of the fighters, that was not theoretical. The operator no longer
+    /// chooses the seed at all.
+    pub fn close_lobby_and_draw(ctx: Context<DrawSeed>, client_seed: [u8; 32]) -> Result<()> {
+        {
+            let r = &mut ctx.accounts.round;
+            require!(r.phase == Phase::Lobby as u8, ArenaError::NotInLobby);
+            require!(r.fighter_count >= 2, ArenaError::NotEnoughFighters);
+            r.phase = Phase::Drawing as u8;
+        }
+        let ix = create_request_scoped_randomness_ix(RequestRandomnessParams {
+            payer: ctx.accounts.payer.key(),
+            oracle_queue: ctx.accounts.oracle_queue.key(),
+            callback_program_id: ID,
+            callback_discriminator: instruction::CallbackSeed::DISCRIMINATOR.to_vec(),
+            caller_seed: client_seed,
+            accounts_metas: None,
+            ..Default::default()
+        });
+        ctx.accounts.invoke_signed_vrf(&ctx.accounts.payer.to_account_info(), &ix)?;
+        Ok(())
+    }
+
+    /// The oracle delivers the seed. `#[vrf_callback]` enforces that ONLY the VRF program can call
+    /// this — without it, anyone could hand us a seed of their choosing and the whole scheme is
+    /// theatre.
+    pub fn callback_seed(ctx: Context<CallbackSeed>, randomness: [u8; 32]) -> Result<()> {
         let r = &mut ctx.accounts.round;
-        require!(r.phase == Phase::Lobby as u8, ArenaError::NotInLobby);
-        require!(hashv(&[seed.as_ref()]).to_bytes() == r.seed_commit, ArenaError::SeedMismatch);
-        r.seed = seed;
+        require!(r.phase == Phase::Drawing as u8, ArenaError::NotDrawing);
+        r.seed = randomness;
+        // Publish sha256(seed) too. The seed is already public at this point, so this is not a
+        // commitment any more — it keeps the browser replay and the anchor format unchanged, so the
+        // client verifying a round does not need to know which scheme produced the seed.
+        r.seed_commit = hashv(&[randomness.as_ref()]).to_bytes();
         r.phase = Phase::Fight as u8;
-        emit!(SeedRevealed { round_no: r.round_no, seed });
+        emit!(SeedRevealed { round_no: r.round_no, seed: randomness });
         Ok(())
     }
 
@@ -278,7 +317,7 @@ pub struct Fighter {
 } // 58 B
 
 #[repr(u8)]
-pub enum Phase { Lobby = 0, Fight = 1, Settled = 2 }
+pub enum Phase { Lobby = 0, Drawing = 1, Fight = 2, Settled = 3 }
 
 #[account]
 pub struct Arena {
@@ -366,11 +405,29 @@ pub struct Tick<'info> {
     pub round: Account<'info, Round>,
 }
 
+/// `#[vrf]` supplies the accounts the randomness request CPI needs.
+#[vrf]
 #[derive(Accounts)]
-pub struct Reveal<'info> {
+pub struct DrawSeed<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
     #[account(mut)]
     pub round: Account<'info, Round>,
-    pub authority: Signer<'info>,
+    /// CHECK: validated against the known queues by the VRF program
+    #[account(mut)]
+    pub oracle_queue: UncheckedAccount<'info>,
+}
+
+/// `#[vrf_callback]` injects `vrf_program_identity` as a Signer constrained to
+/// `scoped_vrf_identity(&crate::ID)` — a PDA bound to THIS program, not the global identity (which
+/// the SDK marks deprecated). Its presence as a signer is what proves the callback came from the
+/// VRF program for this program specifically. Declaring it by hand would have got the constraint
+/// wrong and left the callback spoofable by anything the VRF program also calls.
+#[vrf_callback]
+#[derive(Accounts)]
+pub struct CallbackSeed<'info> {
+    #[account(mut)]
+    pub round: Account<'info, Round>,
 }
 
 /// `#[commit]` supplies `magic_context` and `magic_program`.
@@ -401,5 +458,7 @@ pub enum ArenaError {
     #[msg("round is full")] RoundFull,
     #[msg("step count must be 1..=256")] BadStepCount,
     #[msg("revealed seed does not match the published commitment")] SeedMismatch,
+    #[msg("round is not awaiting randomness")] NotDrawing,
+    #[msg("a fight needs at least two fighters")] NotEnoughFighters,
     #[msg("arithmetic overflow")] MathOverflow,
 }
