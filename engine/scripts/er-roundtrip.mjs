@@ -22,6 +22,11 @@ import { readFileSync } from "node:fs";
 const DEVNET = "https://api.devnet.solana.com";
 const DEVNET_GENESIS = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 const DELEGATION_PROGRAM = new PublicKey("DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh");
+const ROUTER = process.env.ROUTER_ENDPOINT || "https://devnet-router.magicblock.app";
+const ROUTER_WS = ROUTER.replace(/^http/, "ws");
+// Injected by #[commit]; addresses are fixed by the SDK.
+const MAGIC_PROGRAM = new PublicKey("Magic11111111111111111111111111111111111111");
+const MAGIC_CONTEXT = new PublicKey("MagicContext1111111111111111111111111111111");
 const PROGRAM_ID = new PublicKey(process.env.ER_PROGRAM_ID || "BWhnLnryRJpLbRkpybSQvpr68HfnNDsZha7kgouJJ8Dc");
 
 const c = { r: "\x1b[31m", g: "\x1b[32m", y: "\x1b[33m", d: "\x1b[2m", x: "\x1b[0m" };
@@ -161,8 +166,112 @@ async function send(conn, payer, ixs, label) {
     } else {
       die(`delegation did not transfer ownership (owner ${after.owner.toBase58()})`);
     }
+    // ---- FROM HERE THE ACCOUNT LIVES IN THE ER --------------------------------------------
+    //
+    // The Magic Router decides where a transaction goes by inspecting the OWNER of its writable
+    // accounts. The round PDA is now owned by the delegation program, so these route to the
+    // rollup automatically — the client does not choose, the account state does. That is why the
+    // same instruction encoding works against a different endpoint with no other change.
+    console.log(`
+${c.y}driving the round inside the ER…${c.x}`);
+    const erConn = new Connection(ROUTER, { commitment: "confirmed", wsEndpoint: ROUTER_WS });
+
+    const erSend = async (ixs, label) => {
+      const tx = new Transaction().add(...ixs);
+      const t0 = Date.now();
+      const sig = await sendAndConfirmTransaction(erConn, tx, [payer], {
+        commitment: "confirmed", skipPreflight: true,
+      });
+      ok(`${label} ${c.d}${Date.now() - t0}ms  ${sig.slice(0, 24)}…${c.x}`);
+      return { sig, ms: Date.now() - t0 };
+    };
+
+    // enter — two fighters on opposite sides, so the fight has a legal target
+    await erSend([new TransactionInstruction({
+      programId: PROGRAM_ID,
+      keys: [
+        { pubkey: arenaPda, isSigner: false, isWritable: false },
+        { pubkey: roundPda, isSigner: false, isWritable: true },
+        { pubkey: payer.publicKey, isSigner: true, isWritable: false },
+      ],
+      data: Buffer.concat([ixDisc("enter"), Buffer.from([0]), u64(1_000_000)]),
+    })], "enter side A");
+
+    // reveal — the seed must hash to the commitment published before entries opened
+    await erSend([new TransactionInstruction({
+      programId: PROGRAM_ID,
+      keys: [
+        { pubkey: roundPda, isSigner: false, isWritable: true },
+        { pubkey: payer.publicKey, isSigner: true, isWritable: false },
+      ],
+      data: Buffer.concat([ixDisc("reveal"), seed]),
+    })], "reveal seed");
+    ok(`seed revealed — anyone can now recompute this round from ${seed.toString("hex").slice(0, 16)}…`);
+
+    // tick — the hot path. This is the whole reason for the ER.
+    const ticks = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await erSend([new TransactionInstruction({
+        programId: PROGRAM_ID,
+        keys: [{ pubkey: roundPda, isSigner: false, isWritable: true }],
+        data: Buffer.concat([ixDisc("tick"), u16(32)]),
+      })], `tick x32 (#${i + 1})`);
+      ticks.push(r.ms);
+    }
+    info(`tick latency: ${ticks.join("ms, ")}ms  (base layer is ~400ms/slot for comparison)`);
+
+    // settle — decides the winner and COMMITS the state back to the base layer
+    await erSend([new TransactionInstruction({
+      programId: PROGRAM_ID,
+      keys: [
+        { pubkey: payer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: roundPda, isSigner: false, isWritable: true },
+        // ORDER MATTERS: #[commit] appends magic_program FIRST, then magic_context. I had them
+        // the other way round and devnet answered Custom:3008 — the address constraint on
+        // magic_context was being checked against the magic PROGRAM's key. Read out of
+        // ephemeral-rollups-sdk-attribute-commit, not guessed.
+        { pubkey: MAGIC_PROGRAM, isSigner: false, isWritable: false },
+        { pubkey: MAGIC_CONTEXT, isSigner: false, isWritable: true },
+      ],
+      data: ixDisc("settle"),
+    })], "settle + commit");
+
+    // close_round — commit_and_undelegate. The validator injects the base-layer callback.
+    await erSend([new TransactionInstruction({
+      programId: PROGRAM_ID,
+      keys: [
+        { pubkey: payer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: roundPda, isSigner: false, isWritable: true },
+        // ORDER MATTERS: #[commit] appends magic_program FIRST, then magic_context. I had them
+        // the other way round and devnet answered Custom:3008 — the address constraint on
+        // magic_context was being checked against the magic PROGRAM's key. Read out of
+        // ephemeral-rollups-sdk-attribute-commit, not guessed.
+        { pubkey: MAGIC_PROGRAM, isSigner: false, isWritable: false },
+        { pubkey: MAGIC_CONTEXT, isSigner: false, isWritable: true },
+      ],
+      data: ixDisc("close_round"),
+    })], "close_round (commit_and_undelegate)");
+
+    // ---- back on the BASE LAYER: did it actually come home? --------------------------------
+    console.log(`
+${c.y}verifying on the base layer…${c.x}`);
+    for (let i = 0; i < 20; i++) {
+      const back = await conn.getAccountInfo(roundPda);
+      if (back && back.owner.equals(PROGRAM_ID)) {
+        ok(`OWNER REVERTED TO OUR PROGRAM — the round came back from the ER`);
+        const d = back.data;
+        // phase u8 @ 8+32+8 = 48, winner @ 49, fighter_count u16 @ 51, tick_count u64 @ 53
+        info(`phase=${d[48]} (2 = settled)  winner=${d[49]}  fighters=${d.readUInt16LE(51)}  ticks=${d.readBigUInt64LE(53)}`);
+        info(`round pda: ${roundPda.toBase58()}`);
+        return;
+      }
+      await new Promise(r => setTimeout(r, 3000));
+    }
+    console.error(`  ${c.y}!${c.x} still delegated after 60s — commit may still be finalising`);
   } catch (e) {
-    console.error(`  ${c.r}✗ delegation failed:${c.x} ${e.message}`);
+    console.error(`  ${c.r}✗ ER lifecycle failed:${c.x} ${e.message}`);
+    if (e.transactionLogs) console.error(e.transactionLogs.slice(-6).map(l => "    " + l).join(String.fromCharCode(10)));
+
     console.error(`  ${c.d}Round ${roundNo} remains open and undelegated on devnet; it can be`);
     console.error(`  inspected at ${roundPda.toBase58()}${c.x}`);
     process.exitCode = 1;
