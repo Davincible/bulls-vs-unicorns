@@ -518,7 +518,7 @@
       </p>
       <div class="dgrid" style="margin-bottom:18px">
         <div class="stat"><div class="v" id="pzFloat">—</div><div class="n">Held in vault</div></div>
-        <div class="stat"><div class="v" id="pzBack">—</div><div class="n">Backing</div></div>
+        <div class="stat"><div class="v" id="pzBack">—</div><div class="n">Every balance</div></div>
       </div>
       <button class="abtn ghost" id="pzDismiss" style="width:100%">View wallet &amp; proof of reserves</button>
       <div class="note" style="margin-top:10px">Open stakes from the last round were refunded before the pause.</div>
@@ -1145,10 +1145,16 @@
       if(!dot||!txt||!pill)return;
       // worst coverage across assets anyone is actually owed — one bad asset is a bad answer
       let worst=Infinity, owedAny=false;
+      const owedBits=[], heldBits=[];
+      const TICK={sol:"SOL",uwu:"UWU",bull:"ANSEM"};
       for(const a of as){
         if(!(a.liability>0)) continue;
         owedAny=true; worst=Math.min(worst, a.holdings/a.liability);
+        const t=TICK[a.asset]||String(a.asset).toUpperCase();
+        owedBits.push((a.liability<1?a.liability.toFixed(4):a.liability.toFixed(2))+" "+t);
+        heldBits.push((a.holdings<1?a.holdings.toFixed(4):a.holdings.toFixed(2))+" "+t);
       }
+      const owedTxt=owedBits.join(" + ")||"nothing", heldTxt=heldBits.join(" + ")||"nothing";
       const ok=rep.ok!==false && !j.frozen;
       if(j.frozen){
         dot.textContent="●"; dot.className="neg"; txt.textContent="withdrawals frozen";
@@ -1156,11 +1162,22 @@
       } else if(!owedAny){
         dot.textContent="●"; dot.className="g"; txt.textContent="fully backed";
         pill.title="Nothing is currently owed to players; every balance is backed on-chain.";
+      } else if (worst >= 1) {
+        // ABOVE 100%, A COVERAGE RATIO SAYS NOTHING USEFUL. It is holdings / player liability, and
+        // player liability is small and volatile next to the operator's own float — so it swung
+        // 823% -> 1409% -> 2305% -> 3541% in an hour while nothing meaningful changed. A number
+        // that moves 4x for no reason reads as broken, or as spin. The fact that matters is binary:
+        // is every balance backed? Say that, and put the real amounts in the tooltip where someone
+        // checking can see them.
+        dot.textContent="●"; dot.className="g"; txt.textContent="fully backed";
+        pill.title="Every player balance is backed on-chain: "+owedTxt+" owed against "+heldTxt+
+                   " held in the vault, re-checked against the chain every 15s.";
       } else {
-        const pct=worst>=100?"100+":(worst*100).toFixed(0);
-        dot.textContent="●"; dot.className=ok?"g":"neg";
-        txt.textContent=pct+"% backed";
-        pill.title="The vault holds "+pct+"% of what players are owed, checked against the chain every 15s. Above 100% means more is held than owed.";
+        // UNDER 100% is the only case where the ratio is worth showing — it is the shortfall.
+        const pct=(worst*100).toFixed(1);
+        dot.textContent="●"; dot.className="neg"; txt.textContent=pct+"% backed";
+        pill.title="SHORTFALL: the vault holds only "+pct+"% of what players are owed ("+owedTxt+
+                   " owed, "+heldTxt+" held). Withdrawals freeze automatically when this happens.";
       }
     }catch(e){ /* leave the last reading rather than claiming a state we cannot see */ }
   }
