@@ -26,7 +26,7 @@ import { chainReady, vaultPubkey, mints, faucet, verifyDeposit, withdraw, buildD
 // The guard is not wrong; it is simply not ours. A devnet fork's safety rail must never be able to
 // stop the mainnet product from booting, and the fork's own files stay untouched for its own use.
 import { priceUSD, startPriceLoop, allPrices, refreshPrices } from "./prices.ts";
-import { RPC, loadVaultKeypair } from "./chain.ts";
+import { RPC, IS_TEST_CHAIN, loadVaultKeypair } from "./chain.ts";
 import { swapExact } from "./swap.ts";
 import { anchorRound, memoStats, resultsPayload, resultsHash, setMemoFeeSink, setAnchorSink } from "./memo.ts";
 import { redact, redactDeep } from "./redact.ts";
@@ -57,7 +57,6 @@ const SOL_USD_FIXED = Number(process.env.SOL_USD || 0);
 // FAUCETS MINT UNBACKED CREDIT. They are test-chain only: fundMe/faucet hand out tokens and
 // SOL units with no deposit behind them, so on mainnet they would let anyone withdraw real
 // funds against invented balance. Hard-disabled unless the RPC is a test chain.
-const IS_TEST_CHAIN = /localhost|127\.0\.0\.1|devnet|testnet/i.test(RPC);
 const FAUCET_ON = IS_TEST_CHAIN && process.env.DISABLE_FAUCET !== "1";
 if (!FAUCET_ON) console.log("faucets DISABLED (mainnet-safe): fundMe/faucet will be refused");
 // The browser submits its OWN signed transactions, so it needs an RPC endpoint — but it must never
@@ -99,6 +98,12 @@ const BOT_COMMIT_MIN = Number(process.env.BOT_COMMIT_MIN || 0.35);
 const BOT_COMMIT_MAX = Number(process.env.BOT_COMMIT_MAX || 0.85);
 const otcFeeFor = (a: Field, b: Field) => (a === "sol" || b === "sol") ? OTC_FEE_SOL : OTC_FEE_TOKEN;
 const lastConvertAt = new Map<string, number>();
+// SEC-M1: convert debits synchronously, then awaits a real swap before crediting. The cooldown set
+// below happens to be written before that first await, which incidentally blocks a second convert
+// message for the same wallet from interleaving — but that protection is an accident of statement
+// order, not a guarantee, and survives only until someone reorders the function. An explicit guard
+// makes it a real invariant instead of a convention.
+const inFlightConvert = new Set<string>();
 // load once - the vault signs every swap
 let _vaultKp: ReturnType<typeof loadVaultKeypair> | null = null;
 const vaultKeypair = () => (_vaultKp ||= loadVaultKeypair());
@@ -1805,6 +1810,9 @@ wss.on("connection", (ws, req) => {
         // otherwise the one moment the books are known-bad is the moment a player can rotate into
         // whichever asset is better backed and withdraw once the freeze lifts.
         if (isFrozen()) return ws.send(JSON.stringify({ t: "error", msg: "Converts are paused (solvency check). Try again shortly." }));
+        if (inFlightConvert.has(m.wallet)) {
+          return ws.send(JSON.stringify({ t: "error", msg: "A convert is already in progress for this wallet." }));
+        }
         const CFIELDS = ["bull", "uwu", "sol"] as const;
         const to = (CFIELDS.includes(m.to) ? m.to : "uwu") as Field;
         const a = acct(m.wallet, (to === "sol" ? "uwu" : to) as Side);
@@ -1822,6 +1830,7 @@ wss.on("connection", (ws, req) => {
             msg: `One convert per round — try again in ${Math.ceil((CONVERT_COOLDOWN_MS - sinceConv) / 1000)}s.` }));
         }
         lastConvertAt.set(m.wallet, Date.now());
+        inFlightConvert.add(m.wallet);   // cleared on every exit path below — see SEC-M1
 
         // Debit first so the balance can't be spent twice while the swap is in flight.
         a[from] -= amt;
@@ -1873,6 +1882,7 @@ wss.on("connection", (ws, req) => {
                                      fee: outUnits * otcFee / (1 - otcFee), otc: true,
                                      priceImpact: 0, simulated: false }));
             pushBalance(m.wallet); persist();
+            inFlightConvert.delete(m.wallet);
             return;
           }
         }
@@ -1881,7 +1891,7 @@ wss.on("connection", (ws, req) => {
         // USD units. The swap deals in tokens, so cross the boundary here and back again below.
         const solPx = priceUSD("sol") || 0;
         if ((from === "sol" || to === "sol") && !(solPx > 0)) {
-          a[from] += amt; lastConvertAt.delete(m.wallet); pushBalance(m.wallet);
+          a[from] += amt; lastConvertAt.delete(m.wallet); inFlightConvert.delete(m.wallet); pushBalance(m.wallet);
           return ws.send(JSON.stringify({ t: "error", msg: "SOL price unavailable — try again in a moment." }));
         }
         let amtTokens = from === "sol" ? amt / solPx : amt;
@@ -1889,7 +1899,7 @@ wss.on("connection", (ws, req) => {
           const held = await solBalance(vaultPubkey()).catch(() => 0);
           const spendable = Math.max(0, held - SOL_FEE_RESERVE);
           if (amtTokens > spendable) {
-            a[from] += amt; lastConvertAt.delete(m.wallet); pushBalance(m.wallet); persist();
+            a[from] += amt; lastConvertAt.delete(m.wallet); inFlightConvert.delete(m.wallet); pushBalance(m.wallet); persist();
             return ws.send(JSON.stringify({ t: "error",
               msg: `Convert too large right now — the vault can swap up to ${(spendable * solPx).toFixed(2)} of SOL.` }));
           }
@@ -1908,6 +1918,7 @@ wss.on("connection", (ws, req) => {
           // put it straight back — the player must never lose money to a failed swap
           a[from] += amt;
           lastConvertAt.delete(m.wallet);          // a failed attempt shouldn't burn their turn
+          inFlightConvert.delete(m.wallet);
           pushBalance(m.wallet); persist();
           return ws.send(JSON.stringify({ t: "error", msg: "Convert failed: " + (res.error || "swap unavailable") }));
         }
@@ -1923,6 +1934,7 @@ wss.on("connection", (ws, req) => {
         ws.send(JSON.stringify({ t: "converted", to, from, amount: amt, got: credited, fee,
                                  priceImpact: res.priceImpactPct, simulated: res.simulated, sig: res.sig }));
         pushBalance(m.wallet); persist();
+        inFlightConvert.delete(m.wallet);
       } else if (m.t === "chainBalance") {                    // on-chain (Phantom) balances
         if (!chainReady()) return;
         const [bull, uwu] = await Promise.all([walletTokenBalance(m.wallet, "bull"), walletTokenBalance(m.wallet, "uwu")]);

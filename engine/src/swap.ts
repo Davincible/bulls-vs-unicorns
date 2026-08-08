@@ -12,7 +12,7 @@
 // (clearly flagged) to keep the code path exercised; mainnet does the real thing.
 import { Connection, Keypair, VersionedTransaction, PublicKey, SystemProgram,
          TransactionMessage } from "@solana/web3.js";
-import { RPC } from "./chain.ts";
+import { RPC, IS_TEST_CHAIN } from "./chain.ts";
 import { priceUSD, type PriceToken } from "./prices.ts";
 import bs58 from "bs58";
 
@@ -32,7 +32,6 @@ const DYNAMIC_SLIPPAGE = process.env.SWAP_DYNAMIC_SLIPPAGE !== "0";
 const JITO_URL = process.env.SWAP_JITO_URL || "";
 const JITO_TIP_LAMPORTS = Number(process.env.SWAP_JITO_TIP || 100_000);  // 0.0001 SOL
 const MAX_PRICE_IMPACT = Number(process.env.SWAP_MAX_IMPACT || 0.05);    // refuse worse than 5%
-const IS_TEST_CHAIN = /localhost|127\.0\.0\.1|devnet|testnet/i.test(RPC);
 
 export interface SwapResult {
   ok: boolean;

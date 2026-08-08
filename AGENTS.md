@@ -243,7 +243,6 @@ node --experimental-strip-types --test $(ls engine/src/tests/*.test.ts | grep -v
 | `MIGRATION.md` | **Machine setup and migration. Start here on new hardware.** |
 | `README.md` | Short overview |
 | `UI-REDESIGN-BRIEF.md` | Front-end rebuild brief, written from the live build |
-| `SECURITY_AUDIT.md` | Adversarial audit and findings |
 | `MEGA_QUEUE.md` | Work queue with resolutions |
 | `EXECUTION_REPORT.md` | Autonomous-run report |
 | `DEPLOY.md` `PRODUCTION.md` `MAINNET.md` `GO-LIVE.md` `HOSTING.md` | Operational runbooks |

@@ -11,7 +11,7 @@
 // Idempotent: wallets already holding a deposited balance are skipped, so it is safe to re-run.
 import { Connection, Transaction, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import nacl from "tweetnacl";
-import { RPC } from "./chain.ts";
+import { RPC, IS_TEST_CHAIN } from "./chain.ts";
 import { faucet, withdrawSol, solBalance, chainReady, vaultPubkey, transferFromVault,
          sendSolFrom, transferTokensFrom, tokenBalanceOf } from "./chain-ops.ts";
 import { Keypair } from "@solana/web3.js";
@@ -41,7 +41,6 @@ const seedKp: Keypair | null = SEED_KEYPAIR && _exists(SEED_KEYPAIR)
   ? Keypair.fromSecretKey(Uint8Array.from(JSON.parse(_read(SEED_KEYPAIR, "utf8"))))
   : null;
 const ENGINE_WS = process.env.ENGINE_WS || "wss://bulls-arena-engine.fly.dev";
-const IS_TEST_CHAIN = /localhost|127\.0\.0\.1|devnet|testnet/i.test(RPC);
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 const conn = new Connection(RPC, "confirmed");

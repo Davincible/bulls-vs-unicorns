@@ -4,12 +4,11 @@
 // passes, withdrawals resume. The comparison core (`evaluate`) is pure so it can be unit-tested
 // without touching the chain; `start` wires it to the live RPC reads.
 import { chainReady, vaultPubkey, vaultTokenBalance, solBalance } from "./chain-ops.ts";
-import { RPC } from "./chain.ts";
+import { IS_TEST_CHAIN } from "./chain.ts";
 
 // Enforcement = actually FREEZE withdrawals on a breach. Only on a live chain: on a test chain
 // balances are faucet-minted test credit (liabilities always exceed the vault), so freezing would
 // just break dev. There we still compute + report the numbers, we just don't freeze.
-const IS_TEST_CHAIN = /localhost|127\.0\.0\.1|devnet|testnet/i.test(RPC);
 const ENFORCE =
   process.env.RECONCILE_OFF === "1" ? false
   : process.env.RECONCILE_ENFORCE === "1" ? true

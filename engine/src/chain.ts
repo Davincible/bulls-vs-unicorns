@@ -16,7 +16,21 @@ export const KEY_PATH = join(ENGINE_DIR, ".vault-keypair.json"); // gitignored �
 
 export const DECIMALS = 6;
 export const RPC = process.env.SOLANA_RPC || clusterApiUrl("devnet");
-const IS_TEST_CHAIN = /localhost|127\.0\.0\.1|devnet|testnet/i.test(RPC);
+// SEC-L5. This used to be `/localhost|127\.0\.0\.1|devnet|testnet/i.test(RPC)` — a substring match
+// against the WHOLE url, duplicated independently in six files. That gate decides whether faucets,
+// BOT_FAKE_BANK and vault auto-generation are available, so a false positive is a real-money mistake:
+// an API key, a proxy path, or any other query/path segment that happened to contain "devnet" would
+// have flipped it, on ANY of the six copies, with no guarantee they'd all be updated together.
+// Matched against the HOSTNAME only, one definition, imported everywhere else. An unparseable URL
+// resolves to false — this gate must fail toward the safer (production) behaviour, not the
+// permissive one.
+export function isTestChainUrl(url: string): boolean {
+  let host: string;
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return false; }
+  return host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" ||
+         host.includes("devnet") || host.includes("testnet");
+}
+export const IS_TEST_CHAIN = isTestChainUrl(RPC);
 
 export interface DevnetConfig {
   cluster: "devnet";

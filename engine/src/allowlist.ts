@@ -5,9 +5,8 @@
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { RPC } from "./chain.ts";
+import { IS_TEST_CHAIN } from "./chain.ts";
 
-const IS_TEST_CHAIN = /localhost|127\.0\.0\.1|devnet|testnet/i.test(RPC);
 // Enforce on any non-test chain. ALLOWLIST_ENFORCE=1 forces it on (e.g. staging against mainnet
 // data); ALLOWLIST_OFF=1 forces it off (never use on a real launch).
 export const enforced =
