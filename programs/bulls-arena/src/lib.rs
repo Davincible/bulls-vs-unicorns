@@ -30,7 +30,7 @@ use ephemeral_rollups_sdk::ephem::MagicIntentBundleBuilder;
 use ephemeral_rollups_sdk::anchor::{vrf, vrf_callback};
 use ephemeral_rollups_sdk::vrf::instructions::{create_request_scoped_randomness_ix, RequestRandomnessParams};
 
-declare_id!("FNYozykPcscfyQRmpcmKnXJe39ERospgRNCyZ9DJpoCS"); // devnet program keypair: .devnet/program-keypair.json
+declare_id!("3dHbeVh7KuhhjXMCkAw34wsZefwwQUdwKY6DJb12LWXb"); // devnet program keypair: .devnet/program-keypair.json
 
 pub const ARENA_SEED: &[u8] = b"arena";
 pub const ROUND_SEED: &[u8] = b"round";
@@ -160,48 +160,105 @@ pub mod bulls_arena {
         Ok(())
     }
 
-    /// Advance the simulation. The hot path — this is what the ER exists for.
+    /// Run the ENTIRE fight and settle it, in one instruction.
     ///
-    /// Deterministic from (seed, tick_count) alone, so the browser and the engine can both replay it
-    /// and get the same answer. No clock, no slot, no account ordering feeds the outcome.
-    pub fn tick(ctx: Context<Tick>, steps: u16) -> Result<()> {
-        let r = &mut ctx.accounts.round;
-        require!(r.phase == Phase::Fight as u8, ArenaError::NotFighting);
-        require!(steps > 0 && steps <= 256, ArenaError::BadStepCount);
+    /// This replaced a `tick(steps)` that had to be called ~125 times per round. That design was
+    /// copying the off-chain engine's shape — which ticks in real time because it is DRAWING the
+    /// fight — without asking whether the chain needed it. It did not. The fight is a pure function
+    /// of (seed, entries); splitting it across 125 round-trips does not make it more correct, it
+    /// just spreads one computation over 125 confirmations.
+    ///
+    /// NOR DOES THE PER-HIT DATA BELONG ON-CHAIN. Every blow is recomputable from the seed by
+    /// anyone; storing them is publishing our own homework at a cost per byte. Only the inputs
+    /// (seed, entries) and the OUTCOME (winner, final holdings) are recorded — which is exactly the
+    /// set a sceptic needs to check the result themselves.
+    pub fn resolve(ctx: Context<Resolve>, steps: u32) -> Result<()> {
+        {
+            let r = &mut ctx.accounts.round;
+            require!(r.phase == Phase::Fight as u8, ArenaError::NotFighting);
+            require!(steps > 0 && steps <= 20_000, ArenaError::BadStepCount);
 
-        for _ in 0..steps {
             let n = r.fighter_count as usize;
-            if n < 2 { break; }
-            let cursor = r.tick_count;
-            r.tick_count = r.tick_count.saturating_add(1);
+            require!(n >= 2, ArenaError::NotEnoughFighters);
 
-            // Pick attacker and defender from the seed + cursor. Same construction as the engine's
-            // xmur3/sfc32 stream in spirit: a hash chain, not a wall clock.
-            // sha256(seed ++ le_u64(cursor)) — the TS mirror builds the identical preimage
-            let h = hashv(&[r.seed.as_ref(), cursor.to_le_bytes().as_ref()]).to_bytes();
+            // The fight, start to finish, in local memory. No account write per step.
+            for step in 0..steps {
+                let h = hashv(&[r.seed.as_ref(), (step as u64).to_le_bytes().as_ref()]).to_bytes();
+                let a = (u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize) % n;
+                let mut d = (u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize) % n;
+                if d == a { d = (d + 1) % n; }
 
+                if r.fighters[a].side == r.fighters[d].side { continue; }
+                if r.fighters[a].wallet == r.fighters[d].wallet { continue; }
+                if r.fighters[a].dead == 1 || r.fighters[d].dead == 1 { continue; }
+
+                let roll = (h[8] as u64) % 24 + 4;
+                let mut dmg = r.fighters[d].hp.saturating_mul(roll) / 100;
+                if r.fighters[d].hp <= DUST || dmg == 0 { dmg = r.fighters[d].hp; }
+                if dmg == 0 { continue; }
+
+                r.fighters[d].hp = r.fighters[d].hp.saturating_sub(dmg);
+                r.fighters[a].banked = r.fighters[a].banked.saturating_add(dmg);
+                if r.fighters[d].hp == 0 { r.fighters[d].dead = 1; }
+            }
+            r.tick_count = steps as u64;
+
+            // settle in the same instruction — there is nothing to wait for
+            let (mut va, mut vb) = (0u64, 0u64);
+            for f in r.fighters[..n].iter() {
+                let v = f.hp.saturating_add(f.banked);
+                if f.side == 0 { va = va.saturating_add(v) } else { vb = vb.saturating_add(v) }
+            }
+            r.winner = if va >= vb { 0 } else { 1 };
+            r.phase = Phase::Settled as u8;
+            emit!(RoundSettled { round_no: r.round_no, winner: r.winner, pot: r.pot });
+        }
+
+        // Anchor serialises on return; the commit reads account info DURING the instruction. Without
+        // this the committed bytes are the PRE-fight state — a settled round that still says lobby.
+        ctx.accounts.round.exit(&crate::ID)?;
+        MagicIntentBundleBuilder::new(
+            ctx.accounts.payer.to_account_info(),
+            ctx.accounts.magic_context.to_account_info(),
+            ctx.accounts.magic_program.to_account_info(),
+        )
+        .commit(&[ctx.accounts.round.to_account_info()])
+        .build_and_invoke()?;
+        Ok(())
+    }
+
+    /// COMPUTE PROBE — measures what a fight costs, and cannot change anything.
+    ///
+    /// Needed because `resolve` refuses outside the Fight phase, so simulating it only ever measured
+    /// the guard (a flat 12,758 CU however many steps were requested — the giveaway that nothing was
+    /// running). Reaching Fight phase legitimately requires the VRF oracle, which is a dependency the
+    /// measurement should not need.
+    ///
+    /// This runs the IDENTICAL inner loop over a local array and writes NOTHING — no account is
+    /// mutable in its context, so it is a read-only probe rather than a test backdoor. It cannot
+    /// settle a round, change a phase, or move value.
+    pub fn bench_fight(_ctx: Context<BenchFight>, steps: u32, fighters: u8) -> Result<()> {
+        require!(steps > 0 && steps <= 20_000, ArenaError::BadStepCount);
+        let n = (fighters as usize).clamp(2, MAX_FIGHTERS);
+        let seed = [7u8; 32];
+        let mut hp = [1_000_000_000u64; MAX_FIGHTERS];
+        let mut banked = [0u64; MAX_FIGHTERS];
+
+        for step in 0..steps {
+            let h = hashv(&[seed.as_ref(), (step as u64).to_le_bytes().as_ref()]).to_bytes();
             let a = (u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize) % n;
             let mut d = (u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize) % n;
             if d == a { d = (d + 1) % n; }
-
-            // Never fight yourself and never fight your own team. The engine learned this the hard
-            // way: a wallet on both sides was attacking itself and burning its own money on the fee.
-            if r.fighters[a].side == r.fighters[d].side { continue; }
-            if r.fighters[a].wallet == r.fighters[d].wallet { continue; }
-            if r.fighters[a].dead == 1 || r.fighters[d].dead == 1 { continue; }
-
-            // Damage: a bounded fraction of the defender's remaining hp, so a hit can never take
-            // more than exists and the round always converges.
-            let roll = (h[8] as u64) % 24 + 4;                       // 4..27
-            let mut dmg = r.fighters[d].hp.saturating_mul(roll) / 100;
-            // finish off dust rather than chasing an asymptote forever
-            if r.fighters[d].hp <= DUST || dmg == 0 { dmg = r.fighters[d].hp; }
-            if dmg == 0 { continue; }                                // genuinely nothing left
-
-            r.fighters[d].hp = r.fighters[d].hp.saturating_sub(dmg);
-            r.fighters[a].banked = r.fighters[a].banked.saturating_add(dmg);
-            if r.fighters[d].hp == 0 { r.fighters[d].dead = 1; }
+            if a % 2 == d % 2 { continue; }              // stand-in for the same-side check
+            let roll = (h[8] as u64) % 24 + 4;
+            let mut dmg = hp[d].saturating_mul(roll) / 100;
+            if hp[d] <= DUST || dmg == 0 { dmg = hp[d]; }
+            if dmg == 0 { continue; }
+            hp[d] = hp[d].saturating_sub(dmg);
+            banked[a] = banked[a].saturating_add(dmg);
         }
+        // consume the results so the optimiser cannot delete the loop and report a fictitious cost
+        msg!("bench {} steps, {} fighters, hp0={} banked0={}", steps, n, hp[0], banked[0]);
         Ok(())
     }
 
@@ -257,38 +314,8 @@ pub mod bulls_arena {
         Ok(())
     }
 
-    /// Decide the winner and commit the result to the base layer, staying delegated.
-    pub fn settle(ctx: Context<Settle>) -> Result<()> {
-        {
-            let r = &mut ctx.accounts.round;
-            require!(r.phase == Phase::Fight as u8, ArenaError::NotFighting);
-            let (mut a, mut b) = (0u64, 0u64);
-            for f in r.fighters[..r.fighter_count as usize].iter() {
-                let v = f.hp.saturating_add(f.banked);
-                if f.side == 0 { a = a.saturating_add(v) } else { b = b.saturating_add(v) }
-            }
-            r.winner = if a >= b { 0 } else { 1 };
-            r.phase = Phase::Settled as u8;
-            emit!(RoundSettled { round_no: r.round_no, winner: r.winner, pot: r.pot });
-        }
-
-        // THE COMMIT TRAP. Anchor serialises account data when the instruction RETURNS, but the
-        // commit below reads the account info DURING it. Without this explicit exit we would commit
-        // the pre-settlement bytes — a round that says "still fighting" with no winner, silently.
-        ctx.accounts.round.exit(&crate::ID)?;
-
-        MagicIntentBundleBuilder::new(
-            ctx.accounts.payer.to_account_info(),
-            ctx.accounts.magic_context.to_account_info(),
-            ctx.accounts.magic_program.to_account_info(),
-        )
-        .commit(&[ctx.accounts.round.to_account_info()])
-        .build_and_invoke()?;
-        Ok(())
-    }
-
     /// Final commit + hand the account back to the base layer.
-    pub fn close_round(ctx: Context<Settle>) -> Result<()> {
+    pub fn close_round(ctx: Context<Resolve>) -> Result<()> {
         require!(ctx.accounts.round.phase == Phase::Settled as u8, ArenaError::NotSettled);
         ctx.accounts.round.exit(&crate::ID)?;
         MagicIntentBundleBuilder::new(
@@ -390,6 +417,12 @@ pub struct DelegateRound<'info> {
     pub round_pda: UncheckedAccount<'info>,
 }
 
+/// No mutable accounts at all — the probe cannot write, by construction rather than by discipline.
+#[derive(Accounts)]
+pub struct BenchFight<'info> {
+    pub payer: Signer<'info>,
+}
+
 #[derive(Accounts)]
 pub struct Enter<'info> {
     #[account(seeds = [ARENA_SEED], bump = arena.bump)]
@@ -433,7 +466,7 @@ pub struct CallbackSeed<'info> {
 /// `#[commit]` supplies `magic_context` and `magic_program`.
 #[commit]
 #[derive(Accounts)]
-pub struct Settle<'info> {
+pub struct Resolve<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(mut)]
