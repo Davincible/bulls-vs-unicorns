@@ -1,165 +1,252 @@
-# Bulls ⚔ Unicorns — full project context
+# Bulls ⚔ Unicorns — project context
 
-Read this first. It is written for a person or an agent picking the project up cold, on a new
-machine, with no memory of how it got here.
+Single entry point for anyone (human or agent) picking this up cold. Read this first, then
+`MIGRATION.md` if you are setting up a new machine.
 
-**There is real money in this system.** Read §6 before running anything.
-
----
-
-## 1. What this is
-
-A real-time PvP betting game on Solana. Memecoin armies — ANSEM, UWU, SOL — fight 40-second rounds.
-You deploy a stake to one side; fighters raid each other; the winning side takes value from the
-losing one. The house takes 0.2% of deploys and 0.3% of converts.
-
-**It is live on Solana mainnet with real funds.** <https://bulls-arena-engine.fly.dev/>
-
-The product's central claim is *verifiability*: the engine publishes `sha256(seed)` before deploys
-open, reveals the seed at fight start, and anchors round results on-chain. Anyone can recompute a
-round in their browser and check it. That claim is not marketing — it is the answer to the only
-question that matters for a product like this: *"are the fights rigged?"*
-
-Everything else in the design is downstream of protecting that answer.
+**This system holds real money on Solana mainnet.** Read §7 before changing anything.
 
 ---
 
-## 2. Architecture as it actually is
+## 1. What it is
+
+A real-time PvP betting game on Solana mainnet. Memecoin armies fight 40-second rounds; the winning
+side takes value off the losing side. Players deploy real tokens, and real tokens are paid out.
+
+- **Live:** https://bulls-arena-engine.fly.dev
+- **Vault:** `6wLK7paKz2es3nG9jdVvrnHMNUCPkognh8yQUFJ7Zete`
+- **Tokens:** ANSEM (`9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump`),
+  UWU (`UWUy7J86LUiBv5SjAUZ53LMGhtnqvbQ7QNSSkyupump`), SOL
+- **Status at time of writing:** PAUSED (`PAUSED=1`). Rounds halted; balances and withdrawals live.
+
+### The shape of a round
+1. **Lobby (~9s)** — deposits open. A commitment `sha256(secret)` is published.
+2. **Battle (~40s)** — deposits lock. The seed is *derived*, the fight is simulated, the result is
+   settled.
+3. **Settle** — payouts written to the ledger, the round is anchored on-chain, a new lobby opens.
+
+### Modes
+- **Normal** — raids compound in the ring.
+- **Extraction** — raids bank to your wallet in real time.
+
+---
+
+## 2. Vision
+
+A game that reads as a **trading terminal, not a casino**. Confident, quiet, dense with real
+numbers. Restraint is the aesthetic *and* the trust strategy: this product handles other people's
+money, and looking like a slot machine is how you lose the people worth having.
+
+The differentiator is not the fight, it is that **every round is verifiable**. The commitment lands
+before anyone can act, the result is anchored on Solana, and any stranger can recompute a round in
+their own browser without trusting the operator. That is the thing to protect above all else.
+
+---
+
+## 3. Architecture
 
 ```
-browser (web/index.html, one self-contained file)
-   │  websocket
-   ▼
-Node engine (engine/src/server.ts) ── AUTHORITATIVE
-   │
-   ├── SQLite ledger  — every balance, stake, settlement  (node:sqlite, WAL)
-   │                    LIVES ON THE FLY VOLUME, not in this repo
-   │
-   └── Solana mainnet — SPL vault, deposits, withdrawals, Jupiter swaps, memo anchors
+web/index.html        one self-contained page (~2,500 lines) — canvas game + full UI.
+                      No build step. Inline CSS/JS. Strict CSP; the one CDN script is SRI-pinned.
+engine/src/
+  server.ts           the engine: rounds, ledger, websocket, HTTP API, bots           (~2,000 lines)
+  round.ts            2-team round lifecycle + commit/derive/reveal
+  roundN.ts           3-way and FFA lifecycle  ⚠ still draws its seed at lobby open (see §8)
+  game.ts / gameN.ts  the deterministic fight simulation
+  ledger.ts           accounts, treasury, the permanent round log, snapshots
+  chain-ops.ts        Solana reads/writes, vault, ATAs, deposit verification
+  swap.ts             Jupiter converts (Jito-bundled, slippage-capped)
+  memo.ts             on-chain round anchoring
+  reconcile.ts        solvency daemon — freezes withdrawals if the books exceed the vault
+  recover-float.ts    float re-anchoring + the one-shot over-claim write-down
+  er-sim.ts           ⚠ MagicBlock fork work, NOT production (see §9)
+programs/             Anchor/Rust on-chain program (fork work)
 ```
 
-**The engine is the authority.** The browser replays; it never decides. Rounds are simulated
-server-side from a committed seed, and the client runs an independent copy of the same physics so it
-can verify rather than trust (`web/index.html` carries a hand-written JS port of `engine/src/game.ts`
-— they must stay in step; there is a parity test).
+**Model: off-chain authoritative engine + on-chain settlement, custodial vault.** Players deposit
+into the vault; balances are ledger entries. The engine is the source of truth for gameplay; the
+chain is the source of truth for money.
 
-**Custody is custodial.** Player balances are ledger rows backed by one on-chain vault. This is the
-single most dangerous thing in the system and the thing to be most careful changing.
+### Money invariants — do not break these
+1. **Conservation.** A round pays out exactly what was staked, minus the 0.2% fee. Asserted per
+   round; `CONSERVATION` warnings in the log mean something is wrong.
+2. **Solvency.** Player liabilities never exceed vault holdings. Checked every 15s; a breach
+   **freezes withdrawals automatically**.
+3. **One price per arena-round.** Entry and exit use the same frozen price, so a round cannot mint
+   or burn value on a price move.
+4. **One source per fact.** Every money figure derives from the engine round log (`/standings`).
+   Two panels that can disagree mean one is wrong — this already caused three different P/L numbers
+   for one wallet.
 
-### Key files
+### HTTP API
+`/health` `/live` `/float` `/solvency` `/memo` `/standings` `/hall` `/history?id=` `/wallets`
+`/round/*`
 
-| Path | What |
+---
+
+## 4. Provable fairness — read before touching `round.ts`
+
+**The seed must not exist while anyone can still act on it.**
+
+The obvious design draws randomness when the lobby opens. It looks fine — players only see the hash.
+It is not fine: the *engine* then knows the outcome while entries are still open. "Provably fair"
+cannot rest on the operator declining to use knowledge it holds.
+
+So:
+- **Lobby open:** generate a secret, publish `sha256(secret)`.
+- **Lobby close:** derive `seed = sha256(secret | canonical(entries))`, then simulate.
+
+Until entries lock, the seed exists for nobody. The moment it exists, nobody can act on the round.
+
+Verification is two links, both checkable by a stranger:
+```
+sha256(secret)  == the commit published before deploys opened
+seed            == sha256(secret | canonical(entries))
+```
+
+**`canonical()` is load-bearing** — sorted, fixed field order, stake to 8dp. Without it, map
+iteration order or a float's tail decides whether verification passes, which is the same as it not
+verifying. `web/index.html`'s `deriveSeedJS` mirrors the engine and **must stay byte-identical**;
+`engine/src/tests/derive-parity.test.ts` reads the shipped implementation out of the page and
+compares. If they ever drift, every honest round reports "MISMATCH", which reads as the operator
+being caught cheating — worse than having no verifier.
+
+---
+
+## 5. Economics
+
+| | |
 |---|---|
-| `engine/src/server.ts` | the engine — rounds, matching, deposits, withdrawals, HTTP + ws |
-| `engine/src/ledger.ts` | balances, standings, round log, treasury. One definition of "what is this worth" |
-| `engine/src/game.ts` | the 2-team simulation. Deterministic from the seed |
-| `engine/src/reconcile.ts` | solvency guard — freezes withdrawals if the books exceed the vault |
-| `engine/src/devnet-guard.ts` | mainnet kill switch (ER fork only) |
-| `web/index.html` | the entire front end, self-contained, CSP-locked, CDN script pinned by SRI |
-| `programs/bulls-arena/` | the on-chain program (ER fork) |
-| `programs/vault/` | dormant Anchor 0.30.1 vault program — written, never deployed, referenced by nothing |
+| Deploy fee | 0.2% |
+| Convert fee | 0.3% |
+| Matched book | slightly favours smaller positions (deliberate) |
+| Float | ~$115 across 20 real pool wallets |
+| Fighters | synthetic ledger ids (`arena:bot:N`), **not** wallets |
+
+**Two pots that must never mix.** The **pool wallets** are the operator's own capital, entered as a
+participant and at risk like anyone else's. The **treasury** is fee income. If fees could fund
+fighters, the operator would be playing with money taken from players and keeping the winnings.
+`poolAccounts()` only ever returns configured pool ids and the treasury is not among them; pinned by
+`engine/src/tests/treasury-wall.test.ts`.
+
+**The float does not need topping up — it circulates.** A round is zero-sum plus the fee, so what
+one fighter loses another holds. A fighter short of one token plays the side it *can* afford; side
+is a free per-round choice, not an identity. Refilling a wallet from a reservoir is the most obvious
+tell that it is not a person, so it is not done.
 
 ---
 
-## 3. Branches
+## 6. Running it
 
-| Branch | State |
+```bash
+cd engine && npm install
+npm test                     # ~340 tests, ~4s
+npm start                    # needs env — see MIGRATION.md
+```
+
+Deploy (from the repo root):
+```bash
+fly deploy . --config engine/fly.toml --dockerfile engine/Dockerfile --ha=false --app bulls-arena-engine
+```
+
+**Check which branch you are on first.** See §9.
+
+---
+
+## 7. Rules for changing this system
+
+1. **Verify against the live system, not against your reasoning.** Almost every bug found here was
+   found by measuring. Several confident diagnoses were wrong.
+2. **Never measure within ~2 minutes of a deploy.** Every deploy restarts the engine, resetting
+   per-boot counters and disturbing the ledger/chain reconciliation window. Measuring in that trough
+   produced three separate false alarms, including a "$28 loss" that did not exist.
+3. **Run the tests.** `engine/src/tests/` — ~340 of them, 4 seconds. Client-side static checks live
+   in `client.test.ts`; they catch missing-element and TDZ bugs that a syntax check does not.
+4. **A figure with no backing shows `—`, never `0`.** Zero is a claim.
+5. **A ratio is only worth showing when its denominator is stable.** "3541% backed" was arithmetic-
+   ally correct and useless; it moved 4x in an hour because player liability is tiny next to the
+   float. Show the fact, not the derived number.
+6. **Do not spend the operator's money.** Converts, swaps and transfers are theirs to authorise.
+
+---
+
+## 8. Known open items
+
+| Item | Status |
 |---|---|
-| `main` | **the live mainnet product.** This is what serves players |
-| `magicblock-er-migration` | a **devnet-only fork** exploring MagicBlock Ephemeral Rollups. Structurally prevented from reaching mainnet |
-
-**Never merge the ER fork into main without deliberate review.** It disables real swaps, retargets
-the deploy, and refuses to boot against a mainnet RPC — all correct for a fork, all catastrophic if
-they land on the live product by accident.
-
----
-
-## 4. The vision
-
-The current product proves people will play. The direction of travel is to make the game itself
-*provably* fair rather than *verifiably* fair — the difference being whether you have to trust the
-operator's engine at all.
-
-**Where it is going, in order:**
-
-1. **On-chain rounds via MagicBlock Ephemeral Rollups.** The fight executes in a rollup at ~10ms
-   blocks and commits to Solana. Working end-to-end on devnet today (see §7).
-2. **Player agency mid-fight (`extract`).** Pull out and bank what you are holding, or press on.
-   This is what makes the rollup load-bearing rather than decorative — an outcome that depends on
-   when a human presses a button cannot be precomputed. Deployed on devnet.
-3. **VRF for the seed.** Removes seed choice from the operator entirely. Deployed on devnet.
-4. **Ephemeral SPL tokens for balances.** Would make "raids TAKE the enemy's coin" an actual SPL
-   transfer at rollup speed rather than a SQLite row. **Not built.** It moves custody to
-   MagicBlock's per-mint vault, which is a real decision, not a step.
-5. **UI rebuild** per `UI-REDESIGN-BRIEF.md`. The interface still reads as a prototype.
-
-**Explicitly rejected:** Private Ephemeral Rollups. The docs are clear that users cannot
-independently verify shielded state, which contradicts the entire product. See `ER_DESIGN_DECISIONS.md`.
+| `roundN.ts` (3-way, FFA) still draws its seed at lobby open | **Real weakness.** Fix before those modes take real money. 2-team is fixed. |
+| BLK-2 canary | One real mainnet convert (SOL→UWU) reconciled exactly. UWU→SOL never run. `engine/mainnet-canary.mjs` (dry-run by default). |
+| UI redesign | `UI-REDESIGN-BRIEF.md` — Parts 0–5 largely shipped; Part 4 Bands B/C and floating panels done, dashboard polish remains. |
+| Ledger drift | ~$1.3–1.8 per 5-min cycle, always chain-ahead-of-ledger (safe direction), consistent with rounding. Auto-corrected since the deadband went $5 → $1. |
+| `main` is 8 commits behind | All recent production work sits on `magicblock-er-migration`. See §9. |
 
 ---
 
-## 5. Hard-won lessons — read before changing money code
+## 9. ⚠ The branch situation — read this before deploying
 
-These are not hypotheticals. Each cost real money or real time.
+There are **two workstreams in one repo**:
 
-- **Restarts used to strand ~$30 of ledger claim.** The shutdown handler called `refundOpenRounds()`
-  then `flush()` — but not `persist()`. The refund was computed, applied in memory, and thrown away.
-  It hid because *no money is lost*: the coin stays in the vault, the ledger just stops claiming it,
-  and the rebalance daemon re-credits it minutes later. The safety net was suppressing its own alarm.
-- **Never sample the books mid-round.** A stake leaves the account the instant it is placed while the
-  vault still holds the coin, so `gap = (chain − ledger) + open`. Reading in that window produced
-  both false "INSOLVENT" alarms and a real double-credit.
-- **A deadband a leak can hide beneath is a blind spot, not a safety margin.** `REBALANCE_MIN_GAP_USD`
-  was $5; stranded float accumulated to just under it and sat there permanently.
-- **Units are the recurring bug.** The ledger holds bull/uwu in *tokens* but SOL in *USD*. Two
-  endpoints reported "SOL" and disagreed by 75×. Every figure must name its unit.
-- **Three different P/L numbers for one wallet** came from three parallel accounting systems. Only
-  `/standings` (the engine round log) is authoritative.
-- **Measuring across a restart is how you report a loss that never happened.** I did it three times.
-  Any reading taken within ~2 minutes of a deploy is untrustworthy.
-- **Auto-convert was ON by default** and fired a real Jupiter swap on any balance over $1. Removed
-  entirely — raided coin never needs converting; you can deploy or withdraw either token directly.
+- **The mainnet product** (this document).
+- **A MagicBlock "ephemeral rollup" migration** — `er-*.ts`, `programs/`, `ER_*.md`,
+  `MAGICBLOCK_RESEARCH.md`. **Devnet only, by construction.**
 
----
+They collided once and took production down. The fork carries `engine/src/devnet-guard.ts`, a
+mainnet kill switch. When those commits reached the branch being deployed, the mainnet app called it
+at boot, threw, and restart-looped until the machine gave up.
 
-## 6. Safety rules
+Two of its three hooks failed **silently**, which was worse:
+- `memo.ts` gated anchoring on `isDevnetUrl(RPC)` — false on mainnet, so on-chain anchoring switched
+  itself off with no error and no log line.
+- `swap.ts` would have refused real converts.
 
-1. **`main` is live with real money.** A bad deploy affects real players' funds.
-2. **Never delete wallet keys.** `engine/data/bot-wallets-mainnet.json` holds real mainnet keys.
-3. **Do not run mainnet transactions to "test".** The devnet fork exists for that.
-4. **Confirm before anything that moves funds.** Swaps, transfers, withdrawals, ledger write-downs.
-5. **The ER fork must stay devnet-only.** `engine/src/devnet-guard.ts` enforces this; do not weaken it.
+All three are severed, and `engine/src/tests/no-fork-coupling.test.ts` fails if any returns. The
+fork's own `devnet-guard.ts` is untouched — it is correct *for the fork*.
 
----
+**Current state:** `HEAD` is `magicblock-er-migration`, 8 commits ahead of `main`, and production has
+been deployed from it. `main` lacks the fork severance and the client tests.
 
-## 7. Current state (2026-08-08)
+**Recommended:** cherry-pick the production work onto `main`, deploy only from `main`, and keep the
+fork on its own branch. Until then, check `git branch --show-current` before every deploy.
 
-**Live product (`main`):** running, ~361 tests green, solvency ok, books reconciling to the cent.
-Round counter in the 800s. Recent work: fixed the shutdown persist bug, the rebalance deadband,
-matching (bots could not answer a player's bet at all), pot sizing (it was headcount, not stake size),
-one-line Hall of Fame, arena-aware labels, CSP + SRI, backing pill.
-
-**ER fork (`magicblock-er-migration`):** full lifecycle working on devnet —
-`open_round → delegate → enter → VRF seed → resolve → commit → undelegate`, verified by the account's
-owner flipping to the delegation program and back. `extract` deployed. Measured 187 CU/step; one
-transaction fits ~7,300 steps.
-
-**Not done:** ephemeral SPL, the UI rebuild, the mainnet canary (BLK-2 — the real Jupiter swap has
-never been run deliberately with real funds, though one happened accidentally via auto-convert and
-landed correctly).
+`er-sim.test.ts` has 2 failing tests — the fork's own mirror, from their commit *"a bug the mirror
+caught"*. Production imports none of it. To run the production suite only:
+```bash
+node --experimental-strip-types --test $(ls engine/src/tests/*.test.ts | grep -v "er-")
+```
 
 ---
 
-## 8. Where the documents are
+## 10. Future plans
 
-| File | What |
+**Near term**
+- Resume from pause; validate lobby scaling with real players.
+- Finish the UI redesign (`UI-REDESIGN-BRIEF.md`).
+- Fix `roundN.ts` seed timing so 3-way/FFA can take real money.
+- Complete BLK-2 with a UWU→SOL convert.
+
+**Medium**
+- Onboarding that does not assume Solana fluency.
+- More arenas; partner tokens (`ARENAS.md`).
+- Referral programme (built, `?ref=`, 10% of house fee).
+
+**Longer / speculative**
+- **MagicBlock ephemeral rollups** — move round execution on-chain so fairness is enforced rather
+  than asserted. `ER_MIGRATION_PLAN.md`, `ER_DESIGN_DECISIONS.md`. Devnet only today.
+- Mobile.
+- Hosting move if Fly becomes limiting (`HOSTING.md`).
+
+---
+
+## 11. Other documents
+
+| File | What it holds |
 |---|---|
-| `AGENTS.md` | this file — start here |
-| `MIGRATION.md` | how to set this up on a new machine |
-| `UI-REDESIGN-BRIEF.md` | the front-end rebuild, written from what the live build actually does |
-| `MAGICBLOCK_RESEARCH.md` | ER integration model, verified against registries and source |
-| `ER_MIGRATION_PLAN.md` | account mapping, program design, testing strategy |
-| `ER_DESIGN_DECISIONS.md` | VRF / ephemeral SPL / private-rollup analysis and verdicts |
-| `HACKATHON_ANGLE.md` | how to make the ER load-bearing rather than decorative |
-| `MEGA_QUEUE.md` | the work queue, with what is done, blocked, and why |
-| `SECURITY_AUDIT.md` | adversarial audit findings |
+| `MIGRATION.md` | **Machine setup and migration. Start here on new hardware.** |
+| `README.md` | Short overview |
+| `UI-REDESIGN-BRIEF.md` | Front-end rebuild brief, written from the live build |
+| `SECURITY_AUDIT.md` | Adversarial audit and findings |
+| `MEGA_QUEUE.md` | Work queue with resolutions |
+| `EXECUTION_REPORT.md` | Autonomous-run report |
+| `DEPLOY.md` `PRODUCTION.md` `MAINNET.md` `GO-LIVE.md` `HOSTING.md` | Operational runbooks |
+| `ARENAS.md` | Arena/token configuration |
+| `DEVLOG.md` `DEVLIST.md` `QUEUE.md` | History and backlog |
+| `ER_*.md` `MAGICBLOCK_RESEARCH.md` `HACKATHON_ANGLE.md` | Fork workstream |
