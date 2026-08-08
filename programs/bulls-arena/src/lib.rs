@@ -30,7 +30,7 @@ use ephemeral_rollups_sdk::ephem::MagicIntentBundleBuilder;
 use ephemeral_rollups_sdk::anchor::{vrf, vrf_callback};
 use ephemeral_rollups_sdk::vrf::instructions::{create_request_scoped_randomness_ix, RequestRandomnessParams};
 
-declare_id!("3dHbeVh7KuhhjXMCkAw34wsZefwwQUdwKY6DJb12LWXb"); // devnet program keypair: .devnet/program-keypair.json
+declare_id!("F59NksP2bYZhP4wD7fgR1sP729UHNPitrBiYrrKF1sYW"); // devnet program keypair: .devnet/program-keypair.json
 
 pub const ARENA_SEED: &[u8] = b"arena";
 pub const ROUND_SEED: &[u8] = b"round";
@@ -227,6 +227,45 @@ pub mod bulls_arena {
         Ok(())
     }
 
+    /// EXTRACT — the mechanic that makes the rollup load-bearing.
+    ///
+    /// A player pulls out mid-fight: whatever they are still holding in the ring is banked, and they
+    /// stop being a target. This is the whole reason this game belongs on an ER.
+    ///
+    /// Without it the fight is a pure function of (seed, entries) — decided before it starts, with
+    /// the 40 seconds of animation merely replaying a result that already exists. Nothing
+    /// precomputed needs 10ms blocks, so the rollup would be decoration.
+    ///
+    /// With it, the outcome depends on WHEN humans press a button. State mutates constantly from
+    /// many wallets mid-round, the result cannot be computed in advance, and latency stops being a
+    /// performance note and becomes the game: at 400ms base-layer slots "extract now" is a promise
+    /// you cannot keep.
+    ///
+    /// Deliberately cheap — one guard, one move of value, no loop. It has to be affordable to call
+    /// at any moment by anyone, which is the opposite of the fight itself.
+    pub fn extract(ctx: Context<Extract>) -> Result<()> {
+        let who = ctx.accounts.player.key();
+        let r = &mut ctx.accounts.round;
+        require!(r.phase == Phase::Fight as u8, ArenaError::NotFighting);
+
+        let n = r.fighter_count as usize;
+        let f = r.fighters[..n]
+            .iter_mut()
+            .find(|f| f.wallet == who && f.dead == 0 && f.hp > 0)
+            .ok_or(ArenaError::NothingToExtract)?;
+
+        // Value MOVES from the ring to the bank; it is not created. `banked` is already safe from
+        // raids, so this is the whole risk/reward decision in two lines: give up the chance to take
+        // more, in exchange for keeping what you have.
+        let taken = f.hp;
+        f.banked = f.banked.checked_add(taken).ok_or(ArenaError::MathOverflow)?;
+        f.hp = 0;
+        f.dead = 1;                     // out of the ring — no longer a valid target
+
+        emit!(Extracted { round_no: r.round_no, player: who, amount: taken });
+        Ok(())
+    }
+
     /// COMPUTE PROBE — measures what a fight costs, and cannot change anything.
     ///
     /// Needed because `resolve` refuses outside the Fight phase, so simulating it only ever measured
@@ -419,6 +458,14 @@ pub struct DelegateRound<'info> {
 
 /// No mutable accounts at all — the probe cannot write, by construction rather than by discipline.
 #[derive(Accounts)]
+pub struct Extract<'info> {
+    #[account(mut)]
+    pub round: Account<'info, Round>,
+    /// The player pulling out — must sign. Nobody extracts on anyone else's behalf.
+    pub player: Signer<'info>,
+}
+
+#[derive(Accounts)]
 pub struct BenchFight<'info> {
     pub payer: Signer<'info>,
 }
@@ -478,6 +525,7 @@ pub struct Resolve<'info> {
 #[event] pub struct RoundOpened { pub round_no: u64, pub seed_commit: [u8; 32] }
 #[event] pub struct SeedRevealed { pub round_no: u64, pub seed: [u8; 32] }
 #[event] pub struct RoundSettled { pub round_no: u64, pub winner: u8, pub pot: u64 }
+#[event] pub struct Extracted { pub round_no: u64, pub player: Pubkey, pub amount: u64 }
 
 #[error_code]
 pub enum ArenaError {
@@ -493,5 +541,6 @@ pub enum ArenaError {
     #[msg("revealed seed does not match the published commitment")] SeedMismatch,
     #[msg("round is not awaiting randomness")] NotDrawing,
     #[msg("a fight needs at least two fighters")] NotEnoughFighters,
+    #[msg("nothing in the ring to extract")] NothingToExtract,
     #[msg("arithmetic overflow")] MathOverflow,
 }

@@ -45,7 +45,7 @@ test("nothing about the outcome depends on wall-clock time or call order", () =>
 // ── conservation ──────────────────────────────────────────────────────────────────────────────
 // The money invariant. Damage MOVES value between fighters; it must never create or destroy it.
 test("total value is conserved across the whole fight", () => {
-  const r = lobby(seedOf("cons"), 20);
+  const r = lobby(seedOf("cons"), MAX_FIGHTERS);  // cap is 16 now, not 40
   const before = totalValue(r);
   tick(r, 2000);
   assert.equal(totalValue(r), before, "value was created or destroyed by the sim");
@@ -53,7 +53,7 @@ test("total value is conserved across the whole fight", () => {
 
 test("conserved for many independent seeds", () => {
   for (let i = 0; i < 25; i++) {
-    const r = lobby(randomBytes(32), 10 + (i % 20));
+    const r = lobby(randomBytes(32), 4 + (i % (MAX_FIGHTERS - 4)));
     const before = totalValue(r);
     tick(r, 800);
     assert.equal(totalValue(r), before, `seed ${i} broke conservation`);
@@ -133,4 +133,59 @@ test("the tick hash is sha256(seed ++ le_u64(cursor)) — the preimage the Rust 
   seed.copy(pre, 0, 0, 32);
   pre.writeBigUInt64LE(7n, 32);
   assert.deepEqual(tickHash(seed, 7n), createHash("sha256").update(pre).digest());
+});
+
+// ── extract: the mechanic that makes the ER load-bearing ─────────────────────────────────────
+// Without mid-fight input the outcome is a pure function of (seed, entries) — decided before the
+// fight starts, with the animation replaying a result that already exists. Nothing precomputed
+// needs 10ms blocks. These pin the properties that make it a real decision rather than a free win.
+import { extract } from "../er-sim.ts";
+
+test("extracting banks what you hold and takes you out of the ring", () => {
+  const r = lobby(seedOf("ex"), 4);
+  tick(r, 200);
+  const me = r.fighters[0];
+  const before = me.hp + me.banked;
+  const taken = extract(r, me.wallet);
+  assert.equal(taken > 0n, true);
+  assert.equal(me.hp, 0n, "nothing left in the ring");
+  assert.equal(me.banked, before, "value MOVED, none created or destroyed");
+  assert.equal(me.dead, 1, "no longer a valid target");
+});
+
+test("extraction conserves total value", () => {
+  const r = lobby(seedOf("exc"), 6);
+  tick(r, 300);
+  const before = totalValue(r);
+  extract(r, r.fighters[0].wallet);
+  extract(r, r.fighters[1].wallet);
+  assert.equal(totalValue(r), before, "extraction must not mint or burn");
+});
+
+// The decision has to be able to LOSE, or it is not a decision.
+test("extracting early can be worse than holding on", () => {
+  const a = lobby(seedOf("hold"), 4);
+  const b = lobby(seedOf("hold"), 4);
+  tick(a, 100); const early = extract(a, a.fighters[0].wallet);
+  tick(b, 400); const late = b.fighters[0].hp + b.fighters[0].banked;
+  // not asserting which wins — asserting they DIFFER, i.e. timing matters at all
+  assert.notEqual(early, late, "if timing changed nothing, the mechanic would be decoration");
+});
+
+test("an extracted fighter cannot be raided afterwards", () => {
+  const r = lobby(seedOf("safe"), 4);
+  tick(r, 100);
+  const me = r.fighters[0];
+  extract(r, me.wallet);
+  const banked = me.banked;
+  tick(r, 2000);
+  assert.equal(me.banked, banked, "banked value must be untouchable");
+  assert.equal(me.hp, 0n);
+});
+
+test("you cannot extract twice, or extract nothing", () => {
+  const r = lobby(seedOf("twice"), 4);
+  tick(r, 100);
+  extract(r, r.fighters[0].wallet);
+  assert.throws(() => extract(r, r.fighters[0].wallet), /NothingToExtract/);
 });

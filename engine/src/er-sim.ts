@@ -106,6 +106,24 @@ export function tick(round: ERRound, steps: number): void {
   }
 }
 
+/** Mirrors `extract` — a player pulls out mid-fight.
+ *
+ *  This is the mechanic that makes the rollup load-bearing: without mid-fight input the outcome is a
+ *  pure function of (seed, entries) and nothing needs 10ms blocks. With it, WHEN a human presses the
+ *  button changes the result, so the fight cannot be precomputed.
+ *
+ *  Value MOVES from the ring to the bank — never created. That is the entire risk/reward decision:
+ *  give up the chance to take more, in exchange for keeping what you have. */
+export function extract(round: ERRound, wallet: string): bigint {
+  const f = round.fighters.find(x => x.wallet === wallet && x.dead === 0 && x.hp > 0n);
+  if (!f) throw new Error("NothingToExtract");
+  const taken = f.hp;
+  f.banked += taken;
+  f.hp = 0n;
+  f.dead = 1;          // out of the ring, no longer a valid target
+  return taken;
+}
+
 /** Mirrors `settle`: side value is hp + banked; ties go to side A, exactly as the Rust does. */
 export function settle(round: ERRound): 0 | 1 {
   let a = 0n, b = 0n;
