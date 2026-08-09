@@ -12,10 +12,14 @@
 // every round the arena ever opened, "all time" is TRUE and refusing to say so is its own small
 // dishonesty, so `complete` is allowed to license the words the rest of the time it forbids.
 
-import type { LogCoverage } from "../contract.ts";
+import { counted, type LogCoverage } from "../contract.ts";
 
+/** This module's own noun, so the three phrases below read as one voice. It used to be a local
+ *  `${n} ${n === 1 ? "round" : "rounds"}` — the first instance of a rule the hero then shipped
+ *  without ("1 FIGHTERS"), which is why the rule now lives in `contract.ts` beside the other
+ *  formatters and this is a one-line application of it. */
 function rounds(n: number): string {
-  return `${n} ${n === 1 ? "round" : "rounds"}`;
+  return counted(n, "round");
 }
 
 /** The caption a figure carries: `across all 12 rounds this arena has run`, `across the newest 250

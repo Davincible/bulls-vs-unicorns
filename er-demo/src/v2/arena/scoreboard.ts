@@ -35,11 +35,13 @@
 //   parked on it. So it is anchored near the EDGE, where disc density falls off, and clamped so it can
 //   never print through the live band. The live band's own position is untouched by band 2 existing.
 //
-// WHY THE RECORD IS NOT LABELLED "ALL TIME". `useHistory` fetches the newest `MAX_ROUNDS` round
-// accounts and tolerates a failed read, so the log behind band 2 is a WINDOW. `SideRecord` therefore
-// carries the coverage it was counted over and the caption states it — `ROUNDS WON · 12 SETTLED` is
-// true whatever the window did, where "all time" would be a quiet lie of exactly the kind the rest of
-// this page refuses to tell.
+// WHY THE RECORD IS NOT LABELLED "ALL TIME". `useHistory` fetches the newest round accounts still on
+// chain — a walk back from `round_counter` that stops on a short run of rounds whose rent has been
+// reclaimed, capped at `MAX_ROUNDS` — and tolerates a failed read, so the log behind band 2 is a
+// WINDOW, and since `close_round_account` a window close to `MIN_RETAINED_ROUNDS` rather than a
+// distant cap. `SideRecord` therefore carries the coverage it was counted over and the caption states
+// it — `ROUNDS WON · 12 SETTLED` is true whatever the window did, where "all time" would be a quiet
+// lie of exactly the kind the rest of this page refuses to tell.
 //
 //   IT IS A WATERMARK, AND MUST STAY ONE. It is painted after the paper and (in survey) after the
 //     lattice, and BEFORE a single fighter — so nothing here can ever obscure the fight. The alphas

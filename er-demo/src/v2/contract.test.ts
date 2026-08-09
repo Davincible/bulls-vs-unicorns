@@ -1,4 +1,4 @@
-// The money formatters.
+// The money formatters, and the one that counts things.
 //
 // `usd()` acquired a cache of `Intl.NumberFormat` instances because it is called from inside the
 // arena's 60Hz loop — `toLocaleString(locale, options)` rebuilds a formatter on every call, which
@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import {
   ONE_CENT_UNITS,
   UNITS_PER_USD,
+  counted,
   unitsToUsd,
   usd,
   usdCompact,
@@ -272,5 +273,47 @@ describe("unit conversion", () => {
   it("keeps cents rather than flooring them away", () => {
     expect(unitsToUsd(1_500_000n)).toBe(1.5);
     expect(unitsToUsd(1n)).toBe(0.000001);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// `counted` — a count and its noun, agreeing.
+//
+// It exists because `POT ON THE TABLE · 1 FIGHTERS · 1 HOUSE · 1 STILL ALIVE` shipped to production.
+// A one-entrant lobby is not an edge case in this arena: the keeper holds a lobby open with a single
+// house fighter in it until a real player arrives, so the singular is the reading a visitor is MOST
+// likely to get, and it was the only one nobody had written.
+
+describe("counted", () => {
+  it("agrees at one, which is the case that shipped wrong", () => {
+    expect(counted(1, "fighter")).toBe("1 fighter");
+    expect(counted(1, "round")).toBe("1 round");
+  });
+
+  it("pluralises everything else, zero included", () => {
+    // Zero takes the plural in English — "0 fighters", not "0 fighter" — and zero is a real state
+    // here: an empty lobby before anybody has entered.
+    expect(counted(0, "fighter")).toBe("0 fighters");
+    expect(counted(2, "fighter")).toBe("2 fighters");
+    expect(counted(250, "round")).toBe("250 rounds");
+  });
+
+  it("counts a bigint the same way, because half this page's counts are chain-shaped", () => {
+    // `LogCoverage.roundsEverOpened` is a `u64`. A caller forced to convert would eventually convert
+    // one of them wrong, and `1n === 1` is false — which is the bug this test exists to pin.
+    expect(counted(1n, "round")).toBe("1 round");
+    expect(counted(0n, "round")).toBe("0 rounds");
+    expect(counted(613n, "round")).toBe("613 rounds");
+  });
+
+  it("takes an irregular plural rather than guessing at one", () => {
+    expect(counted(1, "entry", "entries")).toBe("1 entry");
+    expect(counted(3, "entry", "entries")).toBe("3 entries");
+  });
+
+  it("does not group thousands, so it never disagrees with a figure beside it", () => {
+    // Every noun this counts is a small population. A caller that genuinely needs grouping passes the
+    // grouped string it already built — see the step figures, which do.
+    expect(counted(4000, "step")).toBe("4000 steps");
   });
 });

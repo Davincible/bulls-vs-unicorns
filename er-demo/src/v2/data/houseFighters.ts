@@ -96,3 +96,49 @@ export function houseDisclosureOf(
     note: roster.house.disclosure,
   };
 }
+
+/**
+ * THE DISCLOSURE, IN FULL, OVER THE TABLE THAT NAMES EVERY FIGHTER — 00-4's lede.
+ *
+ * A six-fighter lobby reads as six people, and until `HouseDisclosure` existed nothing on the page
+ * said otherwise — `README.md`'s go-live list still carries "Bot disclosure in UI" open. The per-row
+ * `HouseTag` says WHICH; this says what that means, because a reader meeting the word "House" in a
+ * roster for the first time is owed more than a label.
+ *
+ * IT LIVES HERE RATHER THAN IN THE VIEW because it is the sentence form of `houseDisclosureOf` above
+ * and is subject to exactly the rules that function exists to enforce — so it belongs where those
+ * rules are written down and where they are tested. It was in `views/ArenaView.tsx`, where it could
+ * not be, and it shipped `All 1 of these fighters are other players` from there.
+ *
+ * THE KEEPER'S OWN SENTENCE IS QUOTED RATHER THAN PARAPHRASED. `note` is written by the party making
+ * the claim; restating it in this page's words would put a disclosure in the mouth of the surface
+ * that benefits from it, and would drift from the keeper's the first time either changed. The one
+ * clause this function adds is the count, which the keeper cannot know about the round on screen.
+ *
+ * ALL THREE STATES ARE DIFFERENT SENTENCES. Counted and non-zero, counted and zero, and not counted
+ * at all — the third being the one that must never render as the second (see `HouseShare`).
+ *
+ * `undefined`, not `""`, when there is nothing to say: it is passed straight to `Section`'s optional
+ * `lede`, and an empty string there renders an empty paragraph with its margins.
+ */
+export function houseNote(d: HouseDisclosure, total: number): string | undefined {
+  const count = d.houseFighterCount;
+  if (count === null) {
+    return "Nothing is publishing a house list right now, so this page cannot tell you which of these fighters are ours. An unmarked fighter below is one we could not check, not one we have cleared.";
+  }
+  // A LOBBY OF ONE IS THE COMMON CASE HERE, NOT THE EDGE CASE — the keeper holds a lobby open with a
+  // single house fighter in it until a real player arrives, which is most of an idle arena's life. So
+  // both branches below get their own sentence rather than a plural one with the count swapped in:
+  // "All 1 of these fighters are other players" is what shipped, and it reads as a template.
+  if (count === 0) {
+    return total === 1
+      ? "The one fighter here is another player, not ours."
+      : `All ${total} of these fighters are other players — none of them is ours.`;
+  }
+  // `count >= 1` here and `count <= total` always, so `total === 1` settles both numbers at once.
+  const head =
+    total === 1
+      ? "The one fighter here is ours, marked HOUSE below."
+      : `${count} of these ${total} fighters ${count === 1 ? "is" : "are"} ours, marked HOUSE below.`;
+  return d.note === null ? head : `${head} ${d.note}`;
+}

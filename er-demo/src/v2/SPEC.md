@@ -174,10 +174,13 @@ so they can never be read as one:**
 | `THIS ROUND` | each side's total worth (`hp + banked`) and its share | `field.bodies`, after the frame's replay sync — via `contract.ts`'s `sideTotals` | moves on every hit |
 | `ROUNDS WON · N SETTLED` | rounds won, per side | `deriveSideRecord(history.rounds)`, in `data/` | static until a round settles |
 
-The record is **never** labelled "all time": `useHistory` reads a newest-`MAX_ROUNDS` window and
-tolerates a failed read, so `SideRecord` carries the coverage it was counted over and the caption
-states it. `sideRecord === null` is "not read yet" and draws nothing — an empty-but-loaded log is a
-real 0–0 and does render.
+The record is **never** labelled "all time": `useHistory` reads the newest rounds **still on chain** —
+a walk back from `round_counter` that stops on a short run of reclaimed accounts, capped at
+`MAX_ROUNDS` — and tolerates a failed read, so `SideRecord` carries the coverage it was counted over
+and the caption states it. Since `close_round_account` that window is close to `MIN_RETAINED_ROUNDS`
+rather than in the hundreds, so the caption is load-bearing on an ordinary arena, not a distant one.
+`sideRecord === null` is "not read yet" and draws nothing — an empty-but-loaded log is a real 0–0 and
+does render.
 
 ## Screens
 

@@ -12,12 +12,14 @@
 // figures here come from `standings`, which the data layer derives from settled rounds only, so the
 // leaderboard and the dashboard's "your position" band are physically incapable of disagreeing.
 //
-// THE BOARD USED TO BE CALLED "ALL-TIME" AND IS NOT. `useHistory` fetches the newest 250 rounds and
-// tolerates a read that fails, so `standings` — derived from exactly that log — covers a WINDOW.
-// `SideRecord` was built refusing the phrase for this reason and carrying its own coverage instead;
-// the board did not, and said "aggregated across every settled round" over the same data. Nothing is
-// wrong today, because this arena has far fewer than 250 rounds. That is how the bug ships: silently,
-// on the day the arena gets popular. Every board here now states the coverage it was counted over.
+// THE BOARD USED TO BE CALLED "ALL-TIME" AND IS NOT. `useHistory` fetches the newest rounds that
+// still exist — it stops once it has walked into a run of accounts whose rent the arena has already
+// reclaimed, and is capped at `MAX_ROUNDS` besides — and tolerates a read that fails, so `standings`
+// (derived from exactly that log) covers a WINDOW. `SideRecord` was built refusing the phrase for
+// this reason and carrying its own coverage instead; the board did not, and said "aggregated across
+// every settled round" over the same data. That window was 250 rounds wide when this was written and
+// is now usually about `MIN_RETAINED_ROUNDS`, so it is no longer a bug waiting for the arena to get
+// popular. Every board here states the coverage it was counted over.
 //
 // AND WHO IS ACTUALLY A PERSON. The keeper seats house wallets so a lobby is never empty, and 01-1
 // listed them indistinguishably from players — a six-fighter lobby reading as six people.

@@ -15,10 +15,13 @@
 //
 // TWO CLAIMS THIS SCREEN USED TO MAKE AND CANNOT BACK:
 //
-//   "EVERY ROUND THIS ARENA HAS EVER RUN". `useHistory` fetches the newest 250 round accounts and
-//   tolerates a read that fails. That is a window, and on an arena with 251 rounds the sentence
-//   becomes false with nothing on screen changing. The head now prints what was read against what
-//   the arena has opened, so the window is a visible figure rather than an assumption.
+//   "EVERY ROUND THIS ARENA HAS EVER RUN". `useHistory` reads back the newest rounds that still
+//   EXIST — it walks down from `round_counter`, stops once it has seen a short run of accounts whose
+//   rent `close_round_account` has already reclaimed, and is capped at `MAX_ROUNDS` besides. That is
+//   a window, it tolerates a read that fails, and since the keeper started reclaiming rent it is
+//   usually about `MIN_RETAINED_ROUNDS` wide rather than 250 — so the sentence goes false on an arena
+//   of thirty rounds, not one of 251. The head now prints what was read against what the arena has
+//   opened, so the window is a visible figure rather than an assumption.
 //
 //   "DEPOSIT". `RoundPlayer.stake` is what the chain stored AFTER the arena took its entry fee at
 //   the door, so a column headed "Deposit" reported less than the player was charged. The per-round
@@ -34,6 +37,7 @@ import { ScrollBox } from "./ScrollBox.tsx";
 import { coverageFigure, coverageNote } from "./coverage.ts";
 import {
   SIDE_TOKEN,
+  counted,
   grossDeposits,
   houseTook,
   usd,
@@ -99,11 +103,16 @@ export function HistoryView() {
             The rounds this page has read back, and every player in them. Read from the round
             accounts themselves — the log survives reloads, wallets and operators, because it was
             never in the browser to begin with.{" "}
+            {/* THE COUNT GOES AT THE END OF EACH OF THESE, and that is not a style preference. A
+                one-round log is a real state (a fresh arena, and any arena the moment the keeper has
+                reclaimed the rest), and every phrasing with the figure in the middle needs a verb to
+                agree with it — "The 1 newest are here". Ending on `counted()` sidesteps the
+                agreement entirely and reads the same at 1 as at 250. */}
             {logCoverage.complete
-              ? `All ${logged} this arena has opened are here.`
+              ? `Every round this arena has opened is here — ${counted(logged, "round")} in all.`
               : opened === null
-                ? `The ${logged} newest are here; how many the arena has opened is not known to this page.`
-                : `The ${logged} newest of ${opened} are here — the rest are still on chain, they are simply not fetched.`}
+                ? `Only the newest are here — ${counted(logged, "round")} — and how many the arena has opened is not known to this page.`
+                : `Only the newest are here — ${counted(logged, "round")} of ${opened} — because the arena reclaims the rent on older round accounts once they leave the chain's retention window, and the page stops reading past them.`}
           </p>
         </div>
         <div className="scr-head-meta">
@@ -133,7 +142,7 @@ export function HistoryView() {
               {/* Header summary, not a grid cell — but a wallet with enough rounds logged can still
                   carry a live-chain P/L past what a header line should spend width on, so this
                   compacts too. */}
-              {mine.length} rounds ·{" "}
+              {counted(mine.length, "round")} ·{" "}
               <span className={totals.pnl >= 0n ? "pos" : "neg"}>{usdCompactSigned(totals.pnl)}</span> net
             </span>
           ) : undefined

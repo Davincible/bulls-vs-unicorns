@@ -34,11 +34,13 @@
 //   IN; `pot` survives only where the claim is "what is in the ring". The two are printed together
 //   in 02-3 so the difference is a visible figure rather than a footnote.
 //
-//   "ALL-TIME" — `useHistory` reads the newest 250 rounds and tolerates a failed read, so no figure
-//   derived from `history.rounds` may claim more than that window. `SideRecord` was built refusing
-//   the phrase for exactly this reason. Every aggregate on this screen now states the coverage it was
-//   counted over ("across N logged rounds"), which is true whatever the window did. Nothing is wrong
-//   today — this arena has far fewer than 250 rounds — which is precisely how the bug ships.
+//   "ALL-TIME" — `useHistory` reads the newest rounds that still exist (it stops once the accounts
+//   below it have had their rent reclaimed, capped at `MAX_ROUNDS`) and tolerates a failed read, so no
+//   figure derived from `history.rounds` may claim more than that window. `SideRecord` was built
+//   refusing the phrase for exactly this reason. Every aggregate on this screen now states the
+//   coverage it was counted over ("across N logged rounds"), which is true whatever the window did.
+//   That window used to be 250 rounds wide and is now usually about `MIN_RETAINED_ROUNDS`, so this is
+//   no longer a bug waiting for the arena to get popular — it is the ordinary case.
 
 import { useMemo } from "react";
 import type { ReactNode } from "react";
@@ -52,6 +54,7 @@ import {
   SIDE_TOKEN,
   bpsPct,
   clock,
+  counted,
   grossDeposits,
   houseTook,
   usd,
@@ -260,7 +263,7 @@ export function DashboardView() {
           </span>
           <span className="sc-hero-sub">
             {live
-              ? `on the table this round, across ${fighters} ${fighters === 1 ? "fighter" : "fighters"}`
+              ? `on the table this round, across ${counted(fighters, "fighter")}`
               : status.loading
                 ? "reading the round…"
                 : "no round open — the figure returns the moment one does"}

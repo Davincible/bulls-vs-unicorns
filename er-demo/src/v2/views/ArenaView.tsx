@@ -24,6 +24,7 @@ import {
   UNITS_PER_USD,
   bpsPct,
   clock,
+  counted,
   entriesOpen,
   nameFor,
   shortKey,
@@ -41,9 +42,11 @@ import {
 } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
 import { abandonText, simBankrollUsd, type AmountRule } from "../data/autoDeploy.ts";
+import { houseNote } from "../data/houseFighters.ts";
 import { ArenaCanvas } from "../arena/ArenaCanvas.tsx";
 import { CombatLog } from "../ui/CombatLog.tsx";
 import { Bar, Dash, Empty, HouseTag, KV, KVs, Mark, Money, Section, Seg, Tag } from "../ui/primitives.tsx";
+import { RoundClockSlot } from "../ui/RoundClockSlot.tsx";
 import { RoundPhaseNote } from "../ui/RoundPhaseNote.tsx";
 import { useDrawWatch } from "../ui/useDrawWatch.ts";
 import { useFullscreen } from "../ui/useFullscreen.ts";
@@ -220,16 +223,30 @@ function TheRound() {
                 end. It is always present, as a number or as a dash: an omitted disclosure and a
                 disclosure of nothing look identical, and only one of them is honest. */}
             <p className="u" style={{ marginTop: 14 }}>
-              Pot on the table · {fighters.length} fighters · <HouseShare fighters={fighters} /> ·{" "}
-              {alive} still alive
+              Pot on the table · {counted(fighters.length, "fighter")} ·{" "}
+              <HouseShare fighters={fighters} /> · {alive} still alive
             </p>
+            {/* WHEN IT CHANGES, IN WORDS, AT THE TOP OF THE PAGE — and this is the surface that owed
+                it. The hero prints the round's headline facts above the fold, and the only thing it
+                had to say about time was a fight clock reading `0:00` through the whole of a lobby.
+                The clock slot beside this now says `OPEN` there instead, which is honest but is one
+                word; this is the sentence behind that word, and it is the same sentence the dock and
+                the plate on the field render, from the same object. `showLabel` is off because
+                `.hero-phase` is already the label two lines to the right, and `announce` is off
+                because the dock is the one instance that speaks (see RoundPhaseNote). */}
+            <div style={{ marginTop: 12 }}>
+              <RoundPhaseNote detail="timing" showLabel={false} announce={false} />
+            </div>
           </div>
           <div className="hero-r">
             <div className="hero-phase">
               {live ? live.phase : status.loading ? "Loading" : "No round"}
             </div>
-            <div className="num num--lg" style={{ marginTop: 8 }}>
-              {clock(live?.elapsedSec ?? 0)}
+            {/* NOT `clock(elapsedSec)` ANY MORE — see `RoundClockSlot`. This was the biggest of the
+                three `0:00`s: 19px of stopped clock directly under the word LOBBY, which is the
+                reading a visitor forms of the whole arena. */}
+            <div style={{ marginTop: 8 }}>
+              <RoundClockSlot className="num num--lg" />
             </div>
             <div className="u" style={{ marginTop: 6 }}>
               {(live?.stepsNow ?? 0).toLocaleString("en-US")} / {MAX_STEPS.toLocaleString("en-US")}{" "}
@@ -357,7 +374,8 @@ function ErWrites() {
       }
     >
       ER writes <span className="num">{ticker.ticksSent}</span> ·{" "}
-      <span className="num">{ticker.stepsAdvanced.toLocaleString("en-US")}</span> steps advanced
+      <span className="num">{ticker.stepsAdvanced.toLocaleString("en-US")}</span>{" "}
+      {ticker.stepsAdvanced === 1 ? "step" : "steps"} advanced
     </span>
   );
 }
@@ -493,7 +511,10 @@ function TheArena() {
         <div className="ovl ovl--tl">
           <div className="ovl-line">
             <span className="u u--ink">{phase}</span>
-            <span className="num">{clock(live?.elapsedSec ?? 0)}</span>
+            {/* The third of the three — see `RoundClockSlot`. This strip sits on the field itself,
+                where an empty white canvas is already the thing a visitor is trying to interpret;
+                `LOBBY 0:00 0/4,000` over it read as an arena that had stopped. */}
+            <RoundClockSlot className="num" />
             <span className="u">
               {(live?.stepsNow ?? 0).toLocaleString("en-US")}/{MAX_STEPS.toLocaleString("en-US")}
             </span>
@@ -1150,7 +1171,7 @@ function Extract() {
             <KV
               value={<span className="num">{terms.freeAtStep.toLocaleString("en-US")}</span>}
               label="Free from step"
-              title={`A fight's length in steps grows with the lineup, so the horizon does too: ${live?.fighters.length ?? 0} fighters here. From this step on, extracting costs nothing.`}
+              title={`A fight's length in steps grows with the lineup, so the horizon does too: ${counted(live?.fighters.length ?? 0, "fighter")} here. From this step on, extracting costs nothing.`}
             />
             <KV
               value={
@@ -1323,36 +1344,6 @@ function Roster({ side }: { side: Side }) {
   );
 }
 
-/** THE DISCLOSURE, IN FULL, OVER THE TABLE THAT NAMES EVERY FIGHTER.
- *
- *  A six-fighter lobby reads as six people, and until `HouseDisclosure` existed nothing on the page
- *  said otherwise — `README.md`'s go-live list still carries "Bot disclosure in UI" open. The per-row
- *  `HouseTag` says WHICH; this says what that means, because a reader meeting the word "House" in a
- *  roster for the first time is owed more than a label.
- *
- *  THE KEEPER'S OWN SENTENCE IS QUOTED RATHER THAN PARAPHRASED. `note` is written by the party making
- *  the claim; restating it here in this page's words would put a disclosure in the mouth of the
- *  surface that benefits from it, and would drift from the keeper's the first time either changed.
- *  The one clause this file adds is the count, which the keeper cannot know about the round on
- *  screen.
- *
- *  ALL THREE STATES ARE DIFFERENT SENTENCES. Counted and non-zero, counted and zero, and not counted
- *  at all — the third being the one that must never render as the second (see `HouseShare`). */
-function houseNote(d: {
-  houseFighterCount: number | null;
-  note: string | null;
-}, total: number): string | undefined {
-  const count = d.houseFighterCount;
-  if (count === null) {
-    return "Nothing is publishing a house list right now, so this page cannot tell you which of these fighters are ours. An unmarked fighter below is one we could not check, not one we have cleared.";
-  }
-  if (count === 0) {
-    return `All ${total} of these fighters are other players — none of them is ours.`;
-  }
-  const head = `${count} of these ${total} fighters ${count === 1 ? "is" : "are"} ours, marked HOUSE below.`;
-  return d.note === null ? head : `${head} ${d.note}`;
-}
-
 function TheField() {
   const { live, houseDisclosure } = useArena();
   const fighters = live?.fighters ?? [];
@@ -1364,7 +1355,11 @@ function TheField() {
       tools={<RoundTag />}
       lede={
         fighters.length === 0
-          ? "Nobody has entered yet. The lobby stays open until an operator closes it and draws the seed."
+          // NOT "until an operator closes it" any more. Nobody closes a lobby on a schedule now: the
+          // keeper holds it open until a real player turns up, and only then commits to a time. The
+          // sentence says what is true of every way a lobby ends instead of naming one that stopped
+          // being the usual one.
+          ? "Nobody has entered yet. The lobby stays open and keeps taking deposits until entries are closed and the seed is drawn."
           : houseNote(houseDisclosure, fighters.length)
       }
     >

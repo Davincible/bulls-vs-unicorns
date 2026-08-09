@@ -21,7 +21,13 @@
 import { describe, expect, it } from "vitest";
 import { FIGHT_TIMEOUT_SECONDS, type FighterView, type LiveRound, type PhaseName } from "../contract.ts";
 import type { PlayBlock } from "../data/playGate.ts";
-import { asSentence, roundPhaseCopy, type RoundPhaseCopy, type RoundPhaseInput } from "./roundPhaseCopy.ts";
+import {
+  asSentence,
+  roundPhaseCopy,
+  timingText,
+  type RoundPhaseCopy,
+  type RoundPhaseInput,
+} from "./roundPhaseCopy.ts";
 
 const NOW = 1_700_000_000_000;
 
@@ -487,6 +493,157 @@ describe("a player who cannot act", () => {
     expect(copy({ ...OPEN_LOBBY, gate: NO_WALLET })).toEqual(
       copy({ ...OPEN_LOBBY, gate: NO_WALLET, inFlight: false }),
     );
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// THE COMPACT CLOCK SLOT — `ClockSlot`, and the `0:00` that reached production.
+//
+// The top bar, 00-1's hero and the overlay on the field each rendered `clock(live.elapsedSec)`
+// directly. That is the FIGHT clock, and outside a fight it is zero — so a lobby the keeper was
+// deliberately holding open until a real person arrived printed `0:00` in three places at once, over
+// a round where nothing whatsoever was up. These hold the two halves of the fix: a slot with no clock
+// running never renders anything clock-SHAPED, and a slot with one genuinely running still does.
+
+describe("the compact clock slot", () => {
+  it("never renders a clock-shaped string in a state that has no clock", () => {
+    // THE REGRESSION ITSELF, as a sweep. `0:00` is the specific string that shipped, but the rule is
+    // the general one: a state word must not be able to be read as a stopped timer.
+    for (const { name, input } of EVERY_STATE) {
+      const c = copy(input);
+      if (c.clockSlot.kind !== "state") continue;
+      expect(c.clockSlot.word, name).not.toMatch(/^\d+:\d\d$/);
+      expect(c.clockSlot.word.length, name).toBeGreaterThan(0);
+    }
+  });
+
+  it("carries the round's own sentence as its title rather than a paraphrase of it", () => {
+    // A slot this size can hold a word and not a reason, so the reason has to be reachable from it —
+    // and it has to be THE reason, the one the note under the Deploy button is printing at the same
+    // instant. Containment against `timingText` is what makes a second set of words impossible.
+    for (const { name, input } of EVERY_STATE) {
+      const c = copy(input);
+      expect(c.clockSlot.title, name).toContain(timingText(c.timing));
+      expect(c.clockSlot.title.endsWith("."), name).toBe(true);
+    }
+  });
+
+  it("says OPEN over a held-open lobby, where it used to say 0:00", () => {
+    const c = copy({
+      live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 3_600_000 }),
+      cadence: { kind: "waiting-for-players" },
+    });
+    expect(c.clockSlot.kind).toBe("state");
+    if (c.clockSlot.kind !== "state") throw new Error("unreachable");
+    expect(c.clockSlot.word).toBe("OPEN");
+    // One word for one state: the plate on the field and the dock's handle both print `label`, and a
+    // slot naming the same state differently would be two readings of one round.
+    expect(c.clockSlot.word).toBe(c.label.toUpperCase());
+    // And the sentence behind the word is the one that names the trigger.
+    expect(c.clockSlot.title).toMatch(/starts when a real player joins/i);
+  });
+
+  it("shows a real countdown the moment one genuinely applies", () => {
+    // A real player has arrived, the keeper has committed to a time, and this is the number that
+    // matters. The point of the fix is not to delete countdowns — it is to delete the fake one.
+    const c = copy({
+      live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 3_600_000 }),
+      cadence: { kind: "entries-close", seconds: 12 },
+    });
+    expect(c.clockSlot).toMatchObject({ kind: "clock", seconds: 12 });
+  });
+
+  it("counts the chain's own deadline where nobody is holding anything open", () => {
+    // The pre-keeper page, the `?fixture=1` page and an operator's hand-opened round: there the
+    // backstop IS the schedule, and refusing to count it would delete a correct countdown.
+    const c = copy({ live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 60_000 }) });
+    expect(c.clockSlot).toMatchObject({ kind: "clock", seconds: 60 });
+  });
+
+  it("NEVER counts the hour-away backstop, in either state where one is sitting there", () => {
+    // The slot is small enough that `59:47` would fit in it perfectly, which is exactly why it has to
+    // be forbidden here as well as in the sentence — a rule enforced in one surface of three is not a
+    // rule. Mirrors the sentence's own assertion further up this file.
+    for (const kind of ["waiting-for-players", "keeper-silent"] as const) {
+      const c = copy({
+        live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 3_600_000 }),
+        cadence: { kind },
+      });
+      expect(c.clockSlot.kind, kind).toBe("state");
+    }
+  });
+
+  it("shows no clock in the window where the phase still says Lobby but entries are shut", () => {
+    const c = copy({ live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 500 }) });
+    expect(c.clockSlot.kind).toBe("state");
+  });
+
+  it("keeps counting the fight UP, which is a different number from the bell counting down", () => {
+    // The slot has always shown elapsed time and should keep doing so — it is what the step gauge
+    // beside it in all three surfaces is measured against. The bell belongs to the sentence.
+    const c = copy({ live: round({ phase: "Fight", elapsedSec: 12.4 }) });
+    expect(c.clockSlot).toMatchObject({ kind: "clock", seconds: 12.4 });
+    expect(c.timing).toMatchObject({
+      kind: "countdown",
+      seconds: Math.ceil(FIGHT_TIMEOUT_SECONDS - 12.4),
+    });
+  });
+
+  it("keeps the length a settled round ran, and refuses one for a round that never fought", () => {
+    // Both have `elapsedSec` on them and only one of them means anything. An abandoned lobby never
+    // started, so its zero is the absence of a fight rather than a fight of no length.
+    expect(copy({ live: round({ phase: "Settled", elapsedSec: 44 }) }).clockSlot).toMatchObject({
+      kind: "clock",
+      seconds: 44,
+    });
+    expect(copy({ live: round({ phase: "Abandoned" }) }).clockSlot.kind).toBe("state");
+  });
+
+  it("shows nothing clock-shaped while the seed is being drawn, or with no round at all", () => {
+    for (const input of [
+      { live: round({ phase: "Drawing" }) },
+      {},
+      { loading: true },
+      { programError: true },
+    ] as Partial<RoundPhaseInput>[]) {
+      expect(copy(input).clockSlot.kind).toBe("state");
+    }
+  });
+
+  it("cannot disagree with the sentence beside it about whether a lobby has a number", () => {
+    // The two are one decision, taken once. If they were derived separately, the state that would
+    // break first is precisely the one this whole module keeps re-litigating: a slot counting the
+    // backstop down beside a sentence refusing to.
+    for (const { name, input } of EVERY_STATE) {
+      if (input.live?.phase !== "Lobby") continue;
+      const c = copy(input);
+      if (c.timing.kind === "countdown") {
+        expect(c.clockSlot, name).toMatchObject({ kind: "clock", seconds: c.timing.seconds });
+      } else {
+        expect(c.clockSlot.kind, name).toBe("state");
+      }
+    }
+  });
+
+  it("survives the player's gate untouched, exactly as the countdown does", () => {
+    // A wallet a reader does not have changes nothing about what the round's clock is doing, and the
+    // slot is on all five screens — including the four a blocked reader is most likely to be on.
+    expect(copy({ ...OPEN_LOBBY, gate: NO_WALLET }).clockSlot).toEqual(copy(OPEN_LOBBY).clockSlot);
+  });
+});
+
+describe("timingText", () => {
+  it("flattens a countdown into the one string a title attribute can hold", () => {
+    // `RoundPhaseNote` splits this around its figure so the number can be marked up as one; a tooltip
+    // has no elements to split into, and the alternative was a second, shorter set of words.
+    expect(timingText({ kind: "countdown", before: "Closes in", seconds: 12, after: "." })).toBe(
+      "Closes in 0:12.",
+    );
+  });
+
+  it("passes a waiting sentence through unchanged, because it already is one", () => {
+    const text = "No timer for the next one — it opens when we start it.";
+    expect(timingText({ kind: "waiting", text })).toBe(text);
   });
 });
 

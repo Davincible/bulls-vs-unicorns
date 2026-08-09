@@ -42,11 +42,14 @@ not exist — the name was copied from the audit rather than from the file.) So 
 calls this "a misrepresentation of who is in the round", and `README.md`'s go-live list still has
 `[ ] Bot disclosure in UI` open. This is an obligation, not a feature.
 
-### 3. "All-time" over a 250-round window
-`useHistory` reads the newest `MAX_ROUNDS = 250` rounds and tolerates failed reads. `SideRecord` was
-built to refuse the phrase "all time" for exactly this reason — but `standings` inherits the same
-window and the Leaderboard's All-time tab, the Dashboard's all-time figures and the fighter rail all
-say it anyway. Nothing is wrong today, which is how this class of bug ships.
+### 3. "All-time" over a retention-window log
+`useHistory` reads the newest rounds **still on chain** — `historyScan.ts` walks back from
+`round_counter`, stops on a short run of accounts `close_round_account` has already reclaimed, caps at
+`MAX_ROUNDS` — and tolerates failed reads. `SideRecord` was built to refuse the phrase "all time" for
+exactly this reason — but `standings` inherits the same window and the Leaderboard's All-time tab, the
+Dashboard's all-time figures and the fighter rail all say it anyway. This used to be a bug waiting for
+a 250-round arena; with the keeper reclaiming rent the window is now close to `MIN_RETAINED_ROUNDS`,
+so it is a bug on any arena that has run more rounds than the chain retains.
 
 ### 4. Fullscreen
 `UI-SPEC.md` Part 3's first requirement is "game canvas is the hero, as large as the viewport

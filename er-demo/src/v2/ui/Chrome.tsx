@@ -2,9 +2,10 @@
 // never scrolled away — so it carries exactly the facts a player must not have to hunt for while
 // they're reading a table: what the round is doing, and whether their key can sign.
 
-import { MAX_STEPS, SIDE_TOKEN, clock, usdCompactSigned, type ViewId } from "../contract.ts";
+import { MAX_STEPS, SIDE_TOKEN, usdCompactSigned, type ViewId } from "../contract.ts";
 import type { PlayBlock } from "../data/playGate.ts";
 import { useArena } from "../data/useArena.ts";
+import { RoundClockSlot } from "./RoundClockSlot.tsx";
 import { useShell } from "./shell.ts";
 import { TokenIcon } from "./TokenIcon.tsx";
 import { SCREEN_KEYS } from "./useKeyboardNav.ts";
@@ -95,7 +96,12 @@ export function TopChrome() {
         <span className="chrome-sep">/</span>
         <b>{live ? live.phase.toUpperCase() : status.loading ? "LOADING" : "NO ROUND"}</b>
         <span className="chrome-sep">/</span>
-        <b>{clock(live?.elapsedSec ?? 0)}</b>
+        {/* NOT `clock(elapsedSec)` ANY MORE. This cell read `0:00` beside `LOBBY` for the whole of a
+            held-open lobby — a stopped clock on the one strip of the page that never scrolls away,
+            which is the worst place on the site to put a figure that reads as broken. `RoundClockSlot`
+            shows the state when there is no clock and the clock when there is; the `<b>` stays because
+            `.tele b` is what makes this cell white (shell.css), and the slot inherits it. */}
+        <b><RoundClockSlot /></b>
         <StepBlocks steps={live?.stepsNow ?? 0} />
       </div>
 

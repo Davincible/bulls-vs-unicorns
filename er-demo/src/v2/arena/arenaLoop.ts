@@ -22,7 +22,7 @@
 // `hash(seed, step) % n`, so nothing about a position, a collision or a frame rate can change a
 // single number on this page.
 
-import { SIDE_TOKEN, sideTotals, usd } from "../contract.ts";
+import { SIDE_TOKEN, counted, sideTotals, usd } from "../contract.ts";
 import { createImpactController } from "./impact.ts";
 import { createChromeMap } from "./chrome.ts";
 import { createInkMap } from "./ink.ts";
@@ -177,7 +177,7 @@ export function createArenaLoop(deps: ArenaLoopDeps): ArenaLoop {
     const next =
       f.bodies.length === 0
         ? `Arena field, ${p.phase}. No fighters.`
-        : `Arena field, ${p.phase}. ${alive} of ${f.bodies.length} fighters in play. ` +
+        : `Arena field, ${p.phase}. ${alive} of ${counted(f.bodies.length, "fighter")} in play. ` +
           `${SIDE_TOKEN[0].name} ${usd(totals[0])}, ${SIDE_TOKEN[1].name} ${usd(totals[1])}.`;
     if (next === labelText) return;
     labelText = next;

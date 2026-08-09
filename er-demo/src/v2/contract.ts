@@ -376,9 +376,12 @@ export interface HouseDisclosure {
 /** HOW MUCH OF THIS ARENA'S HISTORY THE FIGURES ON SCREEN WERE COMPUTED OVER.
  *
  *  `standings`, `hall`, `bigWins` and `sideRecord` are all aggregated from `history.rounds`, which is
- *  the NEWEST N round accounts (`useHistory`'s `MAX_ROUNDS`), minus any read that failed, minus any
- *  round whose account the authority has since reclaimed (`close_round_account`). Every one of those
- *  is a window, and every screen showing one of those aggregates has said "all time" over it.
+ *  the newest round accounts STILL ON CHAIN — `historyScan.ts` walks back from `round_counter`, stops
+ *  on a short run of consecutive accounts the authority has already reclaimed (`close_round_account`),
+ *  and is capped at `MAX_ROUNDS` — minus any read that failed. Every one of those is a window, and
+ *  every screen showing one of those aggregates has said "all time" over it. Once the keeper is
+ *  reclaiming rent that window sits close to `MIN_RETAINED_ROUNDS` rather than in the hundreds, which
+ *  makes this type MORE load-bearing than when it was written, not less.
  *
  *  `SideRecord` already carries its own coverage for exactly this reason and refuses the phrase; this
  *  is the same fact for everything else derived from the same log, so no screen has to reconstruct it
@@ -778,6 +781,32 @@ export function nameFor(wallet: string): string {
   for (let i = 0; i < wallet.length; i++) h = (h * 31 + wallet.charCodeAt(i)) >>> 0;
   const head = NAME_HEAD[h % NAME_HEAD.length];
   return `${head}_${(h % 97).toString().padStart(2, "0")}`;
+}
+
+/**
+ * `1 fighter`, `8 fighters` — a count and its noun, agreeing.
+ *
+ * IT IS HERE, BESIDE THE MONEY AND THE CLOCK, because it is the same kind of thing they are: a number
+ * this page states about the chain, formatted once so two surfaces cannot state it two ways. It went
+ * in after the hero shipped `POT ON THE TABLE · 1 FIGHTERS · 1 HOUSE · 1 STILL ALIVE` to production —
+ * a one-entrant lobby is not an edge case here, it is the state a held-open lobby spends most of its
+ * life in, so the singular was the reading a visitor was most likely to get.
+ *
+ * `bigint` IS ACCEPTED because half the counts on this page are chain-shaped and the other half are
+ * `.length`, and a caller forced to convert would eventually convert one of them wrong.
+ *
+ * IT DOES NOT TRY TO BE A GRAMMAR ENGINE. A caller whose sentence also has a verb to agree
+ * (`is`/`are`) still writes that ternary itself: English agreement is not a function of the noun, and
+ * a helper that guessed at it would be wrong in the cases that matter while looking authoritative.
+ * The irregular plural is a parameter for the same reason — one place to say it, and no table.
+ *
+ * NO THOUSANDS SEPARATOR, unlike `usd()` and the step figures. Every noun this counts is a small
+ * population — fighters in a round, rounds in the log — and a caller that genuinely needs grouping
+ * passes the grouped string it already builds. Reaching for `toLocaleString` here would also put an
+ * `Intl.NumberFormat` construction in a render path for no gain; see `USD_FORMATTERS`' note above.
+ */
+export function counted(n: number | bigint, singular: string, plural = `${singular}s`): string {
+  return `${n} ${n === 1 || n === 1n ? singular : plural}`;
 }
 
 /** `0:14` — elapsed fight clock. */

@@ -32,6 +32,7 @@
 
 import {
   FIGHT_TIMEOUT_SECONDS,
+  clock,
   entriesOpen,
   entrySecondsLeft,
   type LiveRound,
@@ -67,6 +68,53 @@ export type PhaseTiming =
   | { kind: "countdown"; before: string; seconds: number; after: string }
   | { kind: "waiting"; text: string };
 
+/** THE SAME TIMING AS ONE PLAIN STRING, for a `title` — which cannot hold markup.
+ *
+ *  `RoundPhaseNote` splits a countdown around its figure so the number can be marked up AS a number;
+ *  a tooltip has no elements to split into. Flattening the three parts here rather than writing a
+ *  second, shorter set of words for the compact surfaces is the whole point: one claim, one wording,
+ *  one place it changes. */
+export function timingText(timing: PhaseTiming): string {
+  if (timing.kind === "waiting") return timing.text;
+  return `${timing.before} ${clock(timing.seconds)}${timing.after}`;
+}
+
+/**
+ * WHAT GOES IN A COMPACT CLOCK SLOT — the few characters the top bar, 00-1's hero and the field's own
+ * overlay each put where a clock goes.
+ *
+ * THE STATE THIS TYPE EXISTS FOR. All three of those surfaces rendered `clock(live.elapsedSec)`
+ * unconditionally, which is the FIGHT clock — and outside a fight it is zero. So a lobby the keeper
+ * is deliberately holding open, at no cost, until a real person arrives printed `0:00` in three
+ * places at once. `0:00` on a countdown means the time is up; nothing was up, and a visitor read a
+ * broken clock over the healthiest resting state this arena has.
+ *
+ * A slot that cannot hold a sentence must therefore hold a STATE rather than a zero, and the two are
+ * different enough that they must not be the same shape: a figure is formatted through `clock()` and
+ * tabular, a word is not, and a caller holding `{ text: "0:00" }` has no way to tell them apart. The
+ * whole answer travels alongside as `title`, because the sentence still has to be reachable from a
+ * slot too small to print it.
+ */
+export type ClockSlot =
+  /** Seconds to render through `clock()`: a fight that is running, the length one ran, or a deadline
+   *  something is genuinely counting down to. */
+  | { kind: "clock"; seconds: number; title: string }
+  /** No clock is running. `word` IS the state, and it must never be dressed as a figure. */
+  | { kind: "state"; word: string; title: string };
+
+/** THE WORD A HELD-OPEN LOBBY PUTS WHERE A CLOCK WOULD BE.
+ *
+ *  Deliberately the same word as this state's `label`, so the plate on the field, the dock's handle
+ *  and the three compact slots all name one state with one word. It reads as a healthy state rather
+ *  than as a wait on something unnamed — which `WAITING` does not, and which is the reading `0:00`
+ *  already gave a visitor. What it is waiting FOR is in the `title` and in the sentence the hero,
+ *  the plate and the dock all print in full. */
+const HELD_OPEN_WORD = "OPEN";
+
+/** Every other clockless state. This page's standing rule for a slot with no figure in it — a
+ *  no-data cell reads `—`, never `0` (styles/base.css). */
+const NO_CLOCK = "—";
+
 export interface RoundPhaseCopy {
   /** Which body a control surface should show: the deploy buttons, the extract button, or neither.
    *  Derived from `entriesOpen()`, never from the phase alone. */
@@ -89,6 +137,11 @@ export interface RoundPhaseCopy {
   action: string;
   /** (3) When it changes. */
   timing: PhaseTiming;
+  /** (3) AGAIN, AT THE SIZE A FIXED BAR HAS — see `ClockSlot`. The same decision as `timing`, never a
+   *  parallel one, so a slot reading `OPEN` and a sentence reading "closes in 0:12" cannot both be on
+   *  screen at once. NOT taken over by the player's gate, for the same reason `timing` is not: a
+   *  countdown is a countdown whether or not a wallet is connected. */
+  clockSlot: ClockSlot;
 }
 
 export interface RoundPhaseInput {
@@ -199,7 +252,7 @@ function lobbyTiming(cadence: Cadence, live: LiveRound, nowMs: number): PhaseTim
 /** THE ROUND'S OWN STATE, with no opinion about who is reading it. `roundPhaseCopy` below layers the
  *  player's gate on top; keeping the two apart is what lets the gate COMPOSE with the phase — it
  *  keeps the countdown a blocked player still wants to see — instead of replacing it. */
-function phaseCopy(input: RoundPhaseInput): Omit<RoundPhaseCopy, "blocked"> {
+function phaseCopy(input: RoundPhaseInput): Omit<RoundPhaseCopy, "blocked" | "clockSlot"> {
   const { live, nowMs, programError, loading, cadence } = input;
 
   // A dead program is not a phase, but it is the reason nothing can be pressed — and it outranks
@@ -369,6 +422,85 @@ function phaseCopy(input: RoundPhaseInput): Omit<RoundPhaseCopy, "blocked"> {
   }
 }
 
+/**
+ * THE ROUND'S STATE AT THE SIZE OF A FIXED BAR — see `ClockSlot` for the failure that put it here.
+ *
+ * IT IS DERIVED FROM `phaseCopy`'S OWN OUTPUT, NOT ALONGSIDE IT. Every honesty rule about which
+ * deadline may be counted has already been decided once — by `keeperCountdown`, then `lobbyTiming`,
+ * then the branch above — and re-deriving any of it here is how a slot ends up counting down the
+ * hour-away backstop that the sentence six inches away is refusing to count. So the Lobby case reads
+ * `state.timing` and does not look at `lobbyClosesAtMs` at all: if the sentence has a number, the
+ * slot shows that number; if the sentence has none, the slot must not invent one.
+ *
+ * THE FIGHT IS THE ONE CASE THAT IS NOT `timing`, and deliberately. The fight clock counts UP — it is
+ * what the step gauge beside it in all three surfaces is measured against, and what `elapsedSec`
+ * means — while `timing` there counts the bell DOWN. Two different facts; the slot keeps the one it
+ * has always shown, and the bell stays in the sentence and in 00-1's own `Bell in` tile.
+ *
+ * THE BACKSTOP IS STILL NEVER SURFACED, in any branch. `Round.lobby_closes_at` under the hold-open
+ * policy is an hour out and the only thing that happens at it is the keeper abandoning the round; a
+ * slot reading `59:47`, or "closes within the hour", would be the same lie `keeperCountdown`'s
+ * ordering was written to delete, arriving through a surface too small to qualify it.
+ */
+function clockSlotFor(
+  input: RoundPhaseInput,
+  state: Omit<RoundPhaseCopy, "blocked" | "clockSlot">,
+): ClockSlot {
+  const { live, nowMs, cadence } = input;
+  // The whole answer, for a slot with room for a word. Built from the clauses the phase note already
+  // renders rather than from a second, shorter set of words — a compact surface that paraphrases is a
+  // compact surface that drifts, and this one is the surface a visitor reads first.
+  // `lead` replaces `now` for the two branches whose figure is not what `now` describes — see Fight
+  // below, where "Round 23 is fighting" is already the word printed beside the slot and what a reader
+  // hovering actually wants to know is what the number IS.
+  const said = (lead?: string) => `${lead ?? state.now} ${timingText(state.timing)}`;
+  const noClock = (): ClockSlot => ({ kind: "state", word: NO_CLOCK, title: said() });
+
+  // Offline, loading, no round: `state.now` already says which, and none of the three has a clock.
+  if (live === null || input.programError) return noClock();
+
+  switch (live.phase) {
+    case "Lobby": {
+      // `entriesOpen()` and never the phase, exactly as the sentence above is written — the window
+      // between `lobby_closes_at` and the operator's draw still says "Lobby" and has no clock in it.
+      if (!entriesOpen(live, nowMs)) return noClock();
+      // THE STATE THIS WHOLE TYPE EXISTS FOR. Nothing is counting down because nothing is waiting on a
+      // clock, so the slot says what IS true instead of what the fight clock happens to read.
+      if (cadence.kind === "waiting-for-players") {
+        return { kind: "state", word: HELD_OPEN_WORD, title: said() };
+      }
+      // A real deadline, from whichever authority `lobbyTiming` decided was the honest one.
+      if (state.timing.kind === "countdown") {
+        return { kind: "clock", seconds: state.timing.seconds, title: said() };
+      }
+      return noClock();
+    }
+
+    case "Drawing":
+      return noClock();
+
+    case "Fight":
+      return {
+        kind: "clock",
+        seconds: live.elapsedSec,
+        title: said("How long this fight has been running."),
+      };
+
+    case "Settled":
+      return {
+        kind: "clock",
+        seconds: live.elapsedSec,
+        title: said("How long the fight ran before it settled."),
+      };
+
+    case "Abandoned":
+      // No fight ever started here, so `elapsedSec` is 0 and printing it would say the fight ran for
+      // no time rather than that there was never one. That distinction is the entire content of this
+      // phase.
+      return noClock();
+  }
+}
+
 /** WHERE THE WAY OUT OF A BLOCK IS, in one clause.
  *
  *  `PlayBlock.detail` is two to four sentences — right for a panel with a button in it, far too much
@@ -431,7 +563,11 @@ function gateLabel(gate: PlayBlock): string | null {
  * `blocked` stays null so no surface mistakes it for a funnel.
  */
 export function roundPhaseCopy(input: RoundPhaseInput): RoundPhaseCopy {
-  const base = phaseCopy(input);
+  const state = phaseCopy(input);
+  // LAYERED ON ONCE, HERE, AND NEVER TOUCHED BY THE GATE BELOW — the same treatment `timing` gets and
+  // for the same reason. What the round's clock is doing is a fact about the round; a reader with no
+  // wallet is still owed it, and is in fact the reader most likely to be deciding off it.
+  const base = { ...state, clockSlot: clockSlotFor(input, state) };
   const gate = input.gate ?? null;
 
   // Nothing in the way, or nothing being offered to get in the way of.

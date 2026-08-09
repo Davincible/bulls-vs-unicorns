@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 import { nameFor, shortKey, type FighterView, type LiveRound, type Side } from "../contract.ts";
-import { houseDisclosureOf, markHouseFighters, withHouseMarks } from "./houseFighters.ts";
+import { houseDisclosureOf, houseNote, markHouseFighters, withHouseMarks } from "./houseFighters.ts";
 import type { HouseRoster } from "./keeperStatus.ts";
 
 const HOUSE_A = "H0useWa11etAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -153,5 +153,54 @@ describe("houseDisclosureOf", () => {
 
   it("quotes the keeper's own sentence rather than one of ours", () => {
     expect(houseDisclosureOf(LINEUP, ROSTER).note).toBe(DISCLOSURE);
+  });
+});
+
+// THE DISCLOSURE AS A SENTENCE — the same obligation one layer up, in the words a reader gets.
+//
+// It shipped from a view module as `All 1 of these fighters are other players`, which is the state a
+// held-open lobby spends most of its life in: one house fighter, waiting for a person. A disclosure
+// that reads as an unfilled template is a disclosure a reader discounts, so the grammar here is part
+// of the obligation and not a polish item.
+
+describe("houseNote", () => {
+  const counted = (house: number | null) => ({
+    houseFighterCount: house,
+    realFighterCount: house === null ? null : 0,
+    note: house === null ? null : DISCLOSURE,
+  });
+
+  it("says nothing was checked when nothing published a list, and never says nobody is ours", () => {
+    const note = houseNote(counted(null), 4) ?? "";
+    expect(note).toMatch(/cannot tell you/i);
+    // The failure this whole module exists to prevent, at the sentence layer: an unbacked "0 house".
+    expect(note).not.toMatch(/none of them is ours/i);
+  });
+
+  it("reads as English with a single fighter in the room, in both counted states", () => {
+    // The state the live arena is in whenever the keeper is holding a lobby open.
+    expect(houseNote(counted(1), 1)).toMatch(/^The one fighter here is ours, marked HOUSE below\./);
+    expect(houseNote(counted(0), 1)).toBe("The one fighter here is another player, not ours.");
+    for (const n of [houseNote(counted(1), 1), houseNote(counted(0), 1)]) {
+      expect(n).not.toMatch(/\b1 of these 1 fighters\b|\bAll 1 of these fighters\b/);
+    }
+  });
+
+  it("agrees its verb as well as its noun on a full lobby", () => {
+    expect(houseNote(counted(1), 8)).toMatch(/^1 of these 8 fighters is ours/);
+    expect(houseNote(counted(3), 8)).toMatch(/^3 of these 8 fighters are ours/);
+    expect(houseNote(counted(0), 8)).toBe(
+      "All 8 of these fighters are other players — none of them is ours.",
+    );
+  });
+
+  it("appends the keeper's own sentence rather than paraphrasing it, and survives its absence", () => {
+    expect(houseNote({ houseFighterCount: 2, realFighterCount: 6, note: DISCLOSURE }, 8)).toContain(
+      DISCLOSURE,
+    );
+    // A roster with no disclosure string is still a roster: the count stands on its own.
+    expect(houseNote({ houseFighterCount: 2, realFighterCount: 6, note: null }, 8)).toBe(
+      "2 of these 8 fighters are ours, marked HOUSE below.",
+    );
   });
 });

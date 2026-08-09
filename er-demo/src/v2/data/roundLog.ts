@@ -167,12 +167,15 @@ export function deriveSideRecord(rounds: RoundSummary[]): SideRecord {
 
 /** HOW MUCH OF THE ARENA'S HISTORY EVERYTHING ABOVE WAS COMPUTED OVER — see `LogCoverage`.
  *
- *  The log is a WINDOW and has been since the day it was written: `useHistory` reads the newest
- *  `MAX_ROUNDS = 250` accounts, tolerates a read that fails, and (since v7's `close_round_account`)
- *  cannot read a round whose rent the authority has already reclaimed. `SideRecord` was given its own
- *  coverage for exactly this reason and refuses the phrase "all time"; `standings`, `hall` and
- *  `bigWins` inherit the same window and three screens say it anyway. Nothing is wrong today — the
- *  arena has not run 250 rounds yet — which is how this class of bug ships.
+ *  The log is a WINDOW and has been since the day it was written, and v7's `close_round_account` made
+ *  it a far narrower one. What `useHistory` reads is the newest rounds STILL ON CHAIN: `historyScan.ts`
+ *  walks back from `round_counter`, stops once it has seen a short run of consecutive reclaimed
+ *  accounts, caps at `MAX_ROUNDS` regardless, and tolerates a read that fails. Against a keeper that
+ *  has caught up on its rent reclaims that walk bottoms out near `MIN_RETAINED_ROUNDS` — an order of
+ *  magnitude under the cap. `SideRecord` was given its own coverage for exactly this reason and
+ *  refuses the phrase "all time"; `standings`, `hall` and `bigWins` inherit the same window and three
+ *  screens say it anyway. The narrower window does not soften that, it sharpens it: what used to be a
+ *  lie only on an arena that had run 250 rounds is a lie on one that has run a couple of dozen.
  *
  *  `complete` IS FALSE WHENEVER THE DENOMINATOR IS UNKNOWN, not just when it disagrees. A page that
  *  has not read the arena account cannot know whether its log is whole, and "we don't know" must
