@@ -54,6 +54,13 @@ precedence, not a missing SDK. Recorded so the next session doesn't re-diagnose 
 this machine; the program had never been compiled here before this session.
 **Native `cargo test` also runs** on this machine (see ER-051) — something the Windows machine could
 never do at all, since nothing there could compile as a normal Rust crate outside the SBF pipeline.
+**Redeployed to the existing devnet program** (upgrade, same ID — `.devnet/program-keypair.json`
+restored into `target/deploy/` first, since `cargo build-sbf` auto-generates a throwaway keypair
+when none exists there): `F59NksP2bYZhP4wD7fgR1sP729UHNPitrBiYrrKF1sYW`, slot 482254605, sig
+`xmiZZK9bwFpRtPPjxSfQcr7TCmrDgR2EKaCj5E4WWjqVzZEVjS4nSZQf4CFz92vfSoJrggi4G92xnv6HaLUrzaK`. Confirmed
+via `solana confirm` and `solana program show` (new slot, new data length). This is the build
+carrying `extract()`, single-instruction `resolve()`, and VRF-drawn seeds — the current on-chain
+state now matches the current source, for the first time on this machine.
 
 <details><summary>ER-010-OLD — the Windows chain, kept for the record</summary>
 
@@ -83,16 +90,12 @@ dependency graph across both, and anchor 0.30.1's solana-program 1.17 pins `zero
 nothing to do with either program's correctness. Upgrading the vault is separate work.
 **Accept:** `cargo metadata` resolves without conflict; `cargo build-sbf` produces a `.so`. ✅
 
-### ER-012 · Devnet keypair + funding · **DONE**, refunding **BLOCKED on faucet rate limit**
-Fork payer `9BAjpGZfJm8sfnqNr1vj1K9X3fY8fjk4LE2KRtSTRCaj`, gitignored, holds 1.125 SOL as of
-2026-08-09. Public faucet (`solana airdrop`, all amounts from 2 down to 0.1 SOL) refused with a
-rate-limit error this session — the same class of block named repeatedly in this project's history,
-not a new problem. Two previously-deployed fork programs
-(`3dHbeVh7KuhhjXMCkAw34wsZefwwQUdwKY6DJb12LWXb`, `FNYozykPcscfyQRmpcmKnXJe39ERospgRNCyZ9DJpoCS`)
-were checked and are already closed — no reclaimable rent there. Try `https://faucet.solana.com` or
-retry the CLI faucet later; the guarded deploy script (`scripts/deploy-devnet.mjs`) is otherwise
-ready to go the moment the payer has ~2 SOL (a fresh-size buffer account for the upgrade, most of
-which is reclaimed after it lands).
+### ER-012 · Devnet keypair + funding · **DONE**
+Fork payer `9BAjpGZfJm8sfnqNr1vj1K9X3fY8fjk4LE2KRtSTRCaj`, gitignored. CLI faucet (`solana airdrop`,
+all amounts from 2 down to 0.1 SOL) was rate-limited this session — the same class of block named
+repeatedly in this project's history — but topped up via the web faucet (`faucet.solana.com`) to
+6.15 SOL, then confirmed by the ER-010/ER-050 redeploy below, which spent ~0.07 SOL net (most of the
+buffer rent came back on the successful upgrade). 6.08 SOL remains.
 
 ---
 
@@ -282,6 +285,8 @@ because this fork cannot reach mainnet by construction (ER-000).
 
 | ID | Blocked on | Needs |
 |---|---|---|
-| ER-012 (top-up) | devnet faucet rate limit | wait and retry, or `https://faucet.solana.com` |
 | ER-040/041 | Not started | engine integration work, scoped against the current `enter`+`extract`+`resolve` shape, not the original tick-based plan |
 | Per-exchange VRF, eATA | Design decisions, not blockers | explicit sign-off before implementation |
+
+Nothing else is blocked as of 2026-08-09 — the toolchain, the compile, the payer funding, and the
+redeploy all resolved this session.
