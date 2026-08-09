@@ -80,11 +80,14 @@ import * as roundIx from "../../src/chain/round.ts";
 import {
   ABANDON_HOLD_SECONDS, ARENA_FEE_BPS, CLOCK_SKEW_MARGIN_SECONDS, DEFAULT_LOBBY_SECONDS,
   DELEGATION_WAIT_SECONDS, DRAW_TIMEOUT_SECONDS, ERROR_BACKOFF_BASE_SECONDS, ERROR_BACKOFF_MAX_SECONDS,
-  HEARTBEAT_INTERVAL_SECONDS, HOUSE_ENTRY_RETRY_SECONDS, LOOP_INTERVAL_SECONDS, RESOLVE_RETRY_ATTEMPTS,
+  HEARTBEAT_INTERVAL_SECONDS, HOLD_OPEN_LOBBY_SECONDS, HOUSE_ENTRY_RETRY_SECONDS,
+  LOOP_INTERVAL_SECONDS, REAL_PLAYER_GRACE_SECONDS, RESOLVE_RETRY_ATTEMPTS,
   RESOLVE_RETRY_WAIT_SECONDS, RESULT_HOLD_SECONDS, STALE_AFTER_SECONDS,
   STALL_AFTER_CONSECUTIVE_FAILURES, UNDELEGATE_WAIT_SECONDS,
   parseCliOptions, type KeeperCliOptions,
 } from "./config.ts";
+import { lobbyIsHeldOpen, planLobby, type LobbyPlan } from "./lobbyPolicy.ts";
+import { readProgramFeatures, type ProgramFeatures } from "./programFeatures.ts";
 import {
   NO_FRESH_VALIDATOR, createChainClient, selectWritableValidator,
   type ChainClient, type ErValidator, type KeeperChainState,
@@ -127,6 +130,21 @@ interface RoundTimeline {
    *  where that number is honest. */
   settledObservedAtSec: number | null;
   abandonedObservedAtSec: number | null;
+  /** LATCHED, and the only piece of memory the hold-open policy adds.
+   *
+   *  WHY IT CANNOT BE DERIVED, since that was the first thing tried. The program stamps no entry
+   *  time: a `Fighter` row is a wallet, a side, a stake, hp and banked, and `Round` carries
+   *  `lobby_opened_at`, `lobby_closes_at` and `fight_started_at` — not one of which moves when
+   *  somebody enters. The `Entered` event carries the fact but not a timestamp, and it is emitted
+   *  inside the rollup, where scanning transaction history for a block time would be a new dependency
+   *  on the least reliable thing in the system to answer a question worth twenty seconds.
+   *
+   *  So it is stamped when this process first SEES a real fighter standing in the round, and never
+   *  re-stamped while that round number stands. A restart mid-grace re-stamps it to now, which
+   *  extends the entry window by up to `REAL_PLAYER_GRACE_SECONDS`, once. That error only runs in the
+   *  safe direction — a player can never be locked out earlier than they were promised, only later —
+   *  which is the same trade `settledObservedAtSec` makes and the same reason it is acceptable. */
+  firstRealEntryObservedAtSec: number | null;
   operatorLamportsAtOpen: number | null;
   /** Chain-clock second before which no further house entry should be planned, after one failed.
    *  Without it, an entry that can never succeed — an empty house wallet, most obviously — is
@@ -151,6 +169,7 @@ function freshTimeline(roundNo: bigint | null, operatorLamportsAtOpen: number | 
     fightObservedAtMs: null,
     settledObservedAtSec: null,
     abandonedObservedAtSec: null,
+    firstRealEntryObservedAtSec: null,
     operatorLamportsAtOpen,
     houseRetryAfterSec: 0,
     completedCounted: false,
@@ -177,7 +196,16 @@ interface KeeperContext {
   /** Chain second of the last "still drawing" line, so it repeats about every ten seconds rather than
    *  on a modulo that a two-second pass can step straight over. */
   lastDrawLogSec: number;
+  /** Same idea, for the held-open lobby's periodic line. A hold can last an hour, and an hour of an
+   *  empty log is indistinguishable from a stopped process to the operator reading it. Cosmetic:
+   *  nothing branches on it. */
+  lastHoldLogSec: number;
 }
+
+/** How often a held-open lobby says so in the log. A minute — often enough that the process is
+ *  visibly alive during an hour of deliberate silence, rare enough that an overnight run is a
+ *  readable page rather than three thousand identical lines. */
+const HOLD_LOG_INTERVAL_SECONDS = 60;
 
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 // The phase machine
@@ -230,9 +258,9 @@ async function driveLobby(
   round: RawRoundAccount,
   roundPda: PublicKey,
 ): Promise<void> {
-  // NOTHING TO COUNT DOWN TO HERE. A lobby's countdown is the chain's own `lobby_closes_at`, which the
-  // page reads straight off the round; publishing a next-lobby time as well would be a second
-  // countdown competing with the authoritative one.
+  // NO NEXT-LOBBY TIME HERE. A lobby's countdown is either the chain's own `lobby_closes_at` or the
+  // keeper's `entriesCloseAt`; publishing a next-lobby time as well would be a third countdown
+  // competing with whichever of those is authoritative.
   ctx.publisher.setNextLobbyOpensAt(null);
 
   const lobbyClosesAt = Number(round.lobbyClosesAt.toString());
@@ -261,24 +289,64 @@ async function driveLobby(
     return delegateRound(ctx, roundPda, BigInt(round.roundNo.toString()));
   }
 
-  if (lobbyIsOpen(lobbyClosesAt, nowSec)) {
-    return fieldHouseFighters(ctx, state, round, roundPda);
+  // THE ONE GENUINELY NEW PIECE OF MEMORY IN THIS PROCESS, and it is stamped here because here is
+  // where a real fighter is first VISIBLE. The program stamps no per-fighter entry time — a `Fighter`
+  // row is a wallet, a side, a stake and some hp — so "when did the first real player arrive" cannot
+  // be derived from the round account at any price. It is latched per round, exactly like
+  // `settledObservedAtSec`, and it has the same one-directional error: a restart mid-grace re-stamps
+  // it to now, which only ever EXTENDS the window a player has to enter. Never shortens it.
+  const split = ctx.bank.classify(round);
+  if (split.realCount > 0 && ctx.timeline.firstRealEntryObservedAtSec === null) {
+    ctx.timeline.firstRealEntryObservedAtSec = nowSec;
+    if (ctx.options.holdOpen) {
+      ok(`a real player is in round #${round.roundNo} — entries close in ${REAL_PLAYER_GRACE_SECONDS}s, then the fight starts`);
+    }
   }
 
-  // THE DEADLINE HAS PASSED BY OUR CLOCK BUT NOT NECESSARILY BY THE ER's. `lobby_closes_at` is stamped
-  // from the base layer's `Clock` and compared against the ER validator's, and both
-  // `close_lobby_and_draw` and `abandon_round` refuse if the ER disagrees. Waiting the margin out
-  // costs two seconds of an already-expired lobby; not waiting costs a failed transaction and a
-  // `LobbyStillOpen` that reads like a bug.
-  if (nowSec < lobbyClosesAt + CLOCK_SKEW_MARGIN_SECONDS) return;
+  const plan = planLobby({
+    nowSec,
+    lobbyClosesAt,
+    fighterCount: round.fighterCount,
+    realFighterCount: split.realCount,
+    firstRealEntryObservedAtSec: ctx.timeline.firstRealEntryObservedAtSec,
+    holdOpen: ctx.options.holdOpen,
+  });
+  ctx.publisher.setEntriesCloseAt(plan.entriesCloseAt);
 
-  // The chain's own predicate, imported rather than rewritten — `lobby_is_dead` and
-  // `close_lobby_and_draw`'s `enough_to_fight` are exhaustive only while they mean the same thing by
-  // "enough", which is exactly why lib.rs names them once each.
-  if (lobbyIsDead(round.fighterCount, lobbyClosesAt, nowSec)) {
-    return abandonRound(ctx, state, round, roundPda);
+  switch (plan.step.kind) {
+    case "abandon":
+      return abandonRound(ctx, state, round, roundPda);
+    case "close":
+      // The permissionless close — the deadline has passed (or the lobby filled), and the program's
+      // own rule is what permits it. `authority: null` says so in the transaction itself.
+      return drawSeed(ctx, round, roundPda, null);
+    case "closeEarly":
+      // THE OPERATOR CHOSE THIS MOMENT, and the transaction is self-describing about it: an
+      // `authority` account present means a person turned up and the keeper started their fight; the
+      // same instruction with it absent means a clock ran out.
+      return drawSeed(ctx, round, roundPda, ctx.operator.publicKey);
+    case "waitForFighters":
+      // Not thrown and not sent: `enough_to_fight` binds on the authority path too, so closing now
+      // would be a transaction that exists only to be rejected. Logged on a throttle because the
+      // realistic cause is a drained house wallet, which fails on every pass — and `lastError` is
+      // already carrying that, from `fieldHouseFighters`.
+      if (nowSec - ctx.lastHoldLogSec >= HOLD_LOG_INTERVAL_SECONDS) {
+        ctx.lastHoldLogSec = nowSec;
+        warn(`round #${round.roundNo} has a real player but only ${round.fighterCount} fighter(s) — it cannot be drawn until the house is in`);
+      }
+      break;
+    case "wait":
+      if (plan.heldOpen && nowSec - ctx.lastHoldLogSec >= HOLD_LOG_INTERVAL_SECONDS) {
+        // A held lobby is silent for as long as an hour, and silence in a log is indistinguishable
+        // from a stopped process. This says what is being waited for and what it is costing (nothing).
+        ctx.lastHoldLogSec = nowSec;
+        const held = nowSec - Number(round.lobbyOpenedAt.toString());
+        info(`holding round #${round.roundNo} open for players — ${fmtDuration(held)} so far, ${round.fighterCount} house fighter(s), nothing spent while waiting`);
+      }
+      break;
   }
-  return drawSeed(ctx, round, roundPda);
+
+  return fieldHouseFighters(ctx, state, round, roundPda, plan);
 }
 
 async function delegateRound(ctx: KeeperContext, roundPda: PublicKey, roundNo: bigint): Promise<void> {
@@ -312,15 +380,17 @@ async function fieldHouseFighters(
   state: KeeperChainState,
   round: RawRoundAccount,
   roundPda: PublicKey,
+  plan: LobbyPlan,
 ): Promise<void> {
   if (state.nowSec < ctx.timeline.houseRetryAfterSec) return;
 
-  const { entries, split } = plannedHouseEntries(ctx.bank, round, state.roundCounter, state.nowSec);
+  const { entries, split } = plannedHouseEntries(
+    ctx.bank, round, state.roundCounter, state.nowSec, { drawAt: plan.drawAt, heldOpen: plan.heldOpen },
+  );
   if (entries.length === 0) return;
 
-  const lobbyClosesAt = Number(round.lobbyClosesAt.toString());
   info(
-    `fielding ${entries.length} house fighter(s) with ${lobbyClosesAt - state.nowSec}s of lobby left ` +
+    `fielding ${entries.length} house fighter(s) with ${plan.drawAt - state.nowSec}s until the lobby is drawn ` +
     `(currently ${split.realCount} real, ${split.houseCount} house)`,
   );
   // ONE STEP, not one per pass. Bringing the house up to target is a single logical action, and
@@ -329,7 +399,7 @@ async function fieldHouseFighters(
   const result = await enterHouseFighters(
     ctx.client,
     ctx.client.program,
-    { arenaPda: ctx.client.arenaPda, roundPda, lobbyClosesAt },
+    { arenaPda: ctx.client.arenaPda, roundPda, drawAt: plan.drawAt },
     entries,
   );
   if (result.failed > 0) {
@@ -346,14 +416,38 @@ async function fieldHouseFighters(
   }
 }
 
-async function drawSeed(ctx: KeeperContext, round: RawRoundAccount, roundPda: PublicKey): Promise<void> {
+/** Close the lobby and ask the oracle for the seed.
+ *
+ *  `authority` is the ENTIRE difference between the two ways a lobby ends, and it is passed rather
+ *  than inferred so the call site has to say which one this is:
+ *
+ *    * `null` — the permissionless close. The deadline has passed (or the lobby is full) and the
+ *      program's own rule permits anyone to send this. Byte-for-byte the call this has always been.
+ *    * the operator's key — the AUTHORITY EARLY CLOSE. A real player turned up, the grace window has
+ *      run, and the arena's authority is choosing this moment. It bypasses the deadline; it cannot
+ *      touch the outcome, because the seed is requested BY this instruction and delivered afterwards
+ *      by `callback_seed`, so at the instant of choosing, the seed does not exist for anyone.
+ *
+ *  THERE IS NO FALLBACK FROM ONE TO THE OTHER, deliberately. A key that is not the arena's authority
+ *  fails with `NotTheAuthority` — a true statement about the key — and retrying without the authority
+ *  account would answer it with `LobbyStillOpen`, a statement about the clock, for a problem that has
+ *  nothing to do with the clock. The program's authors put a distinct error there on purpose; a
+ *  retry here would throw it away. */
+async function drawSeed(
+  ctx: KeeperContext,
+  round: RawRoundAccount,
+  roundPda: PublicKey,
+  authority: PublicKey | null,
+): Promise<void> {
   // DIRECT TO THIS ROUND'S OWN ER VALIDATOR, never through the generic router. The transaction's
   // writable set includes the ephemeral VRF queue, whose delegation record names the SYSTEM PROGRAM
   // as its authority — the multi-validator router cannot place that and refuses the whole
   // transaction with "accounts delegated to different ER nodes". Full account in
   // src/chain/sendTx.ts's "SDK SURPRISE #2".
   const fqdn = await ctx.client.roundValidatorFqdn(roundPda);
-  info(`lobby closed with ${round.fighterCount} fighters — drawing the seed via ${fqdn}`);
+  info(authority
+    ? `closing the lobby early with ${round.fighterCount} fighters — a real player is in — drawing the seed via ${fqdn}`
+    : `lobby closed with ${round.fighterCount} fighters — drawing the seed via ${fqdn}`);
   // Any 32 bytes satisfy the on-chain format: the client seed is mixed into the VRF request, and the
   // seed itself comes from the oracle, not from anything chosen here.
   const clientSeed = crypto.getRandomValues(new Uint8Array(32));
@@ -361,10 +455,16 @@ async function drawSeed(ctx: KeeperContext, round: RawRoundAccount, roundPda: Pu
     roundIx.closeLobbyAndDraw(ctx.client.program, {
       payer: ctx.operator.publicKey,
       round: roundPda,
+      arena: ctx.client.arenaPda,
       clientSeed,
+      // `undefined` rather than `null` for the permissionless case: the builder turns an absent
+      // authority into the explicit `null` Anchor's optional-account resolver requires.
+      authority: authority ?? undefined,
     }),
+    // The operator signs either way — it is the fee payer on both paths and, on the early one, the
+    // arena authority whose signature IS the permission.
     ctx.operator,
-    `close_lobby_and_draw #${round.roundNo}`,
+    `close_lobby_and_draw #${round.roundNo}${authority ? " (authority early close)" : ""}`,
     { endpoint: fqdn },
   );
   if (outcome.sent) {
@@ -685,6 +785,12 @@ async function openNextRound(ctx: KeeperContext, roundNo: bigint): Promise<void>
   // Vestigial since the seed moved to the VRF oracle — any 32 bytes satisfy the on-chain format, and
   // the operator no longer chooses the seed at all. Kept because `open_round` still takes it.
   const seedCommit = crypto.getRandomValues(new Uint8Array(32));
+  // THE LOBBY LENGTH MEANS TWO DIFFERENT THINGS UNDER THE TWO POLICIES, which is why it is chosen
+  // here rather than fixed. Under the hold-open policy the deadline is a BACKSTOP — the keeper closes
+  // the lobby itself when a player arrives, so this is only "how long before I give up on this round
+  // and pay for another one". Without it the deadline is the SCHEDULE and the keeper has to open a
+  // lobby of exactly the length it intends to wait, because nothing else can end one.
+  const lobbySeconds = ctx.options.holdOpen ? HOLD_OPEN_LOBBY_SECONDS : DEFAULT_LOBBY_SECONDS;
   const outcome = await ctx.client.send(
     roundIx.openRound(ctx.client.program, {
       arena: ctx.client.arenaPda,
@@ -692,7 +798,7 @@ async function openNextRound(ctx: KeeperContext, roundNo: bigint): Promise<void>
       authority: ctx.operator.publicKey,
       roundNo,
       seedCommit,
-      lobbySeconds: DEFAULT_LOBBY_SECONDS,
+      lobbySeconds,
     }),
     ctx.operator,
     `open_round #${roundNo}`,
@@ -773,7 +879,19 @@ function publishRoundSnapshot(ctx: KeeperContext, state: KeeperChainState): void
     return;
   }
   const split = ctx.bank.classify(state.round);
-  ctx.publisher.setRound(roundStatusFrom(state.round, state.roundPda, split.houseCount, split.realCount));
+  // Computed from THIS snapshot, beside the counts it is consistent with, through the same predicate
+  // the phase machine branches on. That is what makes `heldOpen` incapable of contradicting the
+  // `phase` and `realFighterCount` published next to it.
+  const heldOpen = lobbyIsHeldOpen({
+    phaseCode: state.round.phase,
+    lobbyClosesAt: Number(state.round.lobbyClosesAt.toString()),
+    nowSec: state.nowSec,
+    realFighterCount: split.realCount,
+    holdOpen: ctx.options.holdOpen,
+  });
+  ctx.publisher.setRound(
+    roundStatusFrom(state.round, state.roundPda, split.houseCount, split.realCount, heldOpen),
+  );
 }
 
 /** The status file is fetched by a browser, so a failure message carrying twelve lines of program logs
@@ -828,6 +946,23 @@ async function main(): Promise<void> {
     );
   }
 
+  // THE ONE-DIRECTIONAL VETO ON `--hold-open`. `programFeatures` cannot tell us the early close is
+  // DEPLOYED — only the operator knows that, which is why the policy is a flag — but it can tell us
+  // the instruction cannot even be ENCODED, and that answer is worth refusing to start on. Anchor
+  // builds account lists by walking the IDL, so an `authority` the IDL has never heard of is silently
+  // dropped: the keeper would hold a lobby open, send what it believed was an early close, and get
+  // `LobbyStillOpen` — an error about the clock — every twenty seconds, with a real player standing
+  // in the room waiting for a fight that could not start. Better to say so before the first round.
+  const features = await readProgramFeatures();
+  if (options.holdOpen && !features.authorityEarlyClose) {
+    throw new Error(
+      "--hold-open needs an authority-signed early close, and the IDL this keeper builds from " +
+      "(public/idl/bulls_arena.json) has no `authority` account on close_lobby_and_draw. Anchor would " +
+      "drop it silently and every early close would come back as LobbyStillOpen while a real player " +
+      "waited. Deploy the program, regenerate the IDL, then re-run with --hold-open.",
+    );
+  }
+
   heading("choosing an ER validator");
   const validator = await selectWritableValidator();
   if (!validator) {
@@ -876,6 +1011,7 @@ async function main(): Promise<void> {
     stop: false,
     refreshAfterStep: false,
     lastDrawLogSec: 0,
+    lastHoldLogSec: 0,
   };
 
   // INSTALLED AFTER BOOT, ON PURPOSE. A failure during boot — an unreadable keypair, an arena whose

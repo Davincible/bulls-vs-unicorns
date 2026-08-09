@@ -290,7 +290,11 @@ describe("keeperCountdown", () => {
     // past, and a "0" shown while the branch still claims to be counting.
     for (let t = NOW + 27; t <= NOW + 33; t += 0.25) {
       const c = keeperCountdown(status(), t);
-      if (c.kind === "none") continue;
+      // Narrowed on the FIELD, not on a list of kinds. `KeeperCountdown` has two variants that carry
+      // no countdown (`none` and `waiting-for-players`) and this loop only has something to assert
+      // about the ones that do — excluding them by name meant the next variant added without
+      // `seconds` broke the build, which is exactly what happened.
+      if (!("seconds" in c)) continue;
       expect(Number.isInteger(c.seconds), `at ${t}`).toBe(true);
       expect(c.seconds, `at ${t}`).toBeGreaterThan(0);
     }

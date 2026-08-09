@@ -39,7 +39,18 @@
   --paper-2: #ffffff;
   --ink: #0b0b0b;
   --ink-2: #4d4d4d;
-  --ink-3: #8a8a8a;
+  /* THE FAINTEST INK THAT MAY CARRY A WORD. 4.54:1 on white — WCAG AA's 4.5:1 for text under 18px,
+     which is every word this page sets in it. It was #8a8a8a and that measured 3.45:1, so `.u` — the
+     10px tracked micro-label used for every column header, field name and status word on the page —
+     was the single most repeated failure here. The step from #8a8a8a to #767676 is one shade; the
+     page still reads as ink and a grey, and now the grey is legible. */
+  --ink-3: #767676;
+  /* 2.05:1, AND THAT IS ONLY LEGAL BECAUSE NOTHING SETS TEXT IN IT ANY MORE. WCAG exempts the text
+     of a DISABLED control (1.4.3 "Incidental"), which is now this token's entire job — `.btn:disabled`
+     and `.seg > button:disabled` — alongside hairline decoration. `.idx`, `.none`, `.u--faint`,
+     `.row--dead`, the placeholder and the `sim` badge's fill all used to live here and all failed;
+     they are on `--ink-3` now. Anything new that a sighted reader is expected to READ belongs there
+     too. This token is a state, not a shade of quiet. */
   --ink-4: #b5b5b5;
   --rule: #e4e4e4;
   --rule-2: #cccccc;
@@ -75,7 +86,14 @@
      decoded and bucketed by hue, counting only pixels with real chroma (sat > 45%, lightness
      18-88%) — both logos are mostly black, and averaging that in returns mud.
 
-       ANSEM  hue 129, #2b8c39 — the bull's horns and the rays behind it. Taken as sampled.
+       ANSEM  hue 129, sampled #2b8c39 — the bull's horns and the rays behind it. Deepened one step
+              to #278834, for the same reason UWU was and by the same means: the hue is the coin's
+              and only light was given up. The sampled green holds 4.27:1 on white, and this colour
+              is not only a graphic — `.pos` sets 12px P/L figures in it and `.split-a` carries 10px
+              white labels on it, and text on white owes 4.5:1 (AA, SC 1.4.3) where a pure graphic
+              would owe 3:1. At 4.51:1 a losing player can read what they lost. The step is a scale
+              of LINEAR rgb, which multiplies luminance and leaves chromaticity alone (paper.ts's
+              `scaleLuminance`), so this is hue 128 — the same green, one step down.
        UWU    hues 264-300, weighted mean #a00ad5 — the ring and the mane. Deepened one step to
               #8f09bf: at the logo's own lightness it glares against a white page, and this is a
               page whose whole argument is restraint. The hue is the coin's.
@@ -89,7 +107,7 @@
      them — keeping the hue exactly, giving up only light — until each holds at least the contrast it
      holds here. They say which side a fighter is on and whether a number is a loss, so a sheet that
      swallowed one would have broken the page, not merely dulled it. */
-  --a: #2b8c39;          /* side 0 — ANSEM */
+  --a: #278834;          /* side 0 — ANSEM */
   --b: #8f09bf;          /* side 1 — UWU */
   --accent: #f7ce2b;     /* UWU coat yellow — on --ink backgrounds only */
   --hot: #c4291a;        /* loss, death, danger */
@@ -146,13 +164,20 @@ body {
   color: var(--ink-3);
 }
 .u--ink { color: var(--ink); }
-.u--faint { color: var(--ink-4); }
+/* A NO-OP, KEPT ON PURPOSE. It was `--ink-4` (2.05:1) — one step quieter than `.u` and one step past
+   readable. There is no legal step below `--ink-3` for a word, so "faint" now resolves to the same
+   colour `.u` already has and this class earns nothing but its two call sites (PaperTheme.tsx's `dev`
+   tag, DashboardView.tsx's "fixture, not a live round"). Left in place rather than deleted so those
+   keep compiling, and left visible rather than silently aliased so the next reader can decide whether
+   they want the word gone or want a real distinction — which would have to be weight or case, not
+   colour, because the page has run out of grey. */
+.u--faint { color: var(--ink-3); }
 
 /* `.idx` — the section index number ("00-1.2"). Sits beside a heading, never inside it. */
 .idx {
   font: 400 10px/1.2 var(--mono);
   letter-spacing: 0.08em;
-  color: var(--ink-4);
+  color: var(--ink-3);
   white-space: nowrap;
 }
 
@@ -199,15 +224,20 @@ body {
 .dim { color: var(--ink-3); }
 
 /* A no-data cell reads "—", never "0" (UI-SPEC.md's rule). */
-.none { color: var(--ink-4); }
+.none { color: var(--ink-3); }
 
-/* `.sim` — the marker every simulated (non-chain) figure must carry. */
+/* `.sim` — the marker every simulated (non-chain) figure must carry.
+   ITS FILL IS `--ink-3` AND MUST STAY READABLE. White type on the old `--ink-4` fill measured 2.05:1,
+   which made the one badge on the page that says "this figure is not real money" the least legible
+   thing on it — a provenance marker nobody can read is worse than none, because the figure beside it
+   still looks like money. On `--ink-3` it is 4.54:1, and it still reads as the grey counterpart to
+   `.live`'s black: the pair is ink versus grey, which survives at any legible pair of tones. */
 .sim {
   font: 400 9px/1 var(--mono);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--on-ink);
-  background: var(--ink-4);
+  background: var(--ink-3);
   padding: 3px 4px;
   vertical-align: 2px;
 }
@@ -335,8 +365,12 @@ a:hover { border-bottom-color: var(--ink); }
 .row--click { cursor: pointer; }
 .row--click:hover { background: var(--wash); }
 .row--you { box-shadow: inset 2px 0 0 var(--ink); font-weight: 600; }
-.row--dead { color: var(--ink-4); }
-.row--dead .num { color: var(--ink-4); }
+/* A dead fighter's row is QUIET, NOT UNREADABLE. It carries the whole of that player's money — what
+   they entered with, what they left with, what it cost them — and at `--ink-4`'s 2.05:1 the row a
+   reader most wants to check was the one row they could not. `--ink-3` is still a clear step below
+   the living rows' full ink and it is a step a reader can follow. */
+.row--dead { color: var(--ink-3); }
+.row--dead .num { color: var(--ink-3); }
 .r { text-align: right; }
 
 /* =============================================================================================
@@ -383,7 +417,41 @@ a:hover { border-bottom-color: var(--ink); }
 
 /* =============================================================================================
    CONTROLS
-   ============================================================================================= */
+   =============================================================================================
+   TARGET SIZE — the rule, not a set of one-offs. An audit at 390x844 found 55 of 56 visible controls
+   under 44x44 and two of them under 24x24, so this is written down here rather than fixed where it
+   was noticed.
+
+     1. 24x24 CSS PX IS THE HARD FLOOR, EVERYWHERE. WCAG 2.2 SC 2.5.8 Target Size (Minimum), level
+        AA. Nothing on this page may be smaller in any state. A 13px checkbox and a 16px-tall slider
+        track were the only two outright breaches and neither is defensible at any density: they are
+        not dense, they are simply small.
+
+     2. 44x44 IS THE FLOOR FOR A STANDALONE CONTROL UNDER `max-width: 900px` — buttons, segmented
+        cells, tabs, form controls, close buttons. That breakpoint is the phone, where the pointer is
+        a thumb roughly 44px across and there is no hover to aim with. These controls stand alone
+        with whitespace around them, so thumb height costs VERTICAL RHYTHM AND NOTHING ELSE. No type
+        size, no tracking and no letterform changes anywhere below: the phone gets more air, not
+        bigger text.
+
+        WHERE THE AIR GOES IS NOT ARBITRARY. A control whose meaning is carried by a hairline — a
+        tab's underline, an input's bottom rule — grows on the side AWAY from that hairline, so the
+        mark stays the same distance from the word it belongs to. A control with a box around it
+        (`.btn`, `.seg > button`) grows symmetrically, because its box is already the boundary.
+
+     3. DENSE TABLE ROWS STAY AT 32PX AND THAT IS A DECISION. `.row--click` is 32px tall, which
+        clears the 24px floor with 8px to spare, and rule 2 does not reach it: a roster row is not a
+        standalone control, it is one line of a table the reader is scanning. Inflating every row to
+        44px would cut the fighters visible on a phone by a third, and dense legible data is this
+        page's entire argument — the table is the product. `.row`/`.row--click` padding is therefore
+        deliberately untouched by everything below. If a future audit flags these rows, this
+        paragraph is the answer; please do not re-litigate it silently.
+
+     4. INLINE LINKS ARE EXEMPT and stay exempt — SC 2.5.8's "inline" exception covers a target
+        sitting inside a sentence, whose size is set by the line-height of the prose around it.
+
+   The `max-width: 900px` half of this lives in the one media query at the bottom of the file, with
+   the rest of the phone's layout, rather than scattered through each rule. */
 
 .btn {
   font: 400 11px/1 var(--mono);
@@ -458,11 +526,43 @@ select {
   outline: none;
   width: 100%;
 }
-input::placeholder { color: var(--ink-4); }
-input[type="range"] { width: 100%; accent-color: var(--ink); }
-input[type="checkbox"] { accent-color: var(--ink); }
+/* An ENABLED field's placeholder is text a sighted reader is expected to read, and 1.4.3's exemption
+   covers disabled controls only — so it is `--ink-3` like every other quiet word here, not `--ink-4`. */
+input::placeholder { color: var(--ink-3); }
 
-:focus-visible { outline: 1px solid var(--ink); outline-offset: 2px; }
+/* THE HIT AREA IS NOT THE DRAWING. The slider measured 274x16 — under the 24px floor on its short
+   axis, and 16px is a hard thing to catch with a thumb even above it. The fix is height on the input
+   and nothing else: a range input's track and thumb are drawn CENTRED in its content box by every
+   engine, so growing the box grows the region that accepts the drag while the track stays exactly the
+   hairline it was. Restyling the track (`::-webkit-slider-runnable-track` and friends) would have made
+   it thicker to hit, which is the drawing paying for the target's problem. */
+input[type="range"] {
+  width: 100%;
+  min-height: 28px;
+  vertical-align: middle;
+  accent-color: var(--ink);
+}
+
+/* 13px was the UA default and it broke the 24px floor outright. 18px is the box: it is the cap height
+   of the 12px label beside it, so the control reads as part of the sentence rather than as a widget
+   dropped into it.
+   THE TARGET IS THE LABEL, NOT THE BOX. Understanding SC 2.5.8 counts the whole clickable region of a
+   labelled control, and every checkbox on this page is wrapped in a `<label>` (`.opt`, styled in
+   views/ArenaView.css) that is a full-width row over 44px tall — which is what actually clears the
+   floor, on the phone and on the desktop. A checkbox added WITHOUT that wrapper does not clear it and
+   would need its own padded hit area. */
+input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--ink);
+}
+
+/* 2px, DELIBERATELY, and it is not a hairline. Rules 1 and 2 of the design law govern the marks that
+   SEPARATE things — borders, dividers, the lines a section is built from — and a focus ring separates
+   nothing: it is a STATE INDICATOR, drawn only while a keyboard is driving the page, and it has to be
+   found at a glance by the one reader who cannot see where the pointer is. WCAG 2.2 SC 2.4.11 and
+   2.4.13 both ask for a real perimeter for exactly that reason. Please do not tidy this back to 1px. */
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
 /* A key/value pair, stacked: value first, label under it. The page's basic unit of fact. */
 .kv { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
@@ -499,6 +599,14 @@ input[type="checkbox"] { accent-color: var(--ink); }
 .mk { width: 7px; height: 7px; flex: none; display: inline-block; background: var(--ink); }
 .mk--a { background: var(--a); }
 .mk--b { background: var(--b); }
+/* THE ONE MARK LEFT ON `--ink-4` ON PURPOSE, and the exception is worth stating. At 2.05:1 against the
+   sheet it is under SC 1.4.11's 3:1 for a meaningful graphic — but it is the LIGHTEST mark on the
+   page by construction, and that is what stops it from ever being mistaken for a side: a neutral at
+   `--ink-3`'s lightness sits exactly where `--a` does (both L≈0.18), so to a red-green-blind reader a
+   dead marker and an ANSEM marker would become the same square. Fixing the ratio would break the
+   distinction the square exists to make. It is legal instead because it is not the sole carrier: the
+   whole row is toned down and the row's `OUT` cell says so in words — and `.sr` (in UTILITIES) is
+   there so the square can say it too. Do not "fix" this to `--ink-3` without removing one of those. */
 .mk--dead { background: var(--ink-4); }
 
 /* =============================================================================================

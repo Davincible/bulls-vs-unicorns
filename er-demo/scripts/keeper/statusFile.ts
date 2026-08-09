@@ -141,6 +141,33 @@ export function honestNextLobbyOpensAt(
   return { at: candidate, latch: { roundNo: round.no, at: candidate } };
 }
 
+/**
+ * THE SAME RULE FOR `entriesCloseAt`, MINUS THE LATCH — and the missing latch is the interesting part.
+ *
+ * PROPERTY ONE IS IDENTICAL AND IS WHY THIS FUNCTION EXISTS AT ALL: a close time is published only
+ * beside a round that is genuinely still in `Lobby`. The pair `{round.phase, entriesCloseAt}` is
+ * written by two different parts of a pass, so the same contradiction `honestNextLobbyOpensAt` was
+ * written for is available here — the phase snapshot taken before the early close lands and the
+ * countdown set during it, leaving the file claiming that entries close in eight seconds beside a
+ * round that is already `Drawing`. `keeperCountdown` happens to ignore it in that phase; the FILE
+ * would still be asserting something untrue, and the next reader has no way to know.
+ *
+ * PROPERTY TWO NEEDS NOTHING HERE, WHICH IS WORTH SAYING RATHER THAN LEAVING TO BE NOTICED.
+ * `nextLobbyOpensAt` has to be latched because its candidate is recomputed as `now + hold` on every
+ * pass, so an unlatched one sawtooths. This candidate is `firstRealEntryObservedAt + grace`, and
+ * `firstRealEntryObservedAt` is ALREADY latched per round, in the keeper's timeline, by the branch
+ * that stamps it. So the value proposed on every pass of a lobby is the same value, and a second
+ * latch here would be machinery guarding an invariant that is already true one layer up — which is
+ * worse than useless, because it would hide a regression in the layer that actually holds it.
+ */
+export function honestEntriesCloseAt(
+  round: KeeperRoundStatus | null,
+  candidate: number | null,
+): number | null {
+  if (round === null || round.phaseCode !== Phase.Lobby) return null;
+  return candidate;
+}
+
 // ---------------------------------------------------------------------------------------------
 
 export interface StatusPublisherOptions {
@@ -162,6 +189,9 @@ export interface StatusPublisher {
   /** Proposes a next-lobby time. What actually reaches the file is decided by
    *  `honestNextLobbyOpensAt` against the round currently set — see that function. */
   setNextLobbyOpensAt(at: number | null): void;
+  /** Proposes the instant the keeper intends to stop taking entries. Reconciled at write time by
+   *  `honestEntriesCloseAt` against the round currently set — see that function. */
+  setEntriesCloseAt(at: number | null): void;
   setLastError(err: KeeperError | null): void;
   setStalledSince(at: number | null): void;
   /** True when this round number had not been recorded before — so the caller can raise the alarm
@@ -199,6 +229,7 @@ export function createStatusPublisher(options: StatusPublisherOptions): StatusPu
       erValidator: null,
     },
     round: null,
+    entriesCloseAt: null,
     nextLobbyOpensAt: null,
     house: { wallets: options.houseWallets, disclosure: options.disclosure },
   };
@@ -206,14 +237,17 @@ export function createStatusPublisher(options: StatusPublisherOptions): StatusPu
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let latch: CountdownLatch | null = null;
   let proposedNextLobbyOpensAt: number | null = null;
+  let proposedEntriesCloseAt: number | null = null;
   let writeFailures = 0;
 
   function write(): void {
-    // The countdown is reconciled against the round at WRITE time, not at set time, because the two
-    // are assigned by different parts of a pass and only their final pairing is what a reader sees.
+    // Both countdowns are reconciled against the round at WRITE time, not at set time, because the
+    // three are assigned by different parts of a pass and only their final pairing is what a reader
+    // sees.
     const decided = honestNextLobbyOpensAt(status.round, proposedNextLobbyOpensAt, latch);
     latch = decided.latch;
     status.nextLobbyOpensAt = decided.at;
+    status.entriesCloseAt = honestEntriesCloseAt(status.round, proposedEntriesCloseAt);
 
     // Same directory as the target — see this file's header on why a cross-device rename would not be
     // atomic. The pid keeps two keeper processes (a stray one and its replacement) from writing the
@@ -249,6 +283,7 @@ export function createStatusPublisher(options: StatusPublisherOptions): StatusPu
     setErValidator(validator) { status.chain.erValidator = validator; },
     setRound(round) { status.round = round; },
     setNextLobbyOpensAt(at) { proposedNextLobbyOpensAt = at; },
+    setEntriesCloseAt(at) { proposedEntriesCloseAt = at; },
     setLastError(err) { status.keeper.lastError = err; },
     setStalledSince(at) { status.keeper.stalledSince = at; },
     addWedgedRound(roundNo) {

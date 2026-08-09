@@ -446,9 +446,17 @@
 .ovl-list > li > b { font-weight: 500; color: var(--ink); }
 
 @media (max-width: 900px) {
+  :root { --chrome-h-b: 48px; }
+
   .tele { display: none; }
   .rail { width: 100vw; }
   .ovl-list > li { grid-template-columns: 1fr; gap: 3px; }
+
+  /* THE NAV IS THE THUMB'S TARGET, so it takes the whole height of the taller bar. The active
+     screen's inverted block growing to fill the bar is a bonus, not a side effect: on a phone the
+     nav labels are 9px and the fill is what actually says which screen you are on. */
+  .nav > button { min-height: var(--chrome-h-b); }
+  .chrome--bottom .cbtn { min-height: 44px; }
 
   /* Three groups will not sit on one line at this width. The score gets a row of its own rather than
      a 40px stub of split bar — it is the half of this strip that has no other home, since the top
@@ -458,11 +466,65 @@
   .sbar-prog { gap: 14px; }
   .sbar-score { flex: 1 0 100%; order: 3; }
 
-  /* The toast column is `min(520px, 60vw)` and grows upward from the same bottom edge; from here
-     down it and the dock overlap horizontally, so the dock stands on top of the stack instead.
-     `--toasts-h` is the measured height of the column (StakeDock.tsx), gap included. */
-  .dock,
-  .dock-handle { --dock-lift: var(--toasts-h, 0px); }
+  /* --- the dock, on a phone --------------------------------------------------------------- */
+
+  /* FULL BLEED, ON THE FLOOR. A 320px panel floating in the bottom-right of a 390px screen is not a
+     corner, it is a lid: measured at 390x844 it covered 82% of the width and a third of the height of
+     every screen, and followed the reader down five thousand pixels of page. Below this breakpoint
+     the dock stops floating and becomes the bottom edge — flush to the chrome, hairline on top only,
+     no side gutters, because a full-bleed surface with 14px of paper showing either side reads as a
+     panel that failed to fit rather than as a bar.
+     The COLLAPSED state (`.dock-bar`) is the default here and costs one line; the OPEN state
+     (`.dock--sheet`) is an explicit tap and is capped at 60vh so it can never bury more than it
+     reveals. Both publish their height as `--dock-h` (StakeDock.tsx) and everything below stacks on
+     it. */
+  .dock--sheet,
+  .dock-bar {
+    left: 0;
+    right: 0;
+    bottom: var(--chrome-h-b);
+    width: auto;
+    max-width: none;
+    border-width: 1px 0 0;
+  }
+  .dock--sheet {
+    max-height: 60vh;
+    overflow-y: auto;
+    padding: 12px var(--gut) 16px;
+  }
+  /* The bar: the phase sentence, and the button that opens the controls. Baseline-aligned so the
+     label and its sentence sit on one line rather than stacking into a two-line bar. */
+  .dock-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px var(--gut);
+    min-height: 44px;
+  }
+  .dock-bar > .phase-note {
+    grid-auto-flow: column;
+    justify-content: start;
+    align-items: baseline;
+    gap: 9px;
+    min-width: 0;
+  }
+  .dock-bar .phase-note-b {
+    font-size: 11.5px;
+    line-height: 1.35;
+    color: var(--ink);
+  }
+  .dock-bar-x { margin-left: auto; flex: none; }
+
+  /* The bar is the floor, so these stand ON it. Both selectors are element-qualified on purpose:
+     `.page` and `.toasts` are declared in base.css, which loads AFTER this file (main.tsx imports
+     App.tsx — and therefore this stylesheet — before base.css), so a bare class here would lose the
+     tie. They are overridden from the shell because it is the shell's bars that consume the space. */
+  main.page { padding-bottom: calc(var(--chrome-h-b) + var(--dock-h, 0px) + 32px); }
+  div.toasts {
+    bottom: calc(var(--chrome-h-b) + var(--dock-h, 0px) + 10px);
+    right: var(--gut);
+    max-width: none;
+  }
 }
 
 @media (max-width: 700px) {

@@ -128,20 +128,25 @@ function useMatches(query: string): boolean {
  *  Measured rather than counted, for the same reason as before: the bar is one line in Lobby and the
  *  expanded panel is anywhere from 120px to a capped 60vh, and no constant could track that.
  *
- *  A CALLBACK REF rather than an effect on a `useRef`, because this component renders one of three
- *  different elements (bar, panel, nothing at all) and React hands a callback ref `null` on the way
- *  out — which is exactly the moment `--dock-h` has to go back to zero, or the toasts spend the rest
- *  of the session floating above a dock that has unmounted. */
+ *  A CALLBACK REF, AND NO EFFECT AT ALL. Two things force this and both cost a debugging session if
+ *  you get them wrong.
+ *
+ *  The first is that this component renders one of three different elements (bar, panel, nothing),
+ *  and React hands a callback ref `null` on the way out — which is exactly the moment `--dock-h` has
+ *  to go back to zero, or the toasts spend the rest of the session floating above a dock that has
+ *  unmounted.
+ *
+ *  The second is that the observer's whole lifetime has to live in the ref too, and not in a
+ *  `useEffect` cleanup. Under `StrictMode` React mounts effects, tears them down and mounts them
+ *  again — but it does NOT re-run a callback ref, and when the collapsed bar and the open panel are
+ *  both a `<section>` in the same position it does not even re-attach the ref between them, it
+ *  updates the same DOM node in place. So an effect cleanup that disconnected the ResizeObserver
+ *  killed it on the second pass and nothing ever reconnected it: the height published at first paint
+ *  (44px, the bar) stuck permanently, and opening the panel to 258px moved nothing. Attach in the
+ *  ref, disconnect in the ref, and both the StrictMode replay and the in-place branch swap are
+ *  correct for free. */
 function useDockHeight(): (el: HTMLElement | null) => void {
   const observer = useRef<ResizeObserver | null>(null);
-
-  useEffect(
-    () => () => {
-      observer.current?.disconnect();
-      document.documentElement.style.removeProperty("--dock-h");
-    },
-    [],
-  );
 
   return useCallback((el: HTMLElement | null) => {
     observer.current?.disconnect();
