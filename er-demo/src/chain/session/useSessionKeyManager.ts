@@ -14,7 +14,7 @@ import { useCallback, useMemo } from "react";
 import type { AnchorWallet } from "@solana/wallet-adapter-react";
 import type { Cluster, Connection, Transaction } from "@solana/web3.js";
 import { PublicKey } from "@solana/web3.js";
-import { useSessionKeyManager as useGumSessionKeyManager } from "@magicblock-labs/gum-react-sdk";
+import { GPLSESSION_PROGRAMS, useSessionKeyManager as useGumSessionKeyManager } from "@magicblock-labs/gum-react-sdk";
 
 /** Everything chain/round.ts and the UI need to build a session-signed `enter()`/`extract()` call.
  *  Deliberately holds no gum-react-sdk types — see this file's header comment. */
@@ -87,13 +87,39 @@ export function useAppSessionManager(
 
   const active = useMemo<ActiveSession | null>(() => {
     if (!gum.sessionToken || !gum.publicKey || !gum.signTransaction) return null;
+
+    // gum persists a session across reloads (localStorage/IndexedDB), so `gum.sessionToken` can
+    // outlive the wallet it was minted for — chain/useSigner.ts can hand us a DIFFERENT burner than
+    // the one that signed `create_session`. gum does not re-check that binding, so without this the
+    // hook happily reports a live session whose token names someone else's `authority`, and every
+    // enter/extract fails on-chain with InvalidToken — mid-fight, which is the exact moment this
+    // feature exists to keep smooth.
+    //
+    // The token's address IS the binding: `gpl_session` derives it from
+    // [b"session_token", target_program, session_signer, authority]. Re-deriving it from the CURRENT
+    // wallet and comparing is a complete check — a token that doesn't match these three inputs is,
+    // by construction, not a token this wallet can use against this program. Cheap, local, and it
+    // subsumes the wallet-changed case rather than special-casing it.
+    const [expected] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("session_token"),
+        targetProgram.toBuffer(),
+        gum.publicKey.toBuffer(),
+        wallet.publicKey.toBuffer(),
+      ],
+      // Sourced from the SDK rather than hardcoded — same as scripts/verify-session-base.mjs does,
+      // so the app and its verification can never disagree about which program mints the token.
+      GPLSESSION_PROGRAMS[cluster === "localnet" ? "devnet" : cluster],
+    );
+    if (!expected.equals(new PublicKey(gum.sessionToken))) return null;
+
     return {
       signerPubkey: gum.publicKey,
       playerPubkey: wallet.publicKey,
       sessionTokenPda: new PublicKey(gum.sessionToken),
       signTransaction: gum.signTransaction,
     };
-  }, [gum.sessionToken, gum.publicKey, gum.signTransaction, wallet.publicKey]);
+  }, [gum.sessionToken, gum.publicKey, gum.signTransaction, wallet.publicKey, targetProgram, cluster]);
 
   const createSession = useCallback(async () => {
     await gum.createSession(targetProgram, SESSION_TOP_UP_LAMPORTS, SESSION_VALID_MINUTES);

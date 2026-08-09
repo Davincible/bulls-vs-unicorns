@@ -441,6 +441,29 @@ because this fork cannot reach mainnet by construction (ER-000).
 > throwaway program first (commit `e3fb149`), with a negative control, before the real program was
 > touched. That sequencing is what made this safe to ship rather than a gamble.
 >
+> **What is PROVEN, and what is not — the distinction matters more than a green tick.**
+> `er-demo/scripts/verify-session-base.mjs` proves **8 authorization properties** against the real
+> deployed bytecode (sha256-matched to `target/deploy/bulls_arena.so`), with real signatures, for BOTH
+> `enter` and `extract`: a session key may sign on the player's behalf and **the player is what gets
+> credited** (session key absent from `Round.fighters`, side and net-of-fee stake asserted); a forged
+> signer is rejected with or without a token; **an attacker's own valid token aimed at someone else's
+> fighter is rejected**; a token scoped to a different `target_program` is rejected; an expired token
+> is rejected even when presented by its own real session key; and with no token at all,
+> `signer == player` is still required and still works (the unmodified pre-Phase-6 path).
+>
+> That third one nearly slipped through. Every negative control originally varied the *signer* and
+> held `player` fixed — so they only ever exercised the `session_signer` seed, and the
+> `authority`↔`player` binding had **zero coverage**. Under a regression there, anyone holding any
+> valid session could **force-extract any live fighter mid-fight**, banking their hp and pulling them
+> from the ring — directly moving the round's outcome — and every existing assertion would still have
+> passed. It is now a permanent test, not an ad-hoc check.
+>
+> **NOT proven:** a session-signed `extract` *landing in real Fight phase* with a confirmed
+> signature. Authorization is proven three ways and the handler body is byte-unchanged, but the
+> transaction was never landed, because reaching Fight requires the VRF oracle and therefore the ER —
+> and every public devnet ER validator is currently serving pre-upgrade bytecode or gating writes
+> (see below). Stated plainly rather than papered over.
+>
 > **One real bug this shook out, worth remembering:** `anchor-lang = "1.0.2"` (Cargo's default caret
 > range) silently resolved to **1.1.2**, whose `anchor-syn` migration from syn 1.x to syn 2.0 broke
 > `#[derive(Accounts, Session)]` + `#[session(...)]` **with no compile error at all** — it only

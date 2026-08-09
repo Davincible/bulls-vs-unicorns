@@ -77,6 +77,42 @@ the `Program` account), or document the actual cache lifetime/invalidation trigg
 developer redeploying mid-session knows to expect (and how to force past) stale bytecode on
 already-warm validators, rather than discovering it by accident.
 
+**UPDATE, same day, and it's worse than the above.** After a second upgrade, **three of four** public
+devnet ER validators (`devnet-eu`, `devnet-as`, `devnet-us`) were serving the pre-upgrade build; the
+fourth (`devnet-tee`) had the current one but 401-gates writes. So the workaround above — "pin a
+different validator" — had no unstale, writable validator left to pin. A 25-minute watcher never saw
+a refresh. This currently blocks any on-ER verification of a freshly-upgraded program.
+
+**The detail that makes this actively misleading, not merely inconvenient:** on a stale validator,
+the `programdata` account reads as **current** while the executable (LoaderV4-owned) account is still
+the **old build**. The obvious way to check "did my upgrade propagate?" — inspect programdata — says
+yes while the validator continues executing the old bytecode. We only caught it by comparing executable
+account *sizes* and by the old code's own error surfacing (`AccountNotSigner` from a `player: Signer`
+field that no longer exists in the current source). Anyone trusting programdata would conclude their
+upgrade landed and then debug a phantom bug in their new code.
+
+**Suggested minimum:** expose the executing bytecode's hash/length over RPC so a client can detect
+staleness deterministically, instead of inferring it from account sizes and error-message archaeology.
+
+---
+
+## 2026-08-09 — Two smaller `gum-react-sdk` / `session-keys` notes
+
+**[BUG] `useSessionKeyManager`'s `.d.ts` mistypes its third parameter.** It's named `validUntil` and
+typed as though it were an absolute timestamp. Reading the compiled hook, it is actually **minutes
+from now**: `expiryTimestamp = Math.ceil((Date.now() + expiryInMinutes * 60 * 1000) / 1000)`, capped
+at `24 * 60` (it throws "Expiry cannot be more than 24 hours" above that). Passing a real Unix
+timestamp — the obvious reading of the name and type — throws. Since no source ships (see the entry
+below), the `.d.ts` is the only spec a consumer has, and it's wrong.
+
+**[GAP] `SessionError::InvalidToken` is error code 6001** — which, for any Anchor program whose own
+second error variant is also 6001, collides on the wire. Ours is `ArenaError::RoundOutOfOrder`; both
+render as `0x1771`. A decoder using *our* IDL confidently reports a session-auth rejection as
+"rounds must open in sequence." Not MagicBlock's bug exactly — it's inherent to Anchor's per-program
+error numbering — but it's a sharp edge specific to a library whose errors surface inside *someone
+else's* program, and worth a line in the docs. We now assert on the `Error Code: <name>` log line
+rather than the numeric code.
+
 ---
 
 ## 2026-08-09 — Phase 0 spike: Session Keys + Ephemeral Rollup delegation
