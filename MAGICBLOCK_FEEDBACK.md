@@ -10,6 +10,78 @@ documentation or capability), **[BUG]**, or **[FEATURE REQUEST]**.
 
 ---
 
+## 2026-08-09 — Detecting a stale ER bytecode clone: the size check is unreliable, and comparing bytes works
+
+Follow-up to the bytecode-cache entry below, from a third upgrade of the same program. Three things
+are new: a **correction to our own recommended diagnostic**, a worse data point, and a router RPC we
+didn't know existed.
+
+**[CORRECTION — ours, not MagicBlock's] Comparing executable account SIZES does not reliably detect a
+stale clone.** The entry below says we caught staleness "by comparing executable account *sizes*."
+That worked by luck. A `LoaderV4`-owned clone is a **48-byte header plus the program data account's
+entire allocation** — i.e. its length tracks the deploy's `--max-len`, **not** the ELF inside it. Two
+completely different builds deployed under the same `max_len` measure byte-for-byte identical in
+length. What our size check actually detected was a clone frozen at a `max_len` the base layer had
+since grown past, which only happened because that particular upgrade extended the account.
+
+Measured on v3, deployed with `--max-len 350000` against a 316,752-byte `.so`:
+
+```
+base ProgramData   len = 350,045   (max_len = len - 45 = 350,000)
+ER LoaderV4 clone  len = 350,048   (         len - 48 = 350,000)
+```
+
+Both resolve to the same `max_len`, and neither is the 316,752 bytes of actual program.
+
+**What does work, deterministically:** read the clone and compare its bytes against the local
+artifact.
+
+```ts
+const acct = await new Connection(erFqdn).getAccountInfo(PROGRAM_ID);
+const cloned = acct.data.subarray(48, 48 + localElf.length);   // 48 = LoaderV4 header
+const current = Buffer.from(cloned).equals(Buffer.from(localElf));
+```
+
+That is one RPC call, costs nothing, and answers the question before a lamport is spent. It is
+implemented as a preflight in `er-demo/scripts/verify-stepped-fight.ts` (`pickValidator`), which now
+prints per-validator `CURRENT — byte-identical to the local build` / `STALE`. This is a workaround for
+the missing RPC surface requested below, not a substitute for it — it only works if you happen to
+have the exact `.so` that was deployed.
+
+**Worse data point.** After upgrading v2 in place, **all four** validators the router advertises were
+serving the previous build — including `devnet-tee`, which the entry below recorded as having the
+current build. Re-probed ten minutes later: unchanged. Burning the program id was again the only
+recovery, so we deployed **v3** (`8s3x42af7gcNXDCTNheDtteQxeBS2D1p9xuU8C5Jgfrt`). That is now **two
+consecutive sessions** where a correct base-layer upgrade could only be made executable by abandoning
+the program id — which also abandons its PDAs, so every account keyed by that id (for us: the Arena
+and every round number) restarts from scratch. The cost of this compounds; it isn't a one-time tax.
+
+**[GAP] The router exposes `getRoutes`, and we found it by guessing.** Not in the docs we could find,
+and not surfaced by `ConnectionMagicRouter`'s API:
+
+```
+POST https://devnet-router.magicblock.app  {"method": "getRoutes", "params": []}
+-> [{ identity, fqdn, baseFee, blockTimeMs, countryCode }, ...]
+```
+
+This is the only way we found to *enumerate* validators — which matters precisely for the problem
+above, where you need to check every validator before concluding your program id is unusable. Our
+scripts had been carrying a hardcoded list of three endpoints; `getRoutes` returned four. Worth
+documenting, and worth having `ConnectionMagicRouter` expose as a typed method.
+
+**Not a complaint, worth recording as measured fact:** `getRoutes` reports `blockTimeMs: 50` for all
+four devnet validators, not the 10ms that headline material tends to cite. Separately, a confirmed
+write through the Magic Router — our `tick()` instruction, 24 of them across four rounds — measured
+**~780–880ms wall-clock, client-observed**. That figure is *not* block time and shouldn't be read as
+one: it includes a `getBlockhashForAccounts` round trip to the router, the send, and
+`confirmTransaction`'s own polling granularity. But it is the number a real-time client actually
+designs against, and it is ~16x the advertised block time. We'd have saved a design iteration if the
+docs stated the expected end-to-end confirmed-write latency alongside block time — we sized a
+client-side fight ticker at "one second of game state per call", which fell permanently behind at that
+round-trip and had to be re-sized to catch up (`er-demo/src/chain/useFightTicker.ts`).
+
+---
+
 ## 2026-08-09 — `session-keys` macros break silently on anchor-lang 1.1.x (no compile error)
 
 **[BUG]** `session-keys` 3.1.1's `Cargo.toml` declares `anchor-lang = { version = ">=0.28, <2.0" }`

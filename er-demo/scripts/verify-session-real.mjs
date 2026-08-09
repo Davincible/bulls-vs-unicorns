@@ -164,7 +164,12 @@ async function selectValidator(routerUrl, programId) {
 
 const Phase = { Lobby: 0, Drawing: 1, Fight: 2, Settled: 3 };
 const PHASE_NAME = ["Lobby", "Drawing", "Fight", "Settled"];
-const MIN_FIGHT_SECONDS = 5;
+// A settling pause before `resolve`, local to this script. It is no longer named after an on-chain
+// constant: `MIN_FIGHT_SECONDS` was removed when the fight became stepped (a flat floor let a
+// permissionless caller settle a live fight at the moment it favoured them). `resolve` now needs the
+// fight to be OVER — which it is here, because both fighters extract above — or the bell to have
+// rung. The retry below still covers the case where neither is true yet.
+const SETTLE_PAUSE_SECONDS = 5;
 
 const c = { r: "\x1b[31m", g: "\x1b[32m", y: "\x1b[33m", d: "\x1b[2m", b: "\x1b[1m", x: "\x1b[0m" };
 const ok = (s) => console.log(`  ${c.g}✓${c.x} ${s}`);
@@ -559,8 +564,8 @@ const signatures = {};
     }
 
     // ---- resolve + close_round — leave the round in a clean, settled state --------------------------
-    heading("12. resolve — waiting out MIN_FIGHT_SECONDS, then settling");
-    const targetWaitMs = (MIN_FIGHT_SECONDS + 2) * 1000 - (Date.now() - fightStartedAtWall);
+    heading("12. resolve — both fighters have left the ring, so the fight is over; settling");
+    const targetWaitMs = (SETTLE_PAUSE_SECONDS + 2) * 1000 - (Date.now() - fightStartedAtWall);
     if (targetWaitMs > 0) { info(`waiting ${(targetWaitMs / 1000).toFixed(1)}s more…`); await sleep(targetWaitMs); }
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {

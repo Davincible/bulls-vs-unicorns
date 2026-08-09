@@ -778,6 +778,21 @@
   color: var(--ink);
 }
 
+/* Live count of Ephemeral Rollup writes this browser has landed to advance THIS fight. Sits between
+   the explanatory prose and the phase chip, in mono because it's a measured quantity rather than
+   copy — the same reasoning every other real number on this page follows. Gold: it's the one value
+   on the bar that is actively moving while you watch, and gold is this palette's "live" accent.
+   Deliberately quieter than the phase chip, which is the thing you navigate by. */
+.app-arena-ticks {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: var(--gold);
+  white-space: nowrap;
+}
+
 /* Lobby state. Not an error and not a spinner — the round genuinely has nothing to draw yet, so it
    says so, at the canvas's exact dimensions so that the page doesn't jump when the fight starts.
    The faint radial matches the Pixi backdrop's own clear colour so the empty frame reads as the

@@ -15,8 +15,30 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-const ARG = new Set(process.argv.slice(2));
+const ARGV = process.argv.slice(2);
+const ARG = new Set(ARGV);
 const DO_DEPLOY = ARG.has("--deploy");
+
+// --max-len <bytes>: the size the on-chain ProgramData account is allocated at.
+//
+// Only matters for a FIRST deploy of a program id (an upgrade reuses whatever the account already
+// is), and it matters a lot here. The Solana CLI defaults a new deploy to TWICE the binary's length,
+// and rent-exemption is charged on that: at 316 KB that is 4.41 SOL against a faucet-limited payer
+// holding 4.51 — the deploy would succeed and leave nothing to actually run a round with. Passing a
+// real number instead buys exactly the headroom a future upgrade needs and no more.
+//
+// The trade is honest and worth stating: a later build LARGER than this cannot be upgraded into the
+// account. `solana program extend` raises it (for more rent) when that day comes.
+const MAX_LEN = (() => {
+  const i = ARGV.indexOf("--max-len");
+  if (i < 0) return null;
+  const n = Number(ARGV[i + 1]);
+  if (!Number.isInteger(n) || n <= 0) {
+    console.error(`--max-len needs a positive byte count, got ${ARGV[i + 1]}`);
+    process.exit(1);
+  }
+  return n;
+})();
 
 const DEVNET_RPC = "https://api.devnet.solana.com";
 // Genesis hashes are per-cluster and immutable. This is the ground truth the URL cannot fake.
@@ -96,6 +118,9 @@ function sol(args) {
   }
 
   say(`${c.y}deploying…${c.x}`);
-  const out = sol(["program", "deploy", so, "--keypair", kp, "--url", url]);
+  const args = ["program", "deploy", so, "--keypair", kp, "--url", url];
+  if (MAX_LEN !== null) args.push("--max-len", String(MAX_LEN));
+  say(`  ${c.d}solana ${args.join(" ")}${c.x}`);
+  const out = sol(args);
   say(out);
 })();

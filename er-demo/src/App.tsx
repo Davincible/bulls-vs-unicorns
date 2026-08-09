@@ -10,6 +10,7 @@ import { ConnectionMagicRouter } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { BASE_RPC, PROGRAM_ID, ROUTER_URL } from "./chain/constants.ts";
 import { createProgram, type BullsArenaProgram } from "./chain/program.ts";
 import { useRound } from "./chain/useRound.ts";
+import { useFightTicker } from "./chain/useFightTicker.ts";
 import { toAnchorWallet, useSigner } from "./chain/useSigner.ts";
 import { useAppSessionManager } from "./chain/session/useSessionKeyManager.ts";
 import { arenaPda, roundPdaForRoundNo } from "./chain/round.ts";
@@ -113,6 +114,17 @@ function App() {
   const roundPda = useMemo(() => roundPdaForRoundNo(roundNo, arena), [roundNo, arena]);
 
   const { round, error: roundError, loading: roundLoading } = useRound(program, roundPda);
+
+  // Drives the fight forward on-chain. Without this nothing ticks, hp never decays, and `extract`
+  // is back to being a free refund — the whole reason the fight became stepped. `tick` is
+  // permissionless and outcome-neutral (it can only catch stored state up to what the clock already
+  // implies), so any client watching a live round may safely drive it; the hook no-ops outside
+  // Fight phase and skips work when the chain is already caught up.
+  //
+  // This is also the honest headline for the MagicBlock story: a live round is continuous small
+  // writes to a delegated account, which is exactly what an Ephemeral Rollup is for — and
+  // `ticksSent` below is a real count of them, not a claim.
+  const ticker = useFightTicker({ program, router, roundPda, round, keypair, session: session.active });
 
   // The store mirror — the ONLY coupling point between chain/ and anything that isn't already holding
   // a `useRound()` result of its own, per snug-floating-mitten.md. In practice, by the time Phases 4/5
@@ -224,6 +236,16 @@ function App() {
                   Every impact is a real on-chain exchange, replayed from this round's revealed
                   seed — the drifting and bouncing is cosmetic, the hits are not.
                 </span>
+                {/* A real count of transactions this browser has landed on the Ephemeral Rollup to
+                    advance THIS fight — not a marketing figure. It's the most honest form of the
+                    MagicBlock claim: the round is genuinely a stream of small writes to a delegated
+                    account, and you can watch the number climb while it runs. Shown only once it's
+                    non-zero so it never reads as a broken "0". */}
+                {ticker.ticksSent > 0 && (
+                  <span className="app-arena-ticks" title={ticker.lastSignature ?? undefined}>
+                    {ticker.ticksSent} ER {ticker.ticksSent === 1 ? "write" : "writes"} · {ticker.stepsAdvanced} steps
+                  </span>
+                )}
                 <span className="app-arena-phase">{round ? round.phaseName : "no round"}</span>
               </p>
             </div>

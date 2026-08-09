@@ -1,5 +1,5 @@
 {
-  "address": "4uqVSyHtx7CBaXUL2qy7cN4eV3MzqmvucapGHN1imFYm",
+  "address": "8s3x42af7gcNXDCTNheDtteQxeBS2D1p9xuU8C5Jgfrt",
   "metadata": {
     "name": "bulls_arena",
     "version": "0.1.0",
@@ -245,38 +245,38 @@
             "program": {
               "kind": "const",
               "value": [
-                58,
-                28,
-                23,
-                89,
-                139,
-                79,
-                223,
-                12,
-                107,
+                116,
                 212,
-                5,
+                46,
+                255,
+                56,
+                210,
+                164,
+                50,
+                203,
+                42,
+                27,
+                247,
+                253,
+                160,
+                244,
+                2,
+                255,
                 228,
-                212,
-                72,
-                43,
-                104,
-                158,
-                211,
+                124,
+                114,
+                152,
+                148,
+                44,
+                118,
+                217,
+                26,
                 20,
-                254,
-                198,
-                35,
-                110,
-                254,
-                84,
-                157,
-                240,
-                31,
-                121,
-                133,
-                17,
-                218
+                251,
+                1,
+                18,
+                108,
+                141
               ]
             }
           }
@@ -358,7 +358,7 @@
         },
         {
           "name": "owner_program",
-          "address": "4uqVSyHtx7CBaXUL2qy7cN4eV3MzqmvucapGHN1imFYm"
+          "address": "8s3x42af7gcNXDCTNheDtteQxeBS2D1p9xuU8C5Jgfrt"
         },
         {
           "name": "delegation_program",
@@ -468,8 +468,24 @@
         "performance note and becomes the game: at 400ms base-layer slots \"extract now\" is a promise",
         "you cannot keep.",
         "",
-        "Deliberately cheap — one guard, one move of value, no loop. It has to be affordable to call",
-        "at any moment by anyone, which is the opposite of the fight itself.",
+        "IT BANKS WHAT REMAINS, AND ONLY NOW DOES THAT MEAN ANYTHING. The code here is almost unchanged",
+        "— it always banked `f.hp` — but until the fight actually advanced on-chain, `f.hp` was still",
+        "the full entry stake at every moment of the Fight phase, so this paid out 100% no matter when",
+        "it was pressed. Verified empirically before the change: hp=499000 -> banked=499000. The",
+        "mechanic was decoration. With `tick`/`catch_up` moving `hp` for real, pulling out late banks",
+        "less than pulling out early, which is the entire decision the round is built around.",
+        "",
+        "THE ONE REAL CHANGE IS THE `catch_up` BELOW, and it is not optional. Banking `f.hp` at the",
+        "STORED cursor would mean the payout depends on whether anyone happened to tick recently — so a",
+        "player could simply not tick, hope nobody else did, and extract at a cursor where they still",
+        "held everything. That is the free-refund bug wearing a different hat. Settling the ring to the",
+        "current time first makes the payout a function of the clock, not of anyone's diligence.",
+        "",
+        "The cost of that is bounded, not unbounded: `catch_up` can never run more than `MAX_STEPS`",
+        "steps (see `canonical_cursor`), the same ceiling `resolve` is measured against. In the normal",
+        "case — anything at all ticking — it runs single digits, and this stays the cheap instruction it",
+        "needs to be. Clients should still request the CU ceiling on it, because the bound that makes",
+        "this safe is a worst case, not a typical one.",
         "",
         "SESSION KEYS (Phase 6). Same `player`/`signer` split and the same `#[session_auth_or]` guard",
         "as `enter` — see `Enter`'s struct doc comment for the full rationale. This is the more",
@@ -771,21 +787,30 @@
     {
       "name": "resolve",
       "docs": [
-        "Run the ENTIRE fight and settle it, in one instruction.",
+        "Finalise the round: bring the fight up to date, decide the winner from where it stands, settle,",
+        "commit.",
         "",
-        "This replaced a `tick(steps)` that had to be called ~125 times per round. That design was",
-        "copying the off-chain engine's shape — which ticks in real time because it is DRAWING the",
-        "fight — without asking whether the chain needed it. It did not. The fight is a pure function",
-        "of (seed, entries, steps); splitting it across 125 round-trips does not make it more correct,",
-        "it just spreads one computation over 125 confirmations.",
+        "IT NO LONGER RUNS THE FIGHT FROM SCRATCH — it runs whatever steps `tick` has not already done.",
+        "That was a deliberate choice between two options, and the other one is a trap: \"require the",
+        "fight to have been fully ticked before you may resolve\" would make settlement depend on",
+        "somebody having done optional work, which is exactly how a round becomes permanently stuck.",
+        "This repo already has two of those (task #15) and does not need a third failure mode. So",
+        "`resolve` is self-sufficient: it can always finish the job alone, and ticking only ever makes",
+        "it cheaper. In the fully-unticked worst case it does precisely what the old one-shot `resolve`",
+        "did, against the same MAX_STEPS bound that was measured and devnet-verified for it.",
         "",
-        "NOR DOES THE PER-HIT DATA BELONG ON-CHAIN. Every blow is recomputable from the seed by",
+        "WHEN IT MAY BE CALLED: once the fight is genuinely over (one side has nobody standing), or once",
+        "the bell has rung (`FIGHT_TIMEOUT_SECONDS`), whichever comes first — see that constant for why",
+        "this replaced a flat 5-second floor, and why leaving the floor in place would have handed a",
+        "permissionless caller the power to settle a live fight at the moment it favoured them.",
+        "",
+        "The catch-up runs BEFORE that check on purpose: a fight that ends inside the very steps this",
+        "call is about to run is over, and should settle now rather than making someone call twice.",
+        "",
+        "PER-HIT DATA STILL DOES NOT BELONG ON-CHAIN. Every blow is recomputable from the seed by",
         "anyone; storing them is publishing our own homework at a cost per byte. Only the inputs",
-        "(seed, entries) and the OUTCOME (winner, final holdings) are recorded — which is exactly the",
-        "set a sceptic needs to check the result themselves.",
-        "",
-        "`steps` is DERIVED, not accepted as an argument — see the constants above for why. It is a",
-        "pure function of how long `Phase::Fight` has genuinely been running, which nobody controls."
+        "(seed, entries), the CURSOR, and the outcome (winner, final holdings) are recorded — which is",
+        "exactly the set a sceptic needs to check the result themselves."
       ],
       "discriminator": [
         246,
@@ -818,6 +843,69 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "tick",
+      "docs": [
+        "TICK — advance the live fight, on-chain, mid-round. THE instruction that makes the rollup",
+        "load-bearing rather than described as such.",
+        "",
+        "WHY THIS EXISTS AGAIN, HAVING BEEN DELETED ONCE. ER-024's original `tick` was removed by",
+        "ER-030/031 for a good reason: with no player input, the fight was a pure function of",
+        "(seed, entries, steps), and splitting one computation across 125 confirmations bought nothing.",
+        "That reasoning was correct AND its premise is now false. `extract` gives players a decision",
+        "DURING the fight, and a decision can only be about state that exists — so the fight has to",
+        "actually be somewhere when the button is pressed. `HACKATHON_ANGLE.md` predicted this exact",
+        "reversal (\"Fight becomes stepped again — but for a real reason\"); this is it, not a drift back.",
+        "",
+        "The concrete bug it fixes: `run_fight` used to be called in ONE place, at the very end of",
+        "`resolve`, so for the entire Fight phase every fighter's `hp` was still their full entry stake",
+        "and `extract` therefore returned 100% of it whenever it was pressed. A free undo button, while",
+        "the browser animated health draining that the chain did not believe in.",
+        "",
+        "PERMISSIONLESS, AND NOT LOOSELY SO. There is no authority check because there is nothing to",
+        "protect: this call cannot advance the fight past `canonical_cursor()`, which is fixed by real",
+        "elapsed time and the lobby-frozen fighter count. So the strongest thing any caller can do is",
+        "make the stored state agree with the state that already, definitionally, holds — and calling",
+        "it more often, in bigger chunks, from more wallets, or not at all, all produce the same fight.",
+        "A caller who ticks aggressively is doing the round a favour at their own expense; a caller who",
+        "refuses to tick achieves nothing, because `extract` and `resolve` catch up themselves.",
+        "Front-running someone's `extract` with a tick is likewise no attack: it can only move the",
+        "cursor to where the clock already says it is, which is precisely what that `extract` was about",
+        "to do anyway.",
+        "",
+        "WHO DRIVES IT: whoever is watching. The browser client ticks once a second while it has a",
+        "round in Fight phase (`er-demo/src/chain/useFightTicker.ts`) — every open tab, including",
+        "spectators, using a session key so it costs no wallet dialogs. A keeper can do it too. Nobody",
+        "HAS to: an unticked round is still settled correctly by `resolve`, just with the arithmetic",
+        "deferred. That is the difference between a liveness helper and a dependency.",
+        "",
+        "`steps` is a hint, not a promise: the call runs `min(steps, cursor_backlog)` and succeeds",
+        "having done nothing when the fight is already up to date. Deliberate — two clients ticking the",
+        "same round must not make each other's transactions fail."
+      ],
+      "discriminator": [
+        92,
+        79,
+        44,
+        8,
+        101,
+        80,
+        63,
+        15
+      ],
+      "accounts": [
+        {
+          "name": "round",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "steps",
+          "type": "u32"
+        }
+      ]
     }
   ],
   "accounts": [
@@ -900,6 +988,19 @@
         240,
         236
       ]
+    },
+    {
+      "name": "Ticked",
+      "discriminator": [
+        62,
+        38,
+        144,
+        106,
+        104,
+        131,
+        254,
+        110
+      ]
     }
   ],
   "errors": [
@@ -946,7 +1047,7 @@
     {
       "code": 6008,
       "name": "BadStepCount",
-      "msg": "step count must be 1..=20000"
+      "msg": "step count out of range"
     },
     {
       "code": 6009,
@@ -971,7 +1072,7 @@
     {
       "code": 6013,
       "name": "FightNotOverYet",
-      "msg": "the fight must run for MIN_FIGHT_SECONDS before it can be resolved"
+      "msg": "both sides still have fighters standing and the bell has not rung"
     }
   ],
   "types": [
@@ -1220,6 +1321,30 @@
           {
             "name": "valid_until",
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Ticked",
+      "docs": [
+        "`steps` is how many this call actually ran (0 when the fight was already up to date), `cursor` is",
+        "where the fight now stands."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "round_no",
+            "type": "u64"
+          },
+          {
+            "name": "cursor",
+            "type": "u64"
+          },
+          {
+            "name": "steps",
+            "type": "u32"
           }
         ]
       }

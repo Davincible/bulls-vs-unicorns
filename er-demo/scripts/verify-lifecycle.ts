@@ -20,7 +20,7 @@
 
 import { assertDevnetUrl } from "../src/devnet-guard.ts";
 import {
-  BASE_RPC, MIN_FIGHT_SECONDS, PHASE_NAME, Phase, PROGRAM_ID, ROUTER_URL,
+  BASE_RPC, PHASE_NAME, Phase, PROGRAM_ID, ROUTER_URL,
 } from "../src/chain/constants.ts";
 import { createProgram } from "../src/chain/program.ts";
 import { sendTx } from "../src/chain/sendTx.ts";
@@ -236,13 +236,15 @@ const load = (p: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(rea
       ok(`player A now: hp=${fa.hp.toString()} banked=${fa.banked.toString()} dead=${fa.dead} (dead=1 is CORRECT — extracted)`);
     }
 
-    // ---- resolve — must wait for the real on-chain floor ---------------------------------------------
-    heading("8. resolve — waiting out MIN_FIGHT_SECONDS, then settling");
-    const targetWaitMs = (MIN_FIGHT_SECONDS + 2) * 1000 - (Date.now() - fightStartedAtWall);
-    if (targetWaitMs > 0) {
-      info(`waiting ${(targetWaitMs / 1000).toFixed(1)}s more before resolve() is legal…`);
-      await sleep(targetWaitMs);
-    }
+    // ---- resolve ----------------------------------------------------------------------------------
+    // No wall-clock wait any more, and the reason is a real change in the rule rather than a shortcut:
+    // `resolve` used to require a flat MIN_FIGHT_SECONDS floor; it now requires that the fight is
+    // genuinely OVER (one side has nobody standing) or that the bell has rung
+    // (FIGHT_TIMEOUT_SECONDS). Player A above is this round's only side-0 fighter and has just
+    // extracted, which takes them out of the ring — so side 0 is empty and the fight really is over.
+    // The retry stays: it costs one branch and covers the case where a future edit to this script
+    // enters more fighters and the round has to wait for the bell instead.
+    heading("8. resolve — the fight is over (A extracted, side 0 is empty), so settle now");
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const { signature } = await sendTx(

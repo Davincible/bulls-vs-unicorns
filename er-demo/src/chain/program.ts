@@ -28,6 +28,12 @@ export interface MethodsBuilder {
   accounts(accounts: Record<string, PublicKey | null>): MethodsBuilder;
   preInstructions(ixs: TransactionInstruction[]): MethodsBuilder;
   signers(signers: { publicKey: PublicKey }[]): MethodsBuilder;
+  /** Needed for exactly one thing: pinning `delegate_round` to a SPECIFIC ER validator, which the
+   *  delegation CPI reads from `remaining_accounts[0]`. That is not a nicety — MagicBlock's
+   *  validators cache program bytecode per program id and do not re-clone it after a base-layer
+   *  upgrade (MAGICBLOCK_FEEDBACK.md), so after every deploy the router's default choice may run old
+   *  code, and the only way to land a round on a validator with a current clone is to name it. */
+  remainingAccounts(accounts: { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[]): MethodsBuilder;
   transaction(): Promise<Transaction>;
 }
 
@@ -71,6 +77,8 @@ export interface BullsArenaProgram {
     delegateRound(roundNo: BN): MethodsBuilder;
     enter(side: number, stake: BN): MethodsBuilder;
     closeLobbyAndDraw(clientSeed: number[]): MethodsBuilder;
+    /** `steps` is a u32 hint — the program runs `min(steps, backlog)`; see chain/round.ts's `tick`. */
+    tick(steps: number): MethodsBuilder;
     extract(): MethodsBuilder;
     resolve(): MethodsBuilder;
     closeRound(): MethodsBuilder;

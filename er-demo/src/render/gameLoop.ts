@@ -9,6 +9,7 @@
 // targets -> sync every Pixi sprite's position/hp bar from its Matter body + shadow state -> advance
 // any in-flight impactFx animations.
 import Matter from "matter-js";
+import { MAX_STEPS, stepsPerSecond } from "../chain/constants.ts";
 import { spawnFighterBodies, type ArenaScene } from "./arena/ArenaScene.ts";
 import { computeTargets, steer } from "./arena/retarget.ts";
 import { buildShadowFighters, advanceShadow } from "./shadowFight.ts";
@@ -17,25 +18,22 @@ import type { ImpactFxController } from "./arena/impactFx.ts";
 import type { ERFighter } from "../sim/erSim.ts";
 import type { PixiCanvasProps } from "./types.ts";
 
-// Mirrored from `programs/bulls-arena/src/lib.rs`:
-//   pub const STEPS_PER_SECOND: u64 = 175;
-//   pub const MAX_STEPS: u64 = 7_000;
-// (verified directly against the deployed program's source this session, not invented — see this
-// task's own instructions on why a silently-different number here would be a real bug, not a detail).
-// `resolve()` derives its on-chain step count as `min(elapsed_seconds * STEPS_PER_SECOND, MAX_STEPS)`
-// where `elapsed_seconds` is truncated to a whole integer (both `now` and `fight_started_at` are unix
-// timestamps in seconds). `playheadStep` below computes the SAME quantity from wall-clock time at
-// sub-second float precision — it converges to the exact on-chain integer at every whole-second mark,
-// the fractional part in between exists purely to make the client-side animation smooth, not to
-// change which `HitEvent`s have "happened" at any second boundary.
+// THE PACING CONSTANTS NOW LIVE IN chain/constants.ts, and this module imports them.
 //
-// Kept local to render/ rather than chain/constants.ts on purpose: Phase 3 owns that file
-// concurrently this session (see this task's own brief), and these two constants are read ONLY by
-// this module. An integration pass may reasonably hoist them into chain/constants.ts later, since
-// they're genuinely chain-level facts, not render-specific tuning — nothing here depends on them
-// staying local.
-export const STEPS_PER_SECOND = 175;
-export const MAX_STEPS = 7_000;
+// They used to be local copies here (`STEPS_PER_SECOND = 175`, `MAX_STEPS = 7_000`) with a comment
+// saying they'd been verified against the deployed program. By the time the fight became genuinely
+// stepped on-chain, BOTH were stale — the program had moved to `MAX_STEPS = 4_000` in an earlier
+// session and to a per-fighter rate in this one — so the canvas was playing the fight at 44x the
+// chain's pace and would have kept running 3,000 steps past where the chain stops. A second copy of a
+// chain fact is a second thing to forget to update; there is now one copy, in the layer that owns
+// talking to the chain, and this module re-exports `MAX_STEPS` so App.tsx's import is unchanged.
+//
+// `playheadStep` computes the SAME quantity as the program's `canonical_cursor()` — the cursor real
+// elapsed time says the fight has reached — but at sub-second float precision. It converges to the
+// exact on-chain integer at every whole-second mark, which is the only place the chain itself ever
+// moves; the fractional part between marks exists purely to make the animation smooth, not to change
+// which `HitEvent`s have happened at any second boundary.
+export { MAX_STEPS } from "../chain/constants.ts";
 
 /** The fixed step handed to `Matter.Engine.update()` every frame — REACT.md §8's performance budget
  *  verbatim: "Physics substeps: 60Hz fixed step is enough."
@@ -53,11 +51,17 @@ const PHYSICS_STEP_MS = 1000 / 60;
 
 /** Pure — split out from the loop so the wall-clock-to-step math is unit-testable without a DOM, a
  *  Matter world, or pixi.js. Returns a float; callers compare it against integer `HitEvent.step`
- *  values with `<=`. */
-export function playheadStep(fightStartedAtMs: number | null, nowMs: number): number {
+ *  values with `<=`.
+ *
+ *  `fighterCount` is the third argument because the on-chain rate is per fighter, not flat — a fight's
+ *  length in steps grows roughly as n^1.5, so no single rate paces both a duel and a sixteen-fighter
+ *  brawl (the measurements are in `STEPS_PER_FIGHTER_PER_SECOND`'s doc comment in lib.rs). It costs no
+ *  new prop: the loop reads it from `props.fighters.length`, which is already the array the
+ *  `HitEvent` indices are relative to. */
+export function playheadStep(fightStartedAtMs: number | null, nowMs: number, fighterCount: number): number {
   if (fightStartedAtMs === null) return 0;
   const elapsedSeconds = Math.max(0, (nowMs - fightStartedAtMs) / 1000);
-  return Math.min(elapsedSeconds * STEPS_PER_SECOND, MAX_STEPS);
+  return Math.min(elapsedSeconds * stepsPerSecond(fighterCount), MAX_STEPS);
 }
 
 export interface GameLoopHandles {
@@ -139,7 +143,7 @@ export function createGameLoop(handles: GameLoopHandles, propsRef: { current: Pi
     // verification step exists. `performance.timeOrigin + nowMs` converts the rAF timestamp back to
     // the same epoch-ms basis `fightStartedAtMs` is already in.
     const nowEpochMs = performance.timeOrigin + nowMs;
-    const step = playheadStep(props.fightStartedAtMs, nowEpochMs);
+    const step = playheadStep(props.fightStartedAtMs, nowEpochMs, props.fighters.length);
     let cursor = current.cursor;
     while (cursor < props.hitEvents.length && Number(props.hitEvents[cursor].step) <= step) {
       advanceShadow(current.shadow, props.hitEvents, cursor, cursor + 1);

@@ -1,36 +1,48 @@
 // Unit tests for the one piece of gameLoop.ts that's pure and load-bearing for correctness (not just
-// presentation): the wall-clock-to-step math. A silent divergence here from the on-chain
-// `STEPS_PER_SECOND`/`MAX_STEPS` constants would mean the render layer plays events at the wrong
-// pace relative to what a real `resolve()` call would actually settle — worth a real assertion, not
-// just "should work" from reading the code.
+// presentation): the wall-clock-to-step math. A silent divergence here from the on-chain pacing
+// constants would mean the render layer plays events at the wrong pace relative to the fight the
+// chain is actually running — worth a real assertion, not just "should work" from reading the code.
+// That is not hypothetical: this file previously asserted against gameLoop's OWN copies of those
+// constants, so it stayed green while both had gone stale against the deployed program. It now
+// asserts against chain/constants.ts, the same values the instruction builders use.
 import { describe, expect, test } from "vitest";
-import { MAX_STEPS, playheadStep, STEPS_PER_SECOND } from "./gameLoop.ts";
+import { MAX_STEPS, stepsPerSecond, canonicalCursor } from "../chain/constants.ts";
+import { playheadStep } from "./gameLoop.ts";
 
 describe("playheadStep", () => {
   test("returns 0 before the fight has started (fightStartedAtMs === null)", () => {
-    expect(playheadStep(null, Date.now())).toBe(0);
+    expect(playheadStep(null, Date.now(), 4)).toBe(0);
   });
 
-  test("matches the on-chain resolve() formula at whole-second boundaries: elapsed_seconds * STEPS_PER_SECOND", () => {
+  test("matches the on-chain canonical_cursor() at whole-second boundaries", () => {
     const start = 1_000_000;
-    expect(playheadStep(start, start)).toBe(0);
-    expect(playheadStep(start, start + 1_000)).toBe(1 * STEPS_PER_SECOND);
-    expect(playheadStep(start, start + 4_000)).toBe(4 * STEPS_PER_SECOND);
+    for (const fighters of [2, 4, 8, 16]) {
+      expect(playheadStep(start, start, fighters)).toBe(0);
+      for (const seconds of [1, 4, 17]) {
+        expect(playheadStep(start, start + seconds * 1_000, fighters))
+          .toBe(canonicalCursor(start / 1000, fighters, start / 1000 + seconds));
+      }
+    }
+  });
+
+  test("paces per fighter, not flat — a bigger lineup fights faster", () => {
+    const start = 0;
+    expect(playheadStep(start, 1_000, 2)).toBe(stepsPerSecond(2));
+    expect(playheadStep(start, 1_000, 16)).toBe(stepsPerSecond(16));
+    expect(playheadStep(start, 1_000, 16)).toBeGreaterThan(playheadStep(start, 1_000, 2));
   });
 
   test("interpolates smoothly between whole seconds (sub-step precision for animation only)", () => {
-    const start = 0;
-    const step = playheadStep(start, 500); // half a second in
-    expect(step).toBeCloseTo(STEPS_PER_SECOND / 2, 5);
+    const step = playheadStep(0, 500, 4); // half a second in
+    expect(step).toBeCloseTo(stepsPerSecond(4) / 2, 5);
   });
 
-  test("caps at MAX_STEPS no matter how much wall-clock time has elapsed — mirrors resolve()'s .min()", () => {
-    const start = 0;
-    const farInFuture = ((MAX_STEPS / STEPS_PER_SECOND) + 60) * 1000; // 60s past when MAX_STEPS is reached
-    expect(playheadStep(start, farInFuture)).toBe(MAX_STEPS);
+  test("caps at MAX_STEPS no matter how much wall-clock time has elapsed — mirrors the chain's .min()", () => {
+    const farInFuture = ((MAX_STEPS / stepsPerSecond(2)) + 60) * 1000;
+    expect(playheadStep(0, farInFuture, 2)).toBe(MAX_STEPS);
   });
 
   test("never goes negative if nowMs is somehow before fightStartedAtMs (clock skew)", () => {
-    expect(playheadStep(10_000, 0)).toBe(0);
+    expect(playheadStep(10_000, 0, 4)).toBe(0);
   });
 });
