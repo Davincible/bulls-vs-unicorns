@@ -28,8 +28,9 @@ check:
 
 # === Testing ===
 
-# Run unit tests. Placeholder until Phase 2 (sim/erSim.ts + hitEvents.ts parity tests) lands — no
-# E2E suite in this project, manual run-through is the test plan (snug-floating-mitten.md).
+# Run unit tests (vitest). Currently: sim/erSim.ts + sim/hitEvents.ts parity tests against the
+# checked-in Rust fixture (Phase 2). No E2E suite in this project — manual run-through is the test
+# plan for the render/UI layers (snug-floating-mitten.md).
 test:
     bun run test
 

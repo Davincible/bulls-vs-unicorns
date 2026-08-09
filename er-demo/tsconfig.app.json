@@ -4,7 +4,11 @@
     "target": "es2023",
     "lib": ["ES2023", "DOM"],
     "module": "esnext",
-    "types": ["vite/client"],
+    // "node" alongside "vite/client": a handful of src/ modules genuinely run in both the browser
+    // and Node — sim/erSim.ts's sha256 (node:crypto, ported verbatim from engine/, see the runtime
+    // caveat in that file's port note) and chain/idl.ts's dual browser-fetch/disk-read IDL loader.
+    // Needed so `tsc -b` can resolve `Buffer` and `node:*` specifiers in those files at all.
+    "types": ["vite/client", "node"],
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
 

@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "echo 'no unit tests yet — landing in Phase 2 (sim/erSim.ts + hitEvents.ts parity tests), see snug-floating-mitten.md' && exit 0"
+    "test": "vitest run"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
@@ -36,6 +36,8 @@
     "@vitejs/plugin-react": "^6.0.5",
     "oxlint": "^1.75.0",
     "typescript": "^5.6",
-    "vite": "^8.2.1"
+    "vite": "^8.2.1",
+    "vite-plugin-node-polyfills": "^0.28.0",
+    "vitest": "^4.1.10"
   }
 }
