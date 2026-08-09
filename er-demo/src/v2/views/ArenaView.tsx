@@ -251,7 +251,13 @@ function StrengthBar({ a, b }: { a: bigint; b: bigint }) {
 
   return (
     <>
-      <div className="str-head">
+      {/* THE TRIGGER FOR THE STICKY STRIP. `ui/StickyStatus.tsx` reveals itself when this element
+          leaves the top of the viewport, because this is the thing it duplicates: side totals and the
+          split bar. Showing both at once is the same fact twice, and revealing after an arbitrary
+          scroll distance meant the strip either arrived while this was still on screen or long after
+          it had gone. The attribute is the contract between the two files; it is documented at the
+          observer's end too. */}
+      <div className="str-head" data-sbar-trigger>
         {/* The coin's own artwork stands in for the side marker here: at the head of the strength
             bar there is room for it, and it names the community fighting rather than restating a
             colour key the bar underneath already carries. */}

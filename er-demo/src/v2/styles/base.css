@@ -289,7 +289,11 @@ a:hover { border-bottom-color: var(--ink); }
 .chrome-spacer { flex: 1; }
 
 .page {
-  padding: calc(var(--chrome-h) + 18px) var(--gut) calc(var(--chrome-h) + 64px);
+  /* `--sbar-pad` is 0 on the arena, where the status strip reveals itself on scroll and has nothing
+     to cover, and the strip's measured height on every other screen, where it is pinned open from
+     the first paint and the content would otherwise start underneath it. Published by
+     `ui/StickyStatus.tsx`; the fallback keeps this correct if that component never mounts. */
+  padding: calc(var(--chrome-h) + 18px + var(--sbar-pad, 0px)) var(--gut) calc(var(--chrome-h) + 64px);
   max-width: 1680px;
   margin: 0 auto;
 }

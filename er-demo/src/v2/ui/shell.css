@@ -260,25 +260,11 @@
    and being fixed it would cover them. `vh` so it adapts to the window (a short laptop reaches the
    rosters sooner than a tall monitor does), capped in px so a very tall screen doesn't spend most of
    a scroll with no readout at all. Read by StickyStatus.tsx's anchor, and nothing else. */
-/* HOW FAR YOU SCROLL BEFORE THE STRIP APPEARS.
-   Was `min(78vh, 640px)` — most of a screen, which meant it arrived only after the arena frame had
-   already left, and by then a reader had spent the whole journey with no score. Max: "it activates
-   too late, needs to activate much sooner." A fifth of the viewport is roughly the moment the hero
-   figure starts leaving, which is the first instant the strip has anything to add. */
-:root { --sbar-reveal: min(20vh, 150px); }
-
-/* The anchor: a box that extends `--sbar-reveal` down the page and then takes its own height back
-   out of the flow, so it displaces nothing and is invisible. Its bottom edge crossing the top of the
-   viewport is the reveal trigger (IntersectionObserver — see the note in StickyStatus.tsx).
-   Deliberately NOT `position: absolute`: that would resolve against whichever ancestor happens to be
-   positioned today, and the trigger point would silently move the first time one is. */
-.sbar-anchor {
-  display: block;
-  width: 1px;
-  height: var(--sbar-reveal);
-  margin-bottom: calc(-1 * var(--sbar-reveal));
-  pointer-events: none;
-}
+/* The reveal is no longer a distance. The strip is summoned by the strength bar it duplicates
+   leaving the viewport — `views/ArenaView.tsx` marks that element `data-sbar-trigger` and
+   StickyStatus.tsx observes it. `--sbar-reveal` and the `.sbar-anchor` box it sized are gone with it:
+   no constant was ever right, because the thing to track is where an element ends and that moves with
+   the viewport, the board style and the fighter count. */
 
 /* Directly under the top chrome, full bleed, paper on ink hairlines. z-index sits below the rail
    (90) — an open rail is a focused panel and wins the overlap — and above the page. */

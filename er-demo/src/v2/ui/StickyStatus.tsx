@@ -39,7 +39,6 @@ function F({ name, value }: { name: string; value: string }) {
 export function StickyStatus() {
   const { live, status } = useArena();
   const { view } = useShell();
-  const anchorRef = useRef<HTMLSpanElement>(null);
   const [scrolledPast, setScrolledPast] = useState(false);
 
   // PINNED OPEN OFF THE ARENA SCREEN (Max's direction: "that bar should always be visible if you are
@@ -50,23 +49,39 @@ export function StickyStatus() {
   // leaderboard, dashboard, referrals or history screens carries the live score at all — so on those
   // there is nothing to duplicate and no reason to make someone scroll to earn it. A round can settle
   // while you are reading the all-time table, and that is exactly when you want to see it happen.
-  const shown = view !== "arena" || scrolledPast;
+  // PINNED means shown from the first paint rather than revealed by scrolling — true on every screen
+  // that isn't the arena. It decides both what the strip does and what the page reserves for it.
+  const pinned = view !== "arena";
+  const shown = pinned || scrolledPast;
 
-  // HOW THE REVEAL IS TRIGGERED.
+  // HOW THE REVEAL IS TRIGGERED — by the element this strip DUPLICATES, not by a distance.
   //
-  // The thing whose departure should summon the bar is the arena frame, but that element belongs to
-  // `views/ArenaView.tsx`, which this workstream may not edit — and reaching into another file's DOM
-  // by class name to observe it would be a coupling that breaks silently the day that class is
-  // renamed. So the trigger is an anchor THIS component renders: a zero-net-height span whose box
-  // extends `--sbar-reveal` down the page (height plus an equal negative bottom margin, so it takes
-  // part in no layout and displaces nothing). When its bottom edge crosses the top of the viewport,
-  // the reveal fires.
+  // It used to observe an anchor of its own, a zero-height box extending `--sbar-reveal` down the
+  // page, because this file could not edit the arena view. That is a scroll distance pretending to
+  // be a relationship: at 78vh the strip arrived long after the strength bar had gone, and at 20vh it
+  // arrived while the bar was still on screen, showing the same side totals twice. No constant is
+  // right, because the thing it should track is where an element ends, and that moves with the
+  // viewport, the board style and the fighter count.
+  //
+  // So the arena view marks the strength bar `data-sbar-trigger` and this observes it: the strip
+  // appears exactly as that bar leaves, and the page never shows both. The attribute is the contract
+  // and it is commented at the other end too.
+  //
+  // NO TRIGGER MEANS SHOW IMMEDIATELY, which is what the other four screens want: none of them
+  // carries the live score at all, so there is nothing to duplicate and no reason to make someone
+  // scroll to earn it. `view` is in the deps because the trigger appears and disappears with it.
   //
   // An IntersectionObserver rather than a scroll listener: during a fight this page is already
-  // re-rendering at the poll rate, and a scroll handler that runs on every frame of a flick would be
+  // re-rendering at the poll rate, and a scroll handler running on every frame of a flick would be
   // competing with the canvas for the main thread to answer one boolean.
   useEffect(() => {
-    const el = anchorRef.current;
+    if (view !== "arena") {
+      setScrolledPast(false);   // reset, so returning to the arena starts hidden again
+      return;
+    }
+    const el = document.querySelector("[data-sbar-trigger]");
+    // Defensive, not expected: if the arena ever renders without its strength bar, a strip that
+    // never appears is a quieter failure than one pinned over the hero.
     if (!el) return;
     const io = new IntersectionObserver(
       (entries) => {
@@ -77,7 +92,7 @@ export function StickyStatus() {
     );
     io.observe(el);
     return () => io.disconnect();
-  }, []);
+  }, [view]);
 
   // PUBLISH THIS BAR'S HEIGHT so anything that has to sit clear of it can. It is `position: fixed`
   // directly under the top chrome, and it is CONTENT-SIZED: ~40px on a wide screen, ~62px on a phone
@@ -96,7 +111,17 @@ export function StickyStatus() {
     const publish = () => {
       // Round up: a fractional px leaves a hairline of table header peeking out from under the bar,
       // which reads as a rendering fault rather than as a 0.4px difference.
-      document.documentElement.style.setProperty("--sbar-h", `${Math.ceil(el.getBoundingClientRect().height)}px`);
+      const h = Math.ceil(el.getBoundingClientRect().height);
+      const root = document.documentElement;
+      root.style.setProperty("--sbar-h", `${h}px`);
+      // AND HOW MUCH THE PAGE OWES IT. Two different questions, and conflating them was the bug:
+      // `--sbar-h` is "how tall is this strip" and is what a sticky table header offsets against
+      // whether or not the strip is currently visible. `--sbar-pad` is "how much room must the page
+      // reserve at the top", which is only non-zero when the strip is pinned open from the first
+      // paint — the four screens that always show it. On the arena the strip is revealed by
+      // scrolling, so by the time it exists the content it would have covered has already moved up,
+      // and reserving space there would leave a permanent gap under the chrome instead.
+      root.style.setProperty("--sbar-pad", pinned ? `${h}px` : "0px");
     };
     publish();
     const ro = new ResizeObserver(publish);
@@ -104,8 +129,9 @@ export function StickyStatus() {
     return () => {
       ro.disconnect();
       document.documentElement.style.removeProperty("--sbar-h");
+      document.documentElement.style.removeProperty("--sbar-pad");
     };
-  }, []);
+  }, [pinned]);
 
   const fighters = live?.fighters ?? [];
   const [aTot, bTot] = sideTotals(fighters);
@@ -120,8 +146,6 @@ export function StickyStatus() {
 
   return (
     <>
-      <span ref={anchorRef} className="sbar-anchor" aria-hidden="true" />
-
       {/* `role="region"`, NOT `role="status"`. A status role is an implicit polite live region, and
           during a fight every figure in here changes several times a second — a screen reader would
           be read a fresh scoreboard continuously and never finish a sentence. As a labelled region

@@ -449,8 +449,10 @@
      the shared rule, but History and Dashboard are being edited in parallel.
 
      STILL OCCLUDED BY `.sbar`, AND DELIBERATELY NOT PAPERED OVER. `ui/StickyStatus.tsx`'s round
-     strip is `position: fixed; top: var(--chrome-h); z-index: 75`, it reveals after `--sbar-reveal`
-     of scroll — which on a leaderboard is precisely when you are inside the table — and it is
+     strip is `position: fixed; top: var(--chrome-h); z-index: 75`, and on this screen it is pinned
+     open from the first paint (it only reveals on scroll on the arena, where it has something to
+     duplicate). The page reserves room for it via `--sbar-pad`, but a sticky header inside a table
+     scrolls under it regardless, and it is
      CONTENT-SIZED: 62px where it wraps on a phone, ~40px where it doesn't. There is no constant to
      subtract, and writing `62px` here would be a number that is wrong at every other width and stale
      the first time that component changes. So the offset asks for a height `ui/` does not yet
