@@ -12,7 +12,7 @@
 
 import { newRound, enter, tick, settle, DUST } from "../../engine/src/er-sim.ts";
 import type { ERFighter } from "../../engine/src/er-sim.ts";
-import { BASELINE, runFight, stepBudget, winnerSide, makeFighter, DUST_ABSOLUTE, isqrt, pow34 } from "./fight-variant.ts";
+import { BASELINE, DEPLOYED_V5, runFight, stepBudget, winnerSide, makeFighter, DUST_ABSOLUTE, isqrt, pow34 } from "./fight-variant.ts";
 import type { Fighter } from "./fight-variant.ts";
 import { createHash } from "node:crypto";
 import { mulberry32 } from "./rng.ts";
@@ -76,6 +76,25 @@ const check = (ok: boolean, what: string) => {
   }
   check(mismatches === 0, `BASELINE is byte-identical to er-sim.ts over ${rounds} random lineups (${mismatches} mismatches, ${totalExchanges} exchanges compared)`);
   check(DUST === DUST_ABSOLUTE, "the sandbox's DUST equals er-sim.ts's DUST");
+}
+
+// --- DEPLOYED_V5 still reproduces the rule the study measured ----------------------------------
+{
+  // The study's "before" columns are only meaningful if the config that produced them still
+  // describes v5. Pinned against the golden vector that WAS the committed on-chain parity fixture
+  // (`run_fight_matches_the_typescript_mirror_exactly`) before the seat-law fix landed — so this is
+  // a number the chain itself once asserted, not one this sandbox invented about itself.
+  const seed = Buffer.from(Array.from({ length: 32 }, (_, i) => i));
+  const fs: Fighter[] = [
+    { wallet: "w1", side: 0, dead: 0, stake: 100_000n, hp: 100_000n, banked: 0n },
+    { wallet: "w2", side: 0, dead: 0, stake: 250_000n, hp: 250_000n, banked: 0n },
+    { wallet: "w3", side: 1, dead: 0, stake: 180_000n, hp: 180_000n, banked: 0n },
+    { wallet: "w4", side: 1, dead: 0, stake:  90_000n, hp:  90_000n, banked: 0n },
+  ];
+  runFight(fs, seed, 50, DEPLOYED_V5);
+  const got = fs.map(g => `${g.hp}/${g.banked}/${g.dead}`).join(" ");
+  const want = "15158/84062/0 201600/116021/0 26975/48467/0 42942/84775/0";
+  check(got === want, `DEPLOYED_V5 reproduces the pre-fix on-chain fixture${got === want ? "" : `\n        got  ${got}\n        want ${want}`}`);
 }
 
 // --- proportional dust below one unit collapses onto absolute ---------------------------------

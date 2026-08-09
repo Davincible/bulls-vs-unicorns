@@ -17,7 +17,7 @@ import { stepBudget, UNITS_PER_USD } from "./fight-variant.ts";
 import { createHash } from "node:crypto";
 
 const toUsd = (u: bigint) => Number(u) / Number(UNITS_PER_USD);
-const TRIALS = 4000;
+const TRIALS = Number(process.argv[2] ?? 4000);
 
 /** Two side layouts over the same 8 slots. "blocked" is 0,0,0,0,1,1,1,1; "alternating" is 0,1,0,1,...
  *  Both are reachable in production — the array is filled in the order `enter` lands. */
@@ -29,6 +29,7 @@ const LAYOUTS: Record<string, (0 | 1)[]> = {
 for (const [label, sides] of Object.entries(LAYOUTS)) {
   const n = sides.length;
   const out = new Array(n).fill(0);
+  const sq = new Array(n).fill(0);
   const deaths = new Array(n).fill(0);
   for (let t = 0; t < TRIALS; t++) {
     const seed = createHash("sha256").update(`bias|${label}|${t}`).digest();
@@ -37,18 +38,30 @@ for (const [label, sides] of Object.entries(LAYOUTS)) {
     tick(round, stepBudget(n));
     settle(round);
     for (let i = 0; i < n; i++) {
-      out[i] += toUsd(round.fighters[i].hp + round.fighters[i].banked);
+      const v = toUsd(round.fighters[i].hp + round.fighters[i].banked);
+      out[i] += v; sq[i] += v * v;
       if (round.fighters[i].dead === 1) deaths[i]++;
     }
   }
   const mean = out.reduce((a, x) => a + x, 0) / n / TRIALS;
   console.log(`\n--- ${label} --- ${TRIALS} seeds, $10 each, fair share = $${mean.toFixed(3)}`);
   console.log(`slot  side   mean payout   vs fair share   death rate`);
+  let worst = 0;
   for (let i = 0; i < n; i++) {
     const m = out[i] / TRIALS;
-    // SE of the mean across seeds is not tracked per slot here; the effect sizes below are 10-100x
-    // any plausible Monte-Carlo error at 4,000 seeds, so the sign and rough size are what matter.
-    console.log(`  ${i}     ${sides[i]}    $${m.toFixed(3).padStart(8)}   ${(((m / mean) - 1) * 100 >= 0 ? "+" : "")}${(((m / mean) - 1) * 100).toFixed(1).padStart(6)}%        ${(100 * deaths[i] / TRIALS).toFixed(1)}%`);
+    // SE of the per-slot mean across seeds. It is reported because once the (d+1)%n bump is gone the
+    // remaining differences are the SIZE OF THE NOISE, and a table of small numbers with no error
+    // bar cannot tell "fixed" from "smaller". Seeds are independent by construction here.
+    const se = Math.sqrt((sq[i] / TRIALS - m * m) / (TRIALS - 1));
+    const dev = (m / mean - 1) * 100;
+    const sigma = Math.abs(m - mean) / se;
+    worst = Math.max(worst, sigma);
+    console.log(`  ${i}     ${sides[i]}    $${m.toFixed(3).padStart(8)}   ${(dev >= 0 ? "+" : "")}${dev.toFixed(1).padStart(6)}% +-${(100 * se / mean).toFixed(1)}   ${(100 * deaths[i] / TRIALS).toFixed(1)}%   ${sigma.toFixed(1)} sigma`);
   }
+  // 8 slots x 2 layouts = 16 comparisons, so the honest threshold is the one corrected for looking
+  // 16 times: a 3-sigma maximum turns up by chance about 4% of the time. Anything that survives a
+  // 5x increase in seeds is real; anything that does not was the multiplicity.
+  console.log(`  worst slot deviation: ${worst.toFixed(1)} sigma over ${n} slots  ` +
+    `(${worst < 3.5 ? "within what 16 looks costs you — re-run with more seeds to confirm" : "REAL — slot index is worth money"})`);
 }
 console.log("");

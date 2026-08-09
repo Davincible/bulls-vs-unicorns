@@ -368,6 +368,22 @@ export const HOUSE_WALLET_TARGET_SOL = envNumber("KEEPER_HOUSE_WALLET_TARGET_SOL
  *  window, so a transient failure during the fill stage is still recoverable before the deadline. */
 export const HOUSE_ENTRY_RETRY_SECONDS = 3;
 
+// ---- the house's books -----------------------------------------------------------------------
+
+/** How long to wait after a failed `sweep_house_take` before trying that round again.
+ *
+ *  Same shape and same reasoning as `HOUSE_ENTRY_RETRY_SECONDS`: the sweep is derived from chain
+ *  state (`Round.house_swept`) and therefore re-attempted on every pass while the round still reads
+ *  unswept, so a sweep that can never succeed would be re-sent at 1Hz for the whole hold. Three
+ *  seconds still leaves several attempts inside a 12-second result hold, which is the window a sweep
+ *  has to land in before the keeper moves on to the next round.
+ *
+ *  Missing that window is not a loss of money, which is why this is three seconds and not thirty: the
+ *  take stays recorded on the round account, and `sweep_house_take` is permissionless, so anyone can
+ *  sweep it afterwards. What it costs is a gap between `Treasury.rounds_swept` and the arena's
+ *  `round_counter` until somebody does. */
+export const SWEEP_RETRY_SECONDS = 3;
+
 /** How many consecutive failed passes before the keeper publishes itself as STALLED.
  *
  *  THE STATE THIS EXISTS TO EXPRESS. A keeper whose loop is failing every pass is still alive: its

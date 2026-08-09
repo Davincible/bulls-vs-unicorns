@@ -24,6 +24,13 @@
   transition: border-color var(--tick), border-width 0s;
 }
 .pap-sw:hover { border-color: var(--ink); }
+/* The swatch IS its own preview, so its height is a design decision rather than a padding value —
+   which is why it grows here instead of being handed base.css's generic control padding. 32px clears
+   the 24px hard floor everywhere; on a phone, where this grid is a column of thirteen adjacent
+   targets and a mis-tap repaints the entire page, it takes the full 44. */
+@media (max-width: 900px) {
+  .pap-sw { height: 44px; }
+}
 /* Selection is a heavier frame, not a glow and not a tick in a corner. `border-box` sizing means the
    swatch does not move when it thickens — only the sheet showing through it gets smaller, which reads
    as "this one is framed". The name in the caption below repeats the choice in words, because a

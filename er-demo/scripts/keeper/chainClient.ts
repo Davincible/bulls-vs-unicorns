@@ -101,6 +101,14 @@ export interface ChainClient {
   fetchRound(roundNo: bigint): Promise<RawRoundAccount | null>;
   send(builder: TransactionBuilder, signer: TxSigner, label: string, routing?: SendRouting): Promise<SendOutcome>;
   balance(pubkey: PublicKey): Promise<number>;
+  /** Does this base-layer account exist at all? Asked of the arena's `Treasury`, which is created
+   *  once per arena by `init_treasury` and is a precondition of every sweep.
+   *
+   *  Deliberately a raw `getAccountInfo` rather than `program.account.treasury.fetchNullable`: the
+   *  question is existence, not contents, and going through Anchor's decoder would make it depend on
+   *  the runtime IDL carrying a `Treasury` type — so against an IDL that predates the treasury this
+   *  would throw where it should simply answer "no". */
+  accountExists(pubkey: PublicKey): Promise<boolean>;
   isDelegated(roundPda: PublicKey): Promise<boolean>;
   /** The fqdn of the ER validator THIS round is delegated to — required by `close_lobby_and_draw`. */
   roundValidatorFqdn(roundPda: PublicKey): Promise<string>;
@@ -318,11 +326,17 @@ export async function createChainClient({ operator, dryRun, stopSignal }: ChainC
     const round = await fetchRound(roundCounter);
 
     // Named phases rather than the numbers they happen to be: the coupling this module has to the
-    // phase machine is exactly "these two phases need the owner", and writing 0 and 3 would hide that
-    // behind two literals nobody would think to update. See `roundDelegated`'s own comment for why
-    // only these two ask the question.
-    const delegationDecidesSomething =
-      round !== null && (round.phase === Phase.Lobby || round.phase === Phase.Settled);
+    // phase machine is exactly "these phases need the owner", and writing 0, 3 and 4 would hide that
+    // behind three literals nobody would think to update. See `roundDelegated`'s own comment for why
+    // only these ask the question.
+    //
+    // `Abandoned` joined the list when the house sweep did. `sweep_house_take` deserialises the round
+    // as `Account<'info, Round>`, which checks the base-layer owner before anything else, so a round
+    // that has not come home yet cannot be swept at all — and an abandoned round can still owe a fee
+    // from its single entrant. Without asking here the keeper would send that sweep into an
+    // owner-mismatch error, once per abandoned round, saying nothing about delegation.
+    const delegationDecidesSomething = round !== null
+      && (round.phase === Phase.Lobby || round.phase === Phase.Settled || round.phase === Phase.Abandoned);
     const roundDelegated = delegationDecidesSomething ? await isDelegated(roundPda) : null;
 
     return { nowSec: at, arena, roundCounter, roundPda, round, roundDelegated };
@@ -397,6 +411,8 @@ export async function createChainClient({ operator, dryRun, stopSignal }: ChainC
     fetchRound,
     send,
     balance: (pubkey: PublicKey) => withReadRetry("balance", () => base.getBalance(pubkey)),
+    accountExists: async (pubkey: PublicKey) =>
+      (await withReadRetry("account exists", () => base.getAccountInfo(pubkey))) !== null,
     isDelegated,
     roundValidatorFqdn,
     routerSaysDelegated: async (roundPda) => (await delegationStatus(roundPda))?.isDelegated === true,

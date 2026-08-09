@@ -39,6 +39,11 @@
 //   * `completedCounted` stops one round being counted twice. It counts THIS PROCESS'S work, which is
 //     the one question the chain genuinely cannot answer — `round_counter` counts rounds ever opened,
 //     including every round that ran before this keeper booted.
+//   * `firstRealEntryObservedAtSec` decides when the keeper closes a held-open lobby, because the
+//     program stamps no per-fighter entry time — a `Fighter` row is a wallet, a side, a stake and
+//     some hp, and not one field of `Round` moves when somebody enters. Same shape and same safe
+//     error direction as the two above: a restart mid-grace re-stamps to now, which EXTENDS the entry
+//     window by at most `REAL_PLAYER_GRACE_SECONDS`, once, and can never close a lobby early.
 //
 // Everything else — every phase branch, every deadline, every fighter count, every "is it delegated" —
 // is read out of `KeeperChainState`, which was fetched this second. Including the clock: see
@@ -55,15 +60,37 @@
 //   Lobby, not delegated        -> delegate_round (nobody can enter an undelegated round, and
 //                                  abandon_round's commit_and_undelegate needs it too)
 //   Lobby, clock running        -> field house fighters when a stage is due; otherwise wait
+//   Lobby, held open, a player  -> after a grace window, close_lobby_and_draw signed as AUTHORITY
 //   Lobby, expired, >= 2        -> close_lobby_and_draw, DIRECT to this round's own ER validator
 //   Lobby, expired, < 2         -> abandon_round, then straight on to the next round
 //   Drawing                     -> wait for the VRF callback, bounded; then walk away (see the wedge)
 //   Fight                       -> tick once a second; resolve once it is over or the bell has rung
 //   Settled, still delegated    -> close_round
-//   Settled / Abandoned, home   -> hold until nextLobbyOpensAt, then open_round for counter + 1
+//   Settled / Abandoned, home   -> sweep_house_take if it is owed; hold until nextLobbyOpensAt, then
+//                                  open_round for counter + 1
 //
 // Round numbers always come from `arena.round_counter + 1`. Never from memory: `open_round` requires
 // `round_no == round_counter + 1` and the counter is the only thing that knows.
+//
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// TWO LOBBY POLICIES, ONE PHASE MACHINE
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+//
+// FIXED CADENCE (the default): a fresh `DEFAULT_LOBBY_SECONDS` lobby every round, ended by its own
+// deadline. Every round permanently locks ~0.0085 SOL of rent that nothing reclaims, whether or not
+// anybody played — ~0.32 SOL/hour to cycle an arena with nobody in it, and every one of those fights
+// is the house against itself.
+//
+// HOLD OPEN (`--hold-open`): ONE lobby with a long backstop, one house fighter in it so the room is
+// not empty, held at zero marginal cost until a real player arrives — then a short grace window and
+// an authority-signed early close, so the fight starts because a person showed up. One rent payment
+// instead of one per cycle.
+//
+// The switch is the operator's (`config.ts`'s `HOLD_OPEN_ENABLED_DEFAULT` says why it is not
+// auto-detected) and it is OFF until the early close is deployed. What it does NOT do is add a mode
+// this process remembers: every branch still reads the round the chain just handed it, so a keeper
+// that boots into the middle of a held lobby decides exactly what the one that opened it would.
+// `lobbyPolicy.ts` is where that decision lives, as one pure function with its own tests.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -72,9 +99,9 @@ import { Keypair, type PublicKey } from "@solana/web3.js";
 
 import {
   FIGHT_TIMEOUT_SECONDS, PHASE_NAME, Phase, PROGRAM_ID,
-  canonicalCursor, lobbyIsDead, lobbyIsOpen,
+  canonicalCursor, lobbyIsDead,
 } from "../../src/chain/constants.ts";
-import type { RawRoundAccount } from "../../src/chain/program.ts";
+import { bnOr0, type RawRoundAccount } from "../../src/chain/program.ts";
 import * as roundIx from "../../src/chain/round.ts";
 
 import {
@@ -83,9 +110,10 @@ import {
   HEARTBEAT_INTERVAL_SECONDS, HOLD_OPEN_LOBBY_SECONDS, HOUSE_ENTRY_RETRY_SECONDS,
   LOOP_INTERVAL_SECONDS, REAL_PLAYER_GRACE_SECONDS, RESOLVE_RETRY_ATTEMPTS,
   RESOLVE_RETRY_WAIT_SECONDS, RESULT_HOLD_SECONDS, STALE_AFTER_SECONDS,
-  STALL_AFTER_CONSECUTIVE_FAILURES, UNDELEGATE_WAIT_SECONDS,
+  STALL_AFTER_CONSECUTIVE_FAILURES, SWEEP_RETRY_SECONDS, UNDELEGATE_WAIT_SECONDS,
   parseCliOptions, type KeeperCliOptions,
 } from "./config.ts";
+import { HOLD_OPEN_HOUSE_FIGHTERS } from "./houseSizing.ts";
 import { lobbyIsHeldOpen, planLobby, type LobbyPlan } from "./lobbyPolicy.ts";
 import { readProgramFeatures, type ProgramFeatures } from "./programFeatures.ts";
 import {
@@ -151,6 +179,11 @@ interface RoundTimeline {
    *  re-planned and re-sent on every pass for the whole lobby, and nothing throws, so nothing is
    *  recorded and nothing backs off. */
   houseRetryAfterSec: number;
+  /** The same throttle for `sweep_house_take`, and for the same reason: the sweep is attempted on
+   *  every pass of a hold while the round reads unswept, so a sweep that can never succeed — a
+   *  treasury on a different arena, an un-deployed instruction — would be re-sent once a second for
+   *  the whole hold, every round, forever. */
+  sweepRetryAfterSec: number;
   /** Has this round already been counted toward `roundsCompleted` and summarised?
    *
    *  NOT a "did I already send close_round" flag — that would be memory deciding a chain action, and
@@ -172,6 +205,7 @@ function freshTimeline(roundNo: bigint | null, operatorLamportsAtOpen: number | 
     firstRealEntryObservedAtSec: null,
     operatorLamportsAtOpen,
     houseRetryAfterSec: 0,
+    sweepRetryAfterSec: 0,
     completedCounted: false,
   };
 }
@@ -183,6 +217,9 @@ interface KeeperContext {
   operator: Keypair;
   validator: ErValidator;
   options: KeeperCliOptions;
+  /** What the IDL this process builds from can encode. Read once at boot — see `programFeatures.ts`
+   *  for why a `true` here is not evidence of a deploy and a `false` is evidence of the opposite. */
+  features: ProgramFeatures;
   timeline: RoundTimeline;
   roundsCompleted: number;
   roundsAbandoned: number;
@@ -233,7 +270,7 @@ async function driveOneStep(ctx: KeeperContext, state: KeeperChainState): Promis
     case Phase.Drawing: return driveDrawing(ctx, state, round, roundPda);
     case Phase.Fight: return driveFight(ctx, state, round, roundPda);
     case Phase.Settled: return driveSettled(ctx, state, round, roundPda);
-    case Phase.Abandoned: return driveAbandoned(ctx, state);
+    case Phase.Abandoned: return driveAbandoned(ctx, state, round, roundPda);
     default:
       throw new Error(`round #${round.roundNo} reports phase ${round.phase}, which is not one of ${PHASE_NAME.join("/")}`);
   }
@@ -262,6 +299,13 @@ async function driveLobby(
   // keeper's `entriesCloseAt`; publishing a next-lobby time as well would be a third countdown
   // competing with whichever of those is authoritative.
   ctx.publisher.setNextLobbyOpensAt(null);
+  // CLEARED AT THE TOP, RE-PROPOSED BELOW ONCE THIS ROUND'S PLAN EXISTS — and the clearing is not
+  // tidiness. The proposal is a publisher field that survives passes, `honestEntriesCloseAt` only
+  // refuses it outside `Lobby`, and this function has early returns above the point where the plan is
+  // computed (an undelegated round takes one). Without this, round N's close time would be published
+  // beside round N+1's freshly-opened lobby for as long as the delegation took to land: a countdown
+  // in the past, attached to a round it was never about.
+  ctx.publisher.setEntriesCloseAt(null);
 
   const lobbyClosesAt = Number(round.lobbyClosesAt.toString());
   const { nowSec } = state;
@@ -759,13 +803,140 @@ async function driveSettled(
     return;
   }
 
+  // THE ROUND IS HOME. The undelegation has landed (that is what `roundDelegated === false` means
+  // here), so the base layer owns the account again and its house take is finally reachable. Done
+  // inside the result hold, which is dead time the keeper already spends waiting.
+  await sweepHouseTake(ctx, state, round, roundPda);
+
   if (state.nowSec < opensAt) return; // holding, so the result can be read before the arena moves on
   return openNextRound(ctx, state.roundCounter + 1n);
 }
 
-async function driveAbandoned(ctx: KeeperContext, state: KeeperChainState): Promise<void> {
+/** MOVE A FINISHED ROUND'S HOUSE TAKE ONTO THE ARENA'S BOOKS — one more "next thing to do", derived
+ *  from the chain rather than remembered.
+ *
+ *  Both house takes — the entry fee (`fees_collected`) and early-exit penalties
+ *  (`penalties_collected`) — are recorded on the ROUND, because a rollup transaction cannot write the
+ *  base-layer `Arena`. That is where they have to be COLLECTED and a useless place to READ them:
+ *  "what has the house made" would otherwise mean fetching every round account ever opened and adding
+ *  them up. `sweep_house_take` is the step that turns them into one number.
+ *
+ *  IT CANNOT RUN ANY EARLIER THAN THIS, and the reason is the account model rather than a rule
+ *  somebody wrote. A delegated round's base-layer account is owned by the Delegation Program, and
+ *  `Account<'info, Round>` checks the owner before anything else — so until `close_round`'s
+ *  commit_and_undelegate has actually LANDED, the program cannot deserialise the round at all and the
+ *  failure is an owner mismatch that says nothing about phases. Hence `state.roundDelegated === false`
+ *  here: not "we sent close_round", but "the chain says it is home".
+ *
+ *  NOTHING IS REMEMBERED. `house_swept` is a flag on the round, so "is this owed?" is a chain read,
+ *  the retry is free, and a double sweep is refused by the program rather than by a boolean in this
+ *  process. Exactly how `plannedHouseEntries` treats a missing house fighter.
+ *
+ *  IT NEVER TAKES THE ARENA DOWN. Every failure is caught, recorded and backed off rather than
+ *  thrown: this is bookkeeping, and a keeper that stopped running rounds because a ledger update
+ *  failed would be trading the product for its own accounting. A round that misses its window keeps
+ *  its take on the round account, where it is still readable and still sweepable later — by anyone,
+ *  since the instruction is permissionless. */
+async function sweepHouseTake(
+  ctx: KeeperContext,
+  state: KeeperChainState,
+  round: RawRoundAccount,
+  roundPda: PublicKey,
+): Promise<void> {
+  if (!ctx.features.houseTakeSweep) return;
+  // `?? false` is the true value, not a default: a program with no sweep instruction has swept
+  // nothing. See `houseSwept` in chain/program.ts.
+  if (round.houseSwept ?? false) return;
+  if (state.roundDelegated !== false) return; // still delegated, or not asked — see the doc comment
+  if (state.nowSec < ctx.timeline.sweepRetryAfterSec) return;
+
+  const treasury = roundIx.treasuryPda(ctx.client.arenaPda);
+  try {
+    // ONE-TIME, AND ASKED HERE RATHER THAN AT BOOT. The treasury is created once per arena and
+    // `sweep_house_take` fails on a missing account until it exists, so this is a precondition of the
+    // sweep and belongs beside it — a boot-only check would be this process remembering an
+    // observation, which is the one habit the main loop is built to do without. It costs one
+    // `getAccountInfo` on the passes where a sweep is actually owed, which is once per round.
+    if (!(await ctx.client.accountExists(treasury))) {
+      warn(`the arena has no Treasury account yet — opening it, then sweeping round #${round.roundNo} on the next pass`);
+      await ctx.client.send(
+        roundIx.initTreasury(ctx.client.program, {
+          arena: ctx.client.arenaPda,
+          treasury,
+          authority: ctx.operator.publicKey,
+        }),
+        ctx.operator,
+        "init_treasury",
+      );
+      return;
+    }
+
+    const outcome = await ctx.client.send(
+      roundIx.sweepHouseTake(ctx.client.program, {
+        arena: ctx.client.arenaPda,
+        round: roundPda,
+        treasury,
+        roundNo: BigInt(round.roundNo.toString()),
+      }),
+      ctx.operator,
+      `sweep_house_take #${round.roundNo}`,
+    );
+    if (outcome.sent) reportSweptTake(ctx, round);
+  } catch (e) {
+    ctx.timeline.sweepRetryAfterSec = state.nowSec + SWEEP_RETRY_SECONDS;
+    // Recorded rather than thrown — see the doc comment. Surfaced to the status file because the
+    // alternative is a treasury that silently stops accruing while every round looks perfect.
+    error(`sweep_house_take #${round.roundNo} failed (the take stays on the round and can be swept later): ${describeError(e)}`);
+    ctx.publisher.setLastError({
+      at: state.nowSec,
+      context: "house-sweep",
+      message: `sweep_house_take #${round.roundNo}: ${describeError(e)}`,
+    });
+  }
+}
+
+/** WHAT WAS SWEPT, AND WHOSE MONEY IT ACTUALLY WAS — the second half of which is the whole reason
+ *  this is a function rather than one more line in the caller.
+ *
+ *  A FEE PAID BY A HOUSE WALLET IS A WASH. It moves from a bot wallet the keeper owns to a treasury
+ *  the same operator owns, and reporting it as revenue is self-dealing dressed as growth. DEVLOG.md
+ *  Bug #20 is exactly this, already made once and already paid for: the off-chain engine counted bot
+ *  fees as treasury income, its books "grew" 1520 -> 362 UWU in forty minutes with zero real players,
+ *  and the conservation audit blessed it because a fee is expected shrinkage. So every figure here is
+ *  printed BESIDE the composition of the round that produced it, and a round with no real fighters
+ *  says so in words rather than leaving the reader to notice the zero.
+ *
+ *  NO CUMULATIVE TOTAL IS PUBLISHED ANYWHERE, and that is a refusal rather than an omission. Telling
+ *  real revenue from circular revenue needs the fee attributed PER WALLET, and chain state cannot do
+ *  it: `Round` stores each fighter's stake NET and the fee only in aggregate, so the gross a
+ *  particular wallet paid is recoverable only from the `Entered` event, which nothing here reads. The
+ *  arithmetic inverse (`gross = net / (1 - bps/10000)`) is not exact against the program's own
+ *  flooring. A total that mixed the two would be a confident wrong number about money, which is worse
+ *  than no number — so the status file gets none, and this log line carries the split instead. */
+function reportSweptTake(ctx: KeeperContext, round: RawRoundAccount): void {
+  const split = ctx.bank.classify(round);
+  const fees = bnOr0(round.feesCollected);
+  const penalties = bnOr0(round.penaltiesCollected);
+  ok(`swept round #${round.roundNo}: ${fees} fee + ${penalties} penalty units onto the arena's treasury`);
+  plain(split.realCount === 0
+    ? `  ${c.y}all of it is the house paying itself${c.x} ${c.d}(${split.houseCount} house fighters, no real players — not revenue; see DEVLOG.md Bug #20)${c.x}`
+    : `  ${c.d}from ${split.realCount} real and ${split.houseCount} house fighter(s) — the house's own share of this is a wash, and per-wallet attribution is only in the Entered event (see DEVLOG.md Bug #20)${c.x}`);
+}
+
+async function driveAbandoned(
+  ctx: KeeperContext,
+  state: KeeperChainState,
+  round: RawRoundAccount,
+  roundPda: PublicKey,
+): Promise<void> {
   // Latched for the same reason as the settled hold — see `driveSettled`.
   if (ctx.timeline.abandonedObservedAtSec === null) ctx.timeline.abandonedObservedAtSec = state.nowSec;
+  // AN ABANDONED ROUND CAN STILL OWE THE HOUSE SOMETHING. It holds fewer than two fighters, but one
+  // of them may have entered and paid a fee — and `sweep_house_take` accepts `Abandoned` for exactly
+  // that reason. Skipping it here would forfeit that fee permanently and put `Treasury.rounds_swept`
+  // permanently out of step with the arena's `round_counter`, which is the one cross-check the
+  // program offers on whether the books are complete.
+  await sweepHouseTake(ctx, state, round, roundPda);
   // Much shorter than the settled hold, and for a different reason: there is no result to show, so
   // this is room for the commit_and_undelegate rather than a display pause. Same retention rule as
   // `driveSettled` — the abandoned round stays published alongside the countdown.
@@ -999,12 +1170,21 @@ async function main(): Promise<void> {
     plain(`    [${wallet.index}] ${wallet.keypair.publicKey.toBase58()}  ${fmtSol(houseBalances[i]!)}`);
   });
   plain(`  status file    ${publisher.path}`);
-  plain(`  cadence        lobby ${DEFAULT_LOBBY_SECONDS}s · result hold ${RESULT_HOLD_SECONDS}s · draw timeout ${DRAW_TIMEOUT_SECONDS}s · heartbeat ${HEARTBEAT_INTERVAL_SECONDS}s/stale ${STALE_AFTER_SECONDS}s`);
+  // WHICH POLICY IS RUNNING, in the operator's own words, because the two behave so differently that
+  // reading the log without knowing which one is in force is guesswork. The hold-open line states the
+  // three numbers that decide everything about it; the other states the one that always did.
+  plain(options.holdOpen
+    ? `  lobby policy   ${c.g}HOLD OPEN${c.x} — one lobby, held for players; ${HOLD_OPEN_LOBBY_SECONDS}s backstop · ${REAL_PLAYER_GRACE_SECONDS}s grace after the first real entry · ${HOLD_OPEN_HOUSE_FIGHTERS} house fighter while holding`
+    : `  lobby policy   fixed cadence — a fresh ${DEFAULT_LOBBY_SECONDS}s lobby every round ${c.d}(--hold-open is off; each round permanently locks ~0.0085 SOL of rent whether or not anyone plays)${c.x}`);
+  plain(`  cadence        result hold ${RESULT_HOLD_SECONDS}s · draw timeout ${DRAW_TIMEOUT_SECONDS}s · heartbeat ${HEARTBEAT_INTERVAL_SECONDS}s/stale ${STALE_AFTER_SECONDS}s`);
+  plain(`  house sweep    ${features.houseTakeSweep
+    ? "on — each finished round's fees and penalties are swept onto the arena's Treasury"
+    : `${c.d}unavailable — this IDL has no sweep_house_take; each round's take stays on the round${c.x}`}`);
   plain(`  stop after     ${options.rounds === null ? "never — runs until stopped" : `${options.rounds} completed round(s)`}`);
   plain("");
 
   const ctx: KeeperContext = {
-    client, publisher, bank, operator, validator, options,
+    client, publisher, bank, operator, validator, options, features,
     timeline: freshTimeline(null, null),
     roundsCompleted: 0,
     roundsAbandoned: 0,

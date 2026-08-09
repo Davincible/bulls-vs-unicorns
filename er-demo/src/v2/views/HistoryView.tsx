@@ -16,6 +16,7 @@
 import { useMemo, useState } from "react";
 import { useArena } from "../data/useArena.ts";
 import { Empty, Mark, Money, Section, Tag } from "../ui/primitives.tsx";
+import { ScrollBox } from "./ScrollBox.tsx";
 import {
   SIDE_TOKEN,
   usd,
@@ -26,6 +27,10 @@ import {
   type RoundSummary,
 } from "../contract.ts";
 import "./screens.css";
+
+/** 04-2's heading, hoisted because it is said twice: printed at the top of the section, and spoken
+ *  as the name of the scrolling box the log sits in. One string, so the two cannot drift. */
+const EVERY_ROUND = "Every round — all players";
 
 /** One of your entries, carrying the round it belongs to so the row can be expanded in place. */
 interface MyEntry {
@@ -146,7 +151,7 @@ export function HistoryView() {
 
       <Section
         index="04-2"
-        title="Every round — all players"
+        title={EVERY_ROUND}
         lede="Newest first. Each round opens to everyone who deployed in it, what they staked and what they walked away with."
       >
         {history.rounds.length === 0 ? (
@@ -156,7 +161,16 @@ export function HistoryView() {
               : "No rounds yet — the first appears as soon as one settles."}
           </Empty>
         ) : (
-          <div className="sc-wrap">
+          // THE SAME STOP AS THE LEADERBOARD'S, AND ON PURPOSE, even though the case for it here is
+          // weaker: every row of this log is a real disclosure <button>, so a keyboard could already
+          // walk the list and the browser scrolled the box to follow it — this box was never the
+          // WCAG 2.1.1 failure the three boards on 01 were. What it was, was a box that scrolled by
+          // one rule on one screen and a different rule on another. Conditioning the stop on "this
+          // box can scroll" is a fact about the box that stays true as tables change; conditioning it
+          // on "and has nothing focusable inside" would silently retune itself the day someone adds a
+          // sort control to a leaderboard or takes the disclosure off a round — a behaviour that
+          // moves for reasons unrelated to itself. One rule, one gesture, everywhere `.sc-wrap` is.
+          <ScrollBox label={EVERY_ROUND}>
             <div className="rows sc-tbl sc-tbl--rnd">
               <div className="row row--head">
                 <div>Round</div>
@@ -175,7 +189,7 @@ export function HistoryView() {
                 />
               ))}
             </div>
-          </div>
+          </ScrollBox>
         )}
       </Section>
     </div>

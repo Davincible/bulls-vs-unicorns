@@ -188,10 +188,17 @@ const CAP_H = 0.72;
  *
  *  THE LEAD/TRAIL GAP IS SMALL, and was narrowed from 0.16/0.11 after looking at both sides in front.
  *  Three signals already say who is ahead — this alpha, the figure's 600 weight, and the percentage —
- *  and `--b` (#8f09bf) is simply a darker colour than `--a` (#2b8c39), so it carries more apparent
+ *  and `--b` (#8f09bf) is still a darker colour than `--a` (#278834), so it carries more apparent
  *  weight at identical alpha. Stack a wide alpha gap on top of that and UWU-in-front looks like a rout
  *  while the same lead for ANSEM barely registers. The ranking should come from the numbers, not from
  *  which hue happens to be winning.
+ *
+ *  THE GAP IS NARROWER THAN WHEN THESE WERE TUNED. `--a` was deepened from the sampled #2b8c39 so that
+ *  `.pos` and the split bar's labels clear AA as text, which moved the two sides from 1.66:1 apart on
+ *  white to 1.57:1. The imbalance these alphas correct for is therefore slightly smaller than it was —
+ *  the direction is unchanged and 0.15/0.11 still looks right on the fixture, so nothing is retuned
+ *  here on arithmetic alone. Recorded because the next person to look at both sides in front should
+ *  know the ground moved under this paragraph.
  *
  *  The captions are neutral ink, not a side colour: they are labels, and base.css reserves colour for
  *  the two sides. Same rule as `draw.ts`'s "LABELS ARE INK". */

@@ -116,11 +116,26 @@ pub const MIN_FIGHT_SECONDS: i64 = 5;
 
 /// ER-051. The whole fight, pure: no `Context`, no account borrow, no Anchor. This is what `resolve`
 /// calls on-chain, and it is ALSO what a native `cargo test` calls off-chain — the same function,
-/// not a re-description of it. `engine/src/er-sim.ts` is the line-for-line TypeScript mirror of this
-/// exact loop; the test at the bottom of this file runs both implementations against the same seed
-/// and entries and asserts byte-identical hp/banked/dead/winner. Before this, parity was "read to be
-/// the same" — the weakest form of assurance, and the one EXECUTION_REPORT.md named as the residual
-/// risk. This is the test that actually runs the Rust.
+/// not a re-description of it.
+///
+/// # FROZEN. DO NOT PORT FROM THIS FILE.
+///
+/// The sentence that used to stand here — "`engine/src/er-sim.ts` is the line-for-line TypeScript
+/// mirror of this exact loop" — WAS true and is now false, which is the whole reason for this
+/// notice. This spike exists to prove session-key signing, not to run the game; it is a separate
+/// program id and its own golden vectors are self-consistent, so its tests stay green while the
+/// rules below no longer match anything that ships.
+///
+/// Two economic defects were fixed in `programs/bulls-arena/src/lib.rs` and NOT here:
+///
+///   * the defender draw below is `if d == a { d = (d + 1) % n }`, which taxes ENTRY ORDER — slot
+///     `a+1` is targeted twice as often as anyone else, worth +15%/-5% on identical stakes;
+///   * the damage basis below is the defender's ring alone, which makes a fighter's take independent
+///     of their own stake — the "seat law", worth -52% a round to a whale and +661% to a minnow.
+///
+/// `bench_fight` in this file is also the pre-fix hand-copy that drifted from `run_fight` and caused
+/// two permanently stuck rounds. See `HOUSE-EDGE-STUDY.md` §10 for the measurements and
+/// `programs/bulls-arena/src/lib.rs` for the rules that are actually live.
 pub fn run_fight(fighters: &mut [Fighter; MAX_FIGHTERS], n: usize, seed: &[u8; 32], steps: u32) -> u8 {
     for step in 0..steps {
         let h = hashv(&[seed.as_ref(), (step as u64).to_le_bytes().as_ref()]).to_bytes();

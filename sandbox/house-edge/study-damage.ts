@@ -8,7 +8,7 @@
 // If `min` or `geo` reproduces what attacker weighting buys, it is the mechanism to ship, and the
 // entire compute argument evaporates.
 
-import { runFight, payout, DUST_ABSOLUTE, W_UNIFORM, mix } from "./fight-variant.ts";
+import { runFight, payout, DUST_ABSOLUTE, W_UNIFORM, mix, BASELINE, DEPLOYED_V5 } from "./fight-variant.ts";
 import type { FightConfig, DustRule } from "./fight-variant.ts";
 import { BANDS, makeLobby, fightersOf, roiWithSE, pct, toUsd } from "./lobby.ts";
 
@@ -18,6 +18,11 @@ const STUDY_SEED = "house-edge-v1";
 const ABS: DustRule = { kind: "absolute", units: DUST_ABSOLUTE };
 
 const CONFIGS: { name: string; cfg: FightConfig }[] = [
+  // The two rows that matter now: what v5 does, and what the fix ships. Both on the DEPLOYED byte
+  // layout, so the comparison is not confounded by which hash bytes drive the draws — the exploratory
+  // rows below use `wide`, which is why they should not be read as before/after pairs.
+  { name: "v5   dmg=defender, draw=bump (before) ", cfg: DEPLOYED_V5 },
+  { name: "SHIPPED  dmg=min, draw=shift (after)  ", cfg: BASELINE },
   { name: "DEPLOYED   dmg=defender, atk uniform  ", cfg: { attacker: W_UNIFORM, defender: W_UNIFORM, dust: ABS, layout: "legacy" } },
   { name: "O(1)  dmg=min,  atk uniform           ", cfg: { attacker: W_UNIFORM, defender: W_UNIFORM, dust: ABS, layout: "wide", damage: "min" } },
   { name: "O(1)  dmg=geo,  atk uniform           ", cfg: { attacker: W_UNIFORM, defender: W_UNIFORM, dust: ABS, layout: "wide", damage: "geo" } },

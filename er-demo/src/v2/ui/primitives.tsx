@@ -4,7 +4,7 @@
 // always formatted by `contract.ts`. Anything that appears on two screens belongs here; anything
 // specific to one screen stays with that screen.
 
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { usd, usdCompact, usdCompactSigned, usdSigned, type Side } from "../contract.ts";
 
 /** A section: hairline rule, index number, heading, optional tools on the right. No box, no fill —
@@ -36,9 +36,30 @@ export function Section({
   );
 }
 
-/** The smallest possible carrier of a side colour. */
-export function Mark({ side, dead }: { side: Side; dead?: boolean }) {
-  return <span className={`mk ${dead ? "mk--dead" : side === 0 ? "mk--a" : "mk--b"}`} aria-hidden="true" />;
+/** The smallest possible carrier of a side colour — and THE DESIGN'S MOST EXPOSED POINT. The whole
+ *  page is black on white except for two colours, and those two colours carry a real fact: which side
+ *  a fighter is on. A 7px square is that fact and nothing else — no shape difference, no letter — so
+ *  wherever the square is alone, the fact is conveyed by colour alone and a reader who cannot
+ *  distinguish the two, or who is not looking at the page at all, is told nothing.
+ *
+ *  MOSTLY THAT IS FINE, AND THE DEFAULT SAYS SO. In History, Leaderboard, Dashboard and the previous-
+ *  rounds table the square sits immediately beside the side's printed name, so it is decoration on
+ *  top of text — `aria-hidden`, because announcing "Ansem Ansem" on every row of a forty-row table is
+ *  its own defect. `label` is for the two places where the square is the ONLY carrier (00-5 standings
+ *  and 00-7's verify table, both in ArenaView): there it takes visually hidden text instead.
+ *
+ *  The text goes INSIDE the square rather than beside it. Every caller that needs a label puts the
+ *  mark in a fixed grid track — `.standing`'s second column is literally `7px` — and a sibling span
+ *  would be a second grid child that shunts every column after it one place along. `.sr` is
+ *  out-of-flow and clipped, so nested it costs no layout at all. */
+export function Mark({ side, dead, label }: { side: Side; dead?: boolean; label?: string }) {
+  const cls = `mk ${dead ? "mk--dead" : side === 0 ? "mk--a" : "mk--b"}`;
+  if (label === undefined) return <span className={cls} aria-hidden="true" />;
+  return (
+    <span className={cls}>
+      <span className="sr">{label}</span>
+    </span>
+  );
 }
 
 /** A health/share bar. `value`/`max` are bigint so it can take chain units directly. */
@@ -77,32 +98,129 @@ export function KVs({ children }: { children: ReactNode }) {
   return <div className="kvs">{children}</div>;
 }
 
+/* ---------------------------------------------------------------------------------------------
+   TABS — the real pattern, because the roles were already making the promise.
+   ---------------------------------------------------------------------------------------------
+   `role="tablist"` and `role="tab"` were here from the start; `role="tabpanel"`, `aria-controls`,
+   roving tabindex and arrow keys were not. That combination is the worst of both worlds: a screen
+   reader announces "tab, 1 of 3" — which tells the reader to press Right — and Right did nothing,
+   every tab was its own tab stop, and nothing said what any of them controlled.
+   Two ways out. Drop the roles to plain buttons, or finish the widget. Finishing it is right here:
+   the one call site (LeaderboardView) puts these in a Section's `tools` slot and the Section's
+   children ARE the three panels, which is a tab/tabpanel relationship in fact and not just in
+   markup. So: arrow keys move and select, Home/End jump to the ends, only the selected tab is a tab
+   stop, and Tab from the tablist lands in the panel it selected.
+
+   AUTOMATIC ACTIVATION (moving selects, rather than requiring Enter) is the APG's guidance for
+   panels that are cheap to render, and these are: three sorted arrays over data already in memory.
+   Manual activation exists for panels that fetch.
+
+   IDS ARE NAMESPACED BY THE CALLER, and the namespace is required rather than defaulted. Two tab
+   sets on one page with the same generated suffix would cross-wire their `aria-controls` silently —
+   nothing would look wrong and a screen reader would follow the wrong link. `useId()` at the call
+   site is the right namespace: React guarantees it per instance. */
+
+function tabDomId(ns: string, id: string): string {
+  return `${ns}-tab-${id}`;
+}
+
+function panelDomId(ns: string, id: string): string {
+  return `${ns}-panel-${id}`;
+}
+
 // `NoInfer` on `items` so `T` is fixed by `value` — the caller's own union — instead of being
 // widened to `string` by an inline array literal. Without it, `<Tabs items={[{id:"all",…}]}
 // value={tab} onChange={setTab}/>` fails to typecheck against a `useState<TabId>` setter, which is
 // the single most common way these get used.
 export function Tabs<T extends string>({
+  ns,
   items,
   value,
   onChange,
+  ariaLabel,
 }: {
+  /** Id namespace shared with this tablist's `TabPanel`s — `useId()` at the call site. */
+  ns: string;
   items: { id: NoInfer<T>; label: string }[];
   value: T;
   onChange(id: NoInfer<T>): void;
+  ariaLabel: string;
 }) {
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const from = items.findIndex((it) => it.id === value);
+    if (from < 0) return;
+
+    let to: number;
+    switch (e.key) {
+      case "ArrowRight":
+        to = (from + 1) % items.length;
+        break;
+      case "ArrowLeft":
+        to = (from - 1 + items.length) % items.length;
+        break;
+      case "Home":
+        to = 0;
+        break;
+      case "End":
+        to = items.length - 1;
+        break;
+      default:
+        return;
+    }
+
+    const target = items[to];
+    if (!target) return;
+    e.preventDefault();
+    onChange(target.id);
+    // Focus moves WITH selection, and it is read off the DOM at keypress time rather than from a
+    // list of refs: the tablist is the event's own `currentTarget`, so there is nothing to keep in
+    // sync and nothing to go stale if the items change.
+    e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[to]?.focus();
+  };
+
   return (
-    <div className="tabs" role="tablist">
-      {items.map((it) => (
-        <button
-          key={it.id}
-          role="tab"
-          aria-selected={value === it.id}
-          className={value === it.id ? "on" : undefined}
-          onClick={() => onChange(it.id)}
-        >
-          {it.label}
-        </button>
-      ))}
+    <div className="tabs" role="tablist" aria-label={ariaLabel} onKeyDown={onKeyDown}>
+      {items.map((it) => {
+        const selected = value === it.id;
+        return (
+          <button
+            key={it.id}
+            type="button"
+            id={tabDomId(ns, it.id)}
+            role="tab"
+            aria-selected={selected}
+            // ONLY THE SELECTED TAB POINTS AT A PANEL, because only its panel is in the document —
+            // this page renders one board at a time rather than mounting three and hiding two. An
+            // `aria-controls` naming an id that does not exist is worse than none: it is a promise
+            // the reader's "go to controlled element" command cannot keep.
+            aria-controls={selected ? panelDomId(ns, it.id) : undefined}
+            // Roving tabindex: the tablist is ONE tab stop, and the arrow keys move within it. Three
+            // separate stops is what made this widget's roles a lie.
+            tabIndex={selected ? 0 : -1}
+            className={selected ? "on" : undefined}
+            onClick={() => onChange(it.id)}
+          >
+            {it.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** The other half of `Tabs`: the panel a tab controls, named by that tab.
+ *
+ *  NO STYLING, AND THAT IS DELIBERATE — a bare wrapper with no padding, border or background, so the
+ *  panel is exactly the box its contents already were. The design law forbids cards, and a tabpanel
+ *  that drew one would be an accessibility fix leaving a visual scar.
+ *
+ *  `tabIndex={0}` makes the panel itself reachable: a panel whose content is a table of text has no
+ *  focusable descendant at all, and without it a keyboard user tabs straight from the tablist past
+ *  the thing they just selected. */
+export function TabPanel({ ns, id, children }: { ns: string; id: string; children: ReactNode }) {
+  return (
+    <div role="tabpanel" id={panelDomId(ns, id)} aria-labelledby={tabDomId(ns, id)} tabIndex={0}>
+      {children}
     </div>
   );
 }

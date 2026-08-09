@@ -176,10 +176,17 @@
 .scr .sc-side { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .scr .sc-side > .u { overflow: hidden; text-overflow: ellipsis; }
 
-/* Name + wallet on one line: the name carries, the key proves. */
+/* Name + wallet on one line: the name carries, the key proves.
+   THE KEY IS TEXT A READER READS, so it is `--ink-3` and not `--ink-4`. It was the latter: 2.05:1 on
+   the white sheet, at 10px, for the one string on the row that distinguishes two fighters with the
+   same display name and the one a reader copies to check against an explorer. base.css now reserves
+   `--ink-4` for disabled states and hairline decoration — "a state, not a shade of quiet" — and this
+   was the last real text outside that file still drawing on it. On `--ink-3` (#767676) it measures
+   4.54:1 against `--paper`, and it stays the quietest thing in its row by size and family anyway:
+   10px mono against 12.5px sans, two steps down from `--ink`. */
 .scr .sc-who { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .scr .sc-who-n { overflow: hidden; text-overflow: ellipsis; }
-.scr .sc-who-k { font: 400 10px/1 var(--mono); color: var(--ink-4); flex: none; }
+.scr .sc-who-k { font: 400 10px/1 var(--mono); color: var(--ink-3); flex: none; }
 
 /* ---------------------------------------------------------------------------------------------
    DASHBOARD — hero figure and fact groups
@@ -366,7 +373,15 @@
   .scr .sc-tbl--lbr { --cols: 22px 58px minmax(0, 1fr) 82px 50px; }
   .scr .sc-tbl--lba { --cols: 22px minmax(0, 1fr) 60px 90px 54px; }
   .scr .sc-tbl--lbh { --cols: 22px 58px minmax(0, 1fr) 50px 90px; }
-  .scr .sc-tbl--mine { --cols: 52px minmax(0, 1fr) 58px 90px 16px; }
+  /* 66px on the third track, and the eight extra come out of the side column beside it. Measured,
+     not guessed: at 58px the header "SIDE WON" wanted 59 and rendered "SIDE WO…" — one pixel short,
+     and the pixel was spent on an ellipsis that hides the word the YES/NO cells under it depend on.
+     The column is deliberately NOT renamed to "WON" to buy that pixel back: whether YOUR SIDE won and
+     whether YOU made money are different questions — the note above this column in HistoryView.tsx is
+     about exactly that — and a row can honestly read "no" beside a positive P/L. "WON" beside a P/L
+     column answers the other question. The side column gives the width up from 106px to 98px and
+     still carries its 7px mark and the longest token name with ~50px to spare. */
+  .scr .sc-tbl--mine { --cols: 52px minmax(0, 1fr) 66px 90px 16px; }
   .scr .sc-tbl--rnd { --cols: 56px minmax(0, 1fr) 90px 16px; }
   .scr .sc-tbl--plr { --cols: minmax(0, 1fr) 74px 90px; }
   .scr .sc-st { padding-left: 0; }

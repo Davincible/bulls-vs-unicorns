@@ -16,7 +16,7 @@
 // that is the actual trade a player faces in a 16-seat lobby, and separating the two would measure a
 // game nobody can play.
 
-import { runFight, payout, DUST_ABSOLUTE, W_UNIFORM } from "./fight-variant.ts";
+import { runFight, payout, DUST_ABSOLUTE, W_UNIFORM, BASELINE, DEPLOYED_V5 } from "./fight-variant.ts";
 import type { FightConfig, DustRule } from "./fight-variant.ts";
 import { BANDS, finish, fightersOf, usd, pct, toUsd } from "./lobby.ts";
 import type { Entry } from "./lobby.ts";
@@ -51,8 +51,14 @@ function lobbiesFor(k: number, rounds: number) {
   return out;
 }
 
-function score(m: bigint, lobbies: ReturnType<typeof lobbiesFor>) {
-  const cfg = dial(m);
+/** The two rules that actually exist: v5, and what shipped. The `dial(P)` columns beside them are
+ *  exploratory — they answer "what if a tilt were reintroduced", not "what happens now". */
+const NAMED: { label: string; cfg: FightConfig }[] = [
+  { label: "v5 (before)", cfg: DEPLOYED_V5 },
+  { label: "SHIPPED", cfg: BASELINE },
+];
+
+function score(cfg: FightConfig, lobbies: ReturnType<typeof lobbiesFor>) {
   let inn = 0, out = 0;
   const per: number[] = [];
   for (const lobby of lobbies) {
@@ -71,26 +77,30 @@ function score(m: bigint, lobbies: ReturnType<typeof lobbiesFor>) {
 
 const KS = [1, 2, 3, 4, 6, 8, 10, 12];
 const MS = [0n, 10n, 20n, 40n, 100n, 10000n];  // blend P in BPS (10000 = deployed)
+const COLUMNS: { label: string; cfg: FightConfig }[] = [
+  ...NAMED,
+  ...MS.map(m => ({ label: `P=${m}bps`, cfg: dial(m) })),
+];
 
 console.log(`\n=== EXPERIMENT 4: is splitting a $${BUDGET} budget across k wallets profitable? ===`);
 console.log(`study seed "${STUDY_SEED}"  |  ${ROUNDS} rounds per cell  |  16 seats, splitter takes k, background takes 16-k`);
 console.log(`background drawn from the five bands (mean ~$42). ROI is on the splitter's whole $${BUDGET}.\n`);
 
-const header = "  k   stake each " + MS.map(m => `P=${m}bps`.padStart(17)).join("");
+const header = "  k   stake each " + COLUMNS.map(c => c.label.padStart(17)).join("");
 console.log(header); console.log("-".repeat(header.length));
 const table: Record<string, { roi: number; se: number }[]> = {};
 for (const k of KS) {
   const lobbies = lobbiesFor(k, ROUNDS);
-  const row = MS.map(m => score(m, lobbies));
+  const row = COLUMNS.map(c => score(c.cfg, lobbies));
   table[k] = row;
   console.log(`${String(k).padStart(3)}   ${("$" + (BUDGET / k).toFixed(2)).padStart(9)}  ` +
     row.map(r => `${pct(r.roi, 2)}+-${(r.se * 100).toFixed(2)}`.padStart(17)).join(""));
 }
 
 console.log(`\n--- gain from splitting, relative to entering as one $${BUDGET} fighter (percentage points of ROI) ---\n`);
-console.log("  k  " + MS.map(m => `P=${m}bps`.padStart(14)).join(""));
+console.log("  k  " + COLUMNS.map(c => c.label.padStart(14)).join(""));
 for (const k of KS) {
-  console.log(`${String(k).padStart(3)}  ` + MS.map((_, i) => {
+  console.log(`${String(k).padStart(3)}  ` + COLUMNS.map((_, i) => {
     const d = table[k][i].roi - table[1][i].roi;
     const se = Math.hypot(table[k][i].se, table[1][i].se);
     return `${pct(d, 1)}+-${(se * 100).toFixed(1)}`.padStart(14);
@@ -98,9 +108,9 @@ for (const k of KS) {
 }
 
 console.log(`\n--- the practical question: how much is one extra wallet worth, in dollars per round, on a $${BUDGET} budget ---\n`);
-console.log("  k  " + MS.map(m => `P=${m}bps`.padStart(12)).join(""));
+console.log("  k  " + COLUMNS.map(c => c.label.padStart(12)).join(""));
 for (const k of KS) {
-  console.log(`${String(k).padStart(3)}  ` + MS.map((_, i) =>
+  console.log(`${String(k).padStart(3)}  ` + COLUMNS.map((_, i) =>
     `$${((table[k][i].roi - table[1][i].roi) * BUDGET).toFixed(2)}`.padStart(12)).join(""));
 }
 console.log(`\nA row worth less than the gas + signing cost of running k wallets is a tilt nobody will farm.`);

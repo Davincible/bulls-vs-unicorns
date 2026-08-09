@@ -38,14 +38,30 @@ export interface RoundPhaseNoteProps {
   /** Drop the label when the surface already shows it as its own heading — the dock puts it in the
    *  panel head, and "CLOSED / Closed" twice in two lines reads as a rendering bug. */
   showLabel?: boolean;
+  /** Whether THIS instance's label is a live region.
+   *
+   *  ONE PHASE, ONE ANNOUNCEMENT. This component is on screen twice at once — section 00-3 on the
+   *  Arena screen and the deploy dock — and two polite live regions holding the same word means every
+   *  phase change is read out twice, which reads as a stutter rather than as emphasis. The dock keeps
+   *  it, because the dock is the instance that is present on all five screens: a reader on the
+   *  Leaderboard when the lobby closes still hears it. The Arena's copy is the same sentence in the
+   *  reader's own reading order a moment later, so it is silent.
+   *
+   *  Default `true`, so a new surface announces unless it has thought about it — an announcement that
+   *  is missing is invisible, an announcement that doubles is at least audible. */
+  announce?: boolean;
 }
 
-export function RoundPhaseNote({ detail = "full", showLabel = true }: RoundPhaseNoteProps) {
+export function RoundPhaseNote({
+  detail = "full",
+  showLabel = true,
+  announce = true,
+}: RoundPhaseNoteProps) {
   const copy = useRoundPhase();
   return (
     <div className={`phase-note${detail === "timing" ? " phase-note--tight" : ""}`}>
       {showLabel ? (
-        <span className="u u--ink phase-note-l" aria-live="polite">
+        <span className="u u--ink phase-note-l" aria-live={announce ? "polite" : undefined}>
           {copy.label}
         </span>
       ) : null}

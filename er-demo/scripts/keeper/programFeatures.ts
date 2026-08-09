@@ -8,12 +8,23 @@
 // question any local file can answer, and the keeper does not pretend otherwise: the hold-open policy
 // is turned on by the operator (`--hold-open`), who is the only party that knows.
 //
-// WHAT THE `false` DIRECTION IS WORTH, WHICH IS A LOT. Anchor builds instructions from this IDL. If
-// `close_lobby_and_draw` has no `authority` account here, then an early close is not EXPRESSIBLE —
-// the account is silently dropped from the transaction, an ordinary permissionless close is built
-// instead, and the program answers `LobbyStillOpen`: an error about the clock, for a keeper whose
-// actual problem is that the feature it is relying on cannot be encoded. That is the silent-wrong
-// -thing failure this repo keeps deleting, and it is worth one boot-time refusal to make impossible.
+// WHAT THE `false` DIRECTION IS WORTH, WHICH IS A LOT — AND IT IS MEASURED, NOT REASONED ABOUT.
+// Anchor builds instructions from this IDL, so an account the IDL does not declare cannot reach the
+// transaction. Built both ways against the currently served IDL and printed the account list:
+//
+//     closeLobbyAndDraw({ ... })                        ->  7 accounts, one signer
+//     closeLobbyAndDraw({ ..., authority: <operator> })  ->  7 accounts, one signer   (IDENTICAL)
+//
+// No error, no warning: `arena` and `authority` are dropped on the floor and an ordinary
+// permissionless close is built instead, which the program then answers with `LobbyStillOpen` — an
+// error about the CLOCK, for a keeper whose actual problem is that the feature it is relying on
+// cannot be encoded. A real player would be standing in the lobby while that repeated every twenty
+// seconds. That is the silent-wrong-thing failure this repo keeps deleting, and one boot-time refusal
+// makes it impossible.
+//
+// (The same probe is the evidence that the reverse is safe: the permissionless call is byte-identical
+// to what it has always been, so a keeper running against the deployed program is unaffected by any
+// of this.)
 //
 // (A missing METHOD, by contrast, throws loudly on its own — `program.methods.sweepHouseTake` is
 // `undefined` at runtime today and calling it says so. It is a missing ACCOUNT that fails quietly,

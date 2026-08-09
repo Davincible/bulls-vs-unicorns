@@ -7,6 +7,238 @@ Measured 2026-08-09 against the deployed algorithm (`advance_fight` in
 in `sandbox/house-edge/`, which nothing in `engine/`, `er-demo/` or `programs/` imports. Every number
 below is reproducible: see `sandbox/house-edge/README.md` for the exact commands and seeds.
 
+> **That paragraph described this document on the day it was written and is now history.** Both
+> defects in §0 have since been fixed in `programs/bulls-arena/src/lib.rs` and both TypeScript
+> mirrors, and the sandbox rig moved with them. Still not deployed — see §10, which is the
+> before/after record. Everything from §1 to §9 is left exactly as measured against v5, because a
+> study rewritten to agree with its own recommendation is no longer evidence for it.
+
+---
+
+## 10. AFTER — what shipped, and what it did to the numbers
+
+Measured 2026-08-09, same seeds, same lobbies, same rig. `sandbox/house-edge/fight-variant.ts` now
+carries two named configs: `DEPLOYED_V5` (the rule every table above measures) and `BASELINE` (what
+shipped). `parity.ts` asserts `BASELINE` is byte-identical to `engine/src/er-sim.ts` over 300 random
+lineups — 195,954 exchanges, 0 mismatches — **and** that `DEPLOYED_V5` still reproduces the golden
+vector that was the committed on-chain parity fixture before the fix. So the "before" column is
+pinned to a number the chain itself once asserted, not to a memory of one.
+
+### 10.1 The two changes
+
+```rust
+// defender draw — was a bump onto slot a+1, which taxed ENTRY ORDER
+let mut d = (u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize) % (n - 1);
+if d >= a { d += 1; }                     // a rank among the n-1 who are NOT the attacker
+
+// damage basis — was the defender's ring alone, which is what made seats beat deposits
+let basis = fighters[a].hp.min(fighters[d].hp);
+let mut dmg = basis.saturating_mul(roll) / 100;
+if fighters[d].hp <= DUST { dmg = fighters[d].hp; }   // termination: keys on the DEFENDER only
+if dmg == 0 { continue; }                             // a blow too small to register kills nobody
+```
+
+`P = 0`, i.e. plain `min`, not the blend. §10.5 says why.
+
+### 10.2 Defect 1 — the seat law is dead
+
+`study-damage.ts 4000 4`, eight fighters, the same five bands, common random numbers.
+
+| band | BEFORE (v5) | AFTER (shipped) |
+|---|---|---|
+| whale ($80–100) | **−52.51% ± 0.36** | **−0.10% ± 0.25** |
+| big ($50–80) | −34.87% ± 0.48 | −0.71% ± 0.34 |
+| medium ($20–50) | +21.55% ± 0.94 | +0.62% ± 0.45 |
+| small ($8–20) | +201.43% ± 2.45 | −0.31% ± 0.49 |
+| minnow ($3–8) | **+660.92% ± 6.30** | **−0.75% ± 0.54** |
+| **spread** | **+713.4%** | **−0.6%** |
+
+At sixteen fighters (`study-damage.ts 2500 8`): spread **+713.9% → −0.3%**, whale
+−52.98% ± 0.30 → −0.13% ± 0.24. Every band is now inside its own standard error of zero at both
+lobby sizes.
+
+`check-seat-law.ts` — the law's own predictor, run against `er-sim.ts` directly — no longer predicts
+anything. In the 4v4 case with one $200 whale against seven $5 fighters, the law says the whale
+collects $4.99 and each minnow $53.64; measured, the whale collects **$199.53** and the minnows
+**$4.96–$5.05**. Every ROI in every case is now within **±2%**, whatever the stake.
+
+`demo-equalizer.ts` now scores the two rival predictors against each other and prints whichever fits,
+rather than asserting the one that was true when it was written. On the $200-whale lineup: "payout =
+a seat's share of the pot" is off by a mean **145.2%**; "payout = your own deposit" is off by
+**0.7%**.
+
+**The mechanism that made the seat law work is gone, and it shows up in one number.** §0 explained it
+by observing that essentially all value migrated out of rings and into banks by the bell (measured:
+0.0% unbanked), so each side ended holding the other side's money split evenly across its seats. On
+the same lineup now, **83.0% of the pot is still sitting in rings at the bell** — a whale's ring
+barely decays when its attackers can only take minnow-sized bites out of it. There is no longer a
+pool of banked winnings for a uniform lottery to hand out.
+
+### 10.3 Defect 1's consequence — the wallet farm is closed
+
+`study-split.ts 2500`, $80 budget, 16 seats. Dollars per round gained over entering as one $80 fighter:
+
+| wallets | BEFORE (v5) | AFTER (shipped) |
+|---|---|---|
+| 2 | +$37.03 | −$0.33 |
+| 4 | +$95.66 | −$0.48 |
+| 8 | **+$152.09** | **−$0.31** |
+| 12 | +$135.87 | −$0.18 |
+
+Every after-cell is within ±$0.60 of zero and none is distinguishable from it. Splitting now costs
+you the gas.
+
+### 10.4 Defect 2 — entry order is worth nothing
+
+`check-positional-bias.ts`, eight fighters all staking exactly $10. The script now reports a per-slot
+standard error, which it previously did not — once the effect is small, a table with no error bar
+cannot tell "fixed" from "smaller".
+
+| layout | BEFORE (v5) | AFTER (shipped), 24,000 seeds |
+|---|---|---|
+| `0,0,0,0,1,1,1,1` (blocked) | slots 3 and 7 **+15.1% / +15.0%**, others −5%; slots 0 and 4 die **90.6% / 90.3%** vs 64% | every slot within **±0.5%**, worst **1.9σ**; death rate **55.5–56.0%** for all eight |
+| `0,1,0,1,0,1,0,1` (interleaved) | flat, ±0.8% | every slot within ±0.5%, worst 1.8σ |
+
+The two layouts are now indistinguishable from each other, which is the property that was broken:
+payout no longer depends on which transaction confirmed first.
+
+*A note on how that was checked.* At 4,000 seeds one slot sat at 3.0σ, which over 16 comparisons is
+about a 4%-likely maximum — suggestive, not conclusive. Re-run at 24,000 seeds it fell to 0.9σ,
+which is what noise does and bias does not. The 24,000-seed table is the one quoted.
+
+### 10.5 Why `P = 0` (plain `min`) and not the blend this study recommended
+
+§2's dial is real and §2.1's calibration reproduces exactly on the current rig. It was still the
+wrong thing to ship, for two reasons the study did not weigh:
+
+1. **Every `P > 0` sells back the exploit being closed, in proportion to `P`.** §4's own table says
+   so: the eight-wallet farm is worth $1.10/round at P=10, $3.46 at P=40, $7.99 at P=100. The
+   mandate here was to close a farm, not to price one.
+2. **The blend cannot be evaluated in `u64`.** `P*ring_d + (BPS - P)*lo` overflows above a ring of
+   `u64::MAX / 10_000` (~$1.8B in micro-units). An honest port needs `u128`, and §5's own table
+   prices a `u128` divide at 100–300 CU — so the "+6 to +20 CU/step" estimate, made against BigInt
+   arithmetic that cannot overflow, does not survive contact with the port. `min` needs no multiply,
+   no divide and no widening: one load, one compare.
+
+### 10.6 The bug in §2's recommended code block
+
+The code in §2 is exploitable as written, and it was caught before it was ported rather than after.
+
+```rust
+if fighters[d].hp <= DUST || dmg == 0 { dmg = fighters[d].hp; }   // <- the deployed clause, kept
+```
+
+That clause is one branch serving one purpose, and the purpose only holds while `basis` is the
+defender's ring: `dmg == 0` then implies `hp_d <= 24`, far below `DUST`, so it means "the defender is
+spent". Under **any** basis that reads the attacker — `min`, `geo`, or the blend at small `P` —
+`dmg == 0` acquires a second meaning, "the **attacker** is spent", and the clause hands that spent
+attacker the defender's **entire** ring.
+
+It needs no exotic state. `enter` requires only `stake > 0`, so a 3-unit entry — $0.000003 — has a
+ring so small that `3 * roll / 100` floors to zero for every legal roll. Measured on the rig, one
+step, seed chosen so the gnat swings first:
+
+| rule | outcome |
+|---|---|
+| deployed (defender basis) | whale keeps 89,000,000; gnat banks 11,000,003 |
+| **§2's `min` as written** | **whale hp = 0, dead; gnat banks 100,000,003 on a 3-unit stake — 33,000,000×** |
+| §2's blend at P=20 bps | whale keeps 99,978,000; gnat banks 22,003 |
+
+The shipped rule splits the clause: dust-finishing keys on the defender's ring, and a blow that
+rounds to nothing simply moves nothing. Termination survives — a ring only falls when it defends,
+`hp <= DUST` kills on the next defence, and any two fighters both above `DUST` always exchange at
+least `DUST*4/100 = 40`. Asserted by `an_exhausted_attacker_cannot_annihilate_a_healthy_defender`,
+which fails on about half of its 200 seeds if the clause is re-fused.
+
+### 10.7 Compute — the real driver is not the `min`
+
+§5 priced the mechanism and missed the dominant term. The `min` itself is one load and one compare.
+What actually costs is that **the fix keeps fights alive longer, and a live step is dearer than a
+skipped one** — `lib.rs` measures 271 CU/step falling to 198 as fighters die onto the cheap
+early-`continue` path.
+
+Measured on the rig over the full step budget (400 seeds, `stopWhenOver` off, so it counts what the
+chain actually runs):
+
+| | steps that do real work, n = 8 | n = 16 |
+|---|---|---|
+| before | 492 / 1,920 (25.6%) | 996 / 3,840 (25.9%) |
+| after | 576 / 1,920 (30.0%) | 1,187 / 3,840 (30.9%) |
+
+So ~191 more working steps at n = 16, ~73 CU dearer each ≈ **+14k CU**, plus the `min` on ~1,200
+steps at ~5 CU ≈ **+6k**. Against the measured 864,996 CU for 4,000 steps that is **≈ +20k CU,
++2.3%**, taking the loop to ~885k — **63% of the 1.4M ceiling, against 61.8% before**. The draw
+change is free or slightly cheaper: it trades one runtime modulo plus a rare second modulo for one
+runtime modulo plus a compare.
+
+**A bound that does not depend on that estimate:** even if every one of the 4,000 steps became a
+working step at 271 CU, the loop costs 1,084,000 CU — 77% of the ceiling, still leaving 316k for
+`resolve`'s deserialise/serialise/event/CPI remainder. The change cannot break the ceiling on its own.
+
+**These are still estimates, and the thing that settles them is unchanged: the `bench_fight` sweep.**
+`bench_fight` calls `run_fight` directly, so it already measures the new rule with no edit — sweep
+`steps` on a local `solana-test-validator` and read the CU line. Do not ship on the numbers above.
+
+### 10.8 One pacing effect, measured and not free
+
+`check-fight-length.ts`, 200 seeds per lineup size, equal stakes — the shape `PENALTY_HORIZON_STEPS`
+was originally fitted against. `min` damage means a minnow hitting a whale takes minnow-sized bites,
+so fights run longer:
+
+| n | step budget | horizon | median end BEFORE | median end AFTER | horizon as % of fight |
+|---|---|---|---|---|---|
+| 2 | 480 | 71 | 103 | 108 (+5%) | 69% → 66% |
+| 4 | 960 | 200 | 318 | 376 (+18%) | 63% → 53% |
+| 8 | 1,920 | 566 | 876 | 1,029 (+17%) | 65% → 55% |
+| 16 | 3,840 | 1,600 | 2,211 | 2,795 (+26%) | 72% → 57% |
+
+Survivors at the bell go 25% → 44% at n = 16. Rounds are longer and less decisive — a product
+change, and the one thing here a reader might not want.
+
+**`PENALTY_HORIZON_STEPS` was deliberately NOT recalibrated, and that is a decision, not an
+oversight.** The horizon is denominated in steps, and steps map to wall-clock seconds at a fixed
+rate, so the player-facing promise — "hold your nerve for N seconds and leaving is free" — is
+unchanged by this fix. All three of its design constraints still hold and are still asserted by
+passing tests: reachable before the bell, not gone within the first five seconds, monotone. What
+moved is only how far through a *typical* fight the horizon lands, 63–81% → 53–76%, which loosens
+the late-fight free option slightly. Re-fitting it would change extract pricing — a different
+question, with its own measurement and its own owner — and bundling it here would make a
+fight-outcome change and an extract-pricing change indistinguishable under a bisect. The measurement
+is checked in (`check-fight-length.ts`) so that decision costs one command, not another study.
+
+### 10.9 The parity chain had a hole exactly where this change lives
+
+Found in adversarial review, after the fix was already green, and worth recording because it is the
+most dangerous kind of gap: everything passed.
+
+The only Rust↔TypeScript vector was `run_fight_matches_the_typescript_mirror_exactly` — four healthy
+fighters, 50 steps, **zero deaths, minimum hp 20,702**, twenty times `DUST`. It therefore never
+executed `if hp_d <= DUST { dmg = hp_d }` and never executed `if dmg == 0 { continue }` — which are
+precisely the two branches this fix edited. The TS↔TS test does not close it either, since both
+mirrors were edited by the same hand and a shared mistake passes.
+
+A second fixture (`brawl`, in `gen-parity-fixture.mjs`) now covers them, chosen by measurement rather
+than by eye: 3 dust-finishes, 3 zero-damage skips, 3 deaths. The before/after is stark — three
+mutations of those branches in the Rust alone:
+
+| mutation (Rust only, mirrors untouched) | old `calm` fixture | new `brawl` fixture |
+|---|---|---|
+| re-fuse the dust clause to `\|\| dmg == 0` | **survived** | caught |
+| drop the dust branch entirely | **survived** | caught |
+| turn the zero-skip into a kill | **survived** | caught |
+
+### 10.10 What the fix does NOT do
+
+It removes a defect; it does not add a house edge. Player ROI is now ~0% before fees at every stake
+size, and the house's revenue is the 20 bps entry fee and the extract penalty, exactly as before.
+**§7.2 stands unchanged and is now the only route to a fight-independent edge: if the target is 1% of
+volume, raise `FEE_BPS` from 20 to 100.** It is `MAX_FEE_BPS`-legal, already implemented, settable
+without a deploy via `set_fee_bps`, O(1), immune to splitting, and actually the same for everyone.
+
+Uncertainties 2, 3, 4, 6 and 7 in §8 are untouched by any of this — still no player-behaviour model,
+still an invented lobby distribution, still two teams only, still bootstrap SEs that assume
+independent rounds. Uncertainty 1 (the CU numbers) is narrowed but not closed: see §10.7.
+
 ---
 
 ## 0. The finding that reorders everything else
@@ -151,6 +383,10 @@ Section 5 explains why that is probably unaffordable.
 ---
 
 ## 2. The recommended mechanism: change what the damage is a percentage *of*
+
+> **The code block below is exploitable as written — see §10.6 before porting it.** Keeping the
+> deployed `|| dmg == 0` clause under a basis that reads the attacker lets a 3-unit fighter one-shot
+> a whale. What shipped is `P = 0` with that clause split in two; §10.5 says why not the blend.
 
 Weighted selection is the expensive way to fix this. There is an O(1) way, and it is better on every
 axis measured.
@@ -398,6 +634,7 @@ same commit, with the old vectors deleted rather than left to rot.
 ## 7. Recommendation
 
 **7.1 — Fix the two defects. These are not optional and are independent of any edge question.**
+**— DONE, both of them. See §10 for the before/after and for the two places this section was wrong.**
 
 1. **The seat law.** A player who splits $80 across 8 wallets earns $152/round more than one who does
    not. Whales lose 52% per round by construction. Set the damage basis to `min(ring_a, ring_d)`

@@ -38,8 +38,8 @@ const CASES: Case[] = [
 
 console.log(`\n=== the seat law: does payout = (opposing side's stake) / (my side's seats)? ===`);
 console.log(`measured on engine/src/er-sim.ts, ${TRIALS} seeds per case, 20 bps fee, sides ALTERNATED across slots`);
-console.log(`(alternated because check-positional-bias.ts shows a blocked layout adds a +-15% slot artefact`);
-console.log(` that would otherwise be read as error in this table)\n`);
+console.log(`(alternated because a blocked layout USED to add a +-15% slot artefact — fixed now, but the`);
+console.log(` layout is kept so this table stays comparable with the one taken before the fix)\n`);
 
 for (const c of CASES) {
   const n = c.stakes.length;

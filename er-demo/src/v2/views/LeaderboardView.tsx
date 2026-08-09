@@ -12,9 +12,10 @@
 // figures here come from `standings`, which the data layer derives from settled rounds only, so the
 // leaderboard and the dashboard's "your position" band are physically incapable of disagreeing.
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useArena } from "../data/useArena.ts";
-import { Bar, Empty, Mark, Money, Section, Tabs, Tag } from "../ui/primitives.tsx";
+import { Bar, Empty, Mark, Money, Section, TabPanel, Tabs, Tag } from "../ui/primitives.tsx";
+import { ScrollBox } from "./ScrollBox.tsx";
 import {
   SIDE_TOKEN,
   usd,
@@ -76,6 +77,11 @@ export function LeaderboardView() {
   const { live, standings, hall, history, you, source } = useArena();
   const [tab, setTab] = useState<TabId>("round");
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "pnl", desc: true });
+
+  // The id namespace tying each tab to the panel it controls. `useId` rather than a literal so the
+  // pairing survives this screen ever being rendered twice (two boards side by side, a preview) —
+  // duplicate ids would cross-wire the two silently, and nothing on screen would look wrong.
+  const tabsNs = useId();
 
   // `hall` is a flat list of RoundPlayer, and RoundPlayer does not carry its round number — so the
   // round each performance happened in is recovered from the log the list was flattened out of.
@@ -170,14 +176,61 @@ export function LeaderboardView() {
         index={head.index}
         title={head.title}
         lede={head.lede}
-        tools={<Tabs items={TABS} value={tab} onChange={(id) => setTab(id)} />}
+        tools={
+          <Tabs
+            ns={tabsNs}
+            ariaLabel="Leaderboard board"
+            items={TABS}
+            value={tab}
+            onChange={(id) => setTab(id)}
+          />
+        }
       >
-        {tab === "round" ? <RoundBoard fighters={ranked} /> : null}
+        {/* THE SECTION'S CHILDREN ARE THE PANELS, which is why the tabs sit in its `tools` slot: the
+            heading, the lede and the board under it all change together when a tab changes, and the
+            three boards are three renderings of the same section rather than three sections. Each is
+            wrapped in the `TabPanel` its tab names, so a reader can move from the tab to the board it
+            just selected instead of guessing what changed. One at a time — mounting all three and
+            hiding two would sort and render two boards nobody asked for.
+
+            `label` IS `head.title` — the heading printed at the top of this very section. It ends up
+            naming the scrolling box each board sits in (see `ScrollBox`), and passing the heading's
+            own string down is what stops the name a screen reader hears from drifting from the words
+            a sighted reader sees. `head` is `HEAD[tab]` and only this tab's panel is mounted, so it
+            is always this board's heading.
+
+            ONE THING FOR `ui/primitives.tsx` TO RETIRE, NOT FOR THIS FILE: `TabPanel` carries its own
+            `tabIndex={0}`, justified in its comment by "a panel whose content is a table of text has
+            no focusable descendant at all". As of `ScrollBox` that is no longer true here whenever a
+            board is long enough to scroll, and the panel's stop becomes a second consecutive stop on
+            the same box. Harmless, but it is one line to drop once that module is free. */}
+        {tab === "round" ? (
+          <TabPanel ns={tabsNs} id="round">
+            <RoundBoard fighters={ranked} label={head.title} />
+          </TabPanel>
+        ) : null}
         {tab === "alltime" ? (
-          <AllTime rows={sorted} sort={sort} setSort={setSort} youKey={you.pubkey} loading={history.loading} />
+          <TabPanel ns={tabsNs} id="alltime">
+            <AllTime
+              rows={sorted}
+              sort={sort}
+              setSort={setSort}
+              youKey={you.pubkey}
+              loading={history.loading}
+              label={head.title}
+            />
+          </TabPanel>
         ) : null}
         {tab === "hall" ? (
-          <Hall rows={hall} youKey={you.pubkey} loading={history.loading} roundOf={roundOf} />
+          <TabPanel ns={tabsNs} id="hall">
+            <Hall
+              rows={hall}
+              youKey={you.pubkey}
+              loading={history.loading}
+              roundOf={roundOf}
+              label={head.title}
+            />
+          </TabPanel>
         ) : null}
       </Section>
     </div>
@@ -197,12 +250,15 @@ function statusOf(f: FighterView): { label: string; dim: boolean } {
   return { label: "alive", dim: false };
 }
 
-function RoundBoard({ fighters }: { fighters: FighterView[] }) {
+function RoundBoard({ fighters, label }: { fighters: FighterView[]; label: string }) {
+  // An empty board never renders a `ScrollBox` at all — there is no box, so there is no stop to
+  // decide about. The same is true of the two boards below: the empty state is structurally
+  // excluded rather than measured away.
   if (!fighters.length) {
     return <Empty>No fighters in the ring — the board fills the moment someone deploys.</Empty>;
   }
   return (
-    <div className="sc-wrap">
+    <ScrollBox label={label}>
       <div className="rows sc-tbl sc-tbl--lbr" role="table" aria-label="This round">
         <div className="row row--head" role="row">
           <div role="columnheader">#</div>
@@ -270,7 +326,7 @@ function RoundBoard({ fighters }: { fighters: FighterView[] }) {
           );
         })}
       </div>
-    </div>
+    </ScrollBox>
   );
 }
 
@@ -320,12 +376,14 @@ function AllTime({
   setSort,
   youKey,
   loading,
+  label,
 }: {
   rows: StandingsRow[];
   sort: { key: SortKey; desc: boolean };
   setSort(s: { key: SortKey; desc: boolean }): void;
   youKey: string;
   loading: boolean;
+  label: string;
 }) {
   if (!rows.length) {
     return (
@@ -340,7 +398,7 @@ function AllTime({
   // two sorts of the same table disagree about how big the same wallet's P/L is.
   const top = peak(rows.map((r) => r.pnl));
   return (
-    <div className="sc-wrap">
+    <ScrollBox label={label}>
       <div className="rows sc-tbl sc-tbl--lba" role="table" aria-label="All-time standings">
         <div className="row row--head" role="row">
           <div role="columnheader">#</div>
@@ -424,7 +482,7 @@ function AllTime({
           </div>
         ))}
       </div>
-    </div>
+    </ScrollBox>
   );
 }
 
@@ -437,11 +495,13 @@ function Hall({
   youKey,
   loading,
   roundOf,
+  label,
 }: {
   rows: RoundPlayer[];
   youKey: string;
   loading: boolean;
   roundOf(p: RoundPlayer): bigint | null;
+  label: string;
 }) {
   if (!rows.length) {
     return (
@@ -455,7 +515,7 @@ function Hall({
   // the list staying sorted by the same figure it is drawn from.
   const top = peak(rows.map((p) => p.pnl));
   return (
-    <div className="sc-wrap">
+    <ScrollBox label={label}>
       <div className="rows sc-tbl sc-tbl--lbh" role="table" aria-label="Hall of fame">
         <div className="row row--head" role="row">
           <div role="columnheader">#</div>
@@ -530,6 +590,6 @@ function Hall({
           );
         })}
       </div>
-    </div>
+    </ScrollBox>
   );
 }

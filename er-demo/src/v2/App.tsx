@@ -149,6 +149,16 @@ function Shell() {
     <ShellContext.Provider value={shell}>
       <TopChrome />
 
+      {/* BEFORE `main`, AND THAT IS THE WHOLE REASON IT IS HERE. This bar carries `<nav aria-label=
+          "Screens">` — the only way to move between the five screens without knowing the digit
+          shortcuts — and it used to be rendered after the page, which put it LAST in the tab order:
+          on Arena a keyboard user passed 56 controls before reaching the screen navigation, and the
+          shortcuts that mitigate that are printed as `[00]` in the nav they cannot reach yet.
+          Both bars are `position: fixed` with the same `z-index: 80` and they do not overlap (one is
+          `top: 0`, the other `bottom: 0`, see base.css), so DOM order buys layout nothing and costs
+          paint nothing — it buys the conventional order: chrome, navigation, content. */}
+      <BottomChrome />
+
       {/* Inside `main`, and first: the strip itself is `position: fixed` so its place in the DOM is
           immaterial, but the anchor it reveals itself from is a flow element that has to start at the
           top of the page's content to measure a scroll depth from it. Keeping the two together means
@@ -160,7 +170,6 @@ function Shell() {
         <Screen view={view} />
       </main>
 
-      <BottomChrome />
       <SideRail />
       <ToastRail />
       {/* After the toast rail: the dock measures that column to stay clear of it on narrow screens,

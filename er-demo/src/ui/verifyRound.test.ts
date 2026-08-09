@@ -54,10 +54,10 @@ describe("verifyRound — verified", () => {
   test("an exact replay of the checked-in parity fixture reports 'verified'", () => {
     // From sim/hitEvents.test.ts's EXPECTED_FIGHTERS / EXPECTED_WINNER, 50 steps, no extraction.
     const fighters: FighterState[] = [
-      { wallet: pubkey("w1"), side: 0, dead: false, stake: 100_000n, hp: 15_158n, banked: 84_062n },
-      { wallet: pubkey("w2"), side: 0, dead: false, stake: 250_000n, hp: 201_600n, banked: 116_021n },
-      { wallet: pubkey("w3"), side: 1, dead: false, stake: 180_000n, hp: 26_975n, banked: 48_467n },
-      { wallet: pubkey("w4"), side: 1, dead: false, stake: 90_000n, hp: 42_942n, banked: 84_775n },
+      { wallet: pubkey("w1"), side: 0, dead: false, stake: 100_000n, hp: 20_787n, banked: 93_784n },
+      { wallet: pubkey("w2"), side: 0, dead: false, stake: 250_000n, hp: 220_501n, banked: 103_285n },
+      { wallet: pubkey("w3"), side: 1, dead: false, stake: 180_000n, hp: 52_229n, banked: 59_189n },
+      { wallet: pubkey("w4"), side: 1, dead: false, stake: 90_000n, hp: 20_702n, banked: 49_523n },
     ];
     const result = verifyRound(mockRound(fighters, { winner: 0, tickCount: 50n }));
 
@@ -95,9 +95,22 @@ describe("verifyRound — extraction-likely", () => {
     // the direct fingerprint; the untouched opponent does not need to on its own.
     expect(result.fighters[0].extractionSignature).toBe(true);
     expect(result.fighters[0].onChain).toEqual({ hp: 0n, banked: 998_000n, dead: true });
-    // The pure replay (which doesn't know extraction happened) disagrees with the chain on who won —
-    // a real, honest divergence, and exactly the case a flat "MISMATCH" label would misrepresent.
-    expect(result.winnerMatches).toBe(false);
+
+    // THE DIVERGENCE IS IN THE ROWS, AND THAT IS THE WHOLE CASE. The pure replay doesn't know
+    // extraction happened, so it fights both players for all 1,400 steps and reaches numbers that
+    // match neither of them: it has the extractor still standing with 682,966 in the ring, and the
+    // opponent — untouched on chain — dead. Every row disagrees. That is a real, honest divergence,
+    // and exactly the case a flat "MISMATCH" label would misrepresent as cheating.
+    expect(result.fighters.every((f) => f.matches)).toBe(false);
+
+    // AND THE WINNER HAPPENS TO COINCIDE, which makes this fixture the one that proves `verified`
+    // needs both of its conjuncts. It used to disagree here; under the damage basis of
+    // min(attacker, defender) the replay's runaway leader is the same side the chain settled to, so
+    // `winnerMatches` is now true while the round is still nothing like verified. A verdict that
+    // turned on the winner alone would call this replayed-and-reproduced. It does not, because
+    // `allFightersMatch` is false — asserted directly above, and asserted here as the reason.
+    expect(result.winnerMatches).toBe(true);
+    expect(result.verdict).not.toBe("verified");
   });
 
   test("a round where the house took an extract penalty still conserves, and is not a false mismatch", () => {
@@ -245,10 +258,10 @@ describe("verifyRound — the house's take", () => {
 describe("verifyRound — the recorded pot against the stakes it is the sum of", () => {
   // The parity fixture, again: 100_000 + 250_000 + 180_000 + 90_000 = 620_000.
   const cleanFighters: FighterState[] = [
-    { wallet: pubkey("w1"), side: 0, dead: false, stake: 100_000n, hp: 15_158n, banked: 84_062n },
-    { wallet: pubkey("w2"), side: 0, dead: false, stake: 250_000n, hp: 201_600n, banked: 116_021n },
-    { wallet: pubkey("w3"), side: 1, dead: false, stake: 180_000n, hp: 26_975n, banked: 48_467n },
-    { wallet: pubkey("w4"), side: 1, dead: false, stake: 90_000n, hp: 42_942n, banked: 84_775n },
+    { wallet: pubkey("w1"), side: 0, dead: false, stake: 100_000n, hp: 20_787n, banked: 93_784n },
+    { wallet: pubkey("w2"), side: 0, dead: false, stake: 250_000n, hp: 220_501n, banked: 103_285n },
+    { wallet: pubkey("w3"), side: 1, dead: false, stake: 180_000n, hp: 52_229n, banked: 59_189n },
+    { wallet: pubkey("w4"), side: 1, dead: false, stake: 90_000n, hp: 20_702n, banked: 49_523n },
   ];
 
   test("a round whose recorded pot equals its summed stakes reports the two agreeing", () => {
@@ -310,12 +323,12 @@ describe("verifyRound — the recorded pot against the stakes it is the sum of",
 describe("verifyRound — mismatch (not explainable by extraction)", () => {
   test("on-chain value that doesn't conserve is reported as a real mismatch, never as extraction", () => {
     const fighters: FighterState[] = [
-      { wallet: pubkey("w1"), side: 0, dead: false, stake: 100_000n, hp: 15_158n, banked: 84_062n },
-      { wallet: pubkey("w2"), side: 0, dead: false, stake: 250_000n, hp: 201_600n, banked: 116_021n },
-      { wallet: pubkey("w3"), side: 1, dead: false, stake: 180_000n, hp: 26_975n, banked: 48_467n },
+      { wallet: pubkey("w1"), side: 0, dead: false, stake: 100_000n, hp: 20_787n, banked: 93_784n },
+      { wallet: pubkey("w2"), side: 0, dead: false, stake: 250_000n, hp: 220_501n, banked: 103_285n },
+      { wallet: pubkey("w3"), side: 1, dead: false, stake: 180_000n, hp: 52_229n, banked: 59_189n },
       // banked inflated by 999_999 with nothing removed elsewhere — value created from nowhere,
       // which neither tick() nor extract() can ever do.
-      { wallet: pubkey("w4"), side: 1, dead: false, stake: 90_000n, hp: 42_942n, banked: 84_775n + 999_999n },
+      { wallet: pubkey("w4"), side: 1, dead: false, stake: 90_000n, hp: 20_702n, banked: 49_523n + 999_999n },
     ];
     const result = verifyRound(mockRound(fighters, { winner: 0, tickCount: 50n }));
 
@@ -329,14 +342,26 @@ describe("verifyRound — mismatch (not explainable by extraction)", () => {
     // nobody ends up dead/hp=0 in a way that doesn't also match the replay's own ending state, so
     // there's no honest extraction story available: this is what a wrong seed/entries/steps looks
     // like, and it must not be laundered into "probably just an extraction".
+    //
+    // 48, NOT 49, AND THE DIFFERENCE IS NOT COSMETIC. Only 31 of the fixture's 50 steps land a real
+    // exchange; the rest draw a same-side pair, a dead target, or a blow too small to register, and
+    // move nothing. Step 49 is one of those — so a replay stopped at 49 reaches byte-identical
+    // numbers to the full 50, and this test would assert "mismatch" against a round the verifier
+    // (correctly) calls "verified". It silently became that when the damage basis changed to
+    // min(attacker, defender) and shifted which steps land; it had always depended on step 49
+    // happening to be a live one, and never said so. 48 is the fixture's LAST landing step, so
+    // dropping it is guaranteed to move numbers. The `some(!matches)` assertion below is the guard
+    // that was missing: it makes this test fail loudly rather than pass vacuously if the chosen step
+    // count ever stops being a divergent one.
     const fighters: FighterState[] = [
-      { wallet: pubkey("w1"), side: 0, dead: false, stake: 100_000n, hp: 15_158n, banked: 84_062n },
-      { wallet: pubkey("w2"), side: 0, dead: false, stake: 250_000n, hp: 201_600n, banked: 116_021n },
-      { wallet: pubkey("w3"), side: 1, dead: false, stake: 180_000n, hp: 26_975n, banked: 48_467n },
-      { wallet: pubkey("w4"), side: 1, dead: false, stake: 90_000n, hp: 42_942n, banked: 84_775n },
+      { wallet: pubkey("w1"), side: 0, dead: false, stake: 100_000n, hp: 20_787n, banked: 93_784n },
+      { wallet: pubkey("w2"), side: 0, dead: false, stake: 250_000n, hp: 220_501n, banked: 103_285n },
+      { wallet: pubkey("w3"), side: 1, dead: false, stake: 180_000n, hp: 52_229n, banked: 59_189n },
+      { wallet: pubkey("w4"), side: 1, dead: false, stake: 90_000n, hp: 20_702n, banked: 49_523n },
     ];
-    const result = verifyRound(mockRound(fighters, { winner: 0, tickCount: 49n }));
+    const result = verifyRound(mockRound(fighters, { winner: 0, tickCount: 48n }));
 
+    expect(result.fighters.some((f) => !f.matches)).toBe(true);
     expect(result.verdict).toBe("mismatch");
     expect(result.conservationHoldsOnChain).toBe(true);
     expect(result.fighters.some((f) => f.extractionSignature)).toBe(false);

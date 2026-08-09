@@ -20,7 +20,7 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 
 import type { RawFighter, RawRoundAccount } from "../../src/chain/program.ts";
 import { CLOCK_SKEW_MARGIN_SECONDS, HOUSE_FILL_LEAD_SECONDS, MIN_FIGHTERS_TO_FIGHT } from "./config.ts";
-import { HOUSE_FLOOR, HOUSE_MAX } from "./houseSizing.ts";
+import { HOLD_OPEN_HOUSE_FIGHTERS, HOUSE_FLOOR, HOUSE_MAX } from "./houseSizing.ts";
 import { houseBankFrom, plannedHouseEntries } from "./houseBank.ts";
 
 const bank = houseBankFrom(Array.from({ length: HOUSE_MAX }, () => Keypair.generate()));
@@ -49,11 +49,67 @@ function roundWith(fighters: RawFighter[]): RawRoundAccount {
   } as unknown as RawRoundAccount;
 }
 
-const entriesOf = (round: RawRoundAccount, now: number) => plannedHouseEntries(bank, round, 7n, now).entries;
+/** The lobby view for a round that is NOT being held open — the deadline is the schedule, which is
+ *  what every test below the hold-open block is about. `drawAt` is the deadline because that is when
+ *  such a lobby genuinely gets drawn. */
+const runningToDeadline = { drawAt: LOBBY_CLOSES_AT, heldOpen: false };
+
+const entriesOf = (round: RawRoundAccount, now: number, lobby = runningToDeadline) =>
+  plannedHouseEntries(bank, round, 7n, now, lobby).entries;
 
 const sidesOf = (round: RawRoundAccount, now: number) => entriesOf(round, now).map((e) => e.side).sort();
 
 const walletsOf = (round: RawRoundAccount, now: number) => entriesOf(round, now).map((e) => e.wallet.index);
+
+describe("a lobby that is being held open for players", () => {
+  /** An hour of backstop, and the fill stage is therefore an hour away too. */
+  const held = { drawAt: LOBBY_CLOSES_AT, heldOpen: true };
+
+  it("puts exactly one house fighter in, so the chain itself refuses to draw the round", () => {
+    // THE NUMBER IS CHOSEN FOR WHAT IT MAKES IMPOSSIBLE. At one fighter `enough_to_fight` fails, so
+    // `close_lobby_and_draw` is refused for EVERYONE — not just for a keeper that declines to call
+    // it, but for a permissionless caller racing the deadline. "No house-versus-house fights" stops
+    // being a policy and becomes something the program enforces. And `lobby_is_dead` is true, so the
+    // round can still be abandoned when nobody comes. See `HOLD_OPEN_HOUSE_FIGHTERS`.
+    const entries = entriesOf(roundWith([]), EARLY, held);
+    expect(entries).toHaveLength(HOLD_OPEN_HOUSE_FIGHTERS);
+    expect(HOLD_OPEN_HOUSE_FIGHTERS).toBeLessThan(MIN_FIGHTERS_TO_FIGHT);
+  });
+
+  it("adds nothing once that one is in, however long the hold lasts", () => {
+    // The cheap steady state, stated as a property: a held lobby costs nothing per pass, per minute
+    // or per hour, and the only thing keeping that true is this returning an empty plan.
+    const oneIn = roundWith([fighter(houseKey(0), 0)]);
+    expect(entriesOf(oneIn, EARLY, held)).toHaveLength(0);
+    expect(entriesOf(oneIn, LOBBY_CLOSES_AT - 3_500, held)).toHaveLength(0);
+  });
+
+  it("fills the house in around a real player the moment one arrives", () => {
+    // `heldOpen` goes false in the same pass the classifier first sees a real fighter, and the seed
+    // stage takes over — so the room populates AROUND the player rather than having been full before
+    // they got there. This is the behaviour the single hold-open fighter buys.
+    const withPlayer = roundWith([fighter(houseKey(0), 0), fighter(Keypair.generate().publicKey, 1)]);
+    const arriving = { drawAt: LOBBY_CLOSES_AT, heldOpen: false };
+    expect(entriesOf(withPlayer, EARLY, arriving).length).toBeGreaterThan(0);
+  });
+
+  it("sizes the fill against the keeper's own close, not the backstop an hour away", () => {
+    // THE SILENT FAILURE THIS PINS. A real player is in and the keeper will close entries in twenty
+    // seconds; the fill stage has to be due against THAT, or it would come due an hour after the
+    // fight had already been fought, and the house would never throttle against real arrivals at all.
+    const withPlayer = roundWith([fighter(houseKey(0), 0), fighter(Keypair.generate().publicKey, 1)]);
+    const closingSoon = { drawAt: LOBBY_CLOSES_AT - 3_580, heldOpen: false };
+    const fillDue = closingSoon.drawAt - HOUSE_FILL_LEAD_SECONDS;
+    expect(entriesOf(withPlayer, fillDue, closingSoon).length).toBeGreaterThan(0);
+  });
+
+  it("plans nothing into the last moments before the keeper's own close", () => {
+    // `enter` is refused at or past the instant the lobby is drawn, so an entry planned inside the
+    // skew margin of the KEEPER's close is as wasted as one planned inside the chain deadline's.
+    const closingSoon = { drawAt: LOBBY_CLOSES_AT - 3_580, heldOpen: false };
+    expect(entriesOf(roundWith([]), closingSoon.drawAt - CLOCK_SKEW_MARGIN_SECONDS, closingSoon)).toHaveLength(0);
+  });
+});
 
 describe("the seed stage", () => {
   it("puts the policy's floor into an empty lobby, one fighter per side", () => {

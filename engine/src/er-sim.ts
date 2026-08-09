@@ -146,6 +146,32 @@ export function enter(round: ERRound, wallet: string, side: 0 | 1, stake: bigint
   round.feesCollected += fee;
 }
 
+/** Mirrors `draw_pair`: an attacker, and a defender who is never the attacker.
+ *
+ *  Uniform over all `n * (n - 1)` ORDERED pairs of distinct slots. Requires `n >= 2`, which `tick`
+ *  guarantees before calling.
+ *
+ *  IT USED TO BE `let d = h.readUInt32LE(4) % n; if (d === a) d = (d + 1) % n;` and that was a
+ *  measured, ~11-sigma bias on ENTRY ORDER. Re-rolling a collision onto `a + 1` is not a re-draw: it
+ *  targets slot `a + 1` twice as often as anyone else, and hands slot `a` a bonus valid attack
+ *  whenever that bump lands cross-side — which depends purely on how the two sides are laid out
+ *  across the array, i.e. on which transaction confirmed first. With eight fighters all staking $10
+ *  and each side arriving as a block, slots 3 and 7 earned +15% while slots 0 and 4 died 90% of the
+ *  time against 64% for everyone else (`sandbox/house-edge/check-positional-bias.ts`).
+ *
+ *  Drawing a rank among the `n - 1` fighters who are NOT the attacker and shifting it past `a` gives
+ *  every non-attacker exactly one rank, so no slot can be favoured by where it sits. See the Rust
+ *  for the full reasoning; this is its mirror. */
+export function drawPair(h: Buffer, n: number): [number, number] {
+  // The Rust counterpart is private and would panic on the `% 0`. This one is exported, so it says
+  // so out loud instead of returning `[0, NaN]` and failing several frames later at `fighters[NaN]`.
+  if (n < 2) throw new Error(`drawPair requires n >= 2, got ${n}`);
+  const a = h.readUInt32LE(0) % n;
+  let d = h.readUInt32LE(4) % (n - 1);
+  if (d >= a) d += 1;
+  return [a, d];
+}
+
 /** Mirrors `tick`. Deterministic from (seed, tickCount) alone — no clock, no slot, no ordering. */
 export function tick(round: ERRound, steps: number): void {
   for (let s = 0; s < steps; s++) {
@@ -155,20 +181,27 @@ export function tick(round: ERRound, steps: number): void {
     round.tickCount += 1n;
 
     const h = tickHash(round.seed, cursor);
-    const a = h.readUInt32LE(0) % n;
-    let d = h.readUInt32LE(4) % n;
-    if (d === a) d = (d + 1) % n;
+    const [a, d] = drawPair(h, n);
 
     const A = round.fighters[a], D = round.fighters[d];
     if (A.side === D.side) continue;        // never your own team
     if (A.wallet === D.wallet) continue;    // never yourself, even across sides
     if (A.dead === 1 || D.dead === 1) continue;
 
-    const roll = BigInt(h[8] % 24) + 4n;    // 4..27 percent of remaining hp
-    let dmg = (D.hp * roll) / 100n;
-    // finish off dust rather than chasing an asymptote forever
-    if (D.hp <= DUST || dmg === 0n) dmg = D.hp;
-    if (dmg === 0n) continue;               // genuinely nothing left to take
+    const roll = BigInt(h[8] % 24) + 4n;    // 4..27 percent of the SMALLER of the two rings
+    // You cannot take more than you brought. Reading the defender alone made an attacker's take
+    // independent of their own stake, which is the seat law in HOUSE-EDGE-STUDY.md §0 — deposits
+    // bought nothing, seats bought everything, and a split budget farmed it. See the Rust.
+    const basis = A.hp < D.hp ? A.hp : D.hp;
+    let dmg = (basis * roll) / 100n;
+    // TERMINATION: a defender already down to dust is finished off rather than chased to an
+    // asymptote. Keys on the DEFENDER's ring alone.
+    if (D.hp <= DUST) dmg = D.hp;
+    // A blow too small to register moves nothing — and it is NOT a kill. These two used to share a
+    // branch (`D.hp <= DUST || dmg === 0n`), which was safe only while `basis` was the defender's
+    // ring. With `basis` reading the attacker, `dmg === 0n` also means "the ATTACKER is spent", and
+    // the old form paid that spent attacker the defender's whole ring.
+    if (dmg === 0n) continue;
 
     D.hp = sat(D.hp, dmg);
     A.banked += dmg;

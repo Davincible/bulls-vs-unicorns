@@ -11,7 +11,8 @@ cd engine
 npx tsx ../sandbox/house-edge/parity.ts                  # RUN THIS FIRST — validates the rig
 npx tsx ../sandbox/house-edge/demo-equalizer.ts          # what the deployed fight actually pays
 npx tsx ../sandbox/house-edge/check-seat-law.ts          # payout = opposing stake / my side's seats
-npx tsx ../sandbox/house-edge/check-positional-bias.ts   # entry order is worth +-15%
+npx tsx ../sandbox/house-edge/check-positional-bias.ts   # entry order WAS worth +-15%; now flat
+npx tsx ../sandbox/house-edge/check-fight-length.ts 200  # what the fix did to fight length
 npx tsx ../sandbox/house-edge/study-weights.ts  4000 4   # exp 1: what moves ROI by band
 npx tsx ../sandbox/house-edge/study-dial.ts     2000 4   # exp 2: the O(n) selection-weight dial
 npx tsx ../sandbox/house-edge/study-damage.ts   4000 4   # exp 5: the O(1) damage-basis dial
@@ -27,8 +28,9 @@ hash table per lobby so that every configuration is scored against identical dra
 
 | file | what it is |
 |---|---|
-| `fight-variant.ts` | the knobbed fight loop. Integer arithmetic only on the hash-to-damage path. |
-| `parity.ts` | asserts config `BASELINE` is byte-identical to `engine/src/er-sim.ts`. If this fails, ignore every number the rig produces. |
+| `fight-variant.ts` | the knobbed fight loop. Integer arithmetic only on the hash-to-damage path. `BASELINE` is the SHIPPED rule; `DEPLOYED_V5` is the rule the study measured before the fix, kept so the "before" columns stay reproducible rather than quoted. |
+| `parity.ts` | asserts config `BASELINE` is byte-identical to `engine/src/er-sim.ts`, and that `DEPLOYED_V5` still reproduces the pre-fix on-chain fixture. If this fails, ignore every number the rig produces. |
+| `check-fight-length.ts` | fight length before vs after, because `PENALTY_HORIZON_STEPS` is fitted to it. |
 | `lobby.ts` | lobby generation, bootstrap standard errors, USD/micro-unit conversion. |
 | `rng.ts` | mulberry32 — seeds lobbies only, never the fight. |
 | `demo-equalizer.ts`, `check-seat-law.ts`, `check-positional-bias.ts` | run against `er-sim.ts` **directly**, not against the variant, so they cannot be accused of measuring the sandbox instead of the game. |

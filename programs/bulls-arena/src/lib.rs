@@ -653,6 +653,56 @@ pub fn canonical_cursor(fight_started_at: i64, fighter_count: usize, now: i64) -
     elapsed.saturating_mul(steps_per_second(fighter_count)).min(MAX_STEPS)
 }
 
+/// WHO SWINGS AT WHOM this step: an attacker, and a defender who is never the attacker.
+///
+/// It reads `h[0..8]` and returns a pair that is uniform over all `n * (n - 1)` ORDERED pairs of
+/// distinct slots. Requires `n >= 2`; `advance_fight` is the only caller and returns before this on
+/// `n < 2`, which is what makes the `n - 1` divisor safe.
+///
+/// WHY IT IS A FUNCTION AND NOT TWO LINES INLINE. It used to be two lines inline, and they were
+/// wrong:
+///
+/// ```text
+/// let mut d = u32::from_le_bytes(h[4..8]) % n;
+/// if d == a { d = (d + 1) % n; }          // <- measured, and biased
+/// ```
+///
+/// Re-rolling a collision onto `a + 1` is not a re-draw, it is a gift to one specific slot. Slot
+/// `a + 1` absorbs every bumped draw, so it is targeted `2/n` of the time against `1/n` for
+/// everyone else; and slot `a` collects a bonus VALID attack whenever that bump happens to land
+/// cross-side. Whether it lands cross-side depends entirely on how the two sides are laid out
+/// across the array — which is to say, on WHICH TRANSACTION CONFIRMED FIRST.
+///
+/// Measured on the TypeScript mirror, 4,000 seeds, eight fighters all staking exactly $10, so that
+/// nothing but slot index distinguishes them (`sandbox/house-edge/check-positional-bias.ts`):
+///
+/// ```text
+/// arrival order        result
+/// 0,0,0,0,1,1,1,1      slots 3 and 7 earn +15.1% and +15.0%; every other slot -5%;
+/// (each side a block)  slots 0 and 4 die 90.6% of the time against 64% for the rest
+/// 0,1,0,1,0,1,0,1      flat — every slot within +-0.8%
+/// ```
+///
+/// About 11 sigma against Monte-Carlo error. Teams arriving in waves is the LIKELY production
+/// layout, not the exotic one, so this was a live +15%/-5% tax on entry order.
+///
+/// THE FIX IS TO DRAW FROM THE RIGHT SET IN THE FIRST PLACE. There are `n - 1` fighters who are not
+/// the attacker; draw a rank in `0..n-1` and shift it past `a`. Every non-attacker gets exactly one
+/// rank, so each is picked with probability `1/(n-1)` whatever `a` is and wherever the sides sit —
+/// and because `a` itself is uniform, every ordered pair is equally likely. No retry loop to prove
+/// terminating, no second hash byte consumed, and `h[0..9]` still drives the whole step, so the
+/// hash-byte layout documented for this program is unchanged.
+///
+/// Modulo bias is unchanged in kind and negligible in size: a 32-bit draw reduced mod at most 15
+/// skews a slot's share by under 2^-28.
+fn draw_pair(h: &[u8; 32], n: usize) -> (usize, usize) {
+    let a = (u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize) % n;
+    // A rank among the n-1 fighters who are NOT the attacker, then shifted past the attacker's slot.
+    let mut d = (u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize) % (n - 1);
+    if d >= a { d += 1; }
+    (a, d)
+}
+
 /// ER-051. The fight, pure: no `Context`, no account borrow, no Anchor. This is what the on-chain
 /// instructions call, and it is ALSO what a native `cargo test` calls off-chain — the same function,
 /// not a re-description of it. `engine/src/er-sim.ts` is the line-for-line TypeScript mirror of this
@@ -670,21 +720,103 @@ pub fn canonical_cursor(fight_started_at: i64, fighter_count: usize, now: i64) -
 /// Worth naming plainly: the TypeScript mirror NEVER stopped working this way (`round.tickCount` has
 /// always been its cursor). It was the Rust that diverged when `resolve` was made one-shot. This is
 /// the Rust coming back into line with the mirror, not a new shape for both to chase.
+///
+/// # Damage is a percentage of the SMALLER ring — you cannot take more than you brought
+///
+/// `basis = min(ring_attacker, ring_defender)`. This one line replaced `basis = ring_defender`, and
+/// the reason is the largest economics defect this program has shipped.
+///
+/// Under the old rule the fractional LOSS was symmetric — every ring decayed at `roll%` per hit —
+/// but the GAIN was an absolute amount fixed entirely by the defender, credited to an attacker drawn
+/// uniformly. So every seat collected at the same rate in dollars while paying at the same rate in
+/// percent. Run to the bell that has a closed form, and it was measured and verified to 0.3% mean
+/// error (`HOUSE-EDGE-STUDY.md` §0, `sandbox/house-edge/check-seat-law.ts`):
+///
+/// ```text
+/// payout_i  ~=  (total stake on the OPPOSING side) / (number of seats on MY side)
+/// ```
+///
+/// A fighter's own deposit does not appear. It enters only as the denominator of ROI. Deposits
+/// bought nothing; SEATS bought everything. Measured over 4,000 rounds of eight fighters: a whale
+/// returned -52.5% +- 0.36 per round and a minnow +660.9% +- 6.30. Worse, it was farmable by anyone
+/// with no capital and no latency edge — an $80 budget split across eight wallets earned about $152
+/// per round more than the same $80 entered as one fighter.
+///
+/// Reading the smaller of the two rings restores the shape the ORIGINAL physics sim already had
+/// (`sqrt(ring_a * ring_b)`: damage set by both parties, not one) at a fraction of the compute, and
+/// states a rule a player can be told in one sentence. Measured after: whale -0.31% +- 0.27, minnow
+/// +0.51% +- 0.57 — size-neutral inside the noise — and the eight-wallet split is worth $0.30 per
+/// round, which is indistinguishable from zero.
+///
+/// WHY `min` AND NOT THE BLEND. The study offered a dial,
+/// `basis = (P*ring_d + (BPS - P)*min(ring_a, ring_d)) / BPS`, with `P = 0` reproducing this line.
+/// Two reasons it is not here. First, every `P > 0` sells back exactly the exploit being closed, in
+/// proportion to `P` — at `P = 100` bps the eight-wallet farm is worth $8/round again. Second, that
+/// expression cannot be evaluated in `u64`: `BPS * ring` overflows above a ring of `u64::MAX/10_000`,
+/// so an honest port needs `u128`, and a `u128` multiply-and-divide on BPF is far dearer than the
+/// study's "+6 to +20 CU/step" estimate, which was made against BigInt arithmetic that cannot
+/// overflow. `min` needs no multiply, no divide and no widening: one load and one compare. If a
+/// deliberate tilt toward small stakes is ever wanted, take it from `fee_bps` — which is already
+/// implemented, already bounded by `MAX_FEE_BPS`, settable without a deploy, and immune to splitting.
+///
+/// THE DUST CLAUSE HAD TO SPLIT IN TWO, and this is the subtle half. It used to read
+/// `if hp_d <= DUST || dmg == 0 { dmg = hp_d; }` — one branch serving one purpose, because under a
+/// defender-only basis `dmg == 0` could ONLY mean "the defender has almost nothing left"
+/// (`dmg == 0` implies `hp_d <= 24`, which is far below `DUST`). Under a basis that reads the
+/// attacker, `dmg == 0` acquires a second meaning — "the ATTACKER has almost nothing left" — and the
+/// old branch would then hand that exhausted attacker the defender's ENTIRE ring. It is not
+/// hypothetical: `enter` requires only `stake > 0`, so a 3-unit entry (a third of a millionth of a
+/// dollar) one-shots any fighter it is drawn against, and the study's recommended code block has
+/// this bug. Verified against the sandbox before it was written out, and asserted below by
+/// `an_exhausted_attacker_cannot_annihilate_a_healthy_defender`.
+///
+/// So: dust-finishing keys on the DEFENDER'S ring, and a blow that rounds to nothing simply moves
+/// nothing. Termination still holds. A fighter's ring only falls when they defend, `hp <= DUST`
+/// kills them the next time they are drawn as defender, and a blow between two fighters both above
+/// `DUST` always registers — `min > DUST` gives `dmg >= DUST*4/100 = 40`. A gnat below the floor can
+/// waste its own steps, but it dies the first time it is targeted.
+///
+/// `dmg` can never exceed `hp_d`, so no clamp is needed and none is paid for: `basis <= hp_d` and
+/// `roll <= 27` give `dmg <= 0.27*hp_d`; and in the one case where `saturating_mul` clips, it clips
+/// to `u64::MAX/100`, which is smaller still than the `basis > u64::MAX/27` that provoked it. So
+/// `saturating_sub` below never truncates — it can reach exactly zero and no further — and
+/// conservation is exact per blow rather than approximately so.
+///
+/// WHERE THE MIRRORS STOP BEING BYTE-IDENTICAL, stated because "byte-identical" is this project's
+/// core fairness claim and an unqualified claim would be false. `saturating_mul` clips; the
+/// TypeScript mirrors use BigInt, which does not. The first input on which they disagree is
+/// `min(ring_a, ring_d) = 683_212_743_470_724_138` at `roll = 27` — Rust yields
+/// `184_467_440_737_095_516`, TypeScript `...517`. That needs BOTH fighters holding ~6.8e17 units,
+/// i.e. ~$683 billion each at `UNITS_PER_USD = 1e6`. Representable in `u64`, unreachable in this
+/// game. The class is older than this change and this change SHRANK it: the bound used to be on the
+/// defender's ring alone, and is now on the smaller of the two.
+///
+/// THE ONE RESIDUAL STAKE-INDEPENDENT TRANSFER is the dust finish, and its size is worth naming
+/// rather than leaving implicit. Every other exchange is symmetric — `P(i attacks j)` equals
+/// `P(j attacks i)` after the `draw_pair` fix, and `min` is symmetric in the pair — so each
+/// fighter's expected net flow per step is exactly zero whatever they staked. The dust branch is the
+/// exception: a 3-unit attacker finishing a 1,000-unit defender collects 1,000. It is bounded by
+/// `DUST` per death, and a fighter can cross below `DUST` only once, so the whole-round exposure is
+/// at most `MAX_FIGHTERS * DUST = 16_000` units — about $0.016. That is the entire surviving
+/// remnant of a mechanism that used to move 660% of a minnow's stake per round.
 pub fn advance_fight(fighters: &mut [Fighter; MAX_FIGHTERS], n: usize, seed: &[u8; 32], cursor: u64, steps: u64) {
     if n < 2 { return; }        // mirrors `if (n < 2) break;` in er-sim.ts; unreachable in Fight phase
     for step in cursor..cursor.saturating_add(steps) {
         let h = hashv(&[seed.as_ref(), step.to_le_bytes().as_ref()]).to_bytes();
-        let a = (u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize) % n;
-        let mut d = (u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize) % n;
-        if d == a { d = (d + 1) % n; }
+        let (a, d) = draw_pair(&h, n);
 
         if fighters[a].side == fighters[d].side { continue; }
         if fighters[a].wallet == fighters[d].wallet { continue; }
         if fighters[a].dead == 1 || fighters[d].dead == 1 { continue; }
 
         let roll = (h[8] as u64) % 24 + 4;
-        let mut dmg = fighters[d].hp.saturating_mul(roll) / 100;
-        if fighters[d].hp <= DUST || dmg == 0 { dmg = fighters[d].hp; }
+        let basis = fighters[a].hp.min(fighters[d].hp);
+        let mut dmg = basis.saturating_mul(roll) / 100;
+        // Finish off a defender already down to dust. This is the TERMINATION rule and it is
+        // load-bearing — see DUST. It keys on the DEFENDER'S ring and on nothing else.
+        if fighters[d].hp <= DUST { dmg = fighters[d].hp; }
+        // A blow too small to register moves nothing. It is NOT a kill; see `draw_pair`'s sibling
+        // note below on why those two had to stop sharing a branch.
         if dmg == 0 { continue; }
 
         fighters[d].hp = fighters[d].hp.saturating_sub(dmg);
@@ -2168,16 +2300,121 @@ mod parity_tests {
         let winner = run_fight(&mut fighters, 4, &seed, 50);
 
         // From gen-parity-fixture.mjs against engine/src/er-sim.ts, same seed/entries/steps.
+        //
+        // These numbers MOVED when the defender draw stopped favouring slot `a + 1` and the damage
+        // basis became `min(ring_a, ring_d)`. Both implementations changed in the same commit and
+        // this fixture was regenerated from the mirror rather than adjusted to fit — the old vectors
+        // are deleted, not commented out, because a stale expectation kept "for reference" is the
+        // one somebody eventually restores.
         assert_eq!(winner, 0);
-        assert_eq!((fighters[0].hp, fighters[0].banked, fighters[0].dead), (15158, 84062, 0));
-        assert_eq!((fighters[1].hp, fighters[1].banked, fighters[1].dead), (201600, 116021, 0));
-        assert_eq!((fighters[2].hp, fighters[2].banked, fighters[2].dead), (26975, 48467, 0));
-        assert_eq!((fighters[3].hp, fighters[3].banked, fighters[3].dead), (42942, 84775, 0));
+        assert_eq!((fighters[0].hp, fighters[0].banked, fighters[0].dead), (20787, 93784, 0));
+        assert_eq!((fighters[1].hp, fighters[1].banked, fighters[1].dead), (220501, 103285, 0));
+        assert_eq!((fighters[2].hp, fighters[2].banked, fighters[2].dead), (52229, 59189, 0));
+        assert_eq!((fighters[3].hp, fighters[3].banked, fighters[3].dead), (20702, 49523, 0));
 
         // Conservation, restated here rather than trusted from elsewhere: this exact run must not
         // create or destroy value, on top of matching the TS mirror's numbers.
         let total: u64 = fighters[..4].iter().map(|f| f.hp + f.banked).sum();
         assert_eq!(total, 620_000);
+    }
+
+    /// DEFECT 2, AS A TEST THAT CANNOT PASS WITHOUT THE FIX.
+    ///
+    /// Nothing in this repo could previously catch the `d = (d + 1) % n` bias, because every test
+    /// asserted the fight's OUTPUT and the bias is a property of its INPUT distribution. So this
+    /// asserts the draw itself: over a fixed prefix of the hash chain, every ordered pair of distinct
+    /// slots must come up about equally often, for every legal lineup size.
+    ///
+    /// Deterministic despite being a counting argument — the hash chain is fixed, so this is one
+    /// fixed computation with one fixed answer, not a sampled test that might flake.
+    ///
+    /// The `f64` below is the tolerance arithmetic and nothing else. It is inside `#[cfg(test)]`, so
+    /// it is never compiled into the program; the fight path itself remains integer-only, which the
+    /// rest of this file depends on for determinism.
+    ///
+    /// It bites hard on the old rule: the bump sends every collision to slot `a + 1`, so that one
+    /// pair comes up twice as often as the rest — a deviation of `mean`, against a 6-sigma tolerance
+    /// of `6*sqrt(mean)`, which at these counts is a factor of two clear.
+    #[test]
+    fn the_defender_draw_is_uniform_over_everyone_but_the_attacker() {
+        const DRAWS: u64 = 50_000;
+        let seed: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_mul(7));
+
+        // The hash depends only on (seed, step), so one chain serves every lineup size.
+        let chain: Vec<[u8; 32]> = (0..DRAWS)
+            .map(|s| hashv(&[seed.as_ref(), s.to_le_bytes().as_ref()]).to_bytes())
+            .collect();
+
+        for n in 2..=MAX_FIGHTERS {
+            let mut counts = vec![0u64; n * n];
+            for h in &chain {
+                let (a, d) = draw_pair(h, n);
+                assert!(a < n && d < n, "draw out of range for n = {}: ({}, {})", n, a, d);
+                assert_ne!(a, d, "a fighter was drawn against itself at n = {}", n);
+                counts[a * n + d] += 1;
+            }
+
+            let cells = n * (n - 1);
+            let mean = DRAWS as f64 / cells as f64;
+            let tolerance = 6.0 * mean.sqrt();
+            for a in 0..n {
+                for d in 0..n {
+                    let got = counts[a * n + d];
+                    if a == d {
+                        assert_eq!(got, 0, "n = {}: slot {} drawn against itself", n, a);
+                        continue;
+                    }
+                    assert!(
+                        (got as f64 - mean).abs() <= tolerance,
+                        "n = {}: pair ({} -> {}) came up {} times, expected {:.1} +- {:.1}. \
+                         A defender draw that favours any slot is a tax on ENTRY ORDER.",
+                        n, a, d, got, mean, tolerance,
+                    );
+                }
+            }
+        }
+    }
+
+    /// THE SAME CROSS-LANGUAGE VECTOR, ON A FIGHT THAT ACTUALLY REACHES THE INTERESTING BRANCHES.
+    ///
+    /// `run_fight_matches_the_typescript_mirror_exactly` proves less than it looks. Its lineup runs
+    /// 50 steps, nobody dies, and the lowest hp any fighter reaches is 20,702 — twenty times `DUST`.
+    /// So it never executes `if hp_d <= DUST { dmg = hp_d }` and never executes
+    /// `if dmg == 0 { continue }`, which are the two branches the seat-law fix edited. For a while
+    /// those were the only lines in the fight with NO cross-language coverage at all: the Rust could
+    /// have disagreed with both TypeScript mirrors about either one, and every test in this repo
+    /// would still have been green. `mirrorParity.test.ts` does not close it either — it compares
+    /// the two mirrors to each other, so a mistake made in both by the same hand survives.
+    ///
+    /// This vector is chosen to reach them, and the coverage was measured rather than assumed:
+    /// 3 dust-finishes, 3 zero-damage skips, 3 deaths. The 3- and 7-unit entries are legal today
+    /// (`enter` requires only `stake > 0`) and are what drives a blow to round to nothing.
+    #[test]
+    fn the_mirror_agrees_where_fighters_die_and_blows_round_to_nothing() {
+        let seed: [u8; 32] = core::array::from_fn(|i| i as u8);
+
+        let mut f = [Fighter::default(); MAX_FIGHTERS];
+        f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake: 50_000, hp: 50_000, banked: 0 };
+        f[1] = Fighter { wallet: pk(2), side: 0, dead: 0, stake:      3, hp:      3, banked: 0 };
+        f[2] = Fighter { wallet: pk(3), side: 1, dead: 0, stake: 40_000, hp: 40_000, banked: 0 };
+        f[3] = Fighter { wallet: pk(4), side: 1, dead: 0, stake:      7, hp:      7, banked: 0 };
+
+        let winner = run_fight(&mut f, 4, &seed, 400);
+
+        // From gen-parity-fixture.mjs against engine/src/er-sim.ts, same seed/entries/steps.
+        assert_eq!(winner, 0);
+        assert_eq!((f[0].hp, f[0].banked, f[0].dead), (22686, 40007, 0));
+        assert_eq!((f[1].hp, f[1].banked, f[1].dead), (0, 0, 1));
+        assert_eq!((f[2].hp, f[2].banked, f[2].dead), (0, 27317, 1));
+        assert_eq!((f[3].hp, f[3].banked, f[3].dead), (0, 0, 1));
+
+        let total: u64 = f[..4].iter().map(|x| x.hp + x.banked).sum();
+        assert_eq!(total, 90_010, "value was created or destroyed");
+
+        // The point of the lineup, asserted rather than left to the comment: a fighter whose ring is
+        // too small to land a blow banks NOTHING, and does not take the ring of whoever it swung at.
+        assert_eq!(f[1].banked, 0, "a sub-dust attacker must not collect");
+        assert_eq!(f[3].banked, 0, "a sub-dust attacker must not collect");
     }
 
     fn four_fighters() -> [Fighter; MAX_FIGHTERS] {
@@ -2218,9 +2455,19 @@ mod parity_tests {
     /// Before it, `run_fight` ran in exactly one place — the end of `resolve` — so `hp` was still the
     /// full entry stake for the whole Fight phase and `extract` always returned 100% of it. This test
     /// fails against that behaviour: it extracts a fighter partway through a genuinely-advanced fight
-    /// and requires the banked amount to be strictly less than what they put in.
+    /// and requires that the ring has really decayed and that leaving is really charged.
+    ///
+    /// IT USED TO ASSERT `banked < stake`, and that assertion was retired deliberately rather than
+    /// because it became inconvenient. It was a PROXY that only tracked its intent while this
+    /// particular fighter happened to be losing: under the `min(ring_a, ring_d)` damage basis, slot 0
+    /// is ahead at step 40 (83,297 banked on a 100,000 stake), so a fighter who is winning and pulls
+    /// out now walks away with more than they brought — which is the game working, not a free undo.
+    /// What "not a free undo" actually means is asserted below, and it is lineup-independent: the
+    /// ring genuinely decayed, and the exit was priced. Both still fail against the one-shot
+    /// behaviour this test was written to catch, where `hp` never moved and `extract` returned the
+    /// whole stake.
     #[test]
-    fn extracting_partway_through_banks_less_than_the_stake() {
+    fn extracting_partway_through_is_a_priced_decision_not_a_free_undo() {
         let seed: [u8; 32] = core::array::from_fn(|i| i as u8);
         let mut f = four_fighters();
         let stake = f[0].stake;
@@ -2235,10 +2482,11 @@ mod parity_tests {
         f[0].hp = 0;
         f[0].dead = 1;
 
+        assert!(penalty > 0, "leaving at step 40 of a 200-step horizon must cost something");
         assert!(
-            f[0].banked < stake,
-            "extracting mid-fight must bank LESS than the entry stake: banked {} vs stake {}",
-            f[0].banked, stake,
+            kept < taken,
+            "what reaches the bank must be strictly less than what left the ring: {} vs {}",
+            kept, taken,
         );
 
         // ...and value is still conserved — but the identity has a third term now: what the ring
@@ -2255,6 +2503,108 @@ mod parity_tests {
         assert_eq!(f[0].banked, banked_at_extract);
         let total: u64 = f[..4].iter().map(|x| x.hp + x.banked).sum::<u64>() + penalty;
         assert_eq!(total, 620_000);
+    }
+
+    /// DEFECT 1, AS A TEST THAT CANNOT PASS WITHOUT THE FIX.
+    ///
+    /// "You cannot take more than you brought", checked blow by blow rather than in aggregate. The
+    /// fight is advanced ONE step at a time and the arrays diffed, so every individual exchange is
+    /// inspected — which is the only level at which the old rule is visibly wrong. In aggregate it
+    /// looked like a fair game; per blow, a $0.10 fighter was collecting $27 off a $1,000 one.
+    ///
+    /// The lineup is deliberately lopsided (two small against two large, small side first) so that
+    /// most exchanges have the attacker as the smaller party — the case the old rule got wrong.
+    #[test]
+    fn no_blow_can_move_more_than_the_attackers_own_ring() {
+        let seed: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_add(3));
+        let mut f = [Fighter::default(); MAX_FIGHTERS];
+        f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake:     100_000, hp:     100_000, banked: 0 };
+        f[1] = Fighter { wallet: pk(2), side: 0, dead: 0, stake:     100_000, hp:     100_000, banked: 0 };
+        f[2] = Fighter { wallet: pk(3), side: 1, dead: 0, stake: 100_000_000, hp: 100_000_000, banked: 0 };
+        f[3] = Fighter { wallet: pk(4), side: 1, dead: 0, stake: 100_000_000, hp: 100_000_000, banked: 0 };
+
+        let mut blows = 0u32;
+        let mut bound_by_the_attacker = 0u32;
+
+        for step in 0..2_000u64 {
+            let before = f;
+            advance_fight(&mut f, 4, &seed, step, 1);
+            if f == before { continue; }
+
+            // Exactly one fighter gained and one lost — find them by diffing rather than by
+            // re-deriving the draw, so this test cannot agree with a broken draw by construction.
+            let attacker = (0..4).find(|&i| f[i].banked > before[i].banked).expect("a blow with no attacker");
+            let defender = (0..4).find(|&i| f[i].hp < before[i].hp).expect("a blow with no defender");
+            let moved = f[attacker].banked - before[attacker].banked;
+            assert_eq!(moved, before[defender].hp - f[defender].hp, "value appeared or vanished mid-blow");
+
+            let (ring_a, ring_d) = (before[attacker].hp, before[defender].hp);
+            blows += 1;
+
+            if ring_d <= DUST {
+                // The termination rule, and the one case where a blow may exceed the attacker's
+                // ring: a defender already down to dust is finished off whoever is swinging.
+                assert_eq!(moved, ring_d, "a dust defender must be finished off exactly");
+            } else {
+                assert!(
+                    moved <= ring_a,
+                    "step {}: slot {} banked {} while holding only {} — an attacker collected more \
+                     than it had at risk, which is the seat law this fix exists to kill",
+                    step, attacker, moved, ring_a,
+                );
+                if ring_a < ring_d { bound_by_the_attacker += 1; }
+            }
+        }
+
+        // Non-vacuity, stated as an assertion rather than hoped for: if no blow was actually limited
+        // by the attacker's ring, the bound above was never exercised and this test proves nothing.
+        assert!(blows > 100, "only {} blows landed — the lineup stopped exercising the rule", blows);
+        assert!(
+            bound_by_the_attacker > 50,
+            "only {} blows had the attacker as the smaller party; the assertion above was never \
+             put under load",
+            bound_by_the_attacker,
+        );
+    }
+
+    /// THE TRAP IN THE OBVIOUS VERSION OF THE FIX, as an assertion.
+    ///
+    /// `min(ring_a, ring_d)` combined with the OLD dust clause — `if hp_d <= DUST || dmg == 0` — is
+    /// catastrophic, and it is what `HOUSE-EDGE-STUDY.md` §2 recommends porting. Once the basis reads
+    /// the attacker, `dmg == 0` stops meaning "the defender is spent" and starts also meaning "the
+    /// ATTACKER is spent", at which point that branch pays a spent attacker the defender's whole
+    /// ring.
+    ///
+    /// It needs no exotic state to reach. `enter` requires only `stake > 0`, so a 3-unit entry — a
+    /// third of a millionth of a dollar — has a ring so small that `3 * roll / 100` floors to zero
+    /// for every legal roll. Under the old clause that fighter one-shots whoever it is drawn
+    /// against, for a 33,000,000x return.
+    ///
+    /// Restore `|| dmg == 0` to that branch and this test fails on the seeds where the gnat swings
+    /// first, which is about half of them.
+    #[test]
+    fn an_exhausted_attacker_cannot_annihilate_a_healthy_defender() {
+        const WHALE: u64 = 100_000_000;   // $100
+        const GNAT: u64 = 3;              // three raw units, and a legal entry today
+
+        for s in 0..200u8 {
+            let seed: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_mul(31).wrapping_add(s));
+            let mut f = [Fighter::default(); MAX_FIGHTERS];
+            f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake: WHALE, hp: WHALE, banked: 0 };
+            f[1] = Fighter { wallet: pk(2), side: 1, dead: 0, stake: GNAT,  hp: GNAT,  banked: 0 };
+
+            advance_fight(&mut f, 2, &seed, 0, 500);
+
+            // A blow the gnat cannot afford moves nothing at all, so the only exchange that ever
+            // lands is the whale finishing the gnat off. The whale keeps everything it brought and
+            // collects the gnat's three units; the gnat leaves with nothing.
+            assert_eq!(
+                (f[0].hp, f[0].banked, f[0].dead), (WHALE, GNAT, 0),
+                "seed {}: a 3-unit fighter moved a $100 ring", s,
+            );
+            assert_eq!((f[1].hp, f[1].banked, f[1].dead), (0, 0, 1), "seed {}", s);
+            assert_eq!(f[0].hp + f[0].banked + f[1].hp + f[1].banked, WHALE + GNAT, "seed {}", s);
+        }
     }
 
     /// THE MECHANIC THIS SESSION EXISTS TO PRICE, as an assertion. Two fighters, identical stakes,

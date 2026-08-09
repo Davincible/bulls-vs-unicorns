@@ -16,6 +16,12 @@ import { useArena } from "../data/useArena.ts";
 import { PaperTheme } from "./PaperTheme.tsx";
 import { Bar, Dash, Mark, Tag } from "./primitives.tsx";
 import { useShell, type Rail } from "./shell.ts";
+import { useFocusTrap } from "./useFocusTrap.ts";
+import { NARROW, useMediaQuery } from "./useMediaQuery.ts";
+
+/** The width at which `shell.css` takes `.rail` to `width: 100vw`. Below it the rail is not a panel
+ *  beside the page, it IS the page — which is the only condition under which containing the keyboard
+ *  inside it is honest. Same break as every other layout decision on this page. */
 
 /** Simulated balances are plain numbers, not chain units — but they must still be FORMATTED by the
  *  one shared money formatter, or two panels end up disagreeing about what "$5" looks like. Compact:
@@ -327,6 +333,7 @@ export function SideRail() {
   const { rail, setRail } = useShell();
   const [shown, setShown] = useState<Rail>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const railRef = useRef<HTMLElement>(null);
 
   // Hold the last tenant through the close transition, so the rail slides out with its content
   // intact rather than emptying first.
@@ -336,7 +343,6 @@ export function SideRail() {
 
   useEffect(() => {
     if (!rail) return;
-    closeRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setRail(null);
     };
@@ -347,8 +353,34 @@ export function SideRail() {
   const open = rail !== null;
   const tenant = rail ?? shown;
 
+  // TRAPPED ONLY WHERE IT IS THE WHOLE SCREEN. On a desktop this rail is a complementary landmark
+  // 420px wide, beside a page that is still visible and still legitimately operable — trapping the
+  // keyboard in it would be pretending it is a dialogue when a reader can plainly see it is not.
+  // Below `shell.css`'s one layout break the same element is `width: 100vw` and covers everything,
+  // and "tab behind it" means "tab to controls nobody can see". So the trap follows the width, from
+  // the same query the rest of the page breaks at.
+  const fullScreen = useMediaQuery(NARROW);
+
+  // FOCUS IS RESTORED AT BOTH WIDTHS, and that half is not optional anywhere. Closing used to set
+  // `aria-hidden` on an <aside> that still contained the focused element and then let CSS take it to
+  // `visibility: hidden` — so focus was destroyed rather than moved, and the reader was dropped back
+  // at the top of the document having lost the row they opened the rail from. The hook captures the
+  // opener on open and puts focus back on close — after the commit, which for this component is
+  // load-bearing rather than incidental: React re-focuses whatever was focused before a commit if it
+  // is still in the document, and a rail that stays mounted to slide out always is. See the note at
+  // the top of useFocusTrap.ts; it was measured here.
+  useFocusTrap(railRef, {
+    active: open,
+    trapTab: fullScreen,
+    initialFocus: closeRef,
+    // `rail`, not `open`: the panel head is re-focused on every tenant swap, which is what this
+    // component did before the hook took the focus over.
+    refocusKey: rail,
+  });
+
   return (
     <aside
+      ref={railRef}
       className={`rail${open ? " rail--open" : ""}`}
       aria-label={tenant?.kind === "fighter" ? "Fighter profile" : "Wallet and session"}
       aria-hidden={!open}

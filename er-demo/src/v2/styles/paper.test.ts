@@ -32,9 +32,9 @@ const BASE_CSS = {
   "--mark": "#d8d8d8",
   "--rule-2": "#cccccc",
   "--ink-2": "#4d4d4d",
-  "--ink-3": "#8a8a8a",
+  "--ink-3": "#767676",
   "--ink-4": "#b5b5b5",
-  "--a": "#2b8c39",
+  "--a": "#278834",
   "--b": "#8f09bf",
   "--hot": "#c4291a",
 };
@@ -73,6 +73,23 @@ describe("the white sheet is base.css", () => {
     const bogus = resolvePaper({ theme: "chartreuse" as never, tint: 70 });
     expect(bogus.vars).toEqual(BASE_CSS);
   });
+});
+
+describe("the white page's own text colours clear AA", () => {
+  // THE GAP THIS FILE USED TO HAVE. Every contrast promise below is relative — "no sheet is worse than
+  // white" — which is only a promise while white is right, and for a long time it wasn't: `--ink-3`
+  // measured 3.45:1 and `--a` 4.27:1, and the floor carried both failures faithfully onto all thirteen
+  // sheets. An audit found them, not this suite. So the absolute number is asserted here, once, at the
+  // root of the derivation: fix the white page and every sheet follows.
+  //
+  // `--ink-4` is deliberately absent. It measures 2.05:1 and is legal because base.css sets no readable
+  // text in it — disabled control text (which SC 1.4.3 exempts) and `.mk--dead`. If a word is ever put
+  // back on it, this file is the wrong place to catch it; base.css's own comment is the guard.
+  for (const token of ["--ink", "--ink-2", "--ink-3", "--a", "--b", "--hot"] as const) {
+    it(`${token} holds 4.5:1 against the sheet — it is set as text under 18px`, () => {
+      expect(contrastRatio(BASE_CSS[token], "#ffffff")).toBeGreaterThanOrEqual(4.5);
+    });
+  }
 });
 
 describe("no sheet loses a side colour", () => {
@@ -140,7 +157,7 @@ describe("no sheet loses a side colour", () => {
         // still ANSEM's green on every sheet, at whatever lightness the sheet forced. Checked as the
         // ratio between channels, which is what "same colour, less light" means.
         for (const [token, original] of [
-          ["--a", "#2b8c39"],
+          ["--a", "#278834"],
           ["--b", "#8f09bf"],
         ] as const) {
           const got = r.vars[token];
@@ -172,9 +189,19 @@ describe("the readout the switcher prints", () => {
   it("shows the dark sheets collapsing the two sides onto one lightness — the thing to look for", () => {
     // Not an assertion about taste: on a sheet dark enough that BOTH side colours have to be pushed to
     // the same 4.5:1 floor, they end up at the same lightness and the only difference left between
-    // side 0 and side 1 is hue. White separates them 1.66:1. This is why the number is on screen.
-    expect(resolvePaper({ theme: "white", tint: 0 }).report.sides).toBeGreaterThan(1.6);
-    expect(resolvePaper({ theme: "lime", tint: 70 }).report.sides).toBeGreaterThan(1.35);
+    // side 0 and side 1 is hue. White separates them 1.57:1. This is why the number is on screen.
+    //
+    // THE BOUNDS MOVED DOWN ONCE, and the reason belongs here rather than in a git message. They read
+    // 1.6 / 1.35 / 1.1 while `--a` was the logo's own #2b8c39; `--a` is #278834 now, deepened until it
+    // clears AA as text (it sets `.pos`'s P/L figures and `.split-a`'s white labels, both of which are
+    // TYPE and owe 4.5:1 on white, not a graphic's 3:1). Deepening one side and not the other moves
+    // them closer together: white measures 1.5738 and lime@70 measures 1.3328, where they measured
+    // 1.66 and ~1.39. Nothing about the phenomenon changed — the two sides are still plainly apart on
+    // a light sheet and still merged on a hot one — so the property is asserted at the new numbers
+    // rather than weakened in kind. The margin that matters is the distance from 1.0, and lime still
+    // has a third of the way to go.
+    expect(resolvePaper({ theme: "white", tint: 0 }).report.sides).toBeGreaterThan(1.55);
+    expect(resolvePaper({ theme: "lime", tint: 70 }).report.sides).toBeGreaterThan(1.3);
     expect(resolvePaper({ theme: "rose", tint: 70 }).report.sides).toBeLessThan(1.1);
   });
 });

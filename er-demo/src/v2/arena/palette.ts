@@ -37,11 +37,13 @@ const FALLBACK: ArenaPalette = {
   paper: "#ffffff",
   ink: "#0b0b0b",
   ink2: "#4d4d4d",
-  ink3: "#8a8a8a",
+  ink3: "#767676",
   ink4: "#b5b5b5",
-  // Kept in step with base.css's `--a`/`--b`, which are sampled from the coins' own logos (see the
-  // note there). These literals are only ever used when the stylesheet genuinely hasn't applied.
-  side: ["#2b8c39", "#8f09bf"],
+  // Kept in step with base.css's `--a`/`--b`, which are the coins' own logo hues one step down — far
+  // enough for each to hold AA as text on white, since the same two tokens set `.pos`'s figures and
+  // the split bar's labels. See the note in base.css.
+  // These literals are only ever used when the stylesheet genuinely hasn't applied.
+  side: ["#278834", "#8f09bf"],
   grid: "#f0f0f0",
   mark: "#d8d8d8",
   ghost: "#e2e2e2",

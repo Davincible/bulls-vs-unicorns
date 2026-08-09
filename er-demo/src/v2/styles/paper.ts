@@ -127,13 +127,20 @@ const LADDER = {
 } as const;
 
 // THE INK RAMP, mixed the other way — from ink toward paper. These are today pure neutrals, which is
-// right on a neutral sheet and wrong on every other one: a #8a8a8a column header on a cyan page is the
+// right on a neutral sheet and wrong on every other one: a #767676 column header on a cyan page is the
 // single element that visibly does not belong to it. Derived, a label is ink diluted BY THE PAPER IT
 // SITS ON, which is what a printed page does anyway.
+//
+// THE RAMP IS TWO RUNGS OF TEXT AND ONE OF STATE, and `hold` below treats all three the same way for a
+// reason worth knowing: each one's floor is whatever it measured on white, so the ramp cannot be made
+// worse by a sheet, only differently coloured. `--ink-3` carries 4.54:1 and every quiet word on the
+// page; `--ink-4` carries 2.05:1 and, since the contrast pass, no words at all — it is the disabled
+// state and nothing else (base.css says which). Moving a word onto `--ink-4` here would be a WCAG 1.4.3
+// failure on every sheet at once, which is exactly the leverage this file has and why it is stated.
 const INK_RAMP = {
   "--ink-2": "#4d4d4d", // `.lede`, the explanatory sentence a section is allowed
-  "--ink-3": "#8a8a8a", // `.u`, every micro-label on the page
-  "--ink-4": "#b5b5b5", // `.none`, dead rows, the `sim` badge's fill
+  "--ink-3": "#767676", // `.u` and every other quiet word: `.idx`, `.none`, dead rows, the `sim` fill
+  "--ink-4": "#b5b5b5", // disabled control text, and `.mk--dead`. No readable text lives here.
 } as const;
 
 /** THE RAISED SHEET — `--paper-2`: THE PAGE WITH LESS COLOUR IN IT.
@@ -243,7 +250,13 @@ function maxStrength(hue: string, baseHex: string, inkHex: string): number {
 // on and whether a number is a loss — so a sheet that swallows one has broken the page rather than
 // merely dulled it. `--accent` is absent on purpose: base.css confines it to the black chrome bars,
 // which stay black whatever colour the sheet is, so it never meets `--paper`.
-const RESERVED = { "--a": "#2b8c39", "--b": "#8f09bf", "--hot": "#c4291a" } as const;
+//
+// BOTH SIDES ARE THE COINS' HUES ONE STEP DOWN, and neither step was a taste judgement: `--a` and
+// `--b` are set as TEXT (`.pos`'s P/L figures, `.split-a`/`.split-b`'s white labels), so each was
+// deepened until it cleared AA against white — 4.51:1 and 7.10:1. That has a consequence this module
+// then has to live with: the two are 1.57:1 apart on white rather than the 1.66:1 they were, because
+// only the green moved. See `PaperReport.sides`.
+const RESERVED = { "--a": "#278834", "--b": "#8f09bf", "--hot": "#c4291a" } as const;
 
 /** THE FLOOR IS THE WHITE PAGE: no token may give less separation from the sheet than it gave on
  *  white. Every one of these values was chosen against white, so white is the standard they were
@@ -322,8 +335,8 @@ function hold(onWhite: string, candidate: string, paperL: number, up: boolean): 
   // little under the sheet — black — and range runs out fast, so chasing `--b`'s native 7.1:1 on a
   // light sheet drives it to near-black and throws away the hue the contrast existed to protect.
   // Going UP there is room: on a dark sheet `--b` reaches 7.1:1 as a mid lilac with its hue intact,
-  // and asking for the full native figure there is what keeps `--a` and `--b` 1.66 apart — the same
-  // spacing they have on white — instead of collapsing both onto one lightness at 4.5.
+  // and asking for the full native figure there is what keeps `--a` and `--b` apart at the spacing
+  // they have on white — 1.57:1 — instead of collapsing both onto one lightness at 4.5.
   const native = contrastRatio(onWhite, WHITE);
   return separate(candidate, paperL, up ? native : Math.min(native, CONTRAST_CAP), up);
 }
@@ -444,7 +457,13 @@ export interface PaperReport {
   inkIfFlipped: number;
   /** Which way the type runs on this sheet — `PaperThemeDef.ink`, echoed so the switcher can say it. */
   polarity: "dark" | "light";
-  /** `.u`, the 10px tracked micro-labels. Held at white's own 3.45:1 by `hold`. */
+  /** `.u`, the 10px tracked micro-labels. Held by `hold` at white's own 4.54:1, or at `CONTRAST_CAP`'s
+   *  4.5 where the sheet is darkened rather than lightened — either way, at AA for text under 18px.
+   *
+   *  IT USED TO SAY 3.45:1 HERE, and the floor did its job perfectly: it carried `--ink-3`'s white-page
+   *  failure faithfully onto all thirteen sheets. The mechanism was never wrong, the value it was
+   *  anchored to was. Worth remembering when reading the rest of this file — "no worse than white" is
+   *  only a guarantee while white is right. */
   label: number;
   a: number;
   b: number;
@@ -458,7 +477,8 @@ export interface PaperReport {
   /** `--a` against `--b`. THE NUMBER THAT DECIDES WHETHER A SHEET IS USABLE, and the one the other
    *  five miss: `hold` can push both side colours off the paper and still leave them stacked on top of
    *  each other, at which point the page has two dark marks whose only difference is a hue nobody can
-   *  judge at 7px. White gives 1.66:1. Anything near 1.0 means the two sides have merged. */
+   *  judge at 7px. White gives 1.57:1 — it gave 1.66 until `--a` was deepened to clear AA as text, and
+   *  the two sides moved 0.09 closer as the price of that. Anything near 1.0 means they have merged. */
   sides: number;
 }
 

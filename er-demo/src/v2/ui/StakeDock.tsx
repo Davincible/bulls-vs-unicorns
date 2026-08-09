@@ -49,6 +49,7 @@ import { Seg } from "./primitives.tsx";
 import { RoundPhaseNote } from "./RoundPhaseNote.tsx";
 import { useRoundPhase } from "./useRoundPhase.ts";
 import { useShell } from "./shell.ts";
+import { NARROW, useMediaQuery } from "./useMediaQuery.ts";
 import { TokenIcon } from "./TokenIcon.tsx";
 
 /** OPEN ON EVERY LOAD, and closing lasts only for that visit (Max's direction: "it should be open by
@@ -65,11 +66,6 @@ import { TokenIcon } from "./TokenIcon.tsx";
  *  The old key is intentionally not read any more, so anyone carrying a stored `0` from the previous
  *  build gets the new behaviour rather than staying mysteriously collapsed forever. */
 const OPEN_KEY = "v2_dock_open";
-
-/** Below this the right-hand rail is full-bleed (`shell.css`: `.rail { width: 100vw }`), so there is
- *  no "beside it" for the dock to move to. Same threshold as every other layout break on this page.
- *  Also the width below which a 320px floating panel stops being a corner and becomes a blindfold. */
-const NARROW_Q = "(max-width: 900px)";
 
 /** Open on arrival — ON A SCREEN WITH ROOM FOR IT.
  *
@@ -100,18 +96,6 @@ function readOpen(narrow: boolean): boolean {
     /* Storage blocked (private mode, embedded frame) — nothing to clear, nothing to do. */
   }
   return !narrow;
-}
-
-function useMatches(query: string): boolean {
-  const [match, setMatch] = useState(() => window.matchMedia(query).matches);
-  useEffect(() => {
-    const mq = window.matchMedia(query);
-    const sync = () => setMatch(mq.matches);
-    sync();
-    mq.addEventListener("change", sync);
-    return () => mq.removeEventListener("change", sync);
-  }, [query]);
-  return match;
 }
 
 /** HOW EVERYTHING ELSE ON THE BOTTOM EDGE STAYS OFF THE DOCK.
@@ -203,7 +187,7 @@ function DeployBody() {
       {/* The deadline, first — a lobby with an invisible clock is how a player ends up pressing a
           side button two seconds too late and being told the round refused them. The buttons below
           answer "what can I do", so this rendering carries only the label and the countdown. */}
-      <RoundPhaseNote detail="timing" />
+      <RoundPhaseNote detail="timing" announce={false} />
 
       <div className="dock-row">
         <span className="u">Stake</span>
@@ -283,7 +267,7 @@ function ExtractBody() {
       {/* The bell, as a number. Extract is racing a deadline it cannot see otherwise: the round
           becomes settleable by anyone at `FIGHT_TIMEOUT_SECONDS`, or sooner if a side is wiped out,
           and a button offering "leave whenever you like" was the half of that story this dock told. */}
-      <RoundPhaseNote detail="timing" />
+      <RoundPhaseNote detail="timing" announce={false} />
 
       {/* THE HEADLINE IS WHAT YOU KEEP, never what is in the ring — the same rule 00-3.1 is built on.
           The penalty is quoted as a RATE and not a dollar figure: the rate is exact at this cursor,
@@ -326,20 +310,89 @@ function ExtractBody() {
   );
 }
 
+/** THE PAGE'S ONE PHASE ANNOUNCER, and the reason it is a component of its own.
+ *
+ *  A round changing phase is the single fact on this page worth interrupting a screen reader for: it
+ *  is what turns Deploy into Extract and what makes an unpressable button pressable. It changes a
+ *  handful of times a round, so — unlike the figures in `StickyStatus` and the countdown in
+ *  `RoundPhaseNote`, both of which are deliberately NOT live — it is cheap to announce and expensive
+ *  to miss.
+ *
+ *  IT USED TO BE ANNOUNCED TWICE AND THEN NOT AT ALL. `RoundPhaseNote` carried `aria-live="polite"`
+ *  on its own label, and two of them are on screen at once (00-3 and this dock), so every phase change
+ *  was read out twice. Silencing 00-3 fixed the doubling and opened a hole: the dock's three renderings
+ *  do not all contain a `RoundPhaseNote` with a label — the collapsed desktop handle is a bare button,
+ *  and the expanded panel's no-control branch passes `showLabel={false}` because the head already
+ *  prints the state. Those are Drawing, a closed lobby and Settled: precisely the states a player is
+ *  waiting on.
+ *
+ *  So the announcement stops being a side effect of whichever surface happens to be rendered and
+ *  becomes its own element, rendered beside all three branches and reading from the same
+ *  `useRoundPhase()` object as the visible copy. One region, one voice, in every state, with nothing
+ *  visible to keep in sync — `.sr` is clipped to 1x1 and the sighted reader keeps reading the label
+ *  where it already was. */
+function PhaseAnnouncer({ label }: { label: string }) {
+  return (
+    <span className="sr" aria-live="polite">
+      {label}
+    </span>
+  );
+}
+
 // ---------------------------------------------------------------------------------------------
 
 export function StakeDock() {
   const { rail } = useShell();
-  const narrow = useMatches(NARROW_Q);
-  // `useState`'s initialiser runs once, and `useMatches` seeds itself synchronously from
+  // Below `NARROW` the rail is full-bleed (`shell.css`: `.rail { width: 100vw }`), so there is no
+  // "beside it" for this to move to — and it is the width below which a 320px floating panel stops
+  // being a corner and becomes a blindfold.
+  const narrow = useMediaQuery(NARROW);
+  // `useState`'s initialiser runs once, and `useMediaQuery` seeds itself synchronously from
   // `matchMedia` — so this is the real width on the first paint, not a wide-screen default that
   // flashes a 320px panel across a phone before an effect corrects it.
   const [open, setOpen] = useState(() => readOpen(narrow));
   const measure = useDockHeight();
 
+  // COLLAPSING THIS PANEL DESTROYS WHATEVER IS FOCUSED INSIDE IT, so it has to hand focus on.
+  //
+  // Escape is handled below and, per the note there, collapses the dock and goes no further. That
+  // unmounts the whole body — including the control the keypress arrived from — and a focused element
+  // leaving the document drops focus to `<body>`, which announces nothing and restarts tabbing from
+  // the top of the page. Measured on the running page: focus on the dock's `$50` preset, Escape,
+  // focus on `<body>` within the same frame.
+  //
+  // The fix is the standard disclosure contract: a panel that closes returns focus to the control
+  // that reopens it. Guarded on the panel actually holding focus at the moment it collapses, so a
+  // mouse user who clicks ✕ from across the page is not dragged to the corner, and so the initial
+  // collapsed render on a phone (`readOpen`) never steals focus from the page on arrival.
+  const panelRef = useRef<HTMLElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const handFocusOn = useRef(false);
+
   // Local state only — deliberately NOT persisted, see `OPEN_KEY`'s note. Closing it is a "not right
   // now", not a standing preference.
-  const toggle = useCallback((next: boolean) => setOpen(next), []);
+  const toggle = useCallback((next: boolean) => {
+    handFocusOn.current = !next && panelRef.current !== null && panelRef.current.contains(document.activeElement);
+    setOpen(next);
+  }, []);
+
+  useEffect(() => {
+    if (open || !handFocusOn.current) return;
+    handFocusOn.current = false;
+    triggerRef.current?.focus();
+  }, [open]);
+
+  // The collapsed handle is BOTH the measured element and the control focus comes back to, and the
+  // measurement is a callback ref. Composed through a stable `useCallback` rather than an inline
+  // arrow: this component re-renders once a second off the round clock, and an inline ref would tear
+  // down and rebuild the ResizeObserver on every one of those ticks.
+  const setHandleRef = useCallback(
+    (el: HTMLButtonElement | null) => {
+      triggerRef.current = el;
+      measure(el);
+    },
+    [measure],
+  );
 
   // Which body to show, decided once and centrally: `entriesOpen()` rather than a phase check, and a
   // dead program outranks every phase. The words for the "none" case come from the same object.
@@ -371,81 +424,99 @@ export function StakeDock() {
     // real button. The button is the target, at the full 44px, on the thumb side.
     if (narrow) {
       return (
-        <section ref={measure} className="dock-bar" aria-label="Quick deploy and extract">
-          <RoundPhaseNote detail="timing" />
-          <button
-            type="button"
-            className="btn btn--sm dock-bar-x"
-            aria-expanded={false}
-            aria-controls="stake-dock"
-            onClick={() => toggle(true)}
-          >
-            {control === "none" ? "Round" : title}
-          </button>
-        </section>
+        <>
+          <PhaseAnnouncer label={label} />
+          <section ref={measure} className="dock-bar" aria-label="Quick deploy and extract">
+            <RoundPhaseNote detail="timing" announce={false} />
+            <button
+              ref={triggerRef}
+              type="button"
+              className="btn btn--sm dock-bar-x"
+              aria-expanded={false}
+              aria-controls="stake-dock"
+              onClick={() => toggle(true)}
+            >
+              {control === "none" ? "Round" : title}
+            </button>
+          </section>
+        </>
       );
     }
 
     return (
-      <button
-        ref={measure}
-        type="button"
-        className={`dock-handle${rail !== null ? " dock--railed" : ""}`}
-        aria-expanded={false}
-        aria-controls="stake-dock"
-        onClick={() => toggle(true)}
-      >
-        <span className="dock-handle-i" aria-hidden="true">
-          +
-        </span>
-        {/* The handle is a word wide. "Deploy"/"Extract" are the move it opens onto; every other
-            state is just the round, and the panel says which once it is open. */}
-        {control === "none" ? "Round" : title}
-      </button>
+      <>
+        <PhaseAnnouncer label={label} />
+        <button
+          ref={setHandleRef}
+          type="button"
+          className={`dock-handle${rail !== null ? " dock--railed" : ""}`}
+          aria-expanded={false}
+          aria-controls="stake-dock"
+          onClick={() => toggle(true)}
+        >
+          <span className="dock-handle-i" aria-hidden="true">
+            +
+          </span>
+          {/* The handle is a word wide. "Deploy"/"Extract" are the move it opens onto; every other
+              state is just the round, and the panel says which once it is open. */}
+          {control === "none" ? "Round" : title}
+        </button>
+      </>
     );
   }
 
   return (
-    <section
-      ref={measure}
-      id="stake-dock"
-      // Narrow: a full-bleed sheet standing on the bottom chrome, capped at 60vh and scrolling
-      // inside itself, so opening it can never bury more than it reveals. Wide: the corner panel,
-      // unchanged.
-      className={`dock${narrow ? " dock--sheet" : ""}${rail !== null ? " dock--railed" : ""}`}
-      aria-label="Quick deploy and extract"
-      onKeyDown={(e) => {
-        // Escape collapses the dock and goes no further: `useKeyboardNav` also listens for Escape on
-        // the window (to close the rail), and one Escape must do exactly one thing.
-        if (e.key === "Escape") {
-          e.stopPropagation();
-          toggle(false);
-        }
-      }}
-    >
-      <div className="dock-head">
-        <span className="idx">[$]</span>
-        <span className="h h--sm">{title}</span>
-        <button
-          type="button"
-          className="dock-x"
-          aria-expanded
-          aria-controls="stake-dock"
-          aria-label="Collapse the deploy dock"
-          onClick={() => toggle(false)}
-        >
-          –
-        </button>
-      </div>
+    <>
+      <PhaseAnnouncer label={label} />
+      {/* No `measure` on the panel, deliberately. `--dock-h` is what the page has to keep
+          PERMANENTLY clear — the floor — and the floor is the collapsed bar. An opened sheet is
+          something the reader asked for and will close again; reserving 258px of page padding for it
+          would push the whole document down under a panel that is already covering that space, and
+          take it all back on close, so every open and close would end in a scroll jump. The sheet
+          simply overlays, and the toasts (z-index 110 against its 88) still land on top of it, which
+          is the one thing that must never be buried. */}
+      <section
+        ref={panelRef}
+        id="stake-dock"
+        // Narrow: a full-bleed sheet standing on the bottom chrome, capped at 60vh and scrolling
+        // inside itself, so opening it can never bury more than it reveals. Wide: the corner panel,
+        // unchanged.
+        className={`dock${narrow ? " dock--sheet" : ""}${rail !== null ? " dock--railed" : ""}`}
+        aria-label="Quick deploy and extract"
+        onKeyDown={(e) => {
+          // Escape collapses the dock and goes no further: `useKeyboardNav` also listens for Escape
+          // on the window (to close the rail), and one Escape must do exactly one thing. Focus is
+          // handed to the collapsed trigger by `toggle` — see the note beside it.
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            toggle(false);
+          }
+        }}
+      >
+        <div className="dock-head">
+          <span className="idx">[$]</span>
+          <span className="h h--sm">{title}</span>
+          <button
+            type="button"
+            className="dock-x"
+            aria-expanded
+            aria-controls="stake-dock"
+            aria-label="Collapse the deploy dock"
+            onClick={() => toggle(false)}
+          >
+            –
+          </button>
+        </div>
 
-      {control === "deploy" ? (
-        <DeployBody />
-      ) : control === "extract" ? (
-        <ExtractBody />
-      ) : (
-        // The head above is already showing this state's label — see `title`.
-        <RoundPhaseNote showLabel={false} />
-      )}
-    </section>
+        {control === "deploy" ? (
+          <DeployBody />
+        ) : control === "extract" ? (
+          <ExtractBody />
+        ) : (
+          // The head above is already showing this state's label — see `title`.
+          <RoundPhaseNote showLabel={false} announce={false} />
+        )}
+      </section>
+    </>
   );
 }

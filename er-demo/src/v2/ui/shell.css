@@ -89,7 +89,12 @@
    from `--chrome-h` and must not move. Every BOTTOM-anchored offset in this file uses `--chrome-h-b`;
    the three that live in base.css are overridden in the narrow block at the foot of this file. */
 :root { --chrome-h-b: var(--chrome-h); }
-.chrome--bottom { height: var(--chrome-h-b); }
+/* `.chrome.chrome--bottom`, not `.chrome--bottom`. base.css declares `.chrome { height: var(--chrome-h) }`
+   and is imported AFTER this stylesheet (main.tsx pulls in App.tsx, and therefore this file, before
+   `styles/base.css`), so at equal specificity base.css wins the tie and the bar silently stayed 30px
+   while the 48px nav buttons inside it hung out of the viewport. Doubling the class is the smallest
+   thing that states "this deliberately overrides the shared rule" without depending on import order. */
+.chrome.chrome--bottom { height: var(--chrome-h-b); }
 
 .nav { display: flex; align-items: center; gap: 0; min-width: 0; }
 .nav > button {
@@ -106,17 +111,26 @@
 }
 .nav > button:hover { color: #fff; }
 .nav > button.on { background: var(--on-chrome); color: var(--chrome); }
-.nav-i { color: rgba(255, 255, 255, 0.32); margin-right: 7px; }
-.nav > button.on .nav-i { color: var(--ink-4); }
+/* THE PRINTED INDEX IS THE KEYBOARD SHORTCUT, so it is text and it has to clear AA — it is the only
+   place on the page that tells anyone the digit keys exist (`useKeyboardNav.ts`). It was 0.32 white
+   on the black bar (2.85:1) and `--ink-4` on the inverted active button (2.05:1); both were quiet to
+   the point of being a secret. 0.46 is the alpha at which the blend clears 4.5:1 against `--chrome`,
+   and `--ink-3` is the AA grey on the inverted one. The hierarchy the faintness was buying survives:
+   the label beside it is 0.62 and still reads first. */
+.nav-i { color: rgba(255, 255, 255, 0.46); margin-right: 7px; }
+.nav > button.on .nav-i { color: var(--ink-3); }
 
-/* A chrome-native button: hairline box on black. */
+/* A chrome-native button: hairline box on black. The border is the WHOLE affordance here — there is
+   no fill and no underline saying this is pressable — so it is a non-text UI component boundary and
+   WCAG 1.4.11 wants 3:1 against the bar. At 0.3 the blend gave 2.62:1; 0.42 gives 4.0:1 and is still
+   a hairline, not a frame. */
 .cbtn {
   font: 400 10px/1 var(--mono);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   background: none;
   color: rgba(255, 255, 255, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.42);
   padding: 6px 9px;
   cursor: pointer;
   white-space: nowrap;
@@ -169,14 +183,27 @@
   margin-top: -16px;
   z-index: 1;
 }
+/* The rail's close control. A 13px glyph with 2px of padding measured 15.8 x 17 — the smallest
+   target on the page, and the one a reader reaches for most often. `min-width`/`min-height` rather
+   than padding, so the ✕ stays optically centred on the `.rail-head` baseline instead of being
+   pushed off it; 24px is base.css's hard floor (WCAG 2.2 SC 2.5.8) and the narrow block takes it
+   to 44. `flex: none` because `.rail-head` is a flex row and the heading beside it is greedy —
+   without it the box is handed back the width it was just given (the same trap the checkbox fell
+   into in base.css). */
 .rail-x {
   margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: 0;
   cursor: pointer;
   font: 400 13px/1 var(--mono);
   color: var(--ink-3);
   padding: 2px 4px;
+  min-width: 24px;
+  min-height: 24px;
 }
 .rail-x:hover { color: var(--ink); }
 
@@ -455,8 +482,10 @@
   /* THE NAV IS THE THUMB'S TARGET, so it takes the whole height of the taller bar. The active
      screen's inverted block growing to fill the bar is a bonus, not a side effect: on a phone the
      nav labels are 9px and the fill is what actually says which screen you are on. */
-  .nav > button { min-height: var(--chrome-h-b); }
+  .nav > button { min-height: var(--chrome-h-b); min-width: 44px; }
   .chrome--bottom .cbtn { min-height: 44px; }
+  .rail-x,
+  .dock-x { min-width: 44px; min-height: 44px; }
 
   /* Three groups will not sit on one line at this width. The score gets a row of its own rather than
      a 40px stub of split bar — it is the half of this strip that has no other home, since the top

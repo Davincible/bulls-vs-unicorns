@@ -149,10 +149,26 @@ export type DustRule =
   | { kind: "absolute"; units: bigint }   // the deployed rule: DUST = 1,000 units = $0.001
   | { kind: "proportional"; bps: bigint }; // die at `bps` of your ENTRY stake, whatever your size
 
+/** The smallest floor that still guarantees a fight ends.
+ *
+ *  A blow registers only if `basis * roll / 100 >= 1`, and `roll >= 4`, so any ring at or below 24
+ *  units can be hit forever without losing anything. The dust branch is what breaks that loop — but
+ *  only if the floor sits above 24, otherwise a fighter parks in the gap and never dies. That is the
+ *  original "5,000 ticks, 0 deaths, everyone stuck at hp = 3" bug, and a proportional floor could
+ *  walk straight back into it: this function used to bottom out at 1.
+ *
+ *  It did not bite while the fused clause `hp <= floor || dmg === 0n` was doing double duty, because
+ *  the second disjunct finished the stuck fighter off. Splitting that clause — which the shipped
+ *  rule required, see `runFight` — removed the accidental safety net, so the floor now has to carry
+ *  the guarantee itself. No study in this directory goes below `bps: 100n` against million-unit
+ *  stakes, so nothing measured was affected; this stops the next `bps: 0n` row from silently
+ *  reporting infinite fights. */
+export const MIN_TERMINATING_FLOOR = 25n;
+
 export function dustFloor(rule: DustRule, f: Fighter): bigint {
   if (rule.kind === "absolute") return rule.units;
   const d = (f.stake * rule.bps) / BPS;
-  return d > 0n ? d : 1n;
+  return d > MIN_TERMINATING_FLOOR ? d : MIN_TERMINATING_FLOOR;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -197,17 +213,43 @@ export type DamageRule =
    *  can actually afford. */
   | { blend: bigint };
 
+/** What to do when the defender draw lands on the attacker.
+ *
+ *    bump  : `if (d === a) d = (d + 1) % n`  — the pre-fix rule. Slot `a+1` absorbs every collision,
+ *            so it is targeted 2/n of the time, and slot `a` gains a bonus valid attack whenever
+ *            that bump lands cross-side. Whether it does depends on how the sides are laid out
+ *            across the array — i.e. on ENTRY ORDER. Measured at ~11 sigma; see
+ *            `check-positional-bias.ts`.
+ *    shift : draw a rank in `0..n-1` and shift past `a`. Uniform over the n-1 non-attackers for
+ *            every `a`, so no slot can be favoured by where it sits. The shipped rule. */
+export type DefenderDraw = "bump" | "shift";
+
 export interface FightConfig {
   attacker: WeightSpec;
   defender: WeightSpec;
   dust: DustRule;
   layout: ByteLayout;
   damage?: DamageRule;
+  /** Defaults to `bump` so that every config literal written before the fix still describes the
+   *  fight it was written to describe. The shipped rule sets it explicitly. */
+  defenderDraw?: DefenderDraw;
 }
 
+/** THE SHIPPED RULE, as of the seat-law fix. `parity.ts` asserts this is byte-identical to
+ *  `engine/src/er-sim.ts`, which is itself asserted byte-identical to the Rust. */
 export const BASELINE: FightConfig = {
   attacker: W_UNIFORM, defender: W_UNIFORM,
   dust: { kind: "absolute", units: DUST_ABSOLUTE }, layout: "legacy",
+  damage: "min", defenderDraw: "shift",
+};
+
+/** THE RULE AS DEPLOYED IN v5, kept so the study's "before" column stays reproducible rather than
+ *  becoming a quotation. `parity.ts` pins it against the golden vector that was the committed
+ *  on-chain parity fixture before the fix, so it cannot rot silently either. */
+export const DEPLOYED_V5: FightConfig = {
+  attacker: W_UNIFORM, defender: W_UNIFORM,
+  dust: { kind: "absolute", units: DUST_ABSOLUTE }, layout: "legacy",
+  damage: "defender", defenderDraw: "bump",
 };
 
 export function tickHash(seed: Buffer, cursor: bigint): Buffer {
@@ -247,6 +289,15 @@ export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightCo
   const wd: bigint[] = new Array(n).fill(0n);
   const needA = cfg.attacker.kind !== "uniform";
   const needD = cfg.defender.kind !== "uniform";
+  // The `legacy` layout reads 32-bit windows sized for a `% n` draw, so it cannot express a weighted
+  // `% W` selection — the doc on `ByteLayout` says so, and this makes it true rather than said.
+  // Left unenforced, `legacy` + a weighted defender + `shift` silently produces a THIRD thing:
+  // a rank drawn mod n-1 and then bumped, which is neither the weighted distribution nor the shift.
+  // Nothing measured is affected (every legacy config in this directory is uniform/uniform) and
+  // that is exactly why it would have gone unnoticed.
+  if (cfg.layout === "legacy" && (needA || needD)) {
+    throw new Error("legacy layout cannot carry a weighted draw — use layout: 'wide'");
+  }
   // A uniform side needs no table at all. A STAKE-based one is built once, here. A RING-based one
   // must be rebuilt every step, because ring moves every step. That three-way split is the whole
   // compute argument, and `weightPasses` counts it so the study can report it rather than assert it.
@@ -267,19 +318,27 @@ export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightCo
     if (hashes) { h = hashes[step] ?? (hashes[step] = tickHash(seed, BigInt(step))); }
     else h = tickHash(seed, BigInt(step));
 
+    // `shift` draws the defender's rank among the n-1 fighters who are NOT the attacker, so the
+    // collision it is avoiding never arises. It therefore replaces the draw itself, not just the
+    // bump — which is why it is applied here rather than after.
+    const shift = (cfg.defenderDraw ?? "bump") === "shift";
     let a: number, d: number;
     if (cfg.layout === "legacy") {
       a = h.readUInt32LE(0) % n;
-      d = h.readUInt32LE(4) % n;
+      d = h.readUInt32LE(4) % (shift ? n - 1 : n);
     } else {
       const ra = h.readBigUInt64LE(0), rd = h.readBigUInt64LE(8);
       if (rebuildA) { Wa = fillWeights(cfg.attacker, f, n, wa); st.weightPasses++; }
       if (rebuildD) { Wd = fillWeights(cfg.defender, f, n, wd); st.weightPasses++; }
       if (Wa === 0n || Wd === 0n) continue;   // nobody left with any weight
       a = needA ? pick(wa, n, ra % Wa) : Number(ra % BigInt(n));
-      d = needD ? pick(wd, n, rd % Wd) : Number(rd % BigInt(n));
+      // A WEIGHTED defender draw cannot use the shift: the ranks are not interchangeable, so
+      // skipping one changes the distribution. It keeps the bump, and the study reports weighted
+      // configs as carrying the positional bias they carry.
+      d = needD ? pick(wd, n, rd % Wd) : Number(rd % BigInt(shift ? n - 1 : n));
     }
-    if (d === a) d = (d + 1) % n;
+    if (shift && !needD) { if (d >= a) d += 1; }
+    else if (d === a) d = (d + 1) % n;
 
     const A = f[a], D = f[d];
     if (A.side === D.side) continue;
@@ -295,10 +354,19 @@ export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightCo
       basis = (P * D.hp + (BPS - P) * lo) / BPS;
     } else basis = D.hp;
     let dmg = (basis * roll) / 100n;
-    if (dmg > D.hp) dmg = D.hp;   // never take more than is there; a no-op for the deployed rule
+    if (dmg > D.hp) dmg = D.hp;   // never take more than is there; a no-op for every basis but `geo`
     const floorD = dustFloor(cfg.dust, D);
-    if (D.hp <= floorD || dmg === 0n) dmg = D.hp;
-    if (dmg === 0n) continue;
+    // TERMINATION, and it keys on the DEFENDER's ring alone.
+    //
+    // THIS USED TO READ `if (D.hp <= floorD || dmg === 0n) dmg = D.hp;` — one branch, two meanings —
+    // and that was safe only while `basis` was the defender's ring, where `dmg === 0n` could only
+    // mean "the defender has almost nothing left". Under any basis that reads the ATTACKER (`min`,
+    // `geo`, or the blend at small P) `dmg === 0n` ALSO means "the attacker has almost nothing
+    // left", and the old branch then handed that spent attacker the defender's ENTIRE ring. A
+    // 3-unit fighter — `enter` requires only `stake > 0` — one-shot a $100 whale for a 33,000,000x
+    // return. The study's §2 recommendation carries this bug; the shipped rule does not.
+    if (D.hp <= floorD) dmg = D.hp;
+    if (dmg === 0n) continue;     // a blow too small to register moves nothing, and kills nobody
 
     D.hp = sat(D.hp, dmg);
     A.banked += dmg;

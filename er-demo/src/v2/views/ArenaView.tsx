@@ -171,8 +171,15 @@ function TheRound() {
                 takes `usdCompact`; this one has a `1fr` track to itself and is the number a reader
                 is meant to READ rather than scan. `$13.5T` would be a headline that refuses to say
                 how much. The cell it sits in is `min-width: 0` so a long pot wraps inside its own
-                column instead of pushing the clock beside it off the page — see ArenaView.css. */}
-            <h3 className="display display--mono">{live ? usd(live.pot, 2) : "—"}</h3>
+                column instead of pushing the clock beside it off the page — see ArenaView.css.
+
+                A `div`, NOT the `<h3>` it used to be. It is set at 76px because it is the biggest
+                fact on the page, and size was mistaken for outline: a dollar amount is a figure, not
+                the title of a section, and marking it up as one put "$353.00" into the document's
+                heading list between "The round" and "The arena". The section already has its outline
+                node — `<h2>The round</h2>`, one line above, from `Section`. `.display` is a class and
+                carries its own `margin: 0`, so the box is unchanged. */}
+            <div className="display display--mono">{live ? usd(live.pot, 2) : "—"}</div>
             <p className="u" style={{ marginTop: 14 }}>
               Pot on the table · {fighters.length} fighters · {alive} still alive
             </p>
@@ -422,6 +429,11 @@ function TheArena() {
           )}
         </div>
 
+        {/* THIS PLATE IS A LIVE REGION AND THE ONE BELOW IT IS NOT, and the two must not be "made
+            consistent" later. A round settling is an EVENT: it happens once, it is the answer to the
+            question everyone in the round is holding, and it arrives without anybody doing anything —
+            exactly what a polite live region is for. The lobby plate below is DESCRIPTION: the same
+            facts as 00-1's hero and the phase note, rewritten every time anyone enters the round. */}
         {phase === "Settled" && winner !== null ? (
           <div className={`result result--${winner === 0 ? "a" : "b"}`} role="status">
             <div className="u" style={{ marginBottom: 8 }}>
@@ -450,9 +462,16 @@ function TheArena() {
 
         {/* Before the fight there is nothing moving on the field, and an empty 16:9 white rectangle
             reads as a broken canvas rather than as a lobby. The same centred plate the result uses
-            says what the round is waiting for — with no side colour, because nothing is decided. */}
+            says what the round is waiting for — with no side colour, because nothing is decided.
+
+            NO `role="status"` HERE, deliberately (it had one). Every entry into the round rewrites
+            the count and the pot inside this plate, and a live region re-reads its WHOLE contents on
+            any change — so one stranger deploying interrupted the reader with "Round 17, OPEN, 8
+            entered, $353.00 on the table, pick a side and deploy", over and over, none of it new and
+            none of it about them. The phase change itself is announced once, by the dock's phase note
+            (RoundPhaseNote.tsx), which is the sentence that actually changes state. */}
         {phase === "Lobby" || phase === "Drawing" ? (
-          <div className="result result--wait" role="status">
+          <div className="result result--wait">
             <div className="u" style={{ marginBottom: 8 }}>
               Round {live?.roundNo.toString() ?? "—"}
             </div>
@@ -718,7 +737,9 @@ function Deploy() {
         // was a hand-maintained copy of the dock's ladder — and one copy always rots. Both surfaces
         // now render `ui/RoundPhaseNote.tsx`, whose words are a pure function with a test on it.
         <div className="closed" style={{ borderTop: "1px solid var(--rule)", padding: "14px 2px" }}>
-          <RoundPhaseNote />
+          {/* Not the announcer — the dock is (see RoundPhaseNote.tsx). Both are on screen together,
+              and two live regions carrying the same word say it twice. */}
+          <RoundPhaseNote announce={false} />
         </div>
       ) : (
         <div className="deploy">
@@ -729,7 +750,7 @@ function Deploy() {
                 the round carries no deadline (`lobbyClosesAtMs === null`), which is a real state on
                 a program revision without one and used to print as blank space. */}
             <div data-testid="entry-countdown" style={{ marginBottom: 14 }}>
-              <RoundPhaseNote detail="timing" />
+              <RoundPhaseNote detail="timing" announce={false} />
             </div>
             <div className="line" style={{ marginBottom: 14 }}>
               <span className="u">Stake</span>
@@ -1072,7 +1093,16 @@ function Roster({ side }: { side: Side }) {
   const alive = rows.filter((f) => !f.dead).length;
 
   return (
-    <div>
+    // THE MARKS IN HERE ARE NOT LABELLED, AND THAT IS CORRECT: this is one side's roster, under that
+    // side's own name, so the square is decoration on top of a fact the reader has already been
+    // given — unlike 00-5, which mixes both sides into one table.
+    //
+    // With one qualification, which is what this `role`/`aria-label` pair is for. Every row below is
+    // a `role="button"` tab stop, so a keyboard reader arrives INSIDE the roster without passing the
+    // heading above it, and a heading nothing points at is a heading nobody hears. Naming the group
+    // is what makes the grouping true in the accessibility tree rather than only on screen. No
+    // landmark, and no repetition on the rows: one quiet boundary, said once.
+    <div role="group" aria-label={`${SIDE_TOKEN[side].name} roster`}>
       <div className="side-head">
         <TokenIcon token={SIDE_TOKEN[side]} size="md" />
         <span className="h h--sm">{SIDE_TOKEN[side].name}</span>
@@ -1189,7 +1219,19 @@ function RoundStandings() {
     >
       <div className="row row--head standing">
         <span>#</span>
-        <span />
+        {/* The one column on this page whose header cannot be printed: its track is 7px wide, which
+            is the mark and nothing else. Hidden text names it rather than leaving an unnamed column
+            in a table that has seven named ones.
+
+            THE EMPTY OUTER SPAN IS LOAD-BEARING — it is the grid child, and `.sr` cannot be. `.sr` is
+            `position: absolute` (base.css), so an `.sr` span used directly as a grid item takes part
+            in no layout at all: the header row was left with seven children against the rows' eight,
+            and every label slid one track left. Measured at 1440px, "Deployed" sat over the fighter
+            name and "P/L" over Worth — a table of money columns, each one labelled as its neighbour.
+            `Mark` avoids the same trap the same way, by nesting the label inside the 7px square. */}
+        <span>
+          <span className="sr">Side</span>
+        </span>
         <span>Fighter</span>
         <span className="r col-opt">Deployed</span>
         <span className="r col-opt">Ring</span>
@@ -1216,7 +1258,12 @@ function RoundStandings() {
             }}
           >
             <span className="idx">{(i + 1).toString().padStart(2, "0")}</span>
-            <Mark side={f.side} dead={f.dead} />
+            {/* LABELLED, unlike the rosters two sections up. This is one table with both sides mixed
+                into it, so the 7px square is the ONLY thing saying which side a row is on — side by
+                colour alone, in the one table that sorts the two together. Every row here is also a
+                button, so the reader arrives at it by Tab without passing anything that could have
+                said it for them. */}
+            <Mark side={f.side} dead={f.dead} label={SIDE_TOKEN[f.side].name} />
             <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
             {/* Five money columns across 76-88px tracks — the worst case on the page, and the other
                 half of Max's report. All five compact; all five carry the exact figure on a title. */}
@@ -1432,8 +1479,11 @@ function ProvablyFair() {
               <span className="trunc" title={f.wallet}>
                 {nameFor(f.wallet)} <span className="dim num">{shortKey(f.wallet)}</span>
               </span>
+              {/* The whole cell under a "Side" header is the square, so the square has to say it.
+                  The verify table is the page's proof, and a proof with a column its reader cannot
+                  read is not one. */}
               <span className="line" style={{ gap: 6 }}>
-                <Mark side={f.side} />
+                <Mark side={f.side} label={SIDE_TOKEN[f.side].name} />
               </span>
               <span className="num">
                 {usd(f.onChain.hp)} / {usd(f.onChain.banked)}
@@ -1459,6 +1509,20 @@ function ProvablyFair() {
 export function ArenaView() {
   return (
     <div className="arena-view">
+      {/* THE DOCUMENT'S TITLE, WHICH THE CHROME CARRIES VISUALLY AND THE OUTLINE OTHERWISE LACKS.
+          Every other screen prints its name in a `<h1 className="display">` at the top of the page;
+          this one has no slot for one and should not grow one — the screen's name is in the bottom
+          nav's `[00] ARENA` and the round's identity is in the top bar, both permanently on screen,
+          which is exactly why the design put them there. But a screen whose heading outline starts at
+          `<h2>` has no top level: "jump to the first heading" lands in the middle of the page, and a
+          reader listing headings gets seven sections belonging to nothing.
+          So it is hidden rather than absent. Not a workaround — the same title, in the channel the
+          fixed chrome cannot reach. The two sides come from `SIDE_TOKEN` rather than being typed out,
+          for the same reason every other name on this page does: the arena's tokens are a constant,
+          and a hardcoded pair here would be the last place anyone looked when they change. */}
+      <h1 className="sr">
+        Arena — {SIDE_TOKEN[0].name} vs {SIDE_TOKEN[1].name}
+      </h1>
       <TheRound />
       <TheArena />
       <Deploy />

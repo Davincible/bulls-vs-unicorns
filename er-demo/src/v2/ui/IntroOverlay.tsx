@@ -15,6 +15,7 @@ import {
   UNITS_PER_USD,
   bpsPct,
 } from "../contract.ts";
+import { useFocusTrap } from "./useFocusTrap.ts";
 
 /** The opening-bell rate, said in words. Formatted from the program's own constant rather than
  *  typed as "20%" — the intro is the first thing a player reads, and a hardcoded rate here would be
@@ -23,9 +24,18 @@ const START_PENALTY = bpsPct(Number(EXTRACT_PENALTY_START_BPS));
 
 export function IntroOverlay({ onClose }: { onClose(): void }) {
   const ref = useRef<HTMLButtonElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  // A DIALOGUE IS TWO CLAIMS, AND THE MARKUP ONLY MADE ONE. `aria-modal="true"` below tells a screen
+  // reader that nothing outside this takeover exists; it tells the browser nothing at all, so Tab
+  // used to walk straight out of here onto the page behind — measured: one Tab out, three more onto
+  // live controls. `useFocusTrap` is the other claim, and the two together are what makes "read this
+  // once" true for a keyboard as well as for a reading cursor. It also remembers where focus came
+  // from and puts it back on dismissal, which is what stops Escape from leaving the reader on
+  // whatever control focus had leaked to. See useFocusTrap.ts for why it does not own Escape itself.
+  useFocusTrap(overlayRef, { active: true, initialFocus: ref });
 
   useEffect(() => {
-    ref.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
@@ -34,7 +44,7 @@ export function IntroOverlay({ onClose }: { onClose(): void }) {
   }, [onClose]);
 
   return (
-    <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="intro-h">
+    <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="intro-h" ref={overlayRef}>
       <div className="overlay-body">
         <div className="ovl-idx">
           <span className="idx">[00]</span>

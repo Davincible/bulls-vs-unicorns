@@ -70,11 +70,12 @@ export interface ArenaMeta {
 }
 
 /** Colours are SAMPLED FROM THE COINS' LOGOS, and are the same values as `base.css`'s `--a`/`--b`
- *  (see the note there for how they were extracted and why UWU's is deepened one step). `icon` is a
+ *  (see the note there for how they were extracted, and why BOTH are one step down from the logo —
+ *  each has to hold AA as text on white). `icon` is a
  *  path under `public/` — the real coin art, so a side is identifiable by its logo and not only by a
  *  colour swatch. `sol` has no artwork in this repo and renders as a lettered mark instead. */
 export const TOKENS: Record<TokenKey, TokenMeta> = {
-  ansem: { key: "ansem", name: "ANSEM", color: "#2b8c39", icon: "/tokens/ansem.jpg" },
+  ansem: { key: "ansem", name: "ANSEM", color: "#278834", icon: "/tokens/ansem.jpg" },
   uwu: { key: "uwu", name: "UWU", color: "#8f09bf", icon: "/tokens/uwu.jpg" },
   sol: { key: "sol", name: "SOL", color: "#b4530a", icon: null },
 };

@@ -145,7 +145,12 @@ body {
 
 ::selection { background: var(--ink); color: var(--on-ink); }
 
-/* Scrollbars: hairline, never a chrome-coloured slab on a white page. */
+/* Scrollbars: hairline, never a chrome-coloured slab on a white page.
+   An 8px thumb is under the 24px target floor (see CONTROLS) and stays there under SC 2.5.8's
+   "equivalent" exception: every scroll container here is also scrollable by wheel, by keyboard and by
+   touch drag, so the thumb is never the only way to reach the content. It is the one target on the
+   page that has three alternatives; widening it to 24px would put a grey slab down the side of a page
+   whose whole law is hairlines, to serve nobody. */
 *::-webkit-scrollbar { width: 8px; height: 8px; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb { background: var(--rule-2); }
@@ -466,9 +471,18 @@ a:hover { border-bottom-color: var(--ink); }
 }
 .btn:hover:not(:disabled) { background: var(--ink); color: var(--on-ink); }
 .btn:active:not(:disabled) { transform: translateY(1px); }
+/* DISABLED IS A LOOK, NOT A COLOUR SWAP, and it has to survive every variant. `.btn:disabled` only
+   ever set ink and border, which was enough for the plain button and left `.btn--fill` a solid black
+   slab: the Extract control spends most of a round disabled, says "UNAVAILABLE" in the middle of
+   itself, and was still the largest and most primary-looking object on a phone screen. Legibility was
+   never the problem (`--ink-4` on `--ink` is 9.6:1) — the AFFORDANCE was, and an affordance that
+   contradicts the state is a lie told in the loudest voice on the page.
+   So every variant drops back to the plain button when it is disabled: the fill goes, the side
+   underline goes, and the one disabled rule below does the talking for all of them. */
 .btn:disabled { color: var(--ink-4); border-color: var(--rule-2); cursor: not-allowed; }
 .btn--fill { background: var(--ink); color: var(--on-ink); }
 .btn--fill:hover:not(:disabled) { background: var(--paper); color: var(--ink); }
+.btn--fill:disabled { background: var(--paper); }
 .btn--ghost { border-color: var(--rule-2); color: var(--ink-2); }
 .btn--ghost:hover:not(:disabled) { border-color: var(--ink); background: var(--ink); color: var(--on-ink); }
 .btn--sm { padding: 6px 9px; font-size: 10px; }
@@ -477,6 +491,9 @@ a:hover { border-bottom-color: var(--ink); }
 .btn--a { box-shadow: inset 0 -3px 0 var(--a); }
 .btn--b { box-shadow: inset 0 -3px 0 var(--b); }
 .btn--a:hover:not(:disabled), .btn--b:hover:not(:disabled) { box-shadow: none; }
+/* A disabled deploy button must not keep advertising a live side. The underline is the only thing on
+   it that says WHICH side, and a coloured mark under grey type reads as "this one is still available". */
+.btn--a:disabled, .btn--b:disabled { box-shadow: none; }
 
 /* Segmented control: one hairline box, dividers between, active is inverted. */
 .seg { display: inline-flex; border: 1px solid var(--rule-2); }
@@ -498,7 +515,10 @@ a:hover { border-bottom-color: var(--ink); }
 .seg > button.on { background: var(--ink); color: var(--on-ink); }
 .seg > button:disabled { color: var(--ink-4); cursor: not-allowed; background: var(--paper); }
 
-/* Tabs: no box at all — an underline is the whole affordance. */
+/* Tabs: no box at all — an underline is the whole affordance.
+   The top padding is the 24px floor and nothing else: 11px of text over a 5px gap and a 1px rule is a
+   17px target, and a tab is a control like any other. It is all on top so the rule stays 5px under the
+   word — see "where the air goes" in the TARGET SIZE note above. */
 .tabs { display: flex; gap: 18px; }
 .tabs > button {
   font: 400 11px/1 var(--mono);
@@ -507,7 +527,7 @@ a:hover { border-bottom-color: var(--ink); }
   background: none;
   border: 0;
   border-bottom: 1px solid transparent;
-  padding: 0 0 5px;
+  padding: 8px 0 5px;
   color: var(--ink-3);
   cursor: pointer;
 }
@@ -554,6 +574,11 @@ input[type="range"] {
 input[type="checkbox"] {
   width: 18px;
   height: 18px;
+  /* A CHECKBOX IS NEVER THE THING THAT GIVES WAY. `.opt` is a flex row and its text is greedy, so with
+     the default `flex-shrink: 1` an 18px box measured 13px wide on a 390px screen — the size was set
+     and then quietly taken back by the layout. Measured, not reasoned: it is the whole reason this
+     line exists. */
+  flex: none;
   accent-color: var(--ink);
 }
 
@@ -670,12 +695,81 @@ input[type="checkbox"] {
 .trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .hide { display: none !important; }
 
+/* `.sr` — read aloud, never drawn.
+   THE PAGE NEEDS ONE BECAUSE OF RULE 5. The two side colours are the only colour here, and they are
+   not decoration: a 7px `.mk` square, a `.bar--a` fill and a `.split-a` half are how the page says
+   WHICH SIDE a fighter is on, and a screen reader gets none of it — the accessible name of a coloured
+   div is the empty string. SC 1.4.1 (Use of Colour) is the same objection from the other end: a cue
+   carried by hue alone is a cue some readers do not receive. So the mark stays as it is and the word
+   goes beside it, out of the layout and into the accessibility tree.
+   `clip-path: inset(50%)` with a 1px box is the recipe that survives everything: not `display: none`
+   or `visibility: hidden` (both remove it from the tree along with the pixels), not `width: 0`
+   (several readers skip a zero-size box), not a negative `text-indent` (breaks in RTL and is read out
+   by some engines from the wrong place). `white-space: nowrap` is load-bearing — without it a phrase
+   wraps inside its 1px box and a couple of readers announce it one word per line. */
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+  padding: 0;
+  margin: -1px;
+}
+
 @media (max-width: 900px) {
   :root { --gut: 14px; }
   .two { grid-template-columns: 1fr; gap: 18px; }
-  .kvs { grid-auto-flow: row; }
-  .kvs > .kv { border-left: 0; border-top: 1px solid var(--rule); padding: 10px 0; }
-  .kvs > .kv:first-child { border-top: 0; }
+  /* TWO UP, NOT ONE. A `.kvs` is a strip of short facts — a figure and a tracked micro-label under it
+     — and stacking five of them one per row turned about 600px of phone into five figures, three of
+     which are an em dash. That is the exact failure this page exists to argue against: data spread out
+     is not data made legible. Two tracks halve the scroll and each cell still gets ~170px, which
+     comfortably holds a 17px mono figure; `.kv-v` already truncates with an ellipsis, so a long value
+     degrades instead of breaking the grid.
+     The hairlines follow the layout rather than the source order: a rule between the columns, a rule
+     above every row but the first, and — because the borders live on the CELLS and not in the gaps —
+     an odd last item leaves no dangling rule, since the empty grid cell has no element to draw one. */
+  .kvs { grid-auto-flow: row; grid-template-columns: 1fr 1fr; }
+  .kvs > .kv { border-left: 1px solid var(--rule); border-top: 1px solid var(--rule); padding: 10px 12px; }
+  .kvs > .kv:nth-child(odd) { border-left: 0; padding-left: 0; }
+  .kvs > .kv:nth-child(even) { padding-right: 0; }
+  .kvs > .kv:nth-child(-n + 2) { border-top: 0; }
+
+  /* --- THE THUMB (see TARGET SIZE, above the CONTROLS block) ---------------------------------
+     Every standalone control reaches 44x44 here. Type sizes and tracking are untouched throughout:
+     each rule below moves padding, a minimum, or nothing at all. The arithmetic is written out so
+     the next person to change a font-size can see what it costs. */
+
+  /* 11px text + 2x16px padding + 2x1px border = 45. */
+  .btn { padding: 16px 14px; }
+  /* 10px text + 2x16px padding + 2x1px border = 44. Horizontal: the shortest label on the page is
+     `.btn--sm`'s four-glyph "Copy" — 4 glyphs x 6px + 3 tracked gaps ≈ 27px + 28px of padding = 55.
+     Stated rather than pinned with `min-width`, because `.btn` is also worn by an `<a>` (ReferralsView),
+     and an inline box ignores a minimum while it still honours padding. Padding is the rule that holds
+     on both elements; a two-glyph label would be the case that needs revisiting. */
+  .btn--sm { padding: 16px 14px; }
+
+  /* 10.5px text + 2x17px padding = 44.5. `min-width` is safe here — a `.seg` cell is always a real
+     <button> (ui/primitives.tsx) — and it is needed: preset cells are labelled "1", "5", "MAX". */
+  .seg > button { padding: 17px 11px; min-width: 44px; }
+
+  /* THE ONLY ASYMMETRIC ONE, and the reason the policy says where the air goes. A tab has no box; its
+     5px-deep underline IS the affordance, and centring 11px of text in a 44px button would leave that
+     rule floating 16px below the word it underlines. So the bottom padding is untouched and the whole
+     34px goes above: 11 + 28 + 5 = 44. The row of tabs sits lower on a phone; the tab still looks like
+     a tab. `min-width` widens the rule under a short label, which reads as a tab with padding. */
+  .tabs > button { padding: 28px 0 5px; min-width: 44px; }
+
+  /* Same reasoning as the tabs: the field's bottom rule is its boundary and the value sits 7px above
+     it on every screen. 13 + 23 + 7 + 1 = 44. */
+  input[type="text"],
+  input[type="number"],
+  select { padding: 23px 2px 7px; }
+
+  /* The drawing is unchanged — see the desktop rule; only the box the thumb has to find grows. */
+  input[type="range"] { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

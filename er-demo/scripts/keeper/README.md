@@ -33,6 +33,7 @@ cd er-demo
 bun run scripts/keeper/keeper.ts                # runs until you stop it
 bun run scripts/keeper/keeper.ts --rounds 3     # stops cleanly after 3 settled rounds
 bun run scripts/keeper/keeper.ts --dry-run      # one full pass, sends nothing
+bun run scripts/keeper/keeper.ts --hold-open    # hold ONE lobby open for players (see below)
 ```
 
 `--dry-run` does everything except send: loads the operator and house keys, picks an ER validator,
@@ -60,6 +61,48 @@ env-overridable (`KEEPER_RESULT_HOLD_SECONDS`, `KEEPER_DRAW_TIMEOUT_SECONDS`,
 `KEEPER_HOUSE_FILL_LEAD_SECONDS`, …). The lobby length is **not** one of them: that is
 `DEFAULT_LOBBY_SECONDS` in `src/chain/constants.ts`, which already argues the choice at length.
 
+## Two lobby policies
+
+**Fixed cadence (the default).** A fresh `DEFAULT_LOBBY_SECONDS` lobby every round, ended by its own
+deadline. Every round permanently locks the round PDA's rent whether or not anybody played, and every
+one of those fights is the house against itself.
+
+**Hold open (`--hold-open`, or `KEEPER_HOLD_OPEN=1`).** One lobby, opened with a long *backstop*
+deadline and held until a real player arrives:
+
+```
+open ONE round, backstop deadline HOLD_OPEN_LOBBY_SECONDS away
+ONE house fighter goes in, so the room is not an empty page
+hold ─────────────────────────────  nothing sent, nothing spent, for as long as it takes
+first REAL player enters  →  house fills in around them  →  20s grace  →  authority close  →  fight
+```
+
+One rent payment instead of one per cycle, and the fight starts because a person showed up.
+
+**Exactly one house fighter while holding, and that number is the load-bearing part.** At one fighter
+`enough_to_fight` fails, so `close_lobby_and_draw` is refused *for everyone* — not just for a keeper
+that declines to call it, but for a permissionless caller racing us at the deadline. "No
+house-versus-house fights" stops being a policy and becomes something the program enforces. It also
+keeps `lobby_is_dead` true, so a held lobby nobody joined can still be **abandoned** at its backstop
+and the round always reaches a terminal state. Seeding the usual four would have inverted both: the
+lobby could be drawn by anyone the moment the deadline passed, and it could never be abandoned.
+
+**It is off by default and it is not auto-detected.** The policy needs the authority-signed early
+close in `close_lobby_and_draw`, which exists in `lib.rs` and **is not deployed**. The only local
+evidence is the IDL, which is generated from *source* and can be regenerated before a deploy — so a
+capability probe would turn "somebody edited Rust" into "the chain will accept this". Whether a
+program is deployed is not a question this process can answer. The operator turns it on.
+
+The IDL still gets a **veto**, because it can prove the negative: if `close_lobby_and_draw` has no
+`authority` account, `--hold-open` refuses to start. Measured, not assumed — built both ways against
+the served IDL and the account lists are byte-identical, so the extra account is dropped silently and
+every early close would come back as `LobbyStillOpen` (an error about the *clock*) with a real player
+standing in the lobby.
+
+**Real vs house is a private list.** Anyone not in the keeper's own house-wallet set counts as real.
+There is deliberately no on-chain registry and no flag on the round — that is an operator decision,
+not a gap to be tidied up.
+
 ## What it costs
 
 **Rent dominates, and it is never reclaimed.** Measured on devnet, a round PDA is 1,093 bytes and
@@ -85,6 +128,29 @@ At roughly two minutes a round that is about **0.26 SOL an hour**, almost all of
 fork payer accordingly, and read the per-round `operator spent` line in the log as a measured balance
 delta rather than an estimate — it includes the rent.
 
+**Reconciled across 28 real rounds the all-in figure is 0.00981 SOL per round** (net of a one-time
+0.06 SOL house-wallet funding), of which `open_round`'s 0.008503160 SOL is permanent and
+`delegate_round`'s 0.003220520 SOL comes back when undelegation closes the delegation accounts. That
+every round PDA keeps its deposit forever is verified rather than inferred: rounds #4 to #18 all still
+hold exactly 0.008498 SOL.
+
+**This is the entire argument for `--hold-open`**, and it is the reason the backstop is an hour:
+
+| policy | idle cost |
+|---|---|
+| cycling every ~110s | ~0.32 SOL/hour |
+| 1-hour holds | ~0.0098 SOL/hour — **97% of the saving** |
+| 1-day holds | ~0.0004 SOL/hour |
+| 7-day holds | ~0.00006 SOL/hour |
+
+`MAX_LOBBY_SECONDS` is a week, and the keeper deliberately does not take it. Its own doc comment in
+`lib.rs` says plainly that nothing has ever verified a round can *stay delegated* that long — the
+longest this repo has exercised is a couple of minutes, and `MAGICBLOCK_FEEDBACK.md` records ER
+validators losing state. The two failures are not the same size: too short costs one 0.0098 SOL rent
+payment an hour, visible in the log; too long fails as a silently dead arena nobody notices. Raising
+it is a one-line change in `config.ts` and wants one piece of evidence — a delegation *observed*
+surviving longer, not reasoned about.
+
 House wallets are topped up from the operator to 0.01 SOL whenever they drop below 0.002 SOL. At one
 signature per round that is thousands of rounds per top-up; nothing else leaves them, because this
 program custodies no balances at all (`enter` *records* a stake, it does not move one).
@@ -98,7 +164,13 @@ preview` and a production build alike. The shape and every rule about it live in
 It is written **atomically** (temp file in the same directory, then `rename`), so a browser polling it
 never reads half a document.
 
-The four fields that carry the meaning:
+**Schema 3.** `parseKeeperStatus` requires an exact match, so an older page against this keeper reads
+as "keeper down" rather than as a status it half-understands. That degradation is the point: a v2 file
+has no way to say "this deadline is a backstop", so defaulting the missing fields would put a
+59:47 countdown on a lobby that is being held open — the confidently-wrong number the whole module
+exists to prevent.
+
+The six fields that carry the meaning:
 
 - **`keeper.heartbeatAt`** — rewritten every `heartbeatIntervalSeconds` whether or not anything
   happened, by a timer independent of the main loop. If `now - heartbeatAt > staleAfterSeconds`, the
@@ -121,6 +193,19 @@ The four fields that carry the meaning:
   of resetting, and it is never published beside a round that is not in a hold phase. Both of those
   are enforced in one pure function (`honestNextLobbyOpensAt`) with regression tests, because both
   were violated in a real run without anything throwing or failing to parse.
+- **`round.heldOpen`** — true while the lobby is open with **zero real fighters** and the keeper is
+  going to close it itself when somebody arrives. Its whole job is to *stop* a countdown:
+  `lobbyClosesAt` is an hour of backstop, and the only thing that happens at it is the keeper
+  abandoning this round and opening another, so a countdown to it would be a countdown to a non-event.
+  `keeperCountdown` answers `waiting-for-players` here — a state with no `seconds`, because none
+  exists.
+- **`entriesCloseAt`** — the instant the keeper **intends** to stop taking entries. Non-null only once
+  a real player has entered and the grace window is running; null throughout a held-open lobby,
+  because the keeper is not waiting for a clock, it is waiting for a person. Deliberately *not* the
+  chain's `lobbyClosesAt`: that is the backstop the program enforces, this is the schedule the keeper
+  is about to act on, and while somebody is standing in the lobby the two differ by an hour. Once it
+  is set it is the **only** answer for that lobby — including after it passes, where the countdown
+  stops rather than falling back to the backstop.
 - **`round`** — the current round as the chain reports it, including through the result hold. It stays
   populated during the hold on purpose: `keeperCountdown` returns nothing when `round` is null, so
   clearing it would silently kill the "next lobby in 0:08" countdown.
@@ -161,6 +246,26 @@ running here".
   never competes with the round being played; bounded, so it can never become a scan of the whole
   history on a 1Hz loop; and `Drawing` rounds are explicitly *not* sweepable, because the program has
   no exit for them. Until it exists, clean these up with `scripts/admin-abandon-round.mjs`.
+- **The house sweep is best-effort within the round's own hold.** After `close_round`'s undelegation
+  *confirms* — the round has to be back on the base layer, or `Account<'info, Round>` fails the owner
+  check before any phase guard is reached — the keeper sends `sweep_house_take` to move that round's
+  `fees_collected` + `penalties_collected` onto the arena's `Treasury`, creating the treasury with
+  `init_treasury` first if it does not exist. It is derived from `Round.house_swept` rather than
+  remembered, so retries are free and a double sweep is refused by the program. Every failure is
+  caught and recorded rather than thrown: this is bookkeeping, and a keeper that stopped running
+  rounds because a ledger update failed would be trading the product for its own accounting. A round
+  that misses its hold keeps its take *on the round account*, where it stays readable and stays
+  sweepable — the instruction is permissionless, so anyone can finish it later. What that costs until
+  somebody does is a gap between `Treasury.rounds_swept` and the arena's `round_counter`.
+- **No cumulative treasury figure is published, and that is a refusal rather than an omission.** A fee
+  paid by a house wallet is a wash — bot wallet to treasury, same owner — and `DEVLOG.md` Bug #20 is
+  this mistake already made once, with the off-chain engine's books "growing" while zero real players
+  were on. Splitting real from circular revenue needs the fee attributed *per wallet*, and chain state
+  cannot do it: `Round` stores each fighter's stake **net** and the fee only in aggregate, so the
+  gross a particular wallet paid survives solely in the `Entered` event. The arithmetic inverse is not
+  exact against the program's flooring. So the status file carries no total, and the sweep's log line
+  prints the amounts beside the round's real/house composition instead — a round with no real fighters
+  says in words that all of it is the house paying itself.
 - **Sends are not retried, deliberately.** Reads are (bounded backoff, in `chainClient.ts`); sends are
   not, because a blind retry can double-submit a transaction whose confirmation merely timed out — and
   a duplicate `enter` *tops up* a fighter rather than failing. The loop re-deriving from the chain is a

@@ -26,10 +26,10 @@ const FIXTURE_STEPS = 50;
 // From gen-parity-fixture.mjs / parity_tests::run_fight_matches_the_typescript_mirror_exactly.
 const EXPECTED_WINNER = 0;
 const EXPECTED_FIGHTERS: Array<{ hp: bigint; banked: bigint; dead: 0 | 1 }> = [
-  { hp: 15_158n, banked: 84_062n, dead: 0 },   // w1
-  { hp: 201_600n, banked: 116_021n, dead: 0 }, // w2
-  { hp: 26_975n, banked: 48_467n, dead: 0 },   // w3
-  { hp: 42_942n, banked: 84_775n, dead: 0 },   // w4
+  { hp: 20_787n, banked: 93_784n, dead: 0 },   // w1
+  { hp: 220_501n, banked: 103_285n, dead: 0 }, // w2
+  { hp: 52_229n, banked: 59_189n, dead: 0 },   // w3
+  { hp: 20_702n, banked: 49_523n, dead: 0 },   // w4
 ];
 const EXPECTED_TOTAL = 620_000n;
 
@@ -116,7 +116,10 @@ describe("hitEvents.ts under extract() — the flagship mid-fight mechanic", () 
     // long before anyone looked at the numbers. What the table holds is now legitimately short of
     // the pot, by exactly what the house took, so the check carries that third term.
     expect(kept + penalty).toBe(taken);
-    expect(penalty).toBeGreaterThan(0n);   // extracted at cursor 10 of a 200-step horizon: 19.5%
+    // Extracted at cursor 10 of a four-fighter round's 200-step horizon, so the rate has decayed by
+    // 10/200 of its 2,000 bps start: 1,900 bps, i.e. 19%. (It read "19.5%" here before, which no
+    // arithmetic on those two constants produces — a stale note, not a changed rule.)
+    expect(penalty).toBeGreaterThan(0n);
     expect(round.penaltiesCollected).toBe(penalty);
     expect(totalValue(round)).toBe(EXPECTED_TOTAL - penalty);
     expect(conservationHolds(round)).toBe(true);
