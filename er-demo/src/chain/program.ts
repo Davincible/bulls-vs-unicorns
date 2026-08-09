@@ -134,6 +134,20 @@ export interface RawArenaAccount {
   bump: number;
 }
 
+/** The arena's house books — one per arena, written only by `sweep_house_take`.
+ *
+ *  RUNNING TOTALS, NOT A BALANCE. This program holds no custody: these are the sums the off-chain
+ *  treasury is settled against, accumulated one finished round at a time. `roundsSwept` is the one to
+ *  hold against `Arena.roundCounter` when asking whether the books are complete — the totals alone
+ *  cannot distinguish "no fees yet" from "nobody has swept". */
+export interface RawTreasuryAccount {
+  arena: PublicKey;
+  feesAccrued: BN;
+  penaltiesAccrued: BN;
+  roundsSwept: BN;
+  bump: number;
+}
+
 export interface BullsArenaProgram {
   methods: {
     initArena(feeBps: number, tokenA: PublicKey, tokenB: PublicKey): MethodsBuilder;
@@ -156,17 +170,22 @@ export interface BullsArenaProgram {
     /** THE THREE HOUSE-BOOKS INSTRUCTIONS. Declared here because `chain/round.ts` builds all three;
      *  see that file for what each one is for.
      *
-     *  THEY TYPE-CHECK BEFORE THEY WORK, and the gap is worth stating once rather than being
-     *  rediscovered from a runtime error. This interface is hand-written against lib.rs. Anchor
-     *  builds instructions from the IDL FETCHED AT RUNTIME, which is a contract with the deployed
-     *  program and currently predates all three — so `program.methods.sweepHouseTake` is `undefined`
-     *  at runtime today and calling it throws, with nothing the compiler can say about it.
+     *  THESE ONCE TYPE-CHECKED BEFORE THEY WORKED, and the note is kept because the situation
+     *  recurs on every deploy. This interface is hand-written against lib.rs; anchor builds
+     *  instructions from the IDL FETCHED AT RUNTIME, which is a contract with the DEPLOYED program.
+     *  While the two disagree, `program.methods.sweepHouseTake` is `undefined` at runtime and calling
+     *  it throws, with nothing the compiler can say about it.
      *
-     *  That is the right way round, and deliberately not fixed by deleting these. The alternative is
-     *  serving an IDL ahead of the deploy, which breaks decoding for every account the program
-     *  already owns (see `feesCollected` above for the incident). A caller that must not fail on an
-     *  older deployment should check `arena.feeBps`-style evidence or guard on the presence of the
-     *  method, not on the type. */
+     *  RESOLVED for these three as of program v6 (D5S8oJ3s…, `.devnet/program-keypair-v6.json`): the
+     *  served IDL now carries `set_fee_bps`, `init_treasury` and `sweep_house_take`, and all three
+     *  are exercised against a real round in `scripts/verify-house-take.ts`.
+     *
+     *  The ordering is deliberate and must stay this way round — declare here first, serve the IDL
+     *  only at deploy time. The alternative is serving an IDL AHEAD of the deploy, which breaks
+     *  decoding for every account the program already owns (see `feesCollected` above for the
+     *  incident that cost a live page). A caller that must tolerate an older deployment should guard
+     *  on the presence of the method, not on the type — `scripts/keeper/programFeatures.ts` does
+     *  exactly that. */
     setFeeBps(feeBps: number): MethodsBuilder;
     initTreasury(): MethodsBuilder;
     /** `roundNo` is a seeds argument — the program derives the round PDA from it and checks it
@@ -181,6 +200,12 @@ export interface BullsArenaProgram {
     round: {
       fetch(pda: PublicKey): Promise<RawRoundAccount>;
       fetchNullable(pda: PublicKey): Promise<RawRoundAccount | null>;
+    };
+    /** `fetchNullable`, and callers should use it: `init_treasury` is separate from `init_arena`, so
+     *  an arena can legitimately exist without a treasury until someone runs it. */
+    treasury: {
+      fetch(pda: PublicKey): Promise<RawTreasuryAccount>;
+      fetchNullable(pda: PublicKey): Promise<RawTreasuryAccount | null>;
     };
   };
 }

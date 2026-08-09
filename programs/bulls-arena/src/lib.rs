@@ -42,15 +42,24 @@ use ephemeral_rollups_sdk::vrf::types::SerializableAccountMeta;
 // and a wallet popup there undercuts the "real-time because of the ER" pitch worse than one at entry.
 use session_keys::{session_auth_or, Session, SessionError, SessionToken};
 
-// v5 ADDRESS, and the reason is infrastructure, not code — for the FIFTH time, from the same cause.
+// v6 ADDRESS, and the reason is infrastructure, not code — for the SIXTH time, from the same cause.
 //
 // MagicBlock's ER validators clone a program's executable bytecode on first use and do not re-clone
 // it after a base-layer upgrade (MAGICBLOCK_FEEDBACK.md). The cache is keyed by PROGRAM ID, so a
 // fresh id has no stale clone anywhere and the first delegation pulls the current build. v1
 // (F59NksP2bYZhP4wD7fgR1sP729UHNPitrBiYrrKF1sYW), v2 (4uqVSyHtx7CBaXUL2qy7cN4eV3MzqmvucapGHN1imFYm),
-// v3 (8s3x42af7gcNXDCTNheDtteQxeBS2D1p9xuU8C5Jgfrt) and v4
-// (CchN3JPWta2uVxKhwScBQhtPG5gpsaRzf3RA4aPCDam2) are all still valid deployments of this same
+// v3 (8s3x42af7gcNXDCTNheDtteQxeBS2D1p9xuU8C5Jgfrt), v4
+// (CchN3JPWta2uVxKhwScBQhtPG5gpsaRzf3RA4aPCDam2) and v5
+// (CH7K8rDXgPQRs9CCHG9EK5kd1YSDZyPkCDGArcz4PSNP) are all still valid deployments of this same
 // source, and every verification signature recorded against them stands.
+//
+// WHAT v6 CARRIES that no prior id ever executed: the house fee now has somewhere to go. Until this
+// build `fee_bps` was subtracted from every entry and then discarded — charged to players, credited
+// to nobody. `Round.fees_collected` records it, a `Treasury` PDA holds it, and `sweep_house_take`
+// moves it once per round under `house_swept`. Alongside it: an authority-signed early close on
+// `close_lobby_and_draw`, and two economic corrections to the fight itself (damage reads both
+// fighters rather than only the opposing stake, which was farmable by splitting one stake across
+// wallets; and the defender re-draw no longer pays ~15% for entry order).
 //
 // EVERY PRIOR ID IS WRITTEN DOWN HERE FOR A REASON THAT HAS NOW BEEN PAID FOR TWICE. The id appears
 // in the IDL in TWO encodings — as a base58 `address` string, and as a 32-byte array under
@@ -74,7 +83,7 @@ use session_keys::{session_auth_or, Session, SessionError, SessionToken};
 // (devnet-eu/-tee/-as/-us) reported STALE immediately afterward. Same result as v2's upgrade and v1's
 // before it. The preflight cost one second and named the problem exactly, instead of a spent round
 // and a confusing error about the code under test — which is the entire return on having written it.
-declare_id!("CH7K8rDXgPQRs9CCHG9EK5kd1YSDZyPkCDGArcz4PSNP"); // devnet keypair: .devnet/program-keypair-v5.json
+declare_id!("D5S8oJ3sArpJ39zBG2N6PgxwWjVogWpemeJ9ryn9zhhM"); // devnet keypair: .devnet/program-keypair-v6.json
 
 pub const ARENA_SEED: &[u8] = b"arena";
 pub const ROUND_SEED: &[u8] = b"round";
