@@ -143,9 +143,9 @@ dependencies = [
 
 [[package]]
 name = "anchor-lang"
-version = "1.1.2"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa6708f356398752b8d7a08fb701c9c17395e103786fb1b33615a7267a6f4774"
+checksum = "1bac4de7c9a9a69180798af701e22302cc0ebf2ef683b843706a1b7809454735"
 dependencies = [
  "anchor-attribute-access-control",
  "anchor-attribute-account",
@@ -156,7 +156,6 @@ dependencies = [
  "anchor-derive-accounts",
  "anchor-derive-serde",
  "anchor-derive-space",
- "anchor-lang-error",
  "anchor-lang-idl",
  "base64 0.21.7",
  "bincode",
@@ -185,19 +184,6 @@ dependencies = [
  "solana-sysvar 3.1.1",
  "solana-sysvar-id 3.1.0",
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "anchor-lang-error"
-version = "1.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20760a8d5b7ddd1aea7a347c43c702ea4e962ccb7b9908c952e4b372b2d9e1f7"
-dependencies = [
- "anchor-attribute-error",
- "borsh 1.8.0",
- "solana-msg 3.1.0",
- "solana-program-error 3.0.1",
- "solana-pubkey 3.0.0",
 ]
 
 [[package]]
@@ -450,6 +436,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "ephemeral-rollups-sdk",
+ "session-keys",
  "solana-sha256-hasher 3.1.0",
 ]
 

@@ -10,6 +10,41 @@ documentation or capability), **[BUG]**, or **[FEATURE REQUEST]**.
 
 ---
 
+## 2026-08-09 — `session-keys` macros break silently on anchor-lang 1.1.x (no compile error)
+
+**[BUG]** `session-keys` 3.1.1's `Cargo.toml` declares `anchor-lang = { version = ">=0.28, <2.0" }`
+— a deliberately wide range (documented in the entry below as good design, and it *is* good for
+avoiding a forked dependency graph). But the combination of `#[derive(Accounts, Session)]` and
+`#[session(signer = ..., authority = ...)]` **does not work under anchor-lang 1.1.x**, and fails in
+the worst possible way: it compiles cleanly, `cargo expand` shows no obviously wrong output, and the
+breakage only appears at runtime, on-chain, as:
+
+```
+AnchorError caused by account: player. Error Code: AccountNotSigner
+```
+
+...on a field declared `UncheckedAccount<'info>` — an account type that, by definition, is never
+checked for a signature. Reading the expanded macro output line by line, we could not find a code
+path that produces that error for that field.
+
+Cause appears to be anchor's own 1.1.1 change, from its `CHANGELOG.md`: *"lang: Migrate anchor-syn
+from syn 1.x to syn 2.0"* — i.e. the whole attribute/constraint parser was replaced, and
+`session-keys`' macros evidently depend on 1.x parsing behavior.
+
+**How this bit us:** our program declared `anchor-lang = "1.0.2"`, which is Cargo's *caret* range
+(`^1.0.2`) and therefore silently resolved to 1.1.2. Everything else in our repo — every
+`Anchor.toml`'s `anchor_version`, our installed `anchor-cli`, and our earlier working spike — was
+1.0.2. So the drift was invisible until a session-signed instruction hit real devnet and was
+rejected. Our fix: pin exactly, `anchor-lang = "=1.0.2"`.
+
+**[FEATURE REQUEST]** Either narrow `session-keys`' own `anchor-lang` range to versions it actually
+works with (`>=0.28, <1.1`), or fix the macros for syn 2.0 / anchor 1.1+. As it stands the declared
+range advertises support for versions where the library's primary feature silently doesn't work,
+and the resulting error message points at the wrong thing entirely. A `compile_error!` on an
+unsupported anchor version would have saved the entire debugging cycle.
+
+---
+
 ## 2026-08-09 — Ephemeral validators don't re-clone a program's bytecode after a base-layer upgrade
 
 Context: fixing a compute-budget bug in our program (`programs/bulls-arena`), we upgraded the

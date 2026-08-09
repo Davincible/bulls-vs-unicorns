@@ -6,6 +6,7 @@
 
 import { Keypair, type Transaction, type VersionedTransaction } from "@solana/web3.js";
 import type { Wallet } from "@coral-xyz/anchor";
+import type { AnchorWallet } from "@solana/wallet-adapter-react";
 import { useMemo } from "react";
 
 const STORAGE_KEY = "er-demo:burner-secret-key";
@@ -82,6 +83,20 @@ export function createBurnerWallet(keypair: Keypair): Wallet {
 export interface SignerHandle {
   keypair: Keypair;
   wallet: Wallet;
+}
+
+/** Bridges `createBurnerWallet`'s `Wallet` (`@coral-xyz/anchor`'s shape — `publicKey`,
+ *  `signTransaction`, `signAllTransactions`, plus a `payer` this app's own code relies on) into
+ *  `AnchorWallet` (`@solana/wallet-adapter-react`'s narrower shape — the same first three fields,
+ *  no `payer`) for chain/session/useSessionKeyManager.ts, whose `useSessionKeyManager` is typed
+ *  against `AnchorWallet` specifically.
+ *
+ *  `Wallet` is already structurally a superset of `AnchorWallet` — every `AnchorWallet` field exists
+ *  on `Wallet` with the same type — so this function does no runtime work; it exists so that
+ *  boundary is named and typed explicitly at the one place it's crossed, rather than relying on
+ *  structural assignability to paper over it silently at whichever call site happens to need it. */
+export function toAnchorWallet(wallet: Wallet): AnchorWallet {
+  return wallet;
 }
 
 /** React hook: the burner keypair for this browser, loaded/created once per mount and stable across

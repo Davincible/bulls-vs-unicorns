@@ -420,7 +420,36 @@ with eATAs it becomes MagicBlock's shared per-mint Global Vault. `ER_DESIGN_DECI
 deciding deliberately rather than drifting into." Devnet-only either way; not a mainnet question yet
 because this fork cannot reach mainnet by construction (ER-000).
 
-### Session Keys for `enter`/`extract` · **PARKED (2026-08-09, researched — not a quick add)**
+### Session Keys for `enter`/`extract` · **DONE (2026-08-09) — shipped on both instructions**
+
+> **This entry's original "PARKED" verdict was overtaken the same day.** Kept below, unedited, as the
+> record of what was actually known at decision time — both of its "concrete blockers" turned out to
+> be answerable rather than blocking, and the note on `session_auth_or`'s ownership check "not being a
+> drop-in given that shape" was correct and is exactly what the `player`/`signer` split resolves.
+>
+> **What shipped:** `#[derive(Accounts, Session)]` + `#[session_auth_or(...)]` on BOTH `enter` and
+> `extract` in the real program, with `player` (the credited fighter identity, now `UncheckedAccount`)
+> split from `signer` (whoever actually signed — the session key, or the player's own wallet when no
+> session is active) and an `Option<Account<SessionToken>>`. The no-session path is byte-for-byte
+> unchanged: with no token, the guard's fallback requires `signer == player`. Client side:
+> `er-demo/src/chain/session/useSessionKeyManager.ts` (the only file importing `gum-react-sdk`,
+> enforcing the anchor-version boundary by import location) + `ui/SessionButton.tsx`.
+>
+> **How the two "blockers" resolved:** (1) the React-only client SDK stopped being a blocker once the
+> demo became its own React app (`er-demo/`), which is *why* React was adopted; (2) the untested
+> ER-delegation combination was answered by building it — Phase 0's spike proved it works against a
+> throwaway program first (commit `e3fb149`), with a negative control, before the real program was
+> touched. That sequencing is what made this safe to ship rather than a gamble.
+>
+> **One real bug this shook out, worth remembering:** `anchor-lang = "1.0.2"` (Cargo's default caret
+> range) silently resolved to **1.1.2**, whose `anchor-syn` migration from syn 1.x to syn 2.0 broke
+> `#[derive(Accounts, Session)]` + `#[session(...)]` **with no compile error at all** — it only
+> surfaced on real devnet as `AnchorError ... account: player. Error Code: AccountNotSigner`, on an
+> `UncheckedAccount` field whose expanded code contains no path that could produce it. Now pinned
+> `anchor-lang = "=1.0.2"` (exact), matching every other toolchain pin in this repo. A silent
+> dependency drift breaking a security-relevant macro is precisely the class of failure that only
+> real on-chain verification catches — a green local build proved nothing here.
+
 Real and directly relevant: `enter`/`extract` both require the player's own wallet (`Signer<'info>`),
 and `extract` needs to be pressable mid-fight without a Phantom popup per press. Researched properly
 before touching the program again, given this session already found and fixed 4 real bugs in it.

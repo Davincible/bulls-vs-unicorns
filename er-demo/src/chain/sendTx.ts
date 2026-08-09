@@ -50,6 +50,32 @@ export interface TransactionBuilder {
   transaction(): Promise<Transaction>;
 }
 
+/** Anything capable of producing a signature for a `Transaction` that isn't a raw `Keypair` — the
+ *  session wallet's shape (chain/session/useSessionKeyManager.ts's `ActiveSession.signTransaction`,
+ *  itself gum-react-sdk's `SessionWalletInterface.signTransaction`) once Session Keys (Phase 6) is
+ *  active. `sendTx` accepts either this or a `Keypair` (see `TxSigner` below) so the ONE proven
+ *  send path — the account-aware blockhash fetch this module exists for — is shared by both the
+ *  burner-keypair default and the session-key path, rather than the session path reimplementing
+ *  its own send logic elsewhere.
+ *
+ *  Load-bearing ordering note: `sendTx` sets `tx.feePayer`/`tx.recentBlockhash` BEFORE calling
+ *  `signTransaction`. gum-react-sdk's own implementation (decompiled and read directly — it ships
+ *  no source, see MAGICBLOCK_FEEDBACK.md) only fills in either field `transaction.recentBlockhash ||
+ *  (await connection.getLatestBlockhash(...))` — i.e. only when still unset. Because this module
+ *  always sets both first, that fallback path never runs, so the session wallet's own,
+ *  UNROUTED `getLatestBlockhash()` call (which would reproduce SDK SURPRISE #1 below) never fires;
+ *  the only blockhash ever used is this module's own account-aware one. */
+export interface WalletLikeSigner {
+  publicKey: PublicKey;
+  signTransaction<T extends Transaction>(tx: T): Promise<T>;
+}
+
+export type TxSigner = Keypair | WalletLikeSigner;
+
+function isKeypairSigner(signer: TxSigner): signer is Keypair {
+  return "secretKey" in signer;
+}
+
 export interface BlockhashResult {
   blockhash: string;
   lastValidBlockHeight: number;
@@ -96,7 +122,7 @@ export interface SendResult {
 export async function sendTx(
   router: ConnectionMagicRouter,
   methodsBuilder: TransactionBuilder,
-  signer: Keypair,
+  signer: TxSigner,
   label: string,
   routing: SendRouting = {},
 ): Promise<SendResult> {
@@ -117,8 +143,17 @@ export async function sendTx(
   }
   tx.recentBlockhash = blockhash;
   tx.lastValidBlockHeight = lastValidBlockHeight;
-  tx.sign(signer);
-  const signature = await conn.sendRawTransaction(tx.serialize(), {
+  // See `WalletLikeSigner`'s own doc comment above: feePayer/recentBlockhash are already set by the
+  // time either branch runs, which is what keeps the session-wallet path on this module's
+  // account-aware blockhash instead of fetching its own.
+  let signedTx: Transaction;
+  if (isKeypairSigner(signer)) {
+    tx.sign(signer);
+    signedTx = tx;
+  } else {
+    signedTx = await signer.signTransaction(tx);
+  }
+  const signature = await conn.sendRawTransaction(signedTx.serialize(), {
     skipPreflight: false,
     preflightCommitment: "confirmed",
   });

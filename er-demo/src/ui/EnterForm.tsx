@@ -8,8 +8,9 @@ import { useState, type FormEvent } from "react";
 import type { Keypair, PublicKey } from "@solana/web3.js";
 import type { ConnectionMagicRouter } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { enter } from "../chain/round.ts";
-import { sendTx } from "../chain/sendTx.ts";
+import { sendTx, type TxSigner } from "../chain/sendTx.ts";
 import type { BullsArenaProgram } from "../chain/program.ts";
+import type { ActiveSession } from "../chain/session/useSessionKeyManager.ts";
 import { useDemoStore } from "../state/store.ts";
 
 export interface EnterFormProps {
@@ -19,6 +20,11 @@ export interface EnterFormProps {
   keypair: Keypair;
   arena: PublicKey;
   roundPda: PublicKey;
+  /** Non-null once a session is active (chain/session/useSessionKeyManager.ts) — `enter` is then
+   *  signed by the session key instead of the burner keypair directly, with no fresh signature
+   *  prompt. Null (no active session) is the pre-Phase-6 path, byte-for-byte: the burner keypair
+   *  signs directly, `player` and `signer` are the same pubkey, `session_token` is omitted. */
+  session: ActiveSession | null;
 }
 
 /** Parses the stake field as a positive integer. Returns null for anything that isn't one (empty,
@@ -30,7 +36,7 @@ function parseStake(raw: string): bigint | null {
   return n > 0n ? n : null;
 }
 
-export function EnterForm({ program, router, keypair, arena, roundPda }: EnterFormProps) {
+export function EnterForm({ program, router, keypair, arena, roundPda, session }: EnterFormProps) {
   const [side, setSide] = useState<0 | 1>(0);
   const [stakeInput, setStakeInput] = useState("1000000");
   const [pending, setPending] = useState(false);
@@ -44,14 +50,22 @@ export function EnterForm({ program, router, keypair, arena, roundPda }: EnterFo
     if (!program || stake === null) return;
     setPending(true);
     try {
+      // Same shape either way: `player` is always the real fighter identity (the burner wallet's
+      // own pubkey, session or not — see chain/round.ts's `enter` doc comment). What changes is WHO
+      // signs: the session key (no popup, no burner-keypair involvement at all) when a session is
+      // active, or the burner keypair directly when it isn't — the exact, unmodified pre-Phase-6
+      // path.
+      const signer: TxSigner = session ? { publicKey: session.signerPubkey, signTransaction: session.signTransaction } : keypair;
       const builder = enter(program, {
         arena,
         round: roundPda,
         player: keypair.publicKey,
+        signer: signer.publicKey,
+        sessionToken: session?.sessionTokenPda ?? null,
         side,
         stake,
       });
-      const { signature } = await sendTx(router, builder, keypair, `enter side ${side}`);
+      const { signature } = await sendTx(router, builder, signer, `enter side ${side}`);
       pushToast(`entered side ${side}, stake ${stake} — ${signature}`, "info");
     } catch (err) {
       pushToast(err instanceof Error ? err.message : String(err), "error");

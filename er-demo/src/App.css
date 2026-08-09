@@ -1,10 +1,17 @@
 /* Deliberately plain — Phase 3's "done" criteria is raw state rendered as a table/list, not a
    visual layer (that's Phase 4/PixiCanvas.tsx). This replaces the Vite starter template's decorative
-   rules entirely; nothing here styles anything App.tsx no longer renders. */
+   rules entirely; nothing here styles anything App.tsx no longer renders.
+
+   Phase 7 (polish) kept that restraint deliberately and did not re-skin anything: the changes below
+   are hierarchy, spacing, and status colour — making the plain look intentional rather than
+   unfinished — plus the one genuinely new surface, the fixed devnet badge. */
 
 .app {
   text-align: left;
-  padding: 24px 32px 48px;
+  /* Top padding clears the fixed devnet badge (see `.devnet-badge` below) — the badge is out of
+     flow, so nothing else reserves room for it. Derived from the badge's own box, not eyeballed:
+     10px+10px padding + ~18px line = 38px, plus the 24px gutter the page had already. */
+  padding: 62px 32px 48px;
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -15,6 +22,7 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 16px 20px;
+  background: var(--panel);
   /* VerifyPanel's table is 9 columns wide — this keeps an unusually wide table scrolling within its
      own section rather than forcing the whole page wider than the fixed layout above accounts for. */
   overflow-x: auto;
@@ -34,13 +42,205 @@
   font-size: 15px;
 }
 
-.app ul[aria-label="toasts"] {
+/* ============================================================================================
+   Devnet badge (ui/DevnetBadge.tsx)
+
+   Fixed, full-bleed, and colour-coded as a warning rather than as decoration. This app is a fork of
+   a real-money mainnet product; the devnet-only property is enforced in code (src/devnet-guard.ts)
+   and this strip is how that fact reaches someone who is only ever going to see the screen. Fixed
+   rather than static because the page is taller than a laptop viewport and a badge that scrolls
+   away is no badge at all.
+
+   Amber is hard-coded rather than themed: a safety notice should not change appearance based on the
+   viewer's OS colour scheme, and both of these clear WCAG AA against each other.
+   ============================================================================================ */
+.devnet-badge {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 10px 20px;
+  background: #b45309;
+  color: #fff7ed;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: left;
+  box-shadow: var(--shadow);
+}
+
+.devnet-badge__flag {
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  white-space: nowrap;
+}
+
+.devnet-badge__claim {
+  white-space: nowrap;
+}
+
+/* Pushed to the far edge so the two halves read as separate claims: the left is what this is, the
+   right is the evidence for it (the actual endpoints, from chain/constants.ts). */
+.devnet-badge__endpoints {
+  margin-left: auto;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.devnet-badge__endpoints code {
+  background: rgba(0, 0, 0, 0.22);
+  color: #ffedd5;
+  font-size: 12px;
+  padding: 2px 7px;
+}
+
+/* ============================================================================================
+   Header
+   ============================================================================================ */
+.app-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* index.css sizes h1 at 56px — a page-title size inherited from the Vite starter's centred blog
+   column. In an app whose centrepiece is a 960x540 canvas, that made the title, not the arena, the
+   largest thing on screen. */
+.app-header h1 {
+  font-size: 30px;
+  letter-spacing: -0.5px;
+  margin: 0;
+}
+
+.app-tagline {
+  max-width: 78ch;
+  color: var(--muted);
+  font-size: 16px;
+}
+
+/* ============================================================================================
+   Status vocabulary — one definition per meaning, shared by every panel.
+
+   The `.extract-*` / `.session-error` names predate this and are kept as aliases rather than
+   renamed: ExtractButton.tsx and SessionButton.tsx are owned by other work in flight, and a CSS
+   grouping achieves the same single-source-of-truth without touching them. `.session-error` in
+   particular had no rule at all before this — SessionButton has been rendering session failures as
+   ordinary body text.
+   ============================================================================================ */
+.status-error,
+.extract-error,
+.session-error {
+  color: var(--danger);
+}
+
+.status-success,
+.extract-success {
+  color: var(--ok);
+}
+
+.status-warn {
+  color: var(--warn);
+}
+
+.status-muted,
+.extract-reason {
+  color: var(--muted);
+}
+
+/* A blocking, non-dismissible condition (currently: the IDL failing to load, which leaves nothing on
+   the page able to reach the chain). Distinct from a toast, which is for things that already
+   happened and are over. */
+.app-banner {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.app-banner--error {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+/* ============================================================================================
+   Toasts (ui/Toasts.tsx)
+
+   Fixed bottom-right: a signature confirmation or a failed transaction fires while the reader is
+   scrolled down watching the canvas, and a message pinned to the top of the document would be
+   delivered to an empty room. Capped at 5 in the store, info toasts self-expire — so this stack has
+   a hard maximum height and can't creep up the viewport over a multi-round demo.
+   ============================================================================================ */
+.toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 20;
+  width: 420px;
+  max-width: calc(100vw - 40px);
   list-style: none;
   padding: 0;
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
+  text-align: left;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  font-size: 14px;
+  line-height: 140%;
+}
+
+.toast--info {
+  border-left-color: var(--ok);
+}
+
+.toast--error {
+  border-left-color: var(--danger);
+  color: var(--danger);
+}
+
+/* Transaction signatures are 88 characters with no spaces in them — without this they'd push the
+   toast wider than its own box. `max-height` + scroll keeps a pathologically long RPC error from
+   turning one toast into a full-height wall. */
+.toast__message {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  max-height: 8em;
+  overflow-y: auto;
+}
+
+.toast__dismiss {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0.6;
+}
+
+.toast__dismiss:hover {
+  opacity: 1;
 }
 
 /* Integration pass — canvas prominent/large on the left, the plain-text panels (RoundPanel, Enter,
@@ -58,8 +258,41 @@
   gap: 24px;
 }
 
+/* The centrepiece, framed as one panel: canvas flush at the top, caption bar beneath it, a single
+   border around both. `overflow: hidden` is what lets the canvas's square corners sit inside the
+   rounded frame — PixiCanvas.tsx renders its own positioned host div with inline styles and has no
+   class to hook, and giving the frame to its parent is a cleaner seam than reaching into it. */
 .app-arena {
   flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  line-height: 0; /* kills the inline-block descender gap under the canvas element */
+}
+
+.app-arena-caption {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 145%;
+}
+
+/* The one live number worth reading without looking away from the canvas. Monospace so it doesn't
+   reflow the caption line as the phase name changes length (Lobby -> Drawing -> Fight -> Settled). */
+.app-arena-phase {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-h);
 }
 
 .app-arena-placeholder {
@@ -68,10 +301,11 @@
   justify-content: center;
   width: 960px;
   height: 540px;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  color: var(--muted, #888);
+  /* No border of its own any more — `.app-arena` above is the frame now, and a second one inside it
+     read as a box in a box. */
+  color: var(--muted);
   text-align: center;
+  line-height: 145%;
   padding: 0 48px;
   box-sizing: border-box;
 }
@@ -98,45 +332,111 @@
      the fixed-width sidebar fix above, not by reading the CSS. This is what makes `overflow-x: auto`
      above actually take effect as a contained scrollbar instead of the whole section just growing. */
   min-width: 0;
+  font-size: 15px;
+  line-height: 150%;
+}
+
+/* index.css's global h2 is 24px, which is the right weight for a page-level heading and far too
+   loud for six stacked panels — at that size every panel title competed with the canvas for
+   attention. Small, uppercase, muted reads as a label for what's below it, which is what these are. */
+.app section h2,
+.app form h2 {
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+
+/* The wallet panel is the full page width, above the arena, and holds three short facts. Stacked as
+   paragraphs it cost ~120px of vertical space and pushed the canvas toward the fold; as one row it
+   costs ~40px and reads as a toolbar, which is what it is. The funding hint (only present on an
+   unfunded burner) wraps to its own line via `flex-basis: 100%` rather than being squeezed into the
+   row — it contains a full 44-character pubkey and a command meant to be copied. */
+.wallet-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 20px;
+  font-size: 15px;
+}
+
+.wallet-strip h2 {
+  margin: 0;
+}
+
+.wallet-strip .status-warn {
+  flex-basis: 100%;
+}
+
+/* Paragraphs inside a panel need room from each other — index.css zeroes every `p` margin globally
+   (right for the single-line panels Phase 3 had, wrong now that Extract/Session/Verify each stack
+   several). The wallet strip is excluded because it lays its children out with flex `gap`, which a
+   margin would stack on top of. */
+.app section:not(.wallet-strip) p + p,
+.app section:not(.wallet-strip) button + p,
+.app section:not(.wallet-strip) p + button,
+.app form p + p {
+  margin-top: 10px;
 }
 
 /* ExtractButton.tsx / VerifyPanel.tsx (Phase 5) — additive only, doesn't touch anything above.
    Plain color-coded status text, matching this file's own "no styling investment beyond legibility"
    precedent, but color-coded because ExtractButton/VerifyPanel are explicitly the two screens where
-   a judge needs to read status at a glance without parsing prose. */
-.extract-reason {
-  color: var(--muted, #888);
-}
-.extract-success {
-  color: #1a7f37;
-}
-.extract-error {
-  color: #cf222e;
-}
-
+   a judge needs to read status at a glance without parsing prose.
+   (Phase 7: the `.extract-*` colour rules that used to live here are gone — they're now aliases in
+   the shared status block near the top of this file, which is also where the dark-mode-safe values
+   live. Nothing in ExtractButton.tsx changed; only where its colours are defined.) */
 .verify-verdict {
   font-weight: 600;
   font-size: 1.05em;
 }
 .verify-verdict--ok {
-  color: #1a7f37;
+  color: var(--ok);
 }
 .verify-verdict--info {
-  color: #9a6700;
+  color: var(--warn);
 }
 .verify-verdict--bad {
-  color: #cf222e;
+  color: var(--danger);
 }
 
+/* VerifyPanel.tsx wraps each dt/dd pair in its own `<div>` (the correct HTML for a grouped
+   description list). That made the previous `grid-template-columns: max-content 1fr` on the `dl`
+   itself lay out the four WRAPPERS across two columns rather than the labels and values — and since
+   the first wrapper contains a 64-character seed hex, `max-content` sized column one to that, which
+   pushed "steps replayed" and "value conservation" clean out of the 480px sidebar. Two of this
+   panel's four verification facts were invisible, on the screen the plan calls the highest-value one
+   in the app. Found in a full-page screenshot, not by reading the CSS.
+
+   Stacked label-over-value instead of a two-column grid because no column split survives a 64-char
+   hex in a 440px panel; this way every fact fits at any value length. */
 .app dl.verify-facts {
   display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 4px 16px;
-  margin: 8px 0;
+  /* `auto-fit`/`minmax` rather than a fixed column count so the four facts sit side by side at the
+     panel's full page width and fall back to a single column if it's ever placed somewhere narrow —
+     without this file needing to know where VerifyPanel is mounted. */
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px 28px;
+  margin: 12px 0;
+}
+.app dl.verify-facts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0; /* lets the 64-char seed hex wrap inside its cell instead of widening the column */
 }
 .app dl.verify-facts dt {
-  color: var(--muted, #888);
+  color: var(--muted);
+  font-size: 13px;
 }
 .app dl.verify-facts dd {
   margin: 0;
+}
+/* index.css makes `code` an inline-flex box, which never wraps — the seed would otherwise run off
+   the panel's edge rather than breaking onto a second line. */
+.app dl.verify-facts code {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }

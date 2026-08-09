@@ -22,9 +22,31 @@ idl-build = ["anchor-lang/idl-build"]
 bench = []
 
 [dependencies]
-anchor-lang = "1.0.2"   # init-if-needed was declared but never used; it costs bytes
+# SEC/CORRECTNESS finding (this session, Phase 6): pinned EXACT, not "^1.0.2" (Cargo's default caret
+# range). The unpinned range let Cargo silently resolve anchor-lang 1.1.2 — a version that migrated
+# anchor-syn's whole attribute/constraint parser from syn 1.x to syn 2.0 (see anchor's own
+# CHANGELOG.md, [1.1.1]: "lang: Migrate anchor-syn from syn 1.x to syn 2.0"). That migration broke
+# `#[derive(Accounts, Session)]` + `#[session(signer = signer, authority = player.key())]` in a way
+# that never surfaces as a compile error: the deployed program rejected every session-signed enter()/
+# extract() with "AnchorError caused by account: player. Error Code: AccountNotSigner" — a real
+# devnet failure discovered by this session's own Phase 6 verification, not a hypothetical — even
+# though `cargo expand`'s own output, read line-by-line, shows no code path that could produce that
+# error for an `UncheckedAccount` field. Every toolchain file in this repo (every Anchor.toml's
+# `anchor_version`, the installed `anchor-cli 1.0.2`, Phase 0's own spike) was built and verified
+# against 1.0.2 specifically; the caret range was silent drift this program never actually asked
+# for. Exact-pinning here is a reproducibility fix, not a version downgrade choice made for its own
+# sake — re-verified clean (native test + on-chain session-signed enter/extract, both directions)
+# after this change; see MEGA_QUEUE.md/MAGICBLOCK_FEEDBACK.md for the full trail.
+anchor-lang = "=1.0.2"   # init-if-needed was declared but never used; it costs bytes
 ephemeral-rollups-sdk = { version = "0.16.2", features = ["anchor", "vrf"] }
 # anchor 1.x no longer re-exports solana_program::hash — the ecosystem moved to split crates, so the
 # sha256 syscall wrapper is its own dependency now. Verified by reading anchor-lang 1.0.2's
 # re-export list rather than guessing at the path a second time.
 solana-sha256-hasher = "3.1.0"
+# Session Keys (Phase 6, snug-floating-mitten.md) — proven combined with ER delegation first in
+# programs/bulls-arena-session-spike (Phase 0, commit e3fb149) before landing on the real program.
+# `no-entrypoint` is required, not optional: without it the crate's own `#[global_allocator]`
+# collides with ours at compile time ("the #[global_allocator] in this crate conflicts with global
+# allocator in: session_keys") — documented in the crate's install snippet, found here the hard way
+# in Phase 0, see MAGICBLOCK_FEEDBACK.md's entry on it.
+session-keys = { version = "3.1.1", features = ["no-entrypoint"] }

@@ -21,6 +21,14 @@ export interface Toast {
 
 let nextToastId = 1;
 
+/** Nothing in this app ever produces more than a handful of toasts at once, but "a presenter runs
+ *  2-3 full rounds back to back" (the plan's Phase 7 done-criteria) means the list is never
+ *  naturally emptied between rounds either — every enter, every extract, every failure appends one
+ *  more. Oldest-out at a fixed ceiling keeps the stack from quietly becoming the tallest thing on
+ *  screen by round three. Info toasts also expire on their own (ui/Toasts.tsx); this bound is what
+ *  holds when they don't, i.e. for errors, which stay until dismissed on purpose. */
+const MAX_TOASTS = 5;
+
 interface DemoStore {
   /** The active signer's pubkey, or null before `useSigner()` has run once. In practice this is set
    *  almost immediately (the burner keypair is synchronous, see chain/useSigner.ts), but stays
@@ -49,6 +57,6 @@ export const useDemoStore = create<DemoStore>((set) => ({
 
   toasts: [],
   pushToast: (message, kind = "info") =>
-    set((s) => ({ toasts: [...s.toasts, { id: nextToastId++, message, kind }] })),
+    set((s) => ({ toasts: [...s.toasts, { id: nextToastId++, message, kind }].slice(-MAX_TOASTS) })),
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 }));

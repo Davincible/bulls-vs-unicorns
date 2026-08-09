@@ -23,7 +23,13 @@ import { Particles, ParticlesProvider, type ParticlesPluginRegistrar } from "@ts
 import { loadSlim } from "@tsparticles/slim";
 import type { Container as ParticlesContainer, ISourceOptions } from "@tsparticles/engine";
 import { createArenaScene, destroyArenaScene, type ArenaScene } from "./arena/ArenaScene.ts";
-import { createImpactFxController, type ImpactFxController } from "./arena/impactFx.ts";
+import { createArenaBackdrop } from "./arena/backdrop.ts";
+import {
+  createImpactFxController,
+  MAX_ALIVE_PARTICLES,
+  PARTICLE_BURST_LIFETIME_MS,
+  type ImpactFxController,
+} from "./arena/impactFx.ts";
 import { createFighterSprite, type FighterSprite } from "./fighterSprite.ts";
 import { createGameLoop, type GameLoop } from "./gameLoop.ts";
 import { DEFAULT_ARENA_HEIGHT, DEFAULT_ARENA_WIDTH, type PixiCanvasProps } from "./types.ts";
@@ -32,16 +38,21 @@ const BACKGROUND_COLOR = 0x0b0d12;
 
 /** Particles stay dormant (no auto-emitted particles, `number.value: 0`) until impactFx.ts pushes a
  *  burst via `container.particles.push(...)` — this IS the "pooled" part the plan doc calls for: one
- *  persistent particle system reused for every hit, never recreated per event. `limit.value` caps
- *  concurrent alive particles so a fast flurry of hits can't runaway the particle count (the
- *  performance budget the plan's Phase 7 note names explicitly, applied here since it costs nothing
- *  to set correctly from the start). */
+ *  persistent particle system reused for every hit, never recreated per event.
+ *
+ *  `limit.value` is the backstop, not the budget: impactFx.ts throttles bursts to at most
+ *  MAX_CONCURRENT_BURSTS alive (REACT.md §8), and this limit is simply that same ceiling expressed in
+ *  particles, so tsParticles never becomes the thing quietly absorbing an over-budget spawn rate. It
+ *  was previously set to 240 — ~17 concurrent bursts, well past §8's "max 5 alive" guidance — which
+ *  meant the real cap on a 175-events-per-second fight was this number and nothing else. Both the
+ *  count and the lifetime are imported rather than restated so the throttle's arithmetic
+ *  (lifetime / cap = spacing) stays true to what the particles actually do. */
 const PARTICLE_OPTIONS: ISourceOptions = {
   fullScreen: { enable: false },
   detectRetina: true,
   fpsLimit: 60,
   particles: {
-    number: { value: 0, limit: { value: 240 } },
+    number: { value: 0, limit: { value: MAX_ALIVE_PARTICLES } },
     color: { value: ["#ffcc33", "#ff6b3d", "#ffffff"] },
     shape: { type: "circle" },
     opacity: {
@@ -49,7 +60,7 @@ const PARTICLE_OPTIONS: ISourceOptions = {
       animation: { enable: true, speed: 3, startValue: "max", destroy: "min" },
     },
     size: { value: { min: 1, max: 3 } },
-    life: { duration: { value: 0.6, sync: false }, count: 1 },
+    life: { duration: { value: PARTICLE_BURST_LIFETIME_MS / 1000, sync: false }, count: 1 },
     move: {
       enable: true,
       speed: { min: 3, max: 8 },
@@ -123,11 +134,15 @@ export function PixiCanvas(props: PixiCanvasProps) {
         const scene = createArenaScene(width, height);
         sceneRef.current = scene;
 
+        // Added first so it sits under everything — a static, never-updated floor (see
+        // arena/backdrop.ts). `app.destroy(true, true)` in this effect's cleanup takes it down with
+        // the rest of the stage, so it needs no ref or teardown of its own.
+        const backdrop = createArenaBackdrop(width, height);
         const fightersLayer = new Container();
         fightersLayer.label = "fighters";
         const fxLayer = new Container();
         fxLayer.label = "fx";
-        app.stage.addChild(fightersLayer, fxLayer);
+        app.stage.addChild(backdrop, fightersLayer, fxLayer);
 
         // Build the initial sprites HERE, synchronously, rather than waiting for the separate
         // lineup effect below (keyed on `appReady`/`lineupKey`) to do it on its own next run. Found

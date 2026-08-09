@@ -37,6 +37,20 @@ import type { PixiCanvasProps } from "./types.ts";
 export const STEPS_PER_SECOND = 175;
 export const MAX_STEPS = 7_000;
 
+/** The fixed step handed to `Matter.Engine.update()` every frame — REACT.md §8's performance budget
+ *  verbatim: "Physics substeps: 60Hz fixed step is enough."
+ *
+ *  This replaced a real-elapsed delta capped at 50ms. That cap existed to stop a backgrounded-tab
+ *  stall from handing Matter one enormous step (bodies visibly jumping or tunnelling through walls
+ *  on return) — a fixed step is immune to that by construction, and it also silences the
+ *  `Matter.Engine.update: delta argument is recommended to be less than or equal to 16.667 ms`
+ *  warning the capped version printed to the console on every load, which is the one console message
+ *  this demo was still emitting. Matter's own guidance is a constant delta; the reason a variable
+ *  one buys nothing here is that this physics is cosmetic (ArenaScene.ts's header) — it decides
+ *  nothing about the fight, so "the drift is a few percent slow after a stall" has no consequence
+ *  worth the instability of a variable step. */
+const PHYSICS_STEP_MS = 1000 / 60;
+
 /** Pure — split out from the loop so the wall-clock-to-step math is unit-testable without a DOM, a
  *  Matter world, or pixi.js. Returns a float; callers compare it against integer `HitEvent.step`
  *  values with `<=`. */
@@ -82,7 +96,6 @@ export interface GameLoop {
 export function createGameLoop(handles: GameLoopHandles, propsRef: { current: PixiCanvasProps }): GameLoop {
   let rafHandle = 0;
   let run: FightRun | null = null;
-  let lastFrameMs: number | null = null;
 
   /** Copies every live Matter body's position onto its matching sprite and redraws its hp bar —
    *  shared by the normal per-frame sync (below) and by `ensureRun`'s initial spawn (immediately
@@ -136,15 +149,11 @@ export function createGameLoop(handles: GameLoopHandles, propsRef: { current: Pi
     current.cursor = cursor;
 
     const targets = computeTargets(current.shadow.length, props.hitEvents, cursor);
-    // Real elapsed frame time, capped at 50ms so a backgrounded-tab stall doesn't hand Matter a huge
-    // single step on return (bodies would otherwise visibly jump/tunnel through walls).
-    const deltaMs = lastFrameMs === null ? 1000 / 60 : Math.min(50, nowMs - lastFrameMs);
-    Matter.Engine.update(handles.scene.engine, deltaMs);
+    Matter.Engine.update(handles.scene.engine, PHYSICS_STEP_MS);
     steer(handles.scene, current.shadow, targets, nowMs);
     syncSprites(current);
 
     handles.fx.update(nowMs);
-    lastFrameMs = nowMs;
     rafHandle = requestAnimationFrame(frame);
   }
 
@@ -156,7 +165,6 @@ export function createGameLoop(handles: GameLoopHandles, propsRef: { current: Pi
     stop() {
       cancelAnimationFrame(rafHandle);
       rafHandle = 0;
-      lastFrameMs = null;
     },
   };
 }

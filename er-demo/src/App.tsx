@@ -7,14 +7,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { Connection } from "@solana/web3.js";
 import { ConnectionMagicRouter } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { BASE_RPC, ROUTER_URL } from "./chain/constants.ts";
+import { BASE_RPC, PROGRAM_ID, ROUTER_URL } from "./chain/constants.ts";
 import { createProgram, type BullsArenaProgram } from "./chain/program.ts";
 import { useRound } from "./chain/useRound.ts";
-import { useSigner } from "./chain/useSigner.ts";
+import { toAnchorWallet, useSigner } from "./chain/useSigner.ts";
+import { useAppSessionManager } from "./chain/session/useSessionKeyManager.ts";
 import { arenaPda, roundPdaForRoundNo } from "./chain/round.ts";
 import { useDemoStore } from "./state/store.ts";
 import { ConnectWallet } from "./ui/ConnectWallet.tsx";
+import { DevnetBadge } from "./ui/DevnetBadge.tsx";
+import { Toasts } from "./ui/Toasts.tsx";
 import { RoundPanel } from "./ui/RoundPanel.tsx";
+import { SessionButton } from "./ui/SessionButton.tsx";
 import { EnterForm } from "./ui/EnterForm.tsx";
 import { ExtractButton } from "./ui/ExtractButton.tsx";
 import { VerifyPanel } from "./ui/VerifyPanel.tsx";
@@ -53,6 +57,14 @@ function App() {
   const router = useMemo(() => new ConnectionMagicRouter(ROUTER_URL, "confirmed"), []);
   const baseConnection = useMemo(() => new Connection(BASE_RPC, "confirmed"), []);
 
+  // Session Keys (Phase 6). `create_session`/`revoke_session` call the `gpl_session` program
+  // directly, which is never delegated to an Ephemeral Rollup — `baseConnection`, not `router`, per
+  // chain/session/useSessionKeyManager.ts's own comment (matches Phase 0's spike script). `session
+  // .active` is null until "start session" is clicked; every consumer below already treats null as
+  // "fall back to direct wallet signing" (EnterForm.tsx/ExtractButton.tsx).
+  const anchorWallet = useMemo(() => toAnchorWallet(wallet), [wallet]);
+  const session = useAppSessionManager(anchorWallet, baseConnection, "devnet", PROGRAM_ID);
+
   const arena = useMemo(() => arenaPda(), []);
   const roundPda = useMemo(() => roundPdaForRoundNo(parseRoundNoFromUrl(), arena), [arena]);
 
@@ -83,8 +95,6 @@ function App() {
   useEffect(() => { useDemoStore.getState().setSigner(keypair.publicKey); }, [keypair]);
   useEffect(() => { useDemoStore.getState().setRound(round); }, [round]);
 
-  const toasts = useDemoStore((s) => s.toasts);
-  const dismissToast = useDemoStore((s) => s.dismissToast);
   const pushToast = useDemoStore((s) => s.pushToast);
 
   // Primitive keys derived from `round`, NOT `round` itself, are what `hitEvents` memoizes on below.
@@ -131,60 +141,97 @@ function App() {
   const showArena = round !== null && round.phaseName !== "Lobby";
 
   return (
-    <main className="app">
-      <h1>bulls-arena — devnet demo</h1>
+    <>
+      <DevnetBadge />
 
-      {toasts.length > 0 && (
-        <ul aria-label="toasts">
-          {toasts.map((t) => (
-            <li key={t.id}>
-              [{t.kind}] {t.message}{" "}
-              <button type="button" onClick={() => dismissToast(t.id)}>
-                dismiss
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <main className="app">
+        <header className="app-header">
+          <h1>bulls-arena</h1>
+          <p className="app-tagline">
+            One real Solana round, played on a MagicBlock Ephemeral Rollup. Enter a side, watch the
+            fight play back from the chain's own revealed seed, pull out mid-fight — then re-derive
+            the whole result yourself, in this tab, and check it against what the chain settled to.
+          </p>
+        </header>
 
-      <ConnectWallet keypair={keypair} connection={baseConnection} />
+        <ConnectWallet keypair={keypair} connection={baseConnection} />
 
-      {programError && <p>failed to load program/IDL: {programError.message}</p>}
+        {/* Fatal for everything downstream — no program means no round, no enter, no extract — so
+            this is a persistent banner rather than a dismissible toast. The raw message is included
+            verbatim: per the plan's 80/20 cuts there is no per-error-type recovery flow, and a real
+            error string a presenter can read out is worth more than a friendly paraphrase of it. */}
+        {programError && (
+          <p className="app-banner app-banner--error" role="alert">
+            <strong>could not load the program IDL</strong> — nothing on this page can talk to the
+            chain until this succeeds. {programError.message}
+          </p>
+        )}
 
-      <div className="app-layout">
-        <div className="app-arena">
-          {showArena ? (
-            <PixiCanvas
-              fighters={renderFighters}
-              hitEvents={hitEvents}
-              fightStartedAtMs={fightStartedAtMs}
-              phase={round.phaseName}
+        <div className="app-layout">
+          <div className="app-arena">
+            {showArena ? (
+              <PixiCanvas
+                fighters={renderFighters}
+                hitEvents={hitEvents}
+                fightStartedAtMs={fightStartedAtMs}
+                phase={round.phaseName}
+              />
+            ) : (
+              <div className="app-arena-placeholder" aria-label="arena-placeholder">
+                the arena appears once the lobby closes and fighters are locked in
+              </div>
+            )}
+            {/* The canvas is the thing everyone in the room is looking at, so the one sentence that
+                explains what they're looking at belongs under it, not in a sidebar panel they'd
+                have to go find. */}
+            <p className="app-arena-caption">
+              <span>
+                Every impact is a real on-chain exchange, replayed from this round's revealed seed —
+                the drifting and bouncing is cosmetic, the hits are not.
+              </span>
+              <span className="app-arena-phase">{round ? round.phaseName : "no round"}</span>
+            </p>
+          </div>
+
+          <aside className="app-sidebar">
+            <RoundPanel round={round} loading={roundLoading} error={roundError} />
+
+            <SessionButton session={session} />
+
+            <EnterForm
+              program={program}
+              router={router}
+              keypair={keypair}
+              arena={arena}
+              roundPda={roundPda}
+              session={session.active}
             />
-          ) : (
-            <div className="app-arena-placeholder" aria-label="arena-placeholder">
-              the arena appears once the lobby closes and fighters are locked in
-            </div>
-          )}
+
+            <ExtractButton
+              program={program}
+              router={router}
+              keypair={keypair}
+              round={round}
+              roundPda={roundPda}
+              session={session.active}
+              onExtracted={({ signature }) => pushToast(`extracted — ${signature}`, "info")}
+            />
+          </aside>
         </div>
 
-        <aside className="app-sidebar">
-          <RoundPanel round={round} loading={roundLoading} error={roundError} />
+        {/* Full page width, below the layout, rather than as a sixth sidebar panel. Its comparison
+            table is 9 columns of on-chain-vs-replay numbers — in the 480px sidebar the last three
+            were permanently scrolled out of sight, on the one screen snug-floating-mitten.md calls
+            "THE highest-value screen in the app for a judge." It only renders once a round is
+            Settled, which is also exactly the moment there's nothing left to watch on the canvas. */}
+        {round?.phaseName === "Settled" && <VerifyPanel round={round} />}
+      </main>
 
-          <EnterForm program={program} router={router} keypair={keypair} arena={arena} roundPda={roundPda} />
-
-          <ExtractButton
-            program={program}
-            router={router}
-            keypair={keypair}
-            round={round}
-            roundPda={roundPda}
-            onExtracted={({ signature }) => pushToast(`extracted — ${signature}`, "info")}
-          />
-
-          {round?.phaseName === "Settled" && <VerifyPanel round={round} />}
-        </aside>
-      </div>
-    </main>
+      {/* Last in the tree, fixed to the corner (App.css) — a confirmation or a failure has to stay
+          readable while the reader is scrolled down watching the canvas, which is where they'll be
+          standing the moment either one fires. */}
+      <Toasts />
+    </>
   );
 }
 

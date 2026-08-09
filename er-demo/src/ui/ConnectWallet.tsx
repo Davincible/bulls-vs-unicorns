@@ -63,7 +63,10 @@ export function ConnectWallet({ keypair, connection }: ConnectWalletProps) {
   const isUnfunded = balanceLamports === 0;
 
   return (
-    <section aria-label="wallet">
+    // `wallet-strip` (App.css) lays this out as one horizontal row rather than a stack of
+    // paragraphs: it's the full width of the page above the arena, and three stacked lines of
+    // secondary information there pushed the canvas — the thing the demo is about — below the fold.
+    <section aria-label="wallet" className="wallet-strip">
       <h2>Wallet</h2>
       <p>
         burner: <code title={pubkey}>{truncate(pubkey)}</code>{" "}
@@ -73,14 +76,21 @@ export function ConnectWallet({ keypair, connection }: ConnectWalletProps) {
       </p>
       <p>
         balance:{" "}
-        {balanceError !== null
-          ? `error: ${balanceError}`
-          : balanceLamports === null
-            ? "loading..."
-            : `${(balanceLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`}
+        {balanceError !== null ? (
+          // Same reasoning as RoundPanel's poll error: this retries every BALANCE_POLL_MS, so it
+          // belongs in place rather than as a toast per attempt. Marked up as an error rather than
+          // reading as a plain balance value, which is what "error: ..." as bare text looked like.
+          <span className="status-error" role="alert">
+            error: {balanceError}
+          </span>
+        ) : balanceLamports === null ? (
+          "loading..."
+        ) : (
+          `${(balanceLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`
+        )}
       </p>
       {isUnfunded && (
-        <p>
+        <p className="status-warn">
           this wallet has no SOL and can't sign fee-paying transactions yet. Fund it from a terminal:
           <br />
           <code>bun scripts/fund-wallet.mjs {pubkey}</code>

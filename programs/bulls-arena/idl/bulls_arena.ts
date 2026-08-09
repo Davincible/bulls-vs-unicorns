@@ -388,7 +388,15 @@ export type BullsArena = {
         "Add a fighter. Runs in the ER once the round is delegated.",
         "",
         "`stake` is the GROSS amount; the fee is taken here so the on-chain arithmetic matches the",
-        "engine's, where a stake is recorded net of the deploy fee."
+        "engine's, where a stake is recorded net of the deploy fee.",
+        "",
+        "SESSION KEYS (Phase 6). `#[session_auth_or]` runs BEFORE the body below: if `session_token`",
+        "is present and valid (a real PDA, unexpired, bound to this program as `target_program` and",
+        "to `player` as its `authority`), the transaction may be signed by the session key instead of",
+        "`player`'s own wallet. With no session token supplied, it falls back to requiring",
+        "`signer.key() == player.key()` — ordinary direct-wallet signing, byte-for-byte what this",
+        "instruction did before this phase. Either way `who = ctx.accounts.player.key()` below is",
+        "what actually gets credited; the session key/signer is never itself the fighter identity."
       ],
       "discriminator": [
         139,
@@ -424,6 +432,17 @@ export type BullsArena = {
         },
         {
           "name": "player",
+          "docs": [
+            "why this is intentionally not required to sign directly."
+          ]
+        },
+        {
+          "name": "sessionToken",
+          "optional": true
+        },
+        {
+          "name": "signer",
+          "writable": true,
           "signer": true
         }
       ],
@@ -456,7 +475,12 @@ export type BullsArena = {
         "you cannot keep.",
         "",
         "Deliberately cheap — one guard, one move of value, no loop. It has to be affordable to call",
-        "at any moment by anyone, which is the opposite of the fight itself."
+        "at any moment by anyone, which is the opposite of the fight itself.",
+        "",
+        "SESSION KEYS (Phase 6). Same `player`/`signer` split and the same `#[session_auth_or]` guard",
+        "as `enter` — see `Enter`'s struct doc comment for the full rationale. This is the more",
+        "important of the two to cover: without it, every single extract — the one action this whole",
+        "migration exists to make load-bearing — pops a wallet dialog under real time pressure."
       ],
       "discriminator": [
         39,
@@ -476,8 +500,18 @@ export type BullsArena = {
         {
           "name": "player",
           "docs": [
-            "The player pulling out — must sign. Nobody extracts on anyone else's behalf."
-          ],
+            "intentionally not required to sign directly. Nobody extracts on anyone else's behalf: the",
+            "`#[session_auth_or]` guard on `extract()` still requires either `signer == player` directly,",
+            "or a session token whose `authority` is this exact pubkey."
+          ]
+        },
+        {
+          "name": "sessionToken",
+          "optional": true
+        },
+        {
+          "name": "signer",
+          "writable": true,
           "signer": true
         }
       ],
@@ -1168,6 +1202,30 @@ export type BullsArena = {
                 32
               ]
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "sessionToken",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "targetProgram",
+            "type": "pubkey"
+          },
+          {
+            "name": "sessionSigner",
+            "type": "pubkey"
+          },
+          {
+            "name": "validUntil",
+            "type": "i64"
           }
         ]
       }

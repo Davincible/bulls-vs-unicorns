@@ -33,6 +33,14 @@ use ephemeral_rollups_sdk::ephem::MagicIntentBundleBuilder;
 use ephemeral_rollups_sdk::anchor::{vrf, vrf_callback};
 use ephemeral_rollups_sdk::vrf::instructions::{create_request_scoped_randomness_ix, RequestRandomnessParams};
 use ephemeral_rollups_sdk::vrf::types::SerializableAccountMeta;
+// Session Keys (Phase 6, snug-floating-mitten.md) — proven combined with Ephemeral Rollup
+// delegation first in a throwaway fork of this program (programs/bulls-arena-session-spike, devnet
+// id EJ8dAm3HnBY9UL4mYBUyDzLTvgkDGAp8cT3e2mgaLxQP, commit e3fb149) before landing on the real,
+// deployed program. `enter` used that exact pattern verified there; `extract` is the same shape
+// applied for the first time here — it wasn't part of the spike, but it's structurally identical
+// and arguably matters more: it's the mid-fight decision a player makes under real time pressure,
+// and a wallet popup there undercuts the "real-time because of the ER" pitch worse than one at entry.
+use session_keys::{session_auth_or, Session, SessionError, SessionToken};
 
 declare_id!("F59NksP2bYZhP4wD7fgR1sP729UHNPitrBiYrrKF1sYW"); // devnet program keypair: .devnet/program-keypair.json
 
@@ -225,6 +233,18 @@ pub mod bulls_arena {
     ///
     /// `stake` is the GROSS amount; the fee is taken here so the on-chain arithmetic matches the
     /// engine's, where a stake is recorded net of the deploy fee.
+    ///
+    /// SESSION KEYS (Phase 6). `#[session_auth_or]` runs BEFORE the body below: if `session_token`
+    /// is present and valid (a real PDA, unexpired, bound to this program as `target_program` and
+    /// to `player` as its `authority`), the transaction may be signed by the session key instead of
+    /// `player`'s own wallet. With no session token supplied, it falls back to requiring
+    /// `signer.key() == player.key()` — ordinary direct-wallet signing, byte-for-byte what this
+    /// instruction did before this phase. Either way `who = ctx.accounts.player.key()` below is
+    /// what actually gets credited; the session key/signer is never itself the fighter identity.
+    #[session_auth_or(
+        ctx.accounts.player.key() == ctx.accounts.signer.key(),
+        SessionError::InvalidToken
+    )]
     pub fn enter(ctx: Context<Enter>, side: u8, stake: u64) -> Result<()> {
         let arena_fee = ctx.accounts.arena.fee_bps as u64;
         let r = &mut ctx.accounts.round;
@@ -318,6 +338,15 @@ pub mod bulls_arena {
     ///
     /// Deliberately cheap — one guard, one move of value, no loop. It has to be affordable to call
     /// at any moment by anyone, which is the opposite of the fight itself.
+    ///
+    /// SESSION KEYS (Phase 6). Same `player`/`signer` split and the same `#[session_auth_or]` guard
+    /// as `enter` — see `Enter`'s struct doc comment for the full rationale. This is the more
+    /// important of the two to cover: without it, every single extract — the one action this whole
+    /// migration exists to make load-bearing — pops a wallet dialog under real time pressure.
+    #[session_auth_or(
+        ctx.accounts.player.key() == ctx.accounts.signer.key(),
+        SessionError::InvalidToken
+    )]
     pub fn extract(ctx: Context<Extract>) -> Result<()> {
         let who = ctx.accounts.player.key();
         let r = &mut ctx.accounts.round;
@@ -566,13 +595,21 @@ pub struct DelegateRound<'info> {
     pub round_pda: UncheckedAccount<'info>,
 }
 
-/// No mutable accounts at all — the probe cannot write, by construction rather than by discipline.
-#[derive(Accounts)]
+/// `player`/`signer` split apart on purpose — same shape as `Enter`, see that struct's doc comment
+/// for the full rationale. Extracting still credits `player`, not whoever signed.
+#[derive(Accounts, Session)]
 pub struct Extract<'info> {
     #[account(mut)]
     pub round: Account<'info, Round>,
-    /// The player pulling out — must sign. Nobody extracts on anyone else's behalf.
-    pub player: Signer<'info>,
+    /// CHECK: the fighter identity pulling out — see the struct doc comment for why this is
+    /// intentionally not required to sign directly. Nobody extracts on anyone else's behalf: the
+    /// `#[session_auth_or]` guard on `extract()` still requires either `signer == player` directly,
+    /// or a session token whose `authority` is this exact pubkey.
+    pub player: UncheckedAccount<'info>,
+    #[session(signer = signer, authority = player.key())]
+    pub session_token: Option<Account<'info, SessionToken>>,
+    #[account(mut)]
+    pub signer: Signer<'info>,
 }
 
 #[cfg(feature = "bench")]
@@ -581,13 +618,28 @@ pub struct BenchFight<'info> {
     pub payer: Signer<'info>,
 }
 
-#[derive(Accounts)]
+/// `player`/`signer` split apart on purpose — this is the whole shape Session Keys forces: `player`
+/// is WHO gets credited (the fighter identity written into `Round.fighters`, and the pubkey the
+/// SessionToken's `authority` must equal); `signer` is WHOEVER actually signed this transaction (the
+/// session key, when one is used, or `player`'s own wallet directly when none is). `player`
+/// deliberately can no longer be `Signer<'info>` — requiring the identity itself to sign would
+/// defeat the entire point of a session key. It is still safe unsigned: `#[session(authority =
+/// player.key())]` below makes `player` a seed the real SessionToken PDA's address must already
+/// match (see `SessionToken::validate` in the session-keys crate), so a caller can't just name an
+/// arbitrary wallet — only a token that wallet's own signature actually created will resolve.
+#[derive(Accounts, Session)]
 pub struct Enter<'info> {
     #[account(seeds = [ARENA_SEED], bump = arena.bump)]
     pub arena: Account<'info, Arena>,
     #[account(mut)]
     pub round: Account<'info, Round>,
-    pub player: Signer<'info>,
+    /// CHECK: the fighter identity credited by this instruction — see the struct doc comment for
+    /// why this is intentionally not required to sign directly.
+    pub player: UncheckedAccount<'info>,
+    #[session(signer = signer, authority = player.key())]
+    pub session_token: Option<Account<'info, SessionToken>>,
+    #[account(mut)]
+    pub signer: Signer<'info>,
 }
 
 /// `#[vrf]` supplies the accounts the randomness request CPI needs.

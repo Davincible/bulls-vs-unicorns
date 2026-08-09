@@ -12,9 +12,10 @@ import { useState } from "react";
 import type { Keypair, PublicKey } from "@solana/web3.js";
 import type { ConnectionMagicRouter } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { extract } from "../chain/round.ts";
-import { sendTx } from "../chain/sendTx.ts";
+import { sendTx, type TxSigner } from "../chain/sendTx.ts";
 import type { BullsArenaProgram } from "../chain/program.ts";
 import type { RoundState } from "../chain/useRound.ts";
+import type { ActiveSession } from "../chain/session/useSessionKeyManager.ts";
 
 export interface ExtractButtonProps {
   /** Built once IDL has loaded — null while the caller is still awaiting `createProgram()`. */
@@ -23,6 +24,12 @@ export interface ExtractButtonProps {
   keypair: Keypair;
   round: RoundState | null;
   roundPda: PublicKey | null;
+  /** Non-null once a session is active (chain/session/useSessionKeyManager.ts) — `extract` is then
+   *  signed by the session key instead of the burner keypair directly: no fresh signature prompt
+   *  for the one decision this whole demo is built to make feel real-time. Null (no active session)
+   *  is the pre-Phase-6 path, byte-for-byte: the burner keypair signs directly, `player` and
+   *  `signer` are the same pubkey, `session_token` is omitted. */
+  session: ActiveSession | null;
   /** Fires after a confirmed extract signature — an integration layer can hang a toast, a store
    *  refresh, or nothing at all off this without this component knowing any of those exist. */
   onExtracted?: (result: { signature: string; elapsedMs: number }) => void;
@@ -66,7 +73,7 @@ type ExtractStatus =
   | { kind: "success"; signature: string }
   | { kind: "error"; message: string };
 
-export function ExtractButton({ program, router, keypair, round, roundPda, onExtracted }: ExtractButtonProps) {
+export function ExtractButton({ program, router, keypair, round, roundPda, session, onExtracted }: ExtractButtonProps) {
   const [status, setStatus] = useState<ExtractStatus>({ kind: "idle" });
 
   const { eligible, reason, fighterHp } = evaluateEligibility(program, roundPda, round, keypair.publicKey);
@@ -76,8 +83,16 @@ export function ExtractButton({ program, router, keypair, round, roundPda, onExt
     if (!program || !roundPda) return;
     setStatus({ kind: "pending" });
     try {
-      const builder = extract(program, { round: roundPda, player: keypair.publicKey });
-      const { signature, elapsedMs } = await sendTx(router, builder, keypair, "extract");
+      // Same player/signer split as EnterForm.tsx — see that component's own comment on why
+      // `player` is always `keypair.publicKey` regardless of whether a session is active.
+      const signer: TxSigner = session ? { publicKey: session.signerPubkey, signTransaction: session.signTransaction } : keypair;
+      const builder = extract(program, {
+        round: roundPda,
+        player: keypair.publicKey,
+        signer: signer.publicKey,
+        sessionToken: session?.sessionTokenPda ?? null,
+      });
+      const { signature, elapsedMs } = await sendTx(router, builder, signer, "extract");
       setStatus({ kind: "success", signature });
       onExtracted?.({ signature, elapsedMs });
     } catch (err) {

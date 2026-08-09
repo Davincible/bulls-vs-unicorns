@@ -11,6 +11,18 @@
   --shadow:
     rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
 
+  /* Semantic status colours + a panel surface, added in the Phase 7 polish pass. `--muted` in
+     particular was already being referenced by App.css (as `var(--muted, #888)`) without ever having
+     been defined here, so every "secondary" piece of text in the app was silently falling back to a
+     grey that matches nothing else on the page. The hard-coded greens/reds that App.css and
+     ExtractButton/VerifyPanel had accumulated are now these, in one place, with dark-mode values
+     that actually clear the background they sit on. */
+  --muted: #8b8794;
+  --ok: #1a7f37;
+  --warn: #9a6700;
+  --danger: #cf222e;
+  --panel: #fdfdfd;
+
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
@@ -43,6 +55,12 @@
     --social-bg: rgba(47, 48, 58, 0.5);
     --shadow:
       rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
+
+    --muted: #7d8290;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --danger: #f85149;
+    --panel: #1b1d25;
   }
 
   #social .button-icon {

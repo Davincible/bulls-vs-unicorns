@@ -105,13 +105,37 @@ export function delegateRound(
 }
 
 // ---- enter — player joins a side with a stake ---------------------------------------------------
+//
+// SESSION KEYS (Phase 6). `player` is the fighter identity credited on-chain — unchanged by which
+// key actually signs. `signer` is whoever DOES sign this transaction: the session key when a
+// session is active, or `player`'s own wallet directly when it isn't (the pre-Phase-6 behaviour).
+// `sessionToken` is the on-chain `SessionToken` PDA when a session is active, or `null` when not —
+// `null` is REQUIRED, not merely permitted, when there's no session: see `MethodsBuilder.accounts`'s
+// own doc comment in chain/program.ts for why omitting the key entirely doesn't work. Callers with
+// no active session pass `signer: params.player, sessionToken: null` — chain/session/
+// useSessionKeyManager.ts's `ActiveSession` is `null` in exactly that case, so this shape falls out
+// of the caller naturally rather than needing an if/else at every call site (see EnterForm.tsx).
 export function enter(
   program: BullsArenaProgram,
-  params: { arena: PublicKey; round: PublicKey; player: PublicKey; side: 0 | 1; stake: bigint | number },
+  params: {
+    arena: PublicKey;
+    round: PublicKey;
+    player: PublicKey;
+    signer: PublicKey;
+    sessionToken: PublicKey | null;
+    side: 0 | 1;
+    stake: bigint | number;
+  },
 ) {
   return program.methods
     .enter(params.side, new BN(params.stake.toString()))
-    .accounts({ arena: params.arena, round: params.round, player: params.player });
+    .accounts({
+      arena: params.arena,
+      round: params.round,
+      player: params.player,
+      sessionToken: params.sessionToken,
+      signer: params.signer,
+    });
 }
 
 // ---- close_lobby_and_draw — request randomness from the VRF oracle ------------------------------
@@ -133,9 +157,23 @@ export function closeLobbyAndDraw(
     });
 }
 
-// ---- extract — pull a fighter out mid-fight -------------------------------------------------------
-export function extract(program: BullsArenaProgram, params: { round: PublicKey; player: PublicKey }) {
-  return program.methods.extract().accounts({ round: params.round, player: params.player });
+// ---- extract — bank a fighter's current hp and stop it being a valid target -----------------------
+//
+// SESSION KEYS (Phase 6). Same `player`/`signer`/`sessionToken` shape as `enter` — see that
+// function's own comment. Extract is the mid-fight decision under real time pressure, so it's the
+// instruction Session Keys matters most for: no fresh wallet popup once a session is active.
+export function extract(
+  program: BullsArenaProgram,
+  params: { round: PublicKey; player: PublicKey; signer: PublicKey; sessionToken: PublicKey | null },
+) {
+  return program.methods
+    .extract()
+    .accounts({
+      round: params.round,
+      player: params.player,
+      sessionToken: params.sessionToken,
+      signer: params.signer,
+    });
 }
 
 // ---- resolve — runs the fight loop on-chain, settles the round -------------------------------------

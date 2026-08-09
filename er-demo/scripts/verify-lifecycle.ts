@@ -157,7 +157,10 @@ const load = (p: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(rea
     {
       const { signature } = await sendTx(
         router,
-        roundIx.enter(playerAProgram, { arena: arenaPda, round: roundPda, player: playerA.publicKey, side: 0, stake: 1_000_000 }),
+        // No session active in this script — `signer`/`sessionToken: null` reproduce the exact
+        // pre-Phase-6 direct-wallet-signing path (session-signed enter/extract has its own coverage
+        // in scripts/spike-session-er.mjs's real-program successor, not duplicated here).
+        roundIx.enter(playerAProgram, { arena: arenaPda, round: roundPda, player: playerA.publicKey, signer: playerA.publicKey, sessionToken: null, side: 0, stake: 1_000_000 }),
         playerA,
         "enter side 0 (player A, stake=1,000,000)",
       );
@@ -166,7 +169,7 @@ const load = (p: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(rea
     {
       const { signature } = await sendTx(
         router,
-        roundIx.enter(playerBProgram, { arena: arenaPda, round: roundPda, player: playerB.publicKey, side: 1, stake: 750_000 }),
+        roundIx.enter(playerBProgram, { arena: arenaPda, round: roundPda, player: playerB.publicKey, signer: playerB.publicKey, sessionToken: null, side: 1, stake: 750_000 }),
         playerB,
         "enter side 1 (player B, stake=750,000)",
       );
@@ -221,7 +224,7 @@ const load = (p: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(rea
     {
       const { signature } = await sendTx(
         router,
-        roundIx.extract(playerAProgram, { round: roundPda, player: playerA.publicKey }),
+        roundIx.extract(playerAProgram, { round: roundPda, player: playerA.publicKey, signer: playerA.publicKey, sessionToken: null }),
         playerA,
         "extract (player A)",
       );

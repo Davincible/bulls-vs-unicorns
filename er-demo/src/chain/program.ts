@@ -16,9 +16,16 @@ import type { Connection, PublicKey, Transaction, TransactionInstruction } from 
 import { loadIdl } from "./idl.ts";
 
 /** The chainable shape every `program.methods.x(...)` call returns, up through `.transaction()` —
- *  matches (and is assignable to) chain/sendTx.ts's `TransactionBuilder`. */
+ *  matches (and is assignable to) chain/sendTx.ts's `TransactionBuilder`.
+ *
+ *  `accounts()` allows `PublicKey | null` per key, not just `PublicKey`, because of `enter`/
+ *  `extract`'s `session_token: Option<Account<SessionToken>>` (Phase 6, Session Keys) — Anchor's own
+ *  account resolver (`resolveOptionalsHelper` in `@coral-xyz/anchor`'s `accounts-resolver.js`)
+ *  requires an EXPLICIT `null` for an absent optional account, which it then substitutes with the
+ *  program's own id (the sentinel `Option::None` reads as on-chain); omitting the key entirely
+ *  leaves it unresolved and the transaction build throws. See chain/round.ts's `enter`/`extract`. */
 export interface MethodsBuilder {
-  accounts(accounts: Record<string, PublicKey>): MethodsBuilder;
+  accounts(accounts: Record<string, PublicKey | null>): MethodsBuilder;
   preInstructions(ixs: TransactionInstruction[]): MethodsBuilder;
   signers(signers: { publicKey: PublicKey }[]): MethodsBuilder;
   transaction(): Promise<Transaction>;

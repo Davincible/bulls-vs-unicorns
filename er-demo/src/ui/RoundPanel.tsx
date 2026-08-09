@@ -20,7 +20,13 @@ export function RoundPanel({ round, loading, error }: RoundPanelProps) {
     return (
       <section aria-label="round">
         <h2>Round</h2>
-        <p>error polling round: {error.message}</p>
+        {/* `role="alert"` and not a toast on purpose: `useRound()` re-polls every 1.5s, so a
+            persistent failure (RPC down, wrong round number) would push a new toast every tick and
+            bury everything else. In place, with the raw message, is the right surface for a
+            condition that repeats. */}
+        <p className="status-error" role="alert">
+          error polling round: {error.message}
+        </p>
       </section>
     );
   }

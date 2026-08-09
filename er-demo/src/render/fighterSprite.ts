@@ -5,7 +5,9 @@
 import { Container, Graphics, Text } from "pixi.js";
 import { FIGHTER_RADIUS } from "./arena/ArenaScene.ts";
 
-const SIDE_COLOR: Record<0 | 1, number> = { 0: 0x4da3ff, 1: 0xff6b6b };
+/** Exported so the static arena backdrop (arena/backdrop.ts) tints each side's half of the floor
+ *  with the exact colour its fighters are drawn in — one definition, not two that can drift. */
+export const SIDE_COLOR: Record<0 | 1, number> = { 0: 0x4da3ff, 1: 0xff6b6b };
 const DEAD_COLOR = 0x555a63;
 const HP_BAR_WIDTH = 48;
 const HP_BAR_HEIGHT = 6;
