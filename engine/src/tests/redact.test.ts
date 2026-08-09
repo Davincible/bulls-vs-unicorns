@@ -6,11 +6,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { redact, redactDeep } from "../redact.ts";
 
-const KEYED = "https://mainnet.helius-rpc.com/?api-key=0d960ade-310e-41e1-842f-073257b3978d";
+// An OBVIOUSLY FAKE key, and that is the point. This fixture used to carry the project's real
+// Helius credential — so the test proving that keys never leak was itself publishing one, in a
+// public repository. A redaction test needs a key-SHAPED string, never a key.
+const KEYED = "https://mainnet.helius-rpc.com/?api-key=00000000-dead-beef-cafe-000000000000";
 
 test("an API key never survives redaction", () => {
   const out = redact(`TypeError: fetch failed for ${KEYED}`);
-  assert.ok(!out.includes("0d960ade"), `key leaked: ${out}`);
+  assert.ok(!out.includes("dead-beef"), `key leaked: ${out}`);
   assert.ok(!/api-key=[^*]/.test(out), "no live api-key parameter");
 });
 
@@ -53,7 +56,7 @@ test("a public signature is NOT redacted — it is public data and we need it", 
 test("redactDeep scrubs nested payloads, which is how a new field would leak", () => {
   const stats = { enabled: true, posted: 9, lastError: `fetch failed ${KEYED}`, nested: { url: KEYED } };
   const out = redactDeep(stats);
-  assert.equal(JSON.stringify(out).includes("0d960ade"), false, "key survived somewhere in the tree");
+  assert.equal(JSON.stringify(out).includes("dead-beef"), false, "key survived somewhere in the tree");
   assert.equal(out.posted, 9, "non-string values pass through untouched");
   assert.equal(out.enabled, true);
 });

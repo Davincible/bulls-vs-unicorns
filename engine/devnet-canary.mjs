@@ -7,7 +7,13 @@ import { Keypair, Connection, VersionedTransaction, Transaction } from "@solana/
 import nacl from "tweetnacl";
 
 const URL = process.argv[2] || "ws://localhost:8091";
-const RPC = process.env.SOLANA_RPC || "https://devnet.helius-rpc.com/?api-key=0d960ade-310e-41e1-842f-073257b3978d";
+// NO FALLBACK, DELIBERATELY. This line used to carry a live Helius key as its default, and this
+// repository is public — so the key was readable by anyone for as long as it sat here, and rewriting
+// history would not have un-published it. It has been rotated; what stops a replacement being pasted
+// back is that there is now nowhere for one to live. A missing endpoint fails here, loudly, at the
+// only moment anyone can act on it.
+const RPC = process.env.SOLANA_RPC;
+if (!RPC) throw new Error("SOLANA_RPC is required — export your own devnet RPC endpoint (no default is provided on purpose).");
 const conn = new Connection(RPC, "confirmed");
 const kp = Keypair.generate();
 const PK = kp.publicKey.toBase58();

@@ -26,8 +26,12 @@
 //
 // h and s together are the point: anyone can confirm the seed we revealed matches the commitment we
 // published before anyone deployed, timestamped by the chain so it cannot be back-dated.
-const RPC = process.env.SOLANA_RPC
-  || "https://mainnet.helius-rpc.com/?api-key=0d960ade-310e-41e1-842f-073257b3978d";
+// NO FALLBACK, DELIBERATELY — and this one was the worst of the three, because the default it
+// carried was a MAINNET endpoint holding a live Helius key, in a public repository, sharing the same
+// key as the devnet scripts. It has been rotated. There is no default now, so a missing endpoint
+// fails here rather than quietly spending someone's quota.
+const RPC = process.env.SOLANA_RPC;
+if (!RPC) throw new Error("SOLANA_RPC is required — export your own RPC endpoint (no default is provided on purpose).");
 
 const ARENA = { "us-x": "UWU vs SOL · extraction", "us-n": "UWU vs SOL · mayhem",
                 "au-x": "ANSEM vs UWU · extraction", "au-n": "ANSEM vs UWU · mayhem",
