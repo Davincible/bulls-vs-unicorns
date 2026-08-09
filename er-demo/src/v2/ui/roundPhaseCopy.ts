@@ -118,7 +118,19 @@ function nextLobbyTiming(cadence: Cadence): PhaseTiming {
  *  precise failure this whole mechanism was built to delete. `no-keeper` is the only case that falls
  *  through to the chain, and there it is the honest answer: nobody is holding anything open, so the
  *  backstop IS the schedule. That is the pre-keeper page, the `?fixture=1` page, and an operator's
- *  hand-opened round. */
+ *  hand-opened round.
+ *
+ *  THE ONE CASE THIS GETS WRONG, STATED RATHER THAN HIDDEN. A keeper running a schema this build
+ *  cannot parse reaches here as `no-keeper` and not as `keeper-silent`, because `useKeeperStatus`
+ *  deliberately collapses a version skew, a 404 and a dead network into one value — and it is right
+ *  to: telling them apart is only useful if the page acts differently, and for the next-lobby
+ *  sentence it must not. The cost is that a skewed keeper mid-hold gets the chain's backstop counted
+ *  down here for as long as the skew lasts, which the schema note in `data/keeperStatus.ts` bounds at
+ *  one deploy (writer and reader ship together). The alternative is refusing to count `lobby_closes_at`
+ *  anywhere, which would permanently delete a correct and useful countdown from the fixture page and
+ *  from every hand-opened round in order to cover a window measured in minutes. Detecting a backstop
+ *  by its LENGTH instead would mean inventing a threshold in the browser — the exact move
+ *  `staleAfterSeconds` is published to avoid, and a worse lie than the one it would prevent. */
 function lobbyTiming(cadence: Cadence, live: LiveRound, nowMs: number): PhaseTiming {
   if (cadence.kind === "entries-close") {
     return { kind: "countdown", before: "Closes in", seconds: cadence.seconds, after: "." };
@@ -192,9 +204,16 @@ export function roundPhaseCopy(input: RoundPhaseInput): RoundPhaseCopy {
         //
         // A COUNTDOWN HERE WOULD BE THE WORST AVAILABLE ANSWER in both directions: `lobby_closes_at`
         // reads "closes in 59:47", which says nothing is happening, and a timer parked at 0:00 says
-        // something is stuck. So the three clauses carry it instead — what is true (house only), what
-        // to do (deploy, and it is YOU that starts it), and when it changes (when someone joins).
-        // The player is not waiting on this state; they are the thing it is waiting for.
+        // something is stuck. So the words carry it — what is true (house only), what to do (deploy,
+        // and it is YOU that starts it), and when it changes (the moment a real player joins). The
+        // player is not waiting on this state; they are the thing it is waiting for.
+        //
+        // THE TIMING CLAUSE HAS TO SURVIVE ON ITS OWN, which is why it names the trigger rather than
+        // just reporting the absence of a clock. Every surface that shows an OPEN lobby renders
+        // `detail="timing"` — the deploy buttons are the answer to "what can I do", so repeating it
+        // in a paragraph above them is a wall (see `RoundPhaseNote.tsx`). `now` and `action` are
+        // still the honest values for this state and still drive `control`, but the sentence a
+        // player actually reads here is this one, alone, directly above a live Deploy button.
         if (cadence.kind === "waiting-for-players") {
           return {
             control: "deploy",
@@ -203,7 +222,7 @@ export function roundPhaseCopy(input: RoundPhaseInput): RoundPhaseCopy {
             action: "Pick a side and deploy — the first real player starts the clock.",
             timing: {
               kind: "waiting",
-              text: "We hold it open until someone joins, so nothing is counting down yet.",
+              text: "Nothing is counting down — the clock starts when a real player joins.",
             },
           };
         }

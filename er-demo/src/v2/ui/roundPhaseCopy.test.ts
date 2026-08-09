@@ -303,7 +303,10 @@ describe("lobby", () => {
     expect(c.now).toMatch(/house fighters/i);
     expect(c.action).toMatch(/deploy/i);
     if (c.timing.kind !== "waiting") throw new Error("a held-open lobby has no number to count");
-    expect(c.timing.text).toMatch(/until someone joins/i);
+    // NAMES THE TRIGGER, not just the absence of a clock. Every surface showing an OPEN lobby prints
+    // the timing clause ALONE (`detail="timing"`), so this one sentence is the entire state as a
+    // player reads it — "no countdown" by itself would read as a fault rather than as an invitation.
+    expect(c.timing.text).toMatch(/starts when a real player joins/i);
     // Nothing in it may read as broken, stalled or errored — this is the healthy resting state of an
     // arena between players, and the copy is the only thing distinguishing it from a dead one.
     const all = `${c.now} ${c.action} ${c.timing.text}`;
