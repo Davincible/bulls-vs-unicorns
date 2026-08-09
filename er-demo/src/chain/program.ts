@@ -55,6 +55,10 @@ export interface RawRoundAccount {
   fighterCount: number;
   tickCount: BN;
   pot: BN;
+  /** Extract penalties this round has paid out to the house, cumulative. Value LEAVES the round now,
+   *  so `sum(hp + banked)` no longer equals `pot` on its own — this is the term that closes the gap
+   *  (see `Round.penalties_collected` in lib.rs, and `ui/verifyRound.ts`). */
+  penaltiesCollected: BN;
   seedCommit: number[];
   seed: number[];
   fightStartedAt: BN;

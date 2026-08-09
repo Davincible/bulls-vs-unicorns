@@ -269,8 +269,14 @@ export function VerifyPanel({ round }: VerifyPanelProps) {
           <div className={`stat__value ${result.conservationHoldsOnChain ? "" : "stat__value--none"}`}>
             {result.conservationHoldsOnChain ? "holds" : "BROKEN"}
           </div>
+          {/* The penalty term is shown even when it's zero. "held vs pot" alone stopped adding up
+              the moment extract() started paying a penalty to the treasury — value legitimately
+              leaves the round now — and two numbers that differ with no third to explain them read
+              as a discrepancy on the one screen whose entire job is looking trustworthy. Spelling
+              out held + penalties = pot shows the identity actually being checked. */}
           <div className="stat__sub">
-            {result.totalValueOnChain.toString()} held vs pot {result.potOnChain.toString()}
+            {result.totalValueOnChain.toString()} held + {result.penaltiesCollectedOnChain.toString()}{" "}
+            penalties = pot {result.potOnChain.toString()}
           </div>
         </div>
       </div>

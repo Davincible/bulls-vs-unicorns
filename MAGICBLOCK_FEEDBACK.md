@@ -10,6 +10,46 @@ documentation or capability), **[BUG]**, or **[FEATURE REQUEST]**.
 
 ---
 
+## 2026-08-09 — Third consecutive session, third abandoned program id — and a first look at what a FRESH id does
+
+Nothing new about the cause; this is a **frequency and cost** data point on the entry below, plus one
+genuinely new observation.
+
+Adding a mid-fight extract penalty to `programs/bulls-arena`, we upgraded v3 in place on the base
+layer (`3u7AtnMkqEF6dEHQBtQpuQ3zHdpZxNhwmMtmpJxCoRtdTa68KBpfQFUBuFNg4cr2wYLnJmrmrxHmVTUbDz1Xo6cM`;
+316,752 B -> 323,360 B, comfortably inside the account's existing `max_len` of 350,000). The byte
+comparison the entry below recommends was run immediately afterward:
+
+```
+devnet-eu   STALE      devnet-tee  STALE
+devnet-as   STALE      devnet-us   STALE
+```
+
+All four. **That is three consecutive sessions in which a correct, confirmed base-layer upgrade could
+only be made executable by abandoning the program id** — v2, v3, and now v4
+(`CchN3JPWta2uVxKhwScBQhtPG5gpsaRzf3RA4aPCDam2`). The direct cost each time is the ProgramData
+rent on the new id (**2.437 SOL** at `--max-len 350000`) plus every PDA keyed by the old id: the
+Arena and every round number restart from scratch, so no round history survives a bug fix.
+
+**[NEW OBSERVATION] A fresh program id is served correctly by all four validators immediately — no
+first-use delay.** Probing the four routes seconds after the v4 deploy, every one reported
+byte-identical to the local artifact. So the clone path itself is fast and correct; the problem is
+strictly **invalidation**, never population. That is consistent with the `Program`-vs-`ProgramData`
+account diagnosis below and, we think, narrows it: whatever populates the cache is evidently able to
+read current bytecode on demand, so a cache that simply re-checked `ProgramData` (or exposed a
+"refresh this program" RPC) would close the gap without new machinery.
+
+**[FEATURE REQUEST, restated with a price attached]** Either invalidate on `ProgramData` writes, or
+expose an authenticated "drop your clone of program X" call to the program's own upgrade authority.
+As it stands, the documented workaround for shipping a fix to an ER-delegated program is *deploy a
+different program*, which costs 2.4 SOL and all of the program's state, every time.
+
+The one thing that keeps getting cheaper is the diagnosis: the preflight now lives in
+`er-demo/scripts/erValidator.ts` (`pickValidator`), shared by every verification script, and it named
+the problem in about one second instead of costing a spent round and a confusing error.
+
+---
+
 ## 2026-08-09 — Detecting a stale ER bytecode clone: the size check is unreliable, and comparing bytes works
 
 Follow-up to the bytecode-cache entry below, from a third upgrade of the same program. Three things

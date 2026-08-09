@@ -12,21 +12,22 @@ export const BASE_RPC = "https://api.devnet.solana.com";
 assertDevnetUrl(ROUTER_URL, "Magic Router");
 assertDevnetUrl(BASE_RPC, "base devnet RPC");
 
-// The deployed bulls-arena program (v3 address). Matches idl.address in
+// The deployed bulls-arena program (v4 address). Matches idl.address in
 // public/idl/bulls_arena.json — asserted equal at runtime in idl.ts rather than trusted blindly.
 //
-// v3 for the same infrastructure reason v2 existed: MagicBlock's ER validators clone a program's
-// bytecode on first use and don't re-clone it after a base-layer upgrade (MAGICBLOCK_FEEDBACK.md), so
-// after upgrading v2 in place, all four validators the router advertises were still serving the
-// previous build and no route could run the stepped fight on a delegated round. The cache is keyed by
-// program id, so a fresh id sidesteps it. v1 (F59NksP2…) and v2 (4uqVSyHt…) remain valid deployments
-// of this same source and every verification signature recorded against them still stands — see
-// lib.rs's declare_id! note, which now documents how to MEASURE the staleness rather than infer it.
+// v4 for the same infrastructure reason v2 and v3 existed, now observed a fourth time: MagicBlock's
+// ER validators clone a program's bytecode on first use and don't re-clone it after a base-layer
+// upgrade (MAGICBLOCK_FEEDBACK.md). The extract-penalty build was upgraded into v3 on the base layer
+// and all four validators the router advertises were STILL serving the previous build immediately
+// afterward — byte-compared, not guessed (`scripts/erValidator.ts`). The cache is keyed by program
+// id, so a fresh id sidesteps it. v1 (F59NksP2…), v2 (4uqVSyHt…) and v3 (8s3x42af…) remain valid
+// deployments of this same source and every verification signature recorded against them still
+// stands — see lib.rs's declare_id! note.
 //
 // A ROUND NUMBER FROM AN OLDER ID DOES NOT EXIST HERE: a new program id has its own Arena PDA and its
 // own counter, so this deployment's rounds start again at #1. App.tsx already follows the arena's own
 // `round_counter`, so nothing needs to be told; its `DEFAULT_ROUND_NO` is only a pre-load placeholder.
-export const PROGRAM_ID = new PublicKey("8s3x42af7gcNXDCTNheDtteQxeBS2D1p9xuU8C5Jgfrt");
+export const PROGRAM_ID = new PublicKey("CchN3JPWta2uVxKhwScBQhtPG5gpsaRzf3RA4aPCDam2");
 
 // Verified from the ephemeral-vrf-sdk crate source (MEGA_QUEUE.md ER-060) — the EPHEMERAL queue,
 // not the base one, because by the time close_lobby_and_draw runs the round is already

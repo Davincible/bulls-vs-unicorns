@@ -11,7 +11,7 @@
 // layer further down the chain — the parity oracle working all the way through, not just at the
 // engine/ source of truth.
 import { describe, expect, test } from "vitest";
-import { newRound, settle, totalValue, extract, type ERFighter } from "./erSim";
+import { newRound, settle, totalValue, conservationHolds, extract, type ERFighter } from "./erSim";
 import { buildRoundFromEntries, computeHitEvents, applyHitEvent, type HitEventEntry } from "./hitEvents";
 
 const FIXTURE_SEED = Buffer.from(Array.from({ length: 32 }, (_, i) => i));
@@ -60,7 +60,12 @@ describe("hitEvents.ts reproduces the checked-in Rust parity fixture", () => {
       { wallet: e.wallet, side: e.side, dead: 0, stake: e.stake, hp: e.stake, banked: 0n }
     ));
     for (const event of events) applyHitEvent(replay, event);
-    const replayedRound = { seed: FIXTURE_SEED, fighters: replay, tickCount: 0n, pot: 0n, winner: null };
+    // `penaltiesCollected: 0n` because this replay is built from HIT events alone, and a hit never
+    // pays the house — only `extract()` does, and none happens here. It is the honest starting value
+    // for a round reconstructed from the event stream, not a placeholder.
+    const replayedRound = {
+      seed: FIXTURE_SEED, fighters: replay, tickCount: 0n, pot: 0n, penaltiesCollected: 0n, winner: null,
+    };
     const winner = settle(replayedRound);
 
     expect(winner).toBe(EXPECTED_WINNER);
@@ -92,7 +97,7 @@ describe("hitEvents.ts under extract() — the flagship mid-fight mechanic", () 
     // so it's a live target in the early steps), then run the remainder.
     const before = computeHitEvents(round, 10);
     const w2Index = round.fighters.findIndex(f => f.wallet === "w2");
-    extract(round, "w2");
+    const { taken, kept, penalty } = extract(round, "w2");
     const after = computeHitEvents(round, FIXTURE_STEPS - 10);
 
     expect(round.fighters[w2Index].dead).toBe(1);
@@ -103,9 +108,15 @@ describe("hitEvents.ts under extract() — the flagship mid-fight mechanic", () 
       expect(event.defenderId).not.toBe(w2Index);
     }
 
-    // Extraction moves value (ring -> bank for w2), it does not create or destroy it — the
-    // invariant that would catch a broken extract() long before anyone looked at the numbers.
-    expect(totalValue(round)).toBe(EXPECTED_TOTAL);
+    // Extraction moves value — ring -> bank for w2, and ring -> house for the decaying penalty. It
+    // still creates and destroys nothing, which is the invariant that would catch a broken extract()
+    // long before anyone looked at the numbers. What the table holds is now legitimately short of
+    // the pot, by exactly what the house took, so the check carries that third term.
+    expect(kept + penalty).toBe(taken);
+    expect(penalty).toBeGreaterThan(0n);   // extracted at cursor 10 of a 200-step horizon: 19.5%
+    expect(round.penaltiesCollected).toBe(penalty);
+    expect(totalValue(round)).toBe(EXPECTED_TOTAL - penalty);
+    expect(conservationHolds(round)).toBe(true);
 
     // Sanity: the extraction actually happened inside the window that mattered — some hits landed
     // both before and after it, otherwise this test would pass vacuously.

@@ -21,18 +21,30 @@
 //
 //   verified          — exact replay, no divergence. Strongest claim this panel can make.
 //   extraction-likely — diverges, but in a way `extract()` explains: on-chain value is still fully
-//                        conserved (extraction only ever MOVES value, never creates/destroys it —
-//                        same invariant `sim/erSim.ts#totalValue()` exists to check), AND at least
+//                        conserved ONCE THE HOUSE'S TAKE IS COUNTED (see the note below), AND at least
 //                        one fighter's on-chain state (dead, hp=0) doesn't match what the replay
 //                        (which has no idea extraction ever happened) computed for them — exactly
 //                        the fingerprint `extract()` leaves and `tick()`-only death does not
 //                        reliably distinguish from, which is the honest limit of what's checkable
 //                        from final state alone.
 //   mismatch          — diverges in a way extraction cannot explain: either the on-chain fighters
-//                        themselves don't conserve value (hp+banked summed across fighters isn't the
-//                        pot — a real problem, not explainable by a human pressing Extract), or the
-//                        numbers disagree with no fighter carrying the extraction fingerprint at all
-//                        (wrong seed, wrong entries, wrong step count, or a genuine algorithm bug).
+//                        themselves don't conserve value (see below), or the numbers disagree with no
+//                        fighter carrying the extraction fingerprint at all (wrong seed, wrong
+//                        entries, wrong step count, or a genuine algorithm bug).
+//
+// THE CONSERVATION CHECK HAS A THIRD TERM NOW, and getting this wrong would have been worse than
+// leaving the module alone. `extract()` charges a decaying penalty that goes to the house
+// (lib.rs `EXTRACT_PENALTY_START_BPS`), so value genuinely LEAVES the round: `sum(hp + banked)` is
+// strictly less than the pot on any round where somebody extracted. Checked the old way, every such
+// round would fail conservation, and failing conservation is precisely what disqualifies the honest
+// "extraction-likely" verdict — so the panel would have reported a flat MISMATCH on exactly the
+// rounds this whole three-way distinction was built to protect. The chain records what left, in
+// `Round.penalties_collected`, so the identity stays exact and stays checkable:
+//
+//     sum(hp + banked) + penaltiesCollected == pot
+//
+// A round with no extractions has `penaltiesCollected == 0` and this reduces to the old check, which
+// is why the pre-penalty fixtures in verifyRound.test.ts still read the same.
 
 import type { RoundState } from "../chain/useRound.ts";
 import { settle, type ERFighter } from "../sim/erSim.ts";
@@ -62,10 +74,16 @@ export interface VerifyResult {
   winnerMatches: boolean;
   fighters: FighterComparison[];
   potOnChain: bigint;
-  /** sum(on-chain hp + banked) across fighters. Should always equal `potOnChain`, extraction or not
-   *  — both `tick()` and `extract()` only move value between fighters, never create or destroy it.
-   *  A failure here is not something extraction can explain. */
+  /** sum(on-chain hp + banked) across fighters — what the TABLE still holds. On a round where
+   *  somebody extracted this is legitimately LESS than `potOnChain`, by exactly
+   *  `penaltiesCollectedOnChain`. */
   totalValueOnChain: bigint;
+  /** `Round.penalties_collected`: what the house took in extract penalties. Zero on a round nobody
+   *  extracted from. Exposed so a panel can show the difference rather than leaving a viewer to
+   *  wonder why the two numbers above disagree. */
+  penaltiesCollectedOnChain: bigint;
+  /** `totalValueOnChain + penaltiesCollectedOnChain === potOnChain`. Still exact, still not something
+   *  a human pressing Extract can break — see the module header. */
   conservationHoldsOnChain: boolean;
 }
 
@@ -93,7 +111,8 @@ export function verifyRound(round: RoundState): VerifyResult {
 
   const potOnChain = round.fighters.reduce((sum, f) => sum + f.stake, 0n);
   const totalValueOnChain = round.fighters.reduce((sum, f) => sum + f.hp + f.banked, 0n);
-  const conservationHoldsOnChain = totalValueOnChain === potOnChain;
+  const penaltiesCollectedOnChain = round.penaltiesCollected;
+  const conservationHoldsOnChain = totalValueOnChain + penaltiesCollectedOnChain === potOnChain;
 
   const recomputedByKey = new Map<string, ERFighter>(
     recomputed.fighters.map((f) => [`${f.wallet}:${f.side}`, f]),
@@ -145,6 +164,7 @@ export function verifyRound(round: RoundState): VerifyResult {
     fighters,
     potOnChain,
     totalValueOnChain,
+    penaltiesCollectedOnChain,
     conservationHoldsOnChain,
   };
 }

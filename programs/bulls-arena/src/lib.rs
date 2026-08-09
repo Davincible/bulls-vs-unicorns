@@ -42,25 +42,28 @@ use ephemeral_rollups_sdk::vrf::types::SerializableAccountMeta;
 // and a wallet popup there undercuts the "real-time because of the ER" pitch worse than one at entry.
 use session_keys::{session_auth_or, Session, SessionError, SessionToken};
 
-// v3 ADDRESS, and the reason is infrastructure, not code — for the third time, from the same cause.
+// v4 ADDRESS, and the reason is infrastructure, not code — for the FOURTH time, from the same cause.
 //
 // MagicBlock's ER validators clone a program's executable bytecode on first use and do not re-clone
 // it after a base-layer upgrade (MAGICBLOCK_FEEDBACK.md). The cache is keyed by PROGRAM ID, so a
 // fresh id has no stale clone anywhere and the first delegation pulls the current build. v1
-// (F59NksP2bYZhP4wD7fgR1sP729UHNPitrBiYrrKF1sYW) and v2 (4uqVSyHtx7CBaXUL2qy7cN4eV3MzqmvucapGHN1imFYm)
-// are both still valid deployments of this same source, and every verification signature recorded
-// against them stands.
+// (F59NksP2bYZhP4wD7fgR1sP729UHNPitrBiYrrKF1sYW), v2 (4uqVSyHtx7CBaXUL2qy7cN4eV3MzqmvucapGHN1imFYm)
+// and v3 (8s3x42af7gcNXDCTNheDtteQxeBS2D1p9xuU8C5Jgfrt) are all still valid deployments of this same
+// source, and every verification signature recorded against them stands.
 //
-// WHAT WAS DIFFERENT THIS TIME: it was measured rather than inferred from a mystifying failure. The
-// clone is the raw ELF plus a 48-byte LoaderV4 header, so its length identifies which build a
-// validator is serving. After upgrading v2 in place, all FOUR validators the router advertises
-// (`getRoutes`: devnet-eu/-as/-us/-tee) still reported 312,792 B — the previous build — while the
-// current one measures 316,800 B. Ten minutes and a re-probe later, unchanged. Note v2's earlier
-// comment hoped "the old id can be used again once its clones age out": within the timescale of a
-// session, they do not. `er-demo/scripts/verify-stepped-fight.ts` now runs that same length check as
-// a preflight, so this costs one second and a clear message instead of a spent round and a very
-// confusing error about the code under test.
-declare_id!("8s3x42af7gcNXDCTNheDtteQxeBS2D1p9xuU8C5Jgfrt"); // devnet keypair: .devnet/program-keypair-v3.json
+// v3's note recorded that this was MEASURED rather than inferred, by comparing clone LENGTHS — and
+// then corrected itself, because length tracks the deploy's `--max-len` rather than the ELF inside
+// it, so two different builds under the same max_len measure identically. The check that actually
+// answers the question is comparing the clone's BYTES against the local artifact, and it now lives in
+// `er-demo/scripts/erValidator.ts` (`pickValidator`), shared by every verification script.
+//
+// THIS SESSION'S DATA POINT, from that byte comparison: v3 was upgraded in place on the base layer
+// (sig 3u7AtnMkqEF6dEHQBtQpuQ3zHdpZxNhwmMtmpJxCoRtdTa68KBpfQFUBuFNg4cr2wYLnJmrmrxHmVTUbDz1Xo6cM,
+// 323,360 B against the previous 316,752 B) and all FOUR validators the router advertises
+// (devnet-eu/-tee/-as/-us) reported STALE immediately afterward. Same result as v2's upgrade and v1's
+// before it. The preflight cost one second and named the problem exactly, instead of a spent round
+// and a confusing error about the code under test — which is the entire return on having written it.
+declare_id!("CchN3JPWta2uVxKhwScBQhtPG5gpsaRzf3RA4aPCDam2"); // devnet keypair: .devnet/program-keypair-v4.json
 
 pub const ARENA_SEED: &[u8] = b"arena";
 pub const ROUND_SEED: &[u8] = b"round";
@@ -205,9 +208,142 @@ pub const MAX_STEPS: u64 = 4_000;
 /// 120s clears the longest lineup in the table above (16 fighters, 84.1s worst case) with margin.
 pub const FIGHT_TIMEOUT_SECONDS: i64 = 120;
 
+/// WHAT PULLING OUT COSTS AT THE OPENING BELL — and it decays to nothing by the end of the fight.
+///
+/// THE BUG THIS CLOSES. Making the fight advance on-chain gave `extract` real teeth late in a round,
+/// but it left the OPENING free: at cursor 1 of a 236-step fight you have taken essentially no damage,
+/// so extracting returned ~99% of the stake. "Enter, let one tick land, leave" was therefore close to
+/// optimal — a near-riskless option on the round, priced at nothing. That is not a decision, and the
+/// decision is the entire reason this game is on a rollup. A free option also inverts what the
+/// mechanic is FOR: `extract` is supposed to be the choice to stop risking what you hold, and a choice
+/// with no cost is not a choice.
+///
+/// SO THE PENALTY IS AN OPTION PREMIUM, AND IT DECAYS BECAUSE THE OPTION DOES. What a player gives up
+/// by leaving is the rest of the fight; at the opening bell that is the whole fight, and by the end it
+/// is nothing at all. Charging a FLAT rate — the first thing tried on paper — gets this exactly
+/// backwards at the far end: a fighter who has stood in the ring for the entire round, taken every
+/// blow the seed had for them, and pressed the button one step before the bell would pay the same 20%
+/// as the tourist who never took a hit. That taxes nerve, which is the behaviour the round is trying
+/// to buy. Decaying to zero means holding on is rewarded twice over: you keep whatever you defended,
+/// and it costs you nothing to bank it.
+///
+/// 20% AT THE START, chosen against what it has to beat. Riding the round out is, before variance, a
+/// break-even proposition (the house's cut is taken at `enter`, 20 bps), so the instant-bail strategy
+/// has to be made strictly worse than that to stop being dominant — and a rate small enough to shrug
+/// off (5%) would leave "bail immediately" merely slightly worse rather than clearly worse. 20% is
+/// also within the band a player can read off a screen and reason about in the two seconds this
+/// decision actually gets. It is deliberately NOT tied to `Arena.fee_bps`: that is the deploy fee on
+/// every stake, this is the price of one optional action, and coupling them would mean re-pricing the
+/// game every time the house re-prices entry.
+///
+/// WHERE IT GOES: the house, recorded in `Round.penalties_collected` — see that field. Not the pot
+/// (which would pay the penalty straight back to the opponents who were about to raid you, and hand
+/// a wallet holding both sides a way to launder it), and not burned (this program moves no value; a
+/// burn on-chain would be a fiction the off-chain ledger could not honour).
+pub const EXTRACT_PENALTY_START_BPS: u64 = 2_000;
+
+/// HOW LONG THE PENALTY TAKES TO REACH ZERO, per lineup, IN STEPS.
+///
+/// AGAINST THE CURSOR, NOT THE WALL CLOCK — and the two are not interchangeable even though
+/// `canonical_cursor` is linear in elapsed time. Three reasons, in order of how much they matter:
+///
+///   * The penalty must be RECOMPUTABLE FROM WHAT IS STORED. `tick_count` is on the account and in
+///     the `Extracted` event; the block time of the transaction that extracted is in neither. Against
+///     the clock, a sceptic checking a settled round could not re-derive the rate a player was charged
+///     without going and finding the transaction. Against the cursor they can do it from the event
+///     alone, which is the standard the rest of this round already meets.
+///   * The cursor is what actually happened to the player. Elapsed time is a proxy for it, and stops
+///     being one at `MAX_STEPS`, where the cursor saturates and the clock keeps running: a
+///     clock-based penalty would keep falling through a stretch of round in which the fight, by
+///     definition, is no longer moving.
+///   * It is the same quantity every other payout path is a function of (`catch_up`, `resolve`), so
+///     there is one definition of "how far along are we" rather than two that agree by coincidence.
+///
+/// THE HORIZON IS PER-LINEUP BECAUSE A FIGHT'S LENGTH IS. This is the same problem
+/// `STEPS_PER_FIGHTER_PER_SECOND` solves for pacing, and it does not solve it here: per-fighter pacing
+/// divides an ~n^1.5 fight length by n, which leaves ~n^0.5 — so at the rate this round actually runs,
+/// the median duel lasts 19.5 SECONDS and the median sixteen-way lasts 54.4. A flat horizon in seconds
+/// (i.e. a horizon linear in n) therefore misses by ~3x at the ends: pick 45s and a duel spends its
+/// entire life in the first third of the decay curve, never getting below a 12% rate — nerve
+/// unrewarded, in the most common lineup this demo runs. A flat horizon in STEPS is worse still (26x),
+/// and the two obvious "free" horizons are both far too long for the same reason: `MAX_STEPS` (4,000)
+/// leaves a duel paying 19.6% at its natural end, and the bell
+/// (`FIGHT_TIMEOUT_SECONDS × steps_per_second`) leaves it paying 17.1%.
+///
+/// MEASURED, this session, the same way the pacing table was — `engine/src/er-sim.ts`, equal stakes,
+/// 400 seeds per lineup size, counting steps until one side has nobody standing. Fitting `C × n^1.5`:
+///
+/// ```text
+/// lineup shape          | C = median steps / n^1.5   min .. max   median of C
+/// ----------------------+---------------------------------------------------
+/// balanced (alternating)|                           24.2 .. 30.1         27.2
+/// random sides          |                           21.2 .. 25.8         23.5
+/// ```
+///
+/// The wobble in the balanced row is even/odd and is an artifact of the measurement, not the game:
+/// alternating sides makes every ODD lineup structurally one fighter short on one side, and a short
+/// side gets wiped sooner. Random side assignment removes the wobble entirely and shifts C down,
+/// because an unbalanced book finishes faster. Real lobbies are matched but not perfectly, so the
+/// truth is between the rows: **C = 25**, tabulated below.
+///
+/// ERRING SHORT IS THE SAFE DIRECTION, which is why C=25 sits under the balanced median rather than
+/// on it. Too LONG and the penalty never reaches zero inside a real fight — the design goal fails
+/// outright. Too SHORT and the last stretch of a long fight is free, which is where the curve was
+/// heading anyway; by then the player has already taken the damage the penalty exists to make them
+/// risk, and banking hp they could equally have left in the ring (settlement counts `hp + banked`
+/// alike) buys them nothing. One failure mode breaks the mechanic; the other lands on its intended
+/// endpoint slightly early.
+///
+/// A TABLE RATHER THAN THE FORMULA, because `n` has fifteen legal values and `n^1.5` does not exist in
+/// integer arithmetic. The alternative is an integer square root, written out FOUR times — here and in
+/// each TypeScript mirror — to compute fifteen numbers that were never going to change. This repo has
+/// already been bitten twice by exactly that shape of duplication (the DUST floor, and `bench_fight`
+/// drifting from `run_fight`), and a table has the additional property that a player can read their
+/// own lineup's horizon straight off it. `parity_tests::the_typescript_mirrors_carry_the_same_penalty_curve`
+/// parses both mirrors and compares them to this array, so the copies cannot drift in silence.
+const PENALTY_HORIZON_STEPS: [u16; MAX_FIGHTERS - 1] = [
+    /* n= 2 */    71, /* n= 3 */   130, /* n= 4 */   200, /* n= 5 */   280,
+    /* n= 6 */   367, /* n= 7 */   463, /* n= 8 */   566, /* n= 9 */   675,
+    /* n=10 */   791, /* n=11 */   912, /* n=12 */ 1_039, /* n=13 */ 1_172,
+    /* n=14 */ 1_310, /* n=15 */ 1_452, /* n=16 */ 1_600,
+];
+
 /// The fight's pace for a given lineup — see `STEPS_PER_FIGHTER_PER_SECOND` for the measurements.
 pub fn steps_per_second(fighter_count: usize) -> u64 {
     (fighter_count as u64).saturating_mul(STEPS_PER_FIGHTER_PER_SECOND)
+}
+
+/// The cursor at which extracting becomes free, for a lineup of `fighter_count` — see
+/// `PENALTY_HORIZON_STEPS` for the measurement behind the table.
+///
+/// The clamp is not defensive padding: `fighter_count` is a `u16` field on an account, and a lineup
+/// below 2 cannot reach `Phase::Fight` at all, so the only thing the clamp really does is make the
+/// divisor in `extract_penalty_bps` structurally non-zero instead of non-zero-by-argument.
+pub fn penalty_horizon_steps(fighter_count: usize) -> u64 {
+    PENALTY_HORIZON_STEPS[fighter_count.clamp(2, MAX_FIGHTERS) - 2] as u64
+}
+
+/// The penalty rate, in basis points, for extracting at `cursor`. Linear from
+/// `EXTRACT_PENALTY_START_BPS` down to zero across `penalty_horizon_steps`, and zero from there on.
+pub fn extract_penalty_bps(fighter_count: usize, cursor: u64) -> u64 {
+    let horizon = penalty_horizon_steps(fighter_count);
+    let remaining = horizon.saturating_sub(cursor);
+    EXTRACT_PENALTY_START_BPS.saturating_mul(remaining) / horizon
+}
+
+/// Split what a fighter pulls out of the ring into what they KEEP and what the house takes.
+///
+/// `u128` for the one multiply, rather than this file's usual `checked_mul` — not a style break but
+/// the stronger form of the same idea. `taken × 2_000` genuinely can exceed `u64` for a large enough
+/// stake, and the choice is between an error path that a caller can do nothing useful with and simply
+/// widening the intermediate so the overflow cannot exist. The result is bounded by
+/// `taken × 2_000 / 10_000`, i.e. a fifth of `taken`, so the narrowing back to `u64` is exact and the
+/// subtraction cannot go negative — both facts are asserted, not just argued, in
+/// `parity_tests::the_penalty_can_never_exceed_what_was_taken`.
+pub fn split_extraction(taken: u64, fighter_count: usize, cursor: u64) -> (u64, u64) {
+    let bps = extract_penalty_bps(fighter_count, cursor) as u128;
+    let penalty = (taken as u128 * bps / BPS as u128) as u64;
+    (taken - penalty, penalty)
 }
 
 /// HOW FAR THE FIGHT HAS GENUINELY PROGRESSED at `now`. This one function is the definition of the
@@ -361,6 +497,7 @@ pub mod bulls_arena {
         r.seed = [0u8; 32];
         r.winner = 0;
         r.pot = 0;
+        r.penalties_collected = 0;
         r.fighter_count = 0;
         r.tick_count = 0;
         r.fight_started_at = 0;   // meaningful only from callback_seed onward
@@ -577,6 +714,28 @@ pub mod bulls_arena {
     /// needs to be. Clients should still request the CU ceiling on it, because the bound that makes
     /// this safe is a worst case, not a typical one.
     ///
+    /// IT IS NOT FREE, AND IT IS CHEAPEST LAST. What leaves the ring is split: the fighter keeps most
+    /// of it, the house takes `extract_penalty_bps(fighter_count, cursor)` — 20% at the opening bell,
+    /// decaying linearly to nothing by the time the fight would normally be over. See
+    /// `EXTRACT_PENALTY_START_BPS` for why the penalty exists at all (without it, "enter, let one tick
+    /// land, leave" was a near-riskless option priced at nothing) and `PENALTY_HORIZON_STEPS` for why
+    /// it decays against the CURSOR and over a per-lineup horizon.
+    ///
+    /// NO EXEMPTIONS, INCLUDING THE LAST FIGHTER STANDING — and that is a decision, not an omission.
+    /// The tempting special case is "don't charge someone whose opponents are all gone, they aren't
+    /// escaping any risk". It is unnecessary, because such a player is not being made to pay anything:
+    /// once `fight_is_over`, nothing can touch their `hp` again, and `settle_sides` counts `hp` and
+    /// `banked` identically — so standing still until `resolve` gives them the same value for free,
+    /// and extracting is simply a button they have no reason to press. Adding the exemption would
+    /// instead create a reason to ENGINEER that state (a wallet holding both sides can retire one to
+    /// make the other's exit free), and would make the rate un-derivable from the cursor alone, which
+    /// is the property that lets anyone re-check the penalty from the `Extracted` event.
+    ///
+    /// The penalty ROUNDING TO ZERO is likewise left alone. Integer division floors, so a fighter with
+    /// a small enough remainder late enough in the fight pays nothing at all. That is the curve
+    /// arriving where it was always going, one step early, on an amount too small for the difference
+    /// to be worth a branch.
+    ///
     /// SESSION KEYS (Phase 6). Same `player`/`signer` split and the same `#[session_auth_or]` guard
     /// as `enter` — see `Enter`'s struct doc comment for the full rationale. This is the more
     /// important of the two to cover: without it, every single extract — the one action this whole
@@ -598,20 +757,30 @@ pub mod bulls_arena {
         catch_up(r, now, u64::MAX);
 
         let n = r.fighter_count as usize;
+        // Read AFTER `catch_up`, so this is the cursor the fight has genuinely reached — the same
+        // number the payout itself is computed at, and the one the event publishes so anyone can
+        // re-derive the rate that was charged.
+        let cursor = r.tick_count;
         let f = r.fighters[..n]
             .iter_mut()
             .find(|f| f.wallet == who && f.dead == 0 && f.hp > 0)
             .ok_or(ArenaError::NothingToExtract)?;
 
-        // Value MOVES from the ring to the bank; it is not created. `banked` is already safe from
-        // raids, so this is the whole risk/reward decision in two lines: give up the chance to take
-        // more, in exchange for keeping what you have.
+        // Value MOVES: out of the ring, and then in two directions — most of it to the fighter's own
+        // bank (already safe from raids), a decaying slice of it out of the round entirely, to the
+        // house. That is the whole risk/reward decision: give up the chance to take more, pay for the
+        // privilege of being certain, and pay less the longer you were willing to stand there.
         let taken = f.hp;
-        f.banked = f.banked.checked_add(taken).ok_or(ArenaError::MathOverflow)?;
+        let (kept, penalty) = split_extraction(taken, n, cursor);
+        f.banked = f.banked.checked_add(kept).ok_or(ArenaError::MathOverflow)?;
         f.hp = 0;
         f.dead = 1;                     // out of the ring — no longer a valid target
 
-        emit!(Extracted { round_no: r.round_no, player: who, amount: taken });
+        // The leak, recorded rather than merely subtracted — this is the term that keeps conservation
+        // provable now that a round can legitimately end holding less than its pot. See the field.
+        r.penalties_collected = r.penalties_collected.checked_add(penalty).ok_or(ArenaError::MathOverflow)?;
+
+        emit!(Extracted { round_no: r.round_no, player: who, amount: taken, penalty, cursor });
         Ok(())
     }
 
@@ -784,6 +953,28 @@ pub struct Round {
     pub fighter_count: u16,
     pub tick_count: u64,
     pub pot: u64,
+    /// THE LEAK, NAMED. Extract penalties taken out of this round for the house, cumulative.
+    ///
+    /// Until this field existed, every fighter's `hp + banked` summed to exactly `pot` forever, and
+    /// this repo checks that in six places — the Rust tests, the TypeScript mirror's `totalValue`, the
+    /// browser's `verifyRound`, and the devnet scripts. `extract` now moves value OUT of the round, so
+    /// that identity is no longer true and the honest response is to record where the difference went
+    /// rather than to weaken the check. Conservation becomes:
+    ///
+    /// ```text
+    /// sum(hp + banked) + penalties_collected == pot
+    /// ```
+    ///
+    /// — still exact, still provable from the account alone, and now it also proves the house took
+    /// precisely what the published curve says it should. A silently-subtracted penalty would have
+    /// been unauditable AND would have made every existing verifier report a false mismatch on any
+    /// round where somebody extracted, which reads as an accusation of cheating rather than as a
+    /// missing field.
+    ///
+    /// It is a RECORD, not custody: this program deliberately holds no balances (see the file header),
+    /// so the treasury is paid off-chain from the ledger, and this is the number that settlement is
+    /// owed against.
+    pub penalties_collected: u64,
     pub seed_commit: [u8; 32],
     pub seed: [u8; 32],
     /// Unix timestamp `callback_seed` stamped when `Phase::Fight` began. `resolve` derives `steps`
@@ -793,8 +984,8 @@ pub struct Round {
 }
 impl Round {
     // 8 discriminator + 32 arena + 8 round_no + 1 phase + 1 winner + 1 bump + 2 count
-    // + 8 ticks + 8 pot + 32 commit + 32 seed + 8 fight_started_at + fighters
-    pub const SIZE: usize = 8 + 32 + 8 + 1 + 1 + 1 + 2 + 8 + 8 + 32 + 32 + 8 + (58 * MAX_FIGHTERS);
+    // + 8 ticks + 8 pot + 8 penalties_collected + 32 commit + 32 seed + 8 fight_started_at + fighters
+    pub const SIZE: usize = 8 + 32 + 8 + 1 + 1 + 1 + 2 + 8 + 8 + 8 + 32 + 32 + 8 + (58 * MAX_FIGHTERS);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -950,7 +1141,12 @@ pub struct Resolve<'info> {
 /// `steps` is how many this call actually ran (0 when the fight was already up to date), `cursor` is
 /// where the fight now stands.
 #[event] pub struct Ticked { pub round_no: u64, pub cursor: u64, pub steps: u32 }
-#[event] pub struct Extracted { pub round_no: u64, pub player: Pubkey, pub amount: u64 }
+/// `amount` is GROSS — everything that left the ring. Of that, `penalty` went to the house and the
+/// rest (`amount - penalty`) was added to the fighter's `banked`; a client showing "you banked X,
+/// penalty Y" wants exactly that subtraction. `cursor` is where the fight stood when the button
+/// landed, which is what makes the rate checkable from this event alone: it must equal
+/// `extract_penalty_bps(fighter_count, cursor)`, and `fighter_count` was frozen at lobby close.
+#[event] pub struct Extracted { pub round_no: u64, pub player: Pubkey, pub amount: u64, pub penalty: u64, pub cursor: u64 }
 
 #[error_code]
 pub enum ArenaError {
@@ -1061,7 +1257,8 @@ mod parity_tests {
 
         // `extract` itself, inlined — the instruction adds only the account plumbing and the guards.
         let taken = f[0].hp;
-        f[0].banked += taken;
+        let (kept, penalty) = split_extraction(taken, 4, 40);
+        f[0].banked += kept;
         f[0].hp = 0;
         f[0].dead = 1;
 
@@ -1071,9 +1268,11 @@ mod parity_tests {
             f[0].banked, stake,
         );
 
-        // ...and value is still conserved: the fighter's losses moved to their attackers, they were
-        // not deleted. This is the invariant that catches an economics bug in one line.
-        let total: u64 = f[..4].iter().map(|x| x.hp + x.banked).sum();
+        // ...and value is still conserved — but the identity has a third term now: what the ring
+        // holds, plus what has been banked, plus what has LEFT for the house, is the pot. This is the
+        // invariant that catches an economics bug in one line, and the penalty is inside it rather
+        // than quietly outside it.
+        let total: u64 = f[..4].iter().map(|x| x.hp + x.banked).sum::<u64>() + penalty;
         assert_eq!(total, 620_000);
 
         // Extracted fighters leave the ring: the rest of the fight must not touch them again.
@@ -1081,8 +1280,189 @@ mod parity_tests {
         advance_fight(&mut f, 4, &seed, 40, 160);
         assert_eq!(f[0].hp, 0);
         assert_eq!(f[0].banked, banked_at_extract);
-        let total: u64 = f[..4].iter().map(|x| x.hp + x.banked).sum();
+        let total: u64 = f[..4].iter().map(|x| x.hp + x.banked).sum::<u64>() + penalty;
         assert_eq!(total, 620_000);
+    }
+
+    /// THE MECHANIC THIS SESSION EXISTS TO PRICE, as an assertion. Two fighters, identical stakes,
+    /// identical fight — one bails at the opening bell, one holds on. The early exit must be charged
+    /// materially more than the late one, and the late one must be charged nothing at all.
+    #[test]
+    fn bailing_early_is_charged_and_holding_on_is_not() {
+        let n = 4;
+        let horizon = penalty_horizon_steps(n);
+        assert_eq!(horizon, 200, "4-fighter horizon, from the measured table");
+
+        // At the opening bell the option is worth the whole fight, and is priced accordingly.
+        assert_eq!(extract_penalty_bps(n, 0), EXTRACT_PENALTY_START_BPS);
+        // Halfway through, half price. Linear is linear.
+        assert_eq!(extract_penalty_bps(n, horizon / 2), EXTRACT_PENALTY_START_BPS / 2);
+        // At the horizon and beyond, free — nerve costs nothing.
+        assert_eq!(extract_penalty_bps(n, horizon), 0);
+        assert_eq!(extract_penalty_bps(n, horizon * 10), 0);
+        assert_eq!(extract_penalty_bps(n, MAX_STEPS), 0);
+
+        // The same 1,000,000 held in the ring, banked at two different moments.
+        let (kept_early, penalty_early) = split_extraction(1_000_000, n, 1);
+        let (kept_late, penalty_late) = split_extraction(1_000_000, n, 180);
+        assert_eq!((kept_early, penalty_early), (801_000, 199_000));
+        assert_eq!((kept_late, penalty_late), (980_000, 20_000));
+        assert!(
+            penalty_early > penalty_late * 5,
+            "the whole point is a STEEP early cost decaying to a cheap late one: {} vs {}",
+            penalty_early, penalty_late,
+        );
+
+        // Monotone all the way down, for every legal lineup — a curve that ever ticked UP would give
+        // a player a reason to wait for a cheaper instant, which is a timing game inside the timing
+        // game and not one anybody designed.
+        for count in 2..=MAX_FIGHTERS {
+            let mut prev = u64::MAX;
+            for cursor in 0..=penalty_horizon_steps(count) + 5 {
+                let bps = extract_penalty_bps(count, cursor);
+                assert!(bps <= prev, "rate rose at cursor {} for {} fighters", cursor, count);
+                assert!(bps <= EXTRACT_PENALTY_START_BPS);
+                prev = bps;
+            }
+            assert_eq!(extract_penalty_bps(count, 0), EXTRACT_PENALTY_START_BPS);
+            assert_eq!(extract_penalty_bps(count, penalty_horizon_steps(count)), 0);
+        }
+    }
+
+    /// The horizon has to be reachable inside a real fight, or the penalty never decays to zero in
+    /// practice and the "hold your nerve" half of the design is decoration. Checked against the
+    /// pacing the round actually runs at, and against the two hard ceilings a fight can hit.
+    #[test]
+    fn every_lineups_horizon_is_reachable_before_the_bell_and_the_cap() {
+        for n in 2..=MAX_FIGHTERS {
+            let horizon = penalty_horizon_steps(n);
+            assert!(horizon <= MAX_STEPS, "{} fighters: horizon {} past the step cap", n, horizon);
+            let at_the_bell = canonical_cursor(0, n, FIGHT_TIMEOUT_SECONDS);
+            assert!(
+                horizon < at_the_bell,
+                "{} fighters: horizon {} is not reached by the bell ({} steps) — the penalty would \
+                 still be running when the round ends",
+                n, horizon, at_the_bell,
+            );
+            // ...and it is not so short that it is over before the fight is worth watching: the
+            // horizon must outlast the first few seconds, which is the window the instant-bail
+            // exploit lived in.
+            assert!(horizon > canonical_cursor(0, n, 5), "{} fighters: horizon gone within 5s", n);
+        }
+    }
+
+    /// Two arithmetic promises `split_extraction` makes by construction rather than by check, stated
+    /// here so that "by construction" is a fact rather than a claim: the house can never take more
+    /// than a fifth, and can never take more than there was.
+    #[test]
+    fn the_penalty_can_never_exceed_what_was_taken() {
+        for taken in [0u64, 1, 2, 999, 1_000, 4_999, u64::MAX / 2, u64::MAX] {
+            for n in 2..=MAX_FIGHTERS {
+                for cursor in [0u64, 1, 37, 199, 200, 1_599, 1_600, MAX_STEPS, u64::MAX] {
+                    let (kept, penalty) = split_extraction(taken, n, cursor);
+                    assert_eq!(kept.checked_add(penalty), Some(taken), "the split must be exact");
+                    assert!(penalty <= taken / 5 + 1, "penalty {} over a fifth of {}", penalty, taken);
+                }
+            }
+        }
+
+        // Rounding: a tiny remainder late in the fight is charged nothing, because a fifth of nearly
+        // nothing floors to zero. Deliberate — see `extract`'s doc comment.
+        assert_eq!(split_extraction(4, 4, 199), (4, 0));
+        assert_eq!(split_extraction(0, 4, 0), (0, 0));
+    }
+
+    /// THE INVARIANT THE WHOLE REPO CHECKS AGAINST, restated with its new third term and exercised by
+    /// two extracts at genuinely different points of one fight. If this ever fails, either value is
+    /// being created or the house's take is not being recorded — and the second is worse, because it
+    /// is the one that looks fine.
+    #[test]
+    fn conservation_holds_once_the_penalty_is_counted() {
+        let seed: [u8; 32] = core::array::from_fn(|i| i as u8);
+        let mut f = four_fighters();
+        let pot: u64 = f[..4].iter().map(|x| x.stake).sum();
+        let mut penalties_collected = 0u64;
+
+        let ring = |f: &[Fighter; MAX_FIGHTERS], p: u64| -> u64 {
+            f[..4].iter().map(|x| x.hp + x.banked).sum::<u64>() + p
+        };
+
+        advance_fight(&mut f, 4, &seed, 0, 10);
+        let (kept, penalty) = split_extraction(f[0].hp, 4, 10);
+        f[0].banked += kept; f[0].hp = 0; f[0].dead = 1;
+        penalties_collected += penalty;
+        assert_eq!(ring(&f, penalties_collected), pot, "conservation after the early extract");
+        let early_rate = extract_penalty_bps(4, 10);
+
+        advance_fight(&mut f, 4, &seed, 10, 170);
+        // Both extracts must actually move money, or the identity below is being checked against
+        // nothing — a dead fighter extracts zero and passes every assertion vacuously.
+        assert!(f[1].hp > 0, "the late extractor must still be standing at cursor 180");
+        let (kept, penalty) = split_extraction(f[1].hp, 4, 180);
+        f[1].banked += kept; f[1].hp = 0; f[1].dead = 1;
+        penalties_collected += penalty;
+        assert_eq!(ring(&f, penalties_collected), pot, "conservation after the late extract");
+        let late_rate = extract_penalty_bps(4, 180);
+
+        assert!(early_rate > late_rate, "{} must exceed {}", early_rate, late_rate);
+        assert!(penalties_collected > 0, "the house must actually have taken something");
+
+        // And the rest of the fight cannot disturb it: an extracted fighter is out, and the penalty
+        // already left.
+        advance_fight(&mut f, 4, &seed, 180, MAX_STEPS - 180);
+        assert_eq!(ring(&f, penalties_collected), pot, "conservation to the end of the fight");
+    }
+
+    /// THE COPIES CANNOT DRIFT IN SILENCE. The penalty curve lives in three places — here, and in each
+    /// TypeScript mirror — and a mirror that disagreed would pay a player one number on-chain while
+    /// the browser told them another, which is the same class of failure `run_fight_matches_the_
+    /// typescript_mirror_exactly` exists to prevent. So this reads the mirrors' own source and
+    /// compares the numbers, rather than trusting that somebody remembered.
+    #[test]
+    fn the_typescript_mirrors_carry_the_same_penalty_curve() {
+        /// Pull `NAME = [ ... ]` out of a TypeScript source and parse the integers, ignoring line
+        /// comments, `_` digit separators and BigInt `n` suffixes.
+        fn table(src: &str, name: &str) -> Vec<u64> {
+            let start = src.find(name).unwrap_or_else(|| panic!("{} missing from the mirror", name));
+            let open = start + src[start..].find('[').expect("no [ after the name");
+            let close = open + src[open..].find(']').expect("unterminated table");
+            src[open + 1..close]
+                .lines()
+                .map(|l| l.split("//").next().unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join(",")
+                .split(',')
+                .map(|t| t.trim().replace('_', "").replace('n', ""))
+                .filter(|t| !t.is_empty())
+                .map(|t| t.parse::<u64>().unwrap_or_else(|_| panic!("not a number: {:?}", t)))
+                .collect()
+        }
+        fn scalar(src: &str, name: &str) -> u64 {
+            let start = src.find(name).unwrap_or_else(|| panic!("{} missing from the mirror", name));
+            let eq = start + src[start..].find('=').expect("no = after the name");
+            let tail = &src[eq + 1..];
+            let end = tail.find(|c: char| c == ';' || c == '\n').unwrap_or(tail.len());
+            tail[..end].trim().replace('_', "").replace('n', "").parse().expect("not a number")
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let mirrors = ["engine/src/er-sim.ts", "er-demo/src/sim/erSim.ts"];
+        let expected: Vec<u64> = PENALTY_HORIZON_STEPS.iter().map(|&h| h as u64).collect();
+
+        for mirror in mirrors {
+            let src = std::fs::read_to_string(root.join(mirror))
+                .unwrap_or_else(|e| panic!("could not read {}: {}", mirror, e));
+            // Matched on the DECLARATION, not the bare name — the name also appears in each mirror's
+            // prose, and a parser that grabbed the first mention would be checking a comment.
+            assert_eq!(
+                table(&src, "const PENALTY_HORIZON_STEPS"), expected,
+                "{} horizon table drifted", mirror,
+            );
+            assert_eq!(
+                scalar(&src, "const EXTRACT_PENALTY_START_BPS"), EXTRACT_PENALTY_START_BPS,
+                "{} start rate drifted", mirror,
+            );
+        }
     }
 
     /// The security property the `steps`-as-an-argument fix bought, restated for the stepped design:

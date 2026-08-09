@@ -32,6 +32,7 @@ function mockRound(fighters: FighterState[], overrides: Partial<RoundState> = {}
     fighterCount: fighters.length,
     tickCount: 50n,
     pot: fighters.reduce((n, f) => n + f.stake, 0n),
+    penaltiesCollected: 0n,
     seedCommit: [],
     seed: Array.from({ length: 32 }, (_, i) => i),
     fightStartedAt: 0n,
@@ -88,6 +89,47 @@ describe("verifyRound — extraction-likely", () => {
     // The pure replay (which doesn't know extraction happened) disagrees with the chain on who won —
     // a real, honest divergence, and exactly the case a flat "MISMATCH" label would misrepresent.
     expect(result.winnerMatches).toBe(false);
+  });
+
+  test("a round where the house took an extract penalty still conserves, and is not a false mismatch", () => {
+    // THE REGRESSION THIS FILE EXISTS TO CATCH FROM NOW ON. `extract()` charges a decaying penalty
+    // that leaves the round (lib.rs `EXTRACT_PENALTY_START_BPS`), so `sum(hp + banked)` is strictly
+    // BELOW the pot here. Under the old two-term check that read as broken conservation, which
+    // disqualifies the honest "extraction-likely" verdict and reports a flat MISMATCH — an
+    // accusation of cheating, on a round where the chain did exactly what it says it does.
+    //
+    // Same shape as devnet round #8 above, re-priced: a fighter with 998,000 in the ring extracting
+    // at cursor 0 of a two-fighter round pays 20% (horizon 71 steps, so the rate is at its start
+    // value), banking 798,400 and leaving 199,600 with the house.
+    const fighters: FighterState[] = [
+      { wallet: pubkey("early"), side: 0, dead: true, stake: 998_000n, hp: 0n, banked: 798_400n },
+      { wallet: pubkey("stayed"), side: 1, dead: false, stake: 748_500n, hp: 748_500n, banked: 0n },
+    ];
+    const result = verifyRound(mockRound(fighters, {
+      winner: 0, tickCount: 1400n, pot: 1_746_500n, penaltiesCollected: 199_600n,
+    }));
+
+    expect(result.penaltiesCollectedOnChain).toBe(199_600n);
+    expect(result.totalValueOnChain).toBe(1_546_900n);
+    expect(result.totalValueOnChain).toBeLessThan(result.potOnChain);
+    expect(result.conservationHoldsOnChain).toBe(true);
+    expect(result.verdict).toBe("extraction-likely");
+  });
+
+  test("a penalty larger than the value actually missing is still a real mismatch", () => {
+    // The third term must not become a licence to explain away any shortfall: it is checked as an
+    // exact identity, so a `penaltiesCollected` that doesn't account for the gap fails, in either
+    // direction. Same fighters as above, with the house claiming 1 lamport more than it took.
+    const fighters: FighterState[] = [
+      { wallet: pubkey("early"), side: 0, dead: true, stake: 998_000n, hp: 0n, banked: 798_400n },
+      { wallet: pubkey("stayed"), side: 1, dead: false, stake: 748_500n, hp: 748_500n, banked: 0n },
+    ];
+    const result = verifyRound(mockRound(fighters, {
+      winner: 0, tickCount: 1400n, pot: 1_746_500n, penaltiesCollected: 199_601n,
+    }));
+
+    expect(result.conservationHoldsOnChain).toBe(false);
+    expect(result.verdict).toBe("mismatch");
   });
 });
 

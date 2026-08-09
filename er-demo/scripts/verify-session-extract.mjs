@@ -77,7 +77,12 @@ async function readRound(conn, roundPda) {
   let o = 8 + 32 + 8;
   const phase = d[o]; o += 3;
   const fighterCount = d.readUInt16LE(o); o += 2 + 8;
-  const pot = d.readBigUInt64LE(o); o += 8 + 32 + 32 + 8;
+  const pot = d.readBigUInt64LE(o); o += 8;
+  // `penalties_collected` sits here, between `pot` and `seed_commit` — the house's cumulative take
+  // from extract penalties. A hand-rolled decoder is exactly the thing a new field breaks silently:
+  // skip it without reading it and every fighter below is decoded 8 bytes early, which produces
+  // plausible-looking nonsense rather than an error.
+  const penaltiesCollected = d.readBigUInt64LE(o); o += 8 + 32 + 32 + 8;
   const fighters = [];
   for (let i = 0; i < fighterCount; i++) {
     const b = o + i * 58;
@@ -86,7 +91,7 @@ async function readRound(conn, roundPda) {
       stake: d.readBigUInt64LE(b + 34), hp: d.readBigUInt64LE(b + 42), banked: d.readBigUInt64LE(b + 50),
     });
   }
-  return { phase, fighterCount, pot, fighters };
+  return { phase, fighterCount, pot, penaltiesCollected, fighters };
 }
 
 (async () => {
@@ -185,7 +190,8 @@ async function readRound(conn, roundPda) {
 
   // ---- THE POINT OF THIS SCRIPT ----------------------------------------------------------------
   head("6. session-signed extract(), in real Fight phase");
-  const before = (await readRound(roundValidator, roundPda)).fighters.find((f) => f.wallet.equals(playerA.publicKey));
+  const roundBefore = await readRound(roundValidator, roundPda);
+  const before = roundBefore.fighters.find((f) => f.wallet.equals(playerA.publicKey));
   info(`player A before: hp=${before.hp} banked=${before.banked} dead=${before.dead}`);
   sigs.extractSessionSigned = await send(router, [
     ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
@@ -194,12 +200,32 @@ async function readRound(conn, roundPda) {
       .instruction(),
   ], [sessionKp], "extract (SESSION-KEY-SIGNED, Fight phase)");
 
-  const after = (await readRound(roundValidator, roundPda)).fighters.find((f) => f.wallet.equals(playerA.publicKey));
+  const roundAfter = await readRound(roundValidator, roundPda);
+  const after = roundAfter.fighters.find((f) => f.wallet.equals(playerA.publicKey));
   info(`player A after:  hp=${after.hp} banked=${after.banked} dead=${after.dead}`);
   if (after.hp !== 0n) throw new Error(`hp should be 0, got ${after.hp}`);
-  if (after.banked !== before.banked + before.hp) throw new Error(`banked should be ${before.banked + before.hp}, got ${after.banked}`);
   if (after.dead !== 1) throw new Error(`dead should be 1, got ${after.dead}`);
-  ok(`hp moved to banked EXACTLY (${before.hp}), fighter marked out of the ring`);
+
+  // WHAT THIS SCRIPT IS ABOUT is the SIGNATURE, not the payout — the claim under test is that a
+  // session key can land `extract()` in real Fight phase. So the assertion is the one that stays
+  // true whatever the payout turns out to be.
+  //
+  // `after.banked === before.banked + before.hp` used to say that, and no longer can, for two
+  // independent reasons: `extract()` catches the fight up to the current on-chain second before it
+  // pays anyone, so `before.hp` read a moment earlier is already stale; and the payout is now split,
+  // with a decaying penalty going to the house. Conservation is the invariant that survives both —
+  // and it is the stronger statement anyway, because it covers the whole round rather than one
+  // fighter.
+  const held = (r) => r.fighters.reduce((n, f) => n + f.hp + f.banked, 0n);
+  for (const [label, r] of [["before", roundBefore], ["after", roundAfter]]) {
+    const total = held(r) + r.penaltiesCollected;
+    if (total !== r.pot) {
+      throw new Error(`value not conserved ${label} the extract: sum(hp+banked)=${held(r)} + penalties=${r.penaltiesCollected} vs pot=${r.pot}`);
+    }
+  }
+  if (after.banked <= before.banked) throw new Error(`extract banked nothing: ${before.banked} -> ${after.banked}`);
+  const penalty = roundAfter.penaltiesCollected - roundBefore.penaltiesCollected;
+  ok(`hp left the ring, ${after.banked - before.banked} banked and ${penalty} to the house; conservation exact on both sides`);
   ok(`player A's wallet signed ONCE (create_session) — never this transaction`);
 
   console.log(`\n${c.g}${c.b}PASS${c.x} — session-signed extract() lands in real Fight phase, on a real ER validator.`);

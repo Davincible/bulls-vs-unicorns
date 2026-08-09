@@ -13,8 +13,8 @@
 // genuinely fell, extracts, and requires the payout to be strictly less than the stake. It also
 // checks four things that would each quietly undo that if they broke:
 //
-//   * value conservation (sum of hp+banked across fighters == pot) at every checkpoint — the
-//     invariant that catches an economics bug in one line;
+//   * value conservation (sum of hp+banked, plus the house's recorded extract penalties, == pot) at
+//     every checkpoint — the invariant that catches an economics bug in one line;
 //   * that `extract()` advances the fight ITSELF, without anyone having ticked first — otherwise a
 //     player could simply refuse to tick and extract at a stale, larger hp, which is the same free
 //     refund in a different disguise;
@@ -33,6 +33,8 @@ import { createProgram, type BullsArenaProgram, type RawRoundAccount } from "../
 import { sendTx } from "../src/chain/sendTx.ts";
 import { createBurnerWallet, loadOrCreateBurnerKeypair } from "../src/chain/useSigner.ts";
 import * as roundIx from "../src/chain/round.ts";
+// The bytecode-cache preflight, shared with verify-extract-penalty.ts — see its own doc comment.
+import { NO_FRESH_VALIDATOR, pickValidator } from "./erValidator.ts";
 // The independent replay — the same mirror `VerifyPanel.tsx` re-derives a settled round with, used
 // here to name the exact hp the chain's `extract()` moved. Not a second implementation of the fight:
 // it is the parity oracle this repo already maintains for exactly this purpose (ER-051).
@@ -64,78 +66,11 @@ function describeError(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** The router's OWN list of ER validators, rather than a hardcoded one. Asking is both more honest and
- *  strictly better informed — it turned up `devnet-tee` alongside the three endpoints this repo's
- *  scripts had been assuming, and that mattered: the search below has to cover every validator before
- *  it can conclude that a fresh program id is the only way forward. */
-async function routerValidators(): Promise<{ identity: PublicKey; fqdn: string }[]> {
-  const res = await fetch(ROUTER_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getRoutes", params: [] }),
-  });
-  const body = await res.json() as { result?: { identity: string; fqdn: string }[]; error?: { message: string } };
-  if (!body.result) throw new Error(`getRoutes: ${body.error?.message ?? "no result"}`);
-  return body.result.map((r) => ({ identity: new PublicKey(r.identity), fqdn: r.fqdn }));
-}
-
-/** THE PREFLIGHT THAT TURNS A DOCUMENTED TRAP INTO A ONE-SECOND CHECK.
- *
- *  MagicBlock's ER validators clone a program's executable into their own LoaderV4-owned account on
- *  first use and do NOT re-clone it when the base-layer program is upgraded (MAGICBLOCK_FEEDBACK.md;
- *  MEGA_QUEUE.md task #15, where this cost a whole round and a very confusing failure). So right
- *  after a deploy, a round delegated to whichever validator the router happens to pick may run the
- *  PREVIOUS build — and the symptom is an error about the code you are testing, not about the cache.
- *
- *  It is directly observable, though: read the clone and compare its bytes against the local artifact.
- *
- *  The obvious cheap version of this check — compare LENGTHS — is wrong, and worth recording because
- *  it looked right and produced a confident answer. A LoaderV4 clone is 48 bytes of header plus the
- *  program data account's whole allocation, so its length tracks the deploy's `--max-len`, not the
- *  ELF inside it. Two different builds deployed under the same `max_len` measure identically. What
- *  the length DID reveal, correctly, was a clone frozen at a `max_len` the base layer had since grown
- *  past — genuinely stale, but only visible because that particular upgrade happened to extend the
- *  account. Comparing the bytes answers the actual question in every case. */
-async function pickValidator(pinned: PublicKey | null): Promise<{ identity: PublicKey; fqdn: string } | null> {
-  const soPath = join(__dirname, "..", "..", "target", "deploy", "bulls_arena.so");
-  const localElf = new Uint8Array(readFileSync(soPath));
-  const LOADER_V4_HEADER = 48;
-  info(`local build ${localElf.length} B (${soPath.replace(/.*\/target/, "target")})`);
-
-  const fresh: { identity: PublicKey; fqdn: string }[] = [];
-  for (const { identity, fqdn } of await routerValidators()) {
-    assertDevnetUrl(fqdn, "ER validator");
-    try {
-      const acct = await new Connection(fqdn, "confirmed").getAccountInfo(PROGRAM_ID);
-      let state: string;
-      let usable: boolean;
-      if (!acct) {
-        state = "no clone yet — will pull the current build on first use";
-        usable = true;
-      } else {
-        const cloned = acct.data.subarray(LOADER_V4_HEADER, LOADER_V4_HEADER + localElf.length);
-        usable = cloned.length === localElf.length && Buffer.from(cloned).equals(Buffer.from(localElf));
-        state = usable ? "CURRENT — byte-identical to the local build" : "STALE — serving a different build";
-      }
-      console.log(`    ${fqdn.padEnd(38)} ${identity.toBase58().slice(0, 8)}…  ${state}`);
-      if (usable) fresh.push({ identity, fqdn });
-    } catch (e) {
-      console.log(`    ${fqdn.padEnd(38)} unreachable: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
-  if (pinned) {
-    const match = fresh.find((v) => v.identity.equals(pinned));
-    if (!match) throw new Error(`--validator ${pinned.toBase58()} is not among the validators serving the current build`);
-    return match;
-  }
-  return fresh[0] ?? null;
-}
-
 interface Snapshot {
   phase: number;
   tickCount: bigint;
   pot: bigint;
+  penaltiesCollected: bigint;
   fighters: { wallet: PublicKey; side: number; dead: number; stake: bigint; hp: bigint; banked: bigint }[];
 }
 
@@ -144,6 +79,7 @@ function snapshot(raw: RawRoundAccount): Snapshot {
     phase: raw.phase,
     tickCount: BigInt(raw.tickCount.toString()),
     pot: BigInt(raw.pot.toString()),
+    penaltiesCollected: BigInt(raw.penaltiesCollected.toString()),
     fighters: raw.fighters.slice(0, raw.fighterCount).map((f) => ({
       wallet: f.wallet, side: f.side, dead: f.dead,
       stake: BigInt(f.stake.toString()), hp: BigInt(f.hp.toString()), banked: BigInt(f.banked.toString()),
@@ -152,10 +88,20 @@ function snapshot(raw: RawRoundAccount): Snapshot {
 }
 
 /** Value MOVES; it is never created or destroyed. Asserted at every checkpoint rather than once at
- *  the end, so a break is attributed to the instruction that caused it. */
+ *  the end, so a break is attributed to the instruction that caused it.
+ *
+ *  THE IDENTITY HAS THREE TERMS NOW. `extract()` charges a decaying penalty that goes to the house,
+ *  so value legitimately LEAVES the round and `sum(hp + banked)` is below the pot on any round where
+ *  somebody extracted. The chain records what left, in `Round.penalties_collected`, so this stays an
+ *  exact equality rather than becoming an inequality — which matters, because an inequality would
+ *  pass just as happily if the house took twice what the published curve says. */
 function assertConserved(s: Snapshot, where: string): void {
-  const total = s.fighters.reduce((n, f) => n + f.hp + f.banked, 0n);
-  if (total !== s.pot) throw new Error(`value not conserved ${where}: sum(hp+banked)=${total} vs pot=${s.pot}`);
+  const held = s.fighters.reduce((n, f) => n + f.hp + f.banked, 0n);
+  if (held + s.penaltiesCollected !== s.pot) {
+    throw new Error(
+      `value not conserved ${where}: sum(hp+banked)=${held} + penalties=${s.penaltiesCollected} vs pot=${s.pot}`,
+    );
+  }
 }
 
 const pct = (part: bigint, whole: bigint) => `${(Number(part) / Number(whole) * 100).toFixed(1)}%`;
@@ -184,12 +130,7 @@ const pct = (part: bigint, whole: bigint) => `${(Number(part) / Number(whole) * 
   heading("0. which ER validators are serving the CURRENT build?");
   const validator = await pickValidator(pinned);
   if (!validator) {
-    throw new Error(
-      "every public ER validator is still serving a PREVIOUS build of this program id.\n" +
-      "  Their bytecode cache is keyed by program id and is not refreshed by an upgrade, so there is\n" +
-      "  no route on which a delegated round can run the code under test. The documented recovery is\n" +
-      "  to deploy under a FRESH program id (see lib.rs's declare_id! note and MEGA_QUEUE.md #15).",
-    );
+    throw new Error(NO_FRESH_VALIDATOR);
   }
   ok(`pinning ${validator.fqdn} (${validator.identity.toBase58()})`);
 
@@ -396,7 +337,10 @@ const pct = (part: bigint, whole: bigint) => `${(Number(part) / Number(whole) * 
     }));
     const mirror = buildRoundFromEntries(Buffer.from(raw.seed), entries);
     computeHitEvents(mirror, Number(afterExtract.tickCount));
-    const taken = simExtract(mirror, playerA.publicKey.toBase58());
+    // `computeHitEvents` leaves `mirror.tickCount` at the chain's cursor, which is what the mirror's
+    // `extract()` prices the penalty off — the same input the on-chain instruction used, so the two
+    // must agree on the split as well as on the payout.
+    const { taken, kept, penalty } = simExtract(mirror, playerA.publicKey.toBase58());
 
     for (let i = 0; i < entries.length; i++) {
       const chainF = afterExtract.fighters[i];
@@ -409,9 +353,17 @@ const pct = (part: bigint, whole: bigint) => `${(Number(part) / Number(whole) * 
     }
     ok(`chain and the TypeScript mirror agree exactly at cursor ${afterExtract.tickCount}, for every fighter`);
 
+    const penaltyOnChain = afterExtract.penaltiesCollected - beforeExtract.penaltiesCollected;
+    if (penaltyOnChain !== penalty) {
+      throw new Error(`the house's take disagrees with the mirror: chain ${penaltyOnChain} vs mirror ${penalty}. ` +
+        `The penalty is a published curve, so the two must derive the same number from the same cursor.`);
+    }
+    ok(`the house took ${penalty} (${pct(penalty, taken)} of what left the ring), recorded on-chain and matched by the mirror`);
+
     console.log(`     stake at entry         ${stakeA}`);
     console.log(`     hp before the catch-up ${hpAtDecision}`);
-    console.log(`     ${c.b}EXTRACT PAID OUT       ${taken}   ${pct(taken, stakeA)} of the stake${c.x}`);
+    console.log(`     ${c.b}LEFT THE RING          ${taken}   ${pct(taken, stakeA)} of the stake${c.x}`);
+    console.log(`     ${c.b}OF WHICH BANKED        ${kept}   (penalty ${penalty})${c.x}`);
     console.log(`     final purse (raids included) ${a.banked}`);
     if (taken >= stakeA) {
       throw new Error(`extract paid out ${taken} against a stake of ${stakeA} — a full refund, which is ` +

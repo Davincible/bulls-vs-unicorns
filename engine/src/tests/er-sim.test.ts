@@ -139,17 +139,19 @@ test("the tick hash is sha256(seed ++ le_u64(cursor)) — the preimage the Rust 
 // Without mid-fight input the outcome is a pure function of (seed, entries) — decided before the
 // fight starts, with the animation replaying a result that already exists. Nothing precomputed
 // needs 10ms blocks. These pin the properties that make it a real decision rather than a free win.
-import { extract } from "../er-sim.ts";
+import { extract, conservationHolds } from "../er-sim.ts";
 
 test("extracting banks what you hold and takes you out of the ring", () => {
   const r = lobby(seedOf("ex"), 4);
   tick(r, 200);
   const me = r.fighters[0];
   const before = me.hp + me.banked;
-  const taken = extract(r, me.wallet);
+  const { taken, kept, penalty } = extract(r, me.wallet);
   assert.equal(taken > 0n, true);
   assert.equal(me.hp, 0n, "nothing left in the ring");
-  assert.equal(me.banked, before, "value MOVED, none created or destroyed");
+  assert.equal(me.banked + penalty, before, "value MOVED — to the bank and to the house, none lost");
+  assert.equal(me.banked, before - penalty, "the bank gets what the house did not take");
+  assert.equal(kept + penalty, taken, "the split is exact");
   assert.equal(me.dead, 1, "no longer a valid target");
 });
 
@@ -157,18 +159,24 @@ test("extraction conserves total value", () => {
   const r = lobby(seedOf("exc"), 6);
   tick(r, 300);
   const before = totalValue(r);
-  extract(r, r.fighters[0].wallet);
-  extract(r, r.fighters[1].wallet);
-  assert.equal(totalValue(r), before, "extraction must not mint or burn");
+  const a = extract(r, r.fighters[0].wallet);
+  const b = extract(r, r.fighters[1].wallet);
+  // The penalty LEAVES the round, so what fighters hold legitimately falls — and by exactly the
+  // amount the house recorded. Conservation is the identity that keeps both halves honest.
+  assert.equal(totalValue(r), before - a.penalty - b.penalty, "extraction must not mint or burn");
+  assert.equal(r.penaltiesCollected, a.penalty + b.penalty, "the leak must be recorded, not just taken");
+  assert.equal(conservationHolds(r), true, "sum(hp+banked) + penaltiesCollected must equal the pot");
 });
 
 // The decision has to be able to LOSE, or it is not a decision.
 test("extracting early can be worse than holding on", () => {
   const a = lobby(seedOf("hold"), 4);
   const b = lobby(seedOf("hold"), 4);
-  tick(a, 100); const early = extract(a, a.fighters[0].wallet);
+  tick(a, 100); const early = extract(a, a.fighters[0].wallet).kept;
   tick(b, 400); const late = b.fighters[0].hp + b.fighters[0].banked;
-  // not asserting which wins — asserting they DIFFER, i.e. timing matters at all
+  // not asserting which wins — asserting they DIFFER, i.e. timing matters at all. Comparing `.kept`
+  // rather than the returned record: `notEqual` against an object was trivially true and therefore
+  // asserted nothing, which is worse than no test.
   assert.notEqual(early, late, "if timing changed nothing, the mechanic would be decoration");
 });
 

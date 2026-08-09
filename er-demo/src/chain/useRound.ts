@@ -29,6 +29,10 @@ export interface RoundState {
   fighterCount: number;
   tickCount: bigint;
   pot: bigint;
+  /** What the house has taken out of this round in extract penalties, cumulative. Needed by anything
+   *  checking conservation — `sum(hp + banked) + penaltiesCollected === pot` — and by any UI that
+   *  wants to show what leaving early has cost the table so far. */
+  penaltiesCollected: bigint;
   seedCommit: number[];
   seed: number[];
   fightStartedAt: bigint;
@@ -45,6 +49,7 @@ function toPlainRound(raw: RawRoundAccount): RoundState {
     fighterCount: raw.fighterCount,
     tickCount: BigInt(raw.tickCount.toString()),
     pot: BigInt(raw.pot.toString()),
+    penaltiesCollected: BigInt(raw.penaltiesCollected.toString()),
     seedCommit: raw.seedCommit,
     seed: raw.seed,
     fightStartedAt: BigInt(raw.fightStartedAt.toString()),

@@ -1,0 +1,13 @@
+{
+  // Type-checking for scripts/ — NOT part of `tsc -b`'s app/node projects, because these files are
+  // run by bun (which strips types without checking them) and are neither browser bundle nor Vite
+  // config. Without this they were the one directory in the repo that could type-error in silence.
+  //
+  //   bunx tsc -p tsconfig.scripts.json --noEmit
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.scripts.tsbuildinfo",
+    "noEmit": true
+  },
+  "include": ["scripts"]
+}

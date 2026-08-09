@@ -1,5 +1,5 @@
 {
-  "address": "8s3x42af7gcNXDCTNheDtteQxeBS2D1p9xuU8C5Jgfrt",
+  "address": "CchN3JPWta2uVxKhwScBQhtPG5gpsaRzf3RA4aPCDam2",
   "metadata": {
     "name": "bulls_arena",
     "version": "0.1.0",
@@ -245,38 +245,38 @@
             "program": {
               "kind": "const",
               "value": [
-                116,
-                212,
-                46,
-                255,
-                56,
-                210,
-                164,
-                50,
-                203,
-                42,
-                27,
-                247,
-                253,
-                160,
-                244,
-                2,
-                255,
-                228,
-                124,
-                114,
-                152,
-                148,
-                44,
-                118,
-                217,
-                26,
-                20,
-                251,
-                1,
+                172,
+                149,
+                133,
+                215,
+                92,
+                35,
+                117,
+                209,
+                60,
                 18,
-                108,
-                141
+                175,
+                4,
+                21,
+                31,
+                72,
+                229,
+                206,
+                54,
+                84,
+                219,
+                75,
+                123,
+                188,
+                184,
+                224,
+                190,
+                19,
+                200,
+                92,
+                52,
+                143,
+                173
               ]
             }
           }
@@ -358,7 +358,7 @@
         },
         {
           "name": "owner_program",
-          "address": "8s3x42af7gcNXDCTNheDtteQxeBS2D1p9xuU8C5Jgfrt"
+          "address": "CchN3JPWta2uVxKhwScBQhtPG5gpsaRzf3RA4aPCDam2"
         },
         {
           "name": "delegation_program",
@@ -486,6 +486,28 @@
         "case — anything at all ticking — it runs single digits, and this stays the cheap instruction it",
         "needs to be. Clients should still request the CU ceiling on it, because the bound that makes",
         "this safe is a worst case, not a typical one.",
+        "",
+        "IT IS NOT FREE, AND IT IS CHEAPEST LAST. What leaves the ring is split: the fighter keeps most",
+        "of it, the house takes `extract_penalty_bps(fighter_count, cursor)` — 20% at the opening bell,",
+        "decaying linearly to nothing by the time the fight would normally be over. See",
+        "`EXTRACT_PENALTY_START_BPS` for why the penalty exists at all (without it, \"enter, let one tick",
+        "land, leave\" was a near-riskless option priced at nothing) and `PENALTY_HORIZON_STEPS` for why",
+        "it decays against the CURSOR and over a per-lineup horizon.",
+        "",
+        "NO EXEMPTIONS, INCLUDING THE LAST FIGHTER STANDING — and that is a decision, not an omission.",
+        "The tempting special case is \"don't charge someone whose opponents are all gone, they aren't",
+        "escaping any risk\". It is unnecessary, because such a player is not being made to pay anything:",
+        "once `fight_is_over`, nothing can touch their `hp` again, and `settle_sides` counts `hp` and",
+        "`banked` identically — so standing still until `resolve` gives them the same value for free,",
+        "and extracting is simply a button they have no reason to press. Adding the exemption would",
+        "instead create a reason to ENGINEER that state (a wallet holding both sides can retire one to",
+        "make the other's exit free), and would make the rate un-derivable from the cursor alone, which",
+        "is the property that lets anyone re-check the penalty from the `Extracted` event.",
+        "",
+        "The penalty ROUNDING TO ZERO is likewise left alone. Integer division floors, so a fighter with",
+        "a small enough remainder late enough in the fight pays nothing at all. That is the curve",
+        "arriving where it was always going, one step early, on an amount too small for the difference",
+        "to be worth a branch.",
         "",
         "SESSION KEYS (Phase 6). Same `player`/`signer` split and the same `#[session_auth_or]` guard",
         "as `enter` — see `Enter`'s struct doc comment for the full rationale. This is the more",
@@ -1110,6 +1132,13 @@
     },
     {
       "name": "Extracted",
+      "docs": [
+        "`amount` is GROSS — everything that left the ring. Of that, `penalty` went to the house and the",
+        "rest (`amount - penalty`) was added to the fighter's `banked`; a client showing \"you banked X,",
+        "penalty Y\" wants exactly that subtraction. `cursor` is where the fight stood when the button",
+        "landed, which is what makes the rate checkable from this event alone: it must equal",
+        "`extract_penalty_bps(fighter_count, cursor)`, and `fighter_count` was frozen at lobby close."
+      ],
       "type": {
         "kind": "struct",
         "fields": [
@@ -1123,6 +1152,14 @@
           },
           {
             "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "penalty",
+            "type": "u64"
+          },
+          {
+            "name": "cursor",
             "type": "u64"
           }
         ]
@@ -1195,6 +1232,33 @@
           },
           {
             "name": "pot",
+            "type": "u64"
+          },
+          {
+            "name": "penalties_collected",
+            "docs": [
+              "THE LEAK, NAMED. Extract penalties taken out of this round for the house, cumulative.",
+              "",
+              "Until this field existed, every fighter's `hp + banked` summed to exactly `pot` forever, and",
+              "this repo checks that in six places — the Rust tests, the TypeScript mirror's `totalValue`, the",
+              "browser's `verifyRound`, and the devnet scripts. `extract` now moves value OUT of the round, so",
+              "that identity is no longer true and the honest response is to record where the difference went",
+              "rather than to weaken the check. Conservation becomes:",
+              "",
+              "```text",
+              "sum(hp + banked) + penalties_collected == pot",
+              "```",
+              "",
+              "— still exact, still provable from the account alone, and now it also proves the house took",
+              "precisely what the published curve says it should. A silently-subtracted penalty would have",
+              "been unauditable AND would have made every existing verifier report a false mismatch on any",
+              "round where somebody extracted, which reads as an accusation of cheating rather than as a",
+              "missing field.",
+              "",
+              "It is a RECORD, not custody: this program deliberately holds no balances (see the file header),",
+              "so the treasury is paid off-chain from the ledger, and this is the number that settlement is",
+              "owed against."
+            ],
             "type": "u64"
           },
           {
