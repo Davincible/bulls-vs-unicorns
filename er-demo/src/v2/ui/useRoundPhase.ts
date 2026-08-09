@@ -1,7 +1,7 @@
 // THE ROUND'S STATE IN WORDS, LIVE — the hook half of `RoundPhaseNote.tsx`.
 //
 // It is the only place that wires the pure copy (`roundPhaseCopy.ts`) to the two things it cannot be
-// pure about: the clock a countdown needs, and where the "next lobby opens at" instant comes from.
+// pure about: the clock a countdown needs, and the keeper's published cadence.
 //
 // Separate from the component because a surface can want the DECISION without the markup — the dock
 // picks which body to render off `control`, and that decision (`entriesOpen()`, never a phase check)
@@ -9,47 +9,38 @@
 // live Deploy button.
 
 import { useArena } from "../data/useArena.ts";
+import { roundCadence, useSharedKeeperStatus } from "./keeperCadence.ts";
 import { roundPhaseCopy, type RoundPhaseCopy } from "./roundPhaseCopy.ts";
 import { useSecondTick } from "./useSecondTick.ts";
 
-/** Safe to call from more than one component: each gets its own second-resolution clock, and they
- *  agree because both are reading `Date.now()`. */
+/** Safe to call from more than one component: each gets its own second-resolution clock, they agree
+ *  because both are reading `Date.now()`, and they share ONE poll of the keeper's status file
+ *  (`KeeperStatusProvider`) rather than opening one apiece. */
 export function useRoundPhase(): RoundPhaseCopy {
   const { live, status } = useArena();
+  const keeper = useSharedKeeperStatus();
 
-  /** WHERE THE CADENCE WILL COME FROM, and why it is null today.
+  /** THE CONNECTOR, in the one place it does not need a clock — deciding whether to run one.
    *
-   *  A round is opened by a person running the operator script. Nothing schedules the next one:
-   *  there is no keeper process, and the arena account carries no "next round opens at" field — so
-   *  there is no instant to count down to, and manufacturing one would be a timer to an event with
-   *  no cause. That is the same class of lie as an unbacked money figure, which this page refuses
-   *  everywhere else, so the Settled state says plainly that there is no schedule instead.
+   *  A published `nextLobbyOpensAt` from a keeper that is up is the only thing that makes a SETTLED
+   *  round count down; every other countdown on this page belongs to a phase that ticks anyway. It is
+   *  read straight off the status here rather than out of `roundCadence` below because that would be
+   *  circular: the cadence needs `nowMs`, and `nowMs` is what this decides.
    *
-   *  THE KEEPER BEING BUILT ALONGSIDE THIS IS WHAT FEEDS IT, and the field already has a name:
-   *  `data/keeperStatus.ts`'s `KeeperStatus.nextLobbyOpensAt` — unix SECONDS, non-null only while
-   *  the keeper is holding between rounds and the next open time is genuinely known. Once that
-   *  module is wired into the provider, this line becomes one expression:
-   *
-   *      const { status: keeper } = useArena();   // or whatever the provider exposes it as
-   *      const nextLobbyOpensAtMs =
-   *        keeper !== null && !isKeeperStale(keeper, nowSec) && keeper.nextLobbyOpensAt !== null
-   *          ? keeper.nextLobbyOpensAt * 1000
-   *          : null;
-   *
-   *  Both guards are load-bearing and neither is this module's to relax: a STALE keeper's next-open
-   *  time is a promise from a process that has stopped, which is the same lie in a different costume,
-   *  and the field is already null wherever there is no honest answer.
-   *
-   *  Everything downstream handles both worlds today: `roundPhaseCopy`'s Settled and Abandoned
-   *  branches render a countdown when it is a number and the honest waiting sentence when it is not,
-   *  the tick below turns itself on for it, and both are covered by `roundPhaseCopy.test.ts`. No copy
-   *  and no markup moves. */
-  const nextLobbyOpensAtMs: number | null = null;
+   *  Both guards are load-bearing and neither is this file's to relax. A STALE keeper's next-open
+   *  time is a promise from a process that has stopped, and the field is already null wherever the
+   *  keeper has no honest answer. This deliberately does NOT try to be the whole rule — a stalled
+   *  keeper, a passed deadline and a mid-fight round all still reach `roundCadence`, which asks
+   *  `keeperCountdown` and gets every one of them right. The cost of this line being generous is one
+   *  interval that changes no visible number; the cost of `roundCadence` being generous would be a
+   *  wrong number on screen, which is why the honesty rule lives there and not here. */
+  const scheduledLobby =
+    keeper.status !== null && !keeper.stale && keeper.status.nextLobbyOpensAt !== null;
 
   // Tick only while something is genuinely counting down: the lobby deadline, the bell, or a
   // published next-lobby instant. A settled round with no cadence is static text and costs nothing.
   const phase = live?.phase ?? null;
-  const ticking = phase === "Lobby" || phase === "Fight" || nextLobbyOpensAtMs !== null;
+  const ticking = phase === "Lobby" || phase === "Fight" || scheduledLobby;
   const nowMs = useSecondTick(ticking);
 
   return roundPhaseCopy({
@@ -57,6 +48,6 @@ export function useRoundPhase(): RoundPhaseCopy {
     nowMs,
     programError: status.programError !== null,
     loading: status.loading,
-    nextLobbyOpensAtMs,
+    cadence: roundCadence(keeper, nowMs),
   });
 }

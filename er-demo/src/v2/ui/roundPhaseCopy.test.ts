@@ -9,6 +9,14 @@
 //   1. No countdown to an event with no cause. A Settled round with no keeper running must say so,
 //      not tick down to a lobby nobody is going to open.
 //   2. No control offered that the chain would refuse. `entriesOpen()`, never `phase === "Lobby"`.
+//   3. No BACKSTOP rendered as a schedule. Under the keeper's hold-open policy a lobby's on-chain
+//      `lobby_closes_at` is an hour away and means nothing; the only states allowed to count it down
+//      are the ones where no keeper is holding anything open. See `lobbyTiming` in the module.
+//
+// THE CADENCE IS AN INPUT, so all of this is still a pure function of the round and the clock: the
+// keeper's file is parsed and judged in `data/keeperStatus.ts`, converted in `ui/keeperCadence.ts`,
+// and arrives here already reduced to what may be SAID. Tests here therefore name a `Cadence` kind
+// directly rather than building a status file — the mapping from file to kind is that module's suite.
 
 import { describe, expect, it } from "vitest";
 import { FIGHT_TIMEOUT_SECONDS, type FighterView, type LiveRound, type PhaseName } from "../contract.ts";
@@ -65,7 +73,10 @@ function copy(over: Partial<RoundPhaseInput> = {}): RoundPhaseCopy {
     nowMs: NOW,
     programError: false,
     loading: false,
-    nextLobbyOpensAtMs: null,
+    // The default is the pre-keeper page: nothing is publishing a schedule, so the chain's own
+    // deadline is both the schedule and the backstop and every existing assertion below still
+    // describes the page an operator gets when they open a round by hand.
+    cadence: { kind: "no-keeper" },
     ...over,
   });
 }
@@ -84,6 +95,28 @@ const EVERY_STATE: { name: string; input: Partial<RoundPhaseInput> }[] = [
   {
     name: "lobby, deadline passed",
     input: { live: round({ phase: "Lobby", lobbyClosesAtMs: NOW - 1 }) },
+  },
+  {
+    // The hold-open lobby: an hour of on-chain backstop, the house already in the room, and no clock
+    // running because the keeper is waiting for a person rather than for a time.
+    name: "lobby, held open for players",
+    input: {
+      live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 3_600_000 }),
+      cadence: { kind: "waiting-for-players" },
+    },
+  },
+  {
+    // Same lobby, same hour of backstop, keeper gone quiet — the state this repo is in whenever the
+    // keeper is blocked, and the one where borrowing `lobby_closes_at` would print "closes in 59:47".
+    name: "lobby, keeper silent",
+    input: {
+      live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 3_600_000 }),
+      cadence: { kind: "keeper-silent" },
+    },
+  },
+  {
+    name: "settled, next lobby scheduled",
+    input: { live: round({ phase: "Settled" }), cadence: { kind: "next-lobby", seconds: 9 } },
   },
   { name: "drawing", input: { live: round({ phase: "Drawing" }) } },
   { name: "fight", input: { live: round({ phase: "Fight", fighters: [fighter({ isYou: true })] }) } },
@@ -155,9 +188,12 @@ describe("settled", () => {
   });
 
   it("counts down the moment a cadence exists, with no other change to the state", () => {
+    // THE OPERATOR'S COMPLAINT, AS AN ASSERTION. A settled round with a keeper running behind it is
+    // the one state that used to print "No timer for the next one" no matter what the keeper knew,
+    // because nothing was feeding this field.
     const withKeeper = copy({
       live: round({ phase: "Settled" }),
-      nextLobbyOpensAtMs: NOW + 8_400,
+      cadence: { kind: "next-lobby", seconds: 9 },
     });
     const without = copy({ live: round({ phase: "Settled" }) });
 
@@ -169,9 +205,18 @@ describe("settled", () => {
     expect(withKeeper.label).toBe(without.label);
   });
 
-  it("floors the countdown at zero rather than counting into the past", () => {
-    const c = copy({ live: round({ phase: "Settled" }), nextLobbyOpensAtMs: NOW - 30_000 });
-    expect(c.timing).toMatchObject({ kind: "countdown", seconds: 0 });
+  it("says the honest sentence for every silence, rather than holding a countdown at zero", () => {
+    // A next-lobby time that has passed, a keeper that died, a keeper wedged and retrying, a keeper
+    // that was never here: `keeperCadence.ts` reduces all four to a state with no number in it, and
+    // the copy's job is to have ONE true sentence for them rather than four readings a player cannot
+    // act on. `seconds: 0` never reaches this module, which is why no branch here can render it.
+    for (const kind of ["keeper-silent", "no-keeper"] as const) {
+      const c = copy({ live: round({ phase: "Settled" }), cadence: { kind } });
+      expect(c.timing).toEqual({
+        kind: "waiting",
+        text: "No timer for the next one — it opens when we start it.",
+      });
+    }
   });
 
   it("an abandoned round is not a settled one, and says why it never fought", () => {
@@ -195,9 +240,74 @@ describe("lobby", () => {
     // `close_lobby_and_draw` lands. A dock keyed on the phase offers a button the chain rejects.
     const late = copy({ live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 500 }) });
     expect(late.control).toBe("none");
-    expect(late.action).toMatch(/rejected/i);
+    // Not "a deposit gets rejected", which was the old wording and told a reader nothing they could
+    // act on. What they need is the way back in.
+    expect(late.action).toMatch(/next lobby/i);
     if (late.timing.kind !== "waiting") throw new Error("expected no deadline to count");
-    expect(late.timing.text).toMatch(/draw the seed/i);
+    expect(late.timing.text).toMatch(/seed/i);
+  });
+
+  // THE QUESTION THIS STATE EXISTS TO ANSWER. Between `lobby_closes_at` and the draw, the single
+  // most useful fact is whether the reader is in the round that is about to fight — one of them
+  // should sit still and watch, the other has nothing to wait for and wants the next lobby.
+  it("tells a player who got in apart from one who did not", () => {
+    const at = { phase: "Lobby" as const, lobbyClosesAtMs: NOW + 500 };
+    const mine = copy({ live: round({ ...at, fighters: [fighter({ isYou: true })] }) });
+    const theirs = copy({ live: round({ ...at, fighters: [fighter()] }) });
+
+    expect(mine.now).toMatch(/you are in/i);
+    expect(mine.action).toMatch(/watch/i);
+    expect(theirs.now).not.toMatch(/you are in/i);
+    expect(theirs.action).toMatch(/not in this one/i);
+    // Same round, same instant: only the reader's position in it differs.
+    expect(mine.control).toBe(theirs.control);
+    expect(mine.timing).toEqual(theirs.timing);
+  });
+
+  it("prefers the keeper's own close time over the chain's, when the keeper has named one", () => {
+    // The two deadlines are an hour apart and both are on the table: the chain will accept a deposit
+    // for another hour, and the keeper intends to close entries in twelve seconds because somebody
+    // arrived. Twelve is the number a player needs; sixty minutes is the number that reads as a dead
+    // room. Same sentence either way — the source is invisible and should be.
+    const c = copy({
+      live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 3_600_000 }),
+      cadence: { kind: "entries-close", seconds: 12 },
+    });
+    expect(c.control).toBe("deploy");
+    expect(c.timing).toEqual({ kind: "countdown", before: "Closes in", seconds: 12, after: "." });
+  });
+
+  it("NEVER counts an hour-away backstop down, in either state where one is sitting there", () => {
+    // RULE 3, AND THE REGRESSION THE WHOLE KEEPER CHAIN EXISTS TO PREVENT. Both of these rounds carry
+    // a real, live, in-the-future `lobbyClosesAtMs` that `entrySecondsLeft` would happily turn into
+    // "59:47" — technically true (the chain really would take a deposit) and completely useless. The
+    // only thing standing between that and a player is the cadence being consulted first.
+    for (const kind of ["waiting-for-players", "keeper-silent"] as const) {
+      const c = copy({
+        live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 3_600_000 }),
+        cadence: { kind },
+      });
+      expect(c.control).toBe("deploy"); // entries really are open — this is not a disabled state
+      expect(c.timing.kind).toBe("waiting");
+    }
+  });
+
+  it("reads as an invitation while the lobby is held open, not as a fault or a stuck timer", () => {
+    // The state has to say: the room is not empty, YOU are what it is waiting for, and here is what
+    // changes it. A player who reads this and does nothing has misread it.
+    const c = copy({
+      live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 3_600_000 }),
+      cadence: { kind: "waiting-for-players" },
+    });
+    expect(c.label).toBe("Open");
+    expect(c.now).toMatch(/house fighters/i);
+    expect(c.action).toMatch(/deploy/i);
+    if (c.timing.kind !== "waiting") throw new Error("a held-open lobby has no number to count");
+    expect(c.timing.text).toMatch(/until someone joins/i);
+    // Nothing in it may read as broken, stalled or errored — this is the healthy resting state of an
+    // arena between players, and the copy is the only thing distinguishing it from a dead one.
+    const all = `${c.now} ${c.action} ${c.timing.text}`;
+    expect(all).not.toMatch(/\b(error|failed|offline|unavailable|stuck|broken|sorry)\b|0:00/i);
   });
 
   it("says so plainly when the round carries no deadline at all", () => {

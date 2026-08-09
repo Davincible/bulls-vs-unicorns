@@ -36,6 +36,7 @@ import {
   entrySecondsLeft,
   type LiveRound,
 } from "../contract.ts";
+import type { Cadence } from "./keeperCadence.ts";
 
 /** When the state changes, in the only two honest shapes there are.
  *
@@ -68,36 +69,81 @@ export interface RoundPhaseInput {
   programError: boolean;
   /** The first round fetch is still in flight. */
   loading: boolean;
-  /** WHEN THE NEXT LOBBY OPENS, in epoch ms — or null, which is what it is today and the reason
-   *  this is an input at all.
+  /** WHAT THE KEEPER SAYS ABOUT TIME, this instant — `ui/keeperCadence.ts`, which is the only module
+   *  that reads the keeper's status file and the only one that may.
    *
-   *  Rounds are opened by a person running `scripts/`; there is no keeper, no schedule on chain, and
-   *  therefore no instant to count down to. The Settled state below renders the honest waiting
-   *  sentence while this is null and a real countdown the moment it is a number, so the cadence
-   *  drops in without a rewrite of the copy or of either surface. See `useRoundPhase()` in
-   *  `RoundPhaseNote.tsx` for the one line that will feed it. */
-  nextLobbyOpensAtMs: number | null;
+   *  IT IS AN INPUT RATHER THAN A LOOKUP so this stays a pure function of the round and the clock.
+   *  Every case in it has already been decided by `keeperCountdown()` in `data/keeperStatus.ts` — the
+   *  seconds are computed, floored and ceiled there, and every moment where no honest number exists
+   *  has already collapsed to `keeper-silent`. Nothing below re-derives any of that; the branches
+   *  here choose SENTENCES, never numbers.
+   *
+   *  The one thing this module must get right on its own is the difference between `keeper-silent`
+   *  and `no-keeper`, because it decides whether the chain's `lobby_closes_at` may be shown. See
+   *  `lobbyTiming` below. */
+  cadence: Cadence;
 }
 
-/** THE ONE SENTENCE THAT MUST NEVER BE FAKED, factored out because Settled and Abandoned both end
- *  in it: a round is over, and the way back in is a lobby nobody has scheduled. */
-function nextLobbyTiming(nextLobbyOpensAtMs: number | null, nowMs: number): PhaseTiming {
-  if (nextLobbyOpensAtMs === null) {
-    return {
-      kind: "waiting",
-      text: "No timer for the next one — it opens when we start it.",
-    };
+/** THE ONE SENTENCE THAT MUST NEVER BE FAKED, factored out because Settled, Abandoned and "no round"
+ *  all end in it: a round is over, and the way back in is a lobby that may or may not be scheduled.
+ *
+ *  ONE WAITING SENTENCE FOR ALL FOUR SILENT CASES, deliberately. Whether the keeper is absent, down,
+ *  stalled, or simply between commitments, the two facts a PLAYER needs are identical and both are
+ *  true in every one of them: there is no timer, and getting in costs them nothing but showing up
+ *  when it opens. Which of the four it is, is an operator's question, and this page has no operator
+ *  surface to answer it on — splitting the sentence would put four readings in front of a player who
+ *  can act on none of them. */
+function nextLobbyTiming(cadence: Cadence): PhaseTiming {
+  if (cadence.kind === "next-lobby") {
+    return { kind: "countdown", before: "Next lobby in", seconds: cadence.seconds, after: "." };
   }
   return {
-    kind: "countdown",
-    before: "Next lobby in",
-    seconds: Math.max(0, Math.ceil((nextLobbyOpensAtMs - nowMs) / 1000)),
-    after: ".",
+    kind: "waiting",
+    text: "No timer for the next one — it opens when we start it.",
   };
 }
 
+/** WHEN AN OPEN LOBBY STOPS TAKING DEPOSITS — and the one place on this page where reaching for the
+ *  chain's own deadline is sometimes right and sometimes a lie, which is why it is a function.
+ *
+ *  A lobby carries two deadlines that mean different things. `round.lobby_closes_at` is the BACKSTOP
+ *  the program enforces so a round always reaches a terminal state; the keeper's `entriesCloseAt` is
+ *  the SCHEDULE it actually intends to keep. Under the hold-open policy those are an hour apart, and
+ *  they are apart in the direction that reads as "nothing is happening here".
+ *
+ *  So the keeper outranks the chain whenever a keeper is there at all — including, and especially,
+ *  when it is there and SILENT. A keeper that has gone stale mid-hold leaves a lobby whose published
+ *  deadline is fifty-nine minutes of backstop; counting that down would be technically true (the
+ *  chain really would accept a deposit for fifty-nine minutes) and completely useless, which is the
+ *  precise failure this whole mechanism was built to delete. `no-keeper` is the only case that falls
+ *  through to the chain, and there it is the honest answer: nobody is holding anything open, so the
+ *  backstop IS the schedule. That is the pre-keeper page, the `?fixture=1` page, and an operator's
+ *  hand-opened round. */
+function lobbyTiming(cadence: Cadence, live: LiveRound, nowMs: number): PhaseTiming {
+  if (cadence.kind === "entries-close") {
+    return { kind: "countdown", before: "Closes in", seconds: cadence.seconds, after: "." };
+  }
+  if (cadence.kind !== "no-keeper") {
+    // Silent, or describing a round this page has already moved past — either way the keeper is the
+    // authority here and it is not naming a time. Says so, rather than borrowing the backstop.
+    return {
+      kind: "waiting",
+      text: "No close time we can show — it can close any moment.",
+    };
+  }
+  const secondsLeft = entrySecondsLeft(live, nowMs);
+  // Null is a real state, not a missing read: a round opened by a program revision without
+  // `lobby_closes_at` has no deadline to show (see `LiveRound.lobbyClosesAtMs`). Saying so is the
+  // honest fallback; a countdown invented from a client-side constant would be the one thing worse
+  // than none.
+  if (secondsLeft === null) {
+    return { kind: "waiting", text: "No close time set — it can close any moment." };
+  }
+  return { kind: "countdown", before: "Closes in", seconds: secondsLeft, after: "." };
+}
+
 export function roundPhaseCopy(input: RoundPhaseInput): RoundPhaseCopy {
-  const { live, nowMs, programError, loading, nextLobbyOpensAtMs } = input;
+  const { live, nowMs, programError, loading, cadence } = input;
 
   // A dead program is not a phase, but it is the reason nothing can be pressed — and it outranks
   // the phase, because with no program there is no `enter()` and no `extract()` either.
@@ -126,37 +172,47 @@ export function roundPhaseCopy(input: RoundPhaseInput): RoundPhaseCopy {
       label: "No round",
       now: "No round is open.",
       action: "Nothing to join yet.",
-      timing: nextLobbyTiming(nextLobbyOpensAtMs, nowMs),
+      timing: nextLobbyTiming(cadence),
     };
   }
 
   const no = live.roundNo.toString();
+  // Whether the reader has a fighter in this round. Several states below say something different to
+  // a player who is in it than to one who is not, and "am I in this?" is the first question any of
+  // them has to answer.
+  const entered = live.fighters.some((f) => f.isYou);
 
   switch (live.phase) {
     case "Lobby": {
       if (entriesOpen(live, nowMs)) {
-        const secondsLeft = entrySecondsLeft(live, nowMs);
+        // THE ROOM IS NOT EMPTY AND NOTHING IS WRONG — the state that used to have no words at all,
+        // and the one most likely to be read as broken if it borrowed any. The keeper has fielded the
+        // house so nobody arrives to an empty arena, and it will keep this lobby open at no cost
+        // until a real person turns up; there is no clock running, because it is not waiting on one.
+        //
+        // A COUNTDOWN HERE WOULD BE THE WORST AVAILABLE ANSWER in both directions: `lobby_closes_at`
+        // reads "closes in 59:47", which says nothing is happening, and a timer parked at 0:00 says
+        // something is stuck. So the three clauses carry it instead — what is true (house only), what
+        // to do (deploy, and it is YOU that starts it), and when it changes (when someone joins).
+        // The player is not waiting on this state; they are the thing it is waiting for.
+        if (cadence.kind === "waiting-for-players") {
+          return {
+            control: "deploy",
+            label: "Open",
+            now: `Round ${no} is open, with only house fighters in it so far.`,
+            action: "Pick a side and deploy — the first real player starts the clock.",
+            timing: {
+              kind: "waiting",
+              text: "We hold it open until someone joins, so nothing is counting down yet.",
+            },
+          };
+        }
         return {
           control: "deploy",
           label: "Open",
           now: `Round ${no} is open.`,
           action: "Pick a side and deploy.",
-          timing:
-            // Null is a real state, not a missing read: a round opened by a program revision without
-            // `lobby_closes_at` has no deadline to show (see `LiveRound.lobbyClosesAtMs`). Saying so
-            // is the honest fallback; a countdown invented from a client-side constant would be the
-            // one thing worse than none.
-            secondsLeft === null
-              ? {
-                  kind: "waiting",
-                  text: "No close time set — it can close any moment.",
-                }
-              : {
-                  kind: "countdown",
-                  before: "Closes in",
-                  seconds: secondsLeft,
-                  after: ".",
-                },
+          timing: lobbyTiming(cadence, live, nowMs),
         };
       }
       // THE WINDOW THE OLD COPY HAD NO WORDS FOR. `enter` is refused from `lobby_closes_at`, but the
@@ -165,12 +221,26 @@ export function roundPhaseCopy(input: RoundPhaseInput): RoundPhaseCopy {
       // every deposit sent to it.
       return {
         control: "none",
-        label: "Closed",
-        now: `Round ${no} stopped taking deposits.`,
-        action: "Too late to join this one — a deposit now gets rejected.",
+        // WHAT THIS STATE USED TO SAY, and why it was useless: "Round 38 stopped taking deposits.
+        // Too late to join this one, a deposit now gets rejected. The fight starts once we draw the
+        // seed." Three sentences, one fact, and none of the three things a player actually wants to
+        // know — am I in this one, when does it start, and when can I play if I'm not.
+        //
+        // The answer to the first was sitting right here in `live.fighters` the whole time.
+        label: "Fight starting",
+        now: entered
+          ? `You are in round ${no}. It is closed now and about to fight.`
+          : `Round ${no} is closed and about to fight.`,
+        action: entered
+          ? "Nothing to do, just watch. Your extract button appears the moment it starts."
+          : "You are not in this one. The next lobby is the way in.",
         timing: {
           kind: "waiting",
-          text: "The fight starts once we draw the seed.",
+          // No number exists here and inventing one would be the lie this file refuses everywhere
+          // else: the seed is drawn by a separate transaction, so "seconds" is a description of how
+          // it behaves and not a clock. Saying that plainly still beats the old text, which implied
+          // a wait of unknown length and unknown cause.
+          text: "It begins the moment the seed is drawn, usually a few seconds.",
         },
       };
     }
@@ -190,12 +260,11 @@ export function roundPhaseCopy(input: RoundPhaseInput): RoundPhaseCopy {
       };
 
     case "Fight": {
-      const youAreIn = live.fighters.some((f) => f.isYou);
       return {
         control: "extract",
         label: "Fighting",
         now: `Round ${no} is fighting.`,
-        action: youAreIn
+        action: entered
           ? "Extract to bank what is left and get out."
           : "You are not in this one.",
         timing: live.resolvable
@@ -220,7 +289,7 @@ export function roundPhaseCopy(input: RoundPhaseInput): RoundPhaseCopy {
         label: "Round over",
         now: `Round ${no} is done.`,
         action: "Nothing to deposit into. Replay and check it in 00-7.",
-        timing: nextLobbyTiming(nextLobbyOpensAtMs, nowMs),
+        timing: nextLobbyTiming(cadence),
       };
 
     case "Abandoned":
@@ -231,7 +300,7 @@ export function roundPhaseCopy(input: RoundPhaseInput): RoundPhaseCopy {
         // There is no winner, no seed and no fight in one — so it must not read as settled.
         now: `Round ${no} expired — fewer than two players joined.`,
         action: "No fight to watch.",
-        timing: nextLobbyTiming(nextLobbyOpensAtMs, nowMs),
+        timing: nextLobbyTiming(cadence),
       };
   }
 }

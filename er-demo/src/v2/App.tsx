@@ -13,6 +13,7 @@ import { ArenaProvider } from "./data/ArenaProvider.tsx";
 import { useArena } from "./data/useArena.ts";
 import { BottomChrome, TopChrome } from "./ui/Chrome.tsx";
 import { IntroOverlay } from "./ui/IntroOverlay.tsx";
+import { KeeperStatusProvider } from "./ui/KeeperStatusProvider.tsx";
 import { SideRail } from "./ui/SideRail.tsx";
 import { StakeDock } from "./ui/StakeDock.tsx";
 import { StickyStatus } from "./ui/StickyStatus.tsx";
@@ -183,7 +184,13 @@ function Shell() {
 export function App() {
   return (
     <ArenaProvider>
-      <Shell />
+      {/* The keeper's status file, polled ONCE for the whole page — `ui/keeperCadence.ts` explains
+          why it cannot be polled per phase-note, and `KeeperStatusProvider.tsx` why the `<Shell />`
+          element is passed as a child rather than the hook being called inside it. Outside the
+          shell's own state so a poll landing re-renders only the surfaces that show a countdown. */}
+      <KeeperStatusProvider>
+        <Shell />
+      </KeeperStatusProvider>
     </ArenaProvider>
   );
 }
