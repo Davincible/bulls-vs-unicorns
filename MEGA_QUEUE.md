@@ -321,6 +321,39 @@ with eATAs it becomes MagicBlock's shared per-mint Global Vault. `ER_DESIGN_DECI
 deciding deliberately rather than drifting into." Devnet-only either way; not a mainnet question yet
 because this fork cannot reach mainnet by construction (ER-000).
 
+### Session Keys for `enter`/`extract` · **PARKED (2026-08-09, researched — not a quick add)**
+Real and directly relevant: `enter`/`extract` both require the player's own wallet (`Signer<'info>`),
+and `extract` needs to be pressable mid-fight without a Phantom popup per press. Researched properly
+before touching the program again, given this session already found and fixed 4 real bugs in it.
+
+**The mechanism** (`github.com/magicblock-labs/session-keys`, crates.io `session-keys` v3.1.1, MIT):
+compiled directly into our program, not a CPI — `#[derive(Session)]` on the Accounts struct,
+`#[session_auth_or(...)]` wrapping the instruction, a `SessionToken` PDA (minted by a *separate*
+`create_session` instruction the client submits directly to the session-keys program, seeds
+`[SEED_PREFIX, target_program, session_signer, authority]`).
+
+**Two concrete blockers, not just "needs care":**
+1. **No non-React client SDK confirmed.** The only real published client package is
+   `@magicblock-labs/gum-react-sdk` (React-specific). `web/index.html` is vanilla JS with a stated
+   no-build-step constraint — adopting this means either taking on React or hand-rolling the
+   client-side session flow without their SDK, which is a materially bigger scope than "add a
+   library."
+2. **Untested combination with ER delegation.** `SessionToken` lives on the BASE layer; `Round` is
+   delegated to the ER when `enter`/`extract` run. No evidence anywhere (their own test suite, issue
+   trackers on either repo) that anyone has combined Session Keys with ephemeral-rollups-sdk
+   delegation — this fork would be the first integration test of that combination, not a known-good
+   pattern.
+
+Also: `Enter`/`Extract`'s current design keys fighters by wallet lookup inside the account array, not
+a separate "authority" field — `session_auth_or`'s ownership check isn't a drop-in given that shape.
+And an open upstream issue (`session-keys#1`) flags incomplete interop with some Anchor signer
+constraint shapes — likely doesn't block us (we use plain `Signer<'info>`), but signals the library's
+Anchor-constraint testing isn't exhaustive.
+
+**Verdict:** prototype `#[session_auth_or]` on `extract` alone, in isolation, before touching `enter`
+— and budget a real review pass before redeploying, same rigor as this session's fixes, not less.
+Not attempted this session; parked with this research so a future pass starts grounded, not guessing.
+
 ### Private ER (TEE) · **REJECTED, not parked**
 `ER_DESIGN_DECISIONS.md`: a TEE-shielded rollup contradicts the product's entire trust proposition
 ("every round is recomputable in your browser from that seed"). Not reconsidered.
