@@ -216,7 +216,28 @@ export function Tabs<T extends string>({
  *
  *  `tabIndex={0}` makes the panel itself reachable: a panel whose content is a table of text has no
  *  focusable descendant at all, and without it a keyboard user tabs straight from the tablist past
- *  the thing they just selected. */
+ *  the thing they just selected.
+ *
+ *  IT IS SOMETIMES A DUPLICATE STOP, AND IT STAYS ANYWAY. ARIA's own authoring practice is to give a
+ *  tabpanel `tabindex="0"` only when it holds nothing focusable, and since `views/ScrollBox.tsx`
+ *  started contributing a stop for boards that overflow, two of the three leaderboard panels hold
+ *  something: tabbing the all-time board now lands on the panel and then immediately on the scroll
+ *  region inside it. Counted across the six states that actually ship (three boards x {1440px, 390px},
+ *  at 8 and 16 fighters):
+ *
+ *      this round   0 focusable descendants, at every width and every roster size
+ *      hall of fame 0 at 390px, 1 at 1440px (the ScrollBox, once the board is long enough to scroll)
+ *      all-time     2 at 390px, 6 at 1440px (five sort headers, plus the ScrollBox)
+ *
+ *  So the blanket attribute is REQUIRED in two of those six and redundant in four. The two are not
+ *  edge cases — "this round" is the board this screen opens on. Removing the attribute to satisfy the
+ *  pattern would trade one surplus keystroke on the busy boards for a panel a keyboard cannot enter
+ *  at all on the default one, which is the wrong direction to err in. Making it conditional would
+ *  mean a primitive asking at runtime whether its own children are focusable — a MutationObserver, re-
+ *  run on every sort and every resize — to save that keystroke.
+ *
+ *  If a future panel makes the duplication genuinely costly, the fix is a `focusable` prop decided by
+ *  the call site, which knows what it is rendering. It is not a `querySelectorAll` in here. */
 export function TabPanel({ ns, id, children }: { ns: string; id: string; children: ReactNode }) {
   return (
     <div role="tabpanel" id={panelDomId(ns, id)} aria-labelledby={tabDomId(ns, id)} tabIndex={0}>

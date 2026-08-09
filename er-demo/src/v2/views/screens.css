@@ -330,8 +330,31 @@
 /* ONE BAND, AND ONLY THIS BAND, LOSES THE RAIL. Above it the row is wide enough to need one; below
    it the board has dropped to five columns and is wide enough to afford one again. In between the
    full column set is still on screen and there is no slack left to draw in — this is the only width
-   at which the rail would be squeezing the figures rather than filling a gap between them. */
-@media (min-width: 901px) and (max-width: 999px) {
+   at which the rail would be squeezing the figures rather than filling a gap between them.
+
+   THE BAND ENDED AT 999px AND THE CONDITION DID NOT. Measured across 960/1000/1024/1100/1152/1200:
+   the rail's track is `minmax(60px, 1fr)` and it is the first thing the grid starves, so from 1000px
+   up to ~1180px it sits at its 60px floor while its own header needs 67px ("P/L scale") or 89px
+   ("Profit scale") — and a `columnheader` that does not fit does not wrap, it ellipsises. The band
+   this rule was written for therefore covered less than half of itself: 1024 and 1152 — the two
+   commonest laptop widths there are — both printed a rail labelled "P/L scal…".
+
+   THE HEADER IS NOT THE THING TO SHORTEN, which is the obvious alternative and the wrong one. On the
+   all-time board the rail sits between Wallet and Rounds, FOUR columns away from the P/L figures it
+   draws, with Staked and Returned in between; "Scale" alone would leave a reader to guess which of
+   three money columns the bar belongs to. The word is load-bearing at every width, so it stays at
+   every width — and a header that changes wording between a laptop and a monitor would be two
+   different tables to anyone comparing them anyway.
+
+   WIDENING THE TRACK IS NOT AVAILABLE EITHER: at 1000px the all-time row is within ~10px of the sum
+   of its own column minimums, so the 7px the header needs comes straight back out as a sideways
+   scrollbar inside the box — the exact fault the block above this one exists to prevent.
+
+   So the band grows to meet its condition. What 1000-1199 loses is a bar; every number that bar
+   scales is still printed as a figure in the P/L column beside it, and the `--cols` below hand the
+   freed track to those figures rather than leaving a gap. Losing a redundant graphic beats keeping a
+   mislabelled one. */
+@media (min-width: 901px) and (max-width: 1199px) {
   .scr .sc-w { display: none !important; }
 
   .scr .sc-tbl--lba { --cols: 30px minmax(120px, 1fr) 64px 84px 104px 112px 124px 84px; }
