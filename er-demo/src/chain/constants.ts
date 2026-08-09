@@ -27,7 +27,7 @@ assertDevnetUrl(BASE_RPC, "base devnet RPC");
 // A ROUND NUMBER FROM AN OLDER ID DOES NOT EXIST HERE: a new program id has its own Arena PDA and its
 // own counter, so this deployment's rounds start again at #1. App.tsx already follows the arena's own
 // `round_counter`, so nothing needs to be told; its `DEFAULT_ROUND_NO` is only a pre-load placeholder.
-export const PROGRAM_ID = new PublicKey("CchN3JPWta2uVxKhwScBQhtPG5gpsaRzf3RA4aPCDam2");
+export const PROGRAM_ID = new PublicKey("CH7K8rDXgPQRs9CCHG9EK5kd1YSDZyPkCDGArcz4PSNP");
 
 // Verified from the ephemeral-vrf-sdk crate source (MEGA_QUEUE.md ER-060) — the EPHEMERAL queue,
 // not the base one, because by the time close_lobby_and_draw runs the round is already

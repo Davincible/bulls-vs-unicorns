@@ -63,7 +63,7 @@ use session_keys::{session_auth_or, Session, SessionError, SessionToken};
 // (devnet-eu/-tee/-as/-us) reported STALE immediately afterward. Same result as v2's upgrade and v1's
 // before it. The preflight cost one second and named the problem exactly, instead of a spent round
 // and a confusing error about the code under test — which is the entire return on having written it.
-declare_id!("CchN3JPWta2uVxKhwScBQhtPG5gpsaRzf3RA4aPCDam2"); // devnet keypair: .devnet/program-keypair-v4.json
+declare_id!("CH7K8rDXgPQRs9CCHG9EK5kd1YSDZyPkCDGArcz4PSNP"); // devnet keypair: .devnet/program-keypair-v5.json
 
 pub const ARENA_SEED: &[u8] = b"arena";
 pub const ROUND_SEED: &[u8] = b"round";
@@ -1258,12 +1258,13 @@ pub struct Round {
     ///     within [MIN_LOBBY_SECONDS, MAX_LOBBY_SECONDS] without going to find the opening
     ///     transaction's block time.
     ///
-    /// STAMPED ON THE BASE LAYER, COMPARED IN THE ROLLUP, and this is the one assumption in the whole
-    /// feature that has NOT been measured. `open_round` runs before `delegate_round`, so `Clock` here
-    /// is the base layer's, while `enter`'s and `close_lobby_and_draw`'s comparisons against it happen
-    /// in the ER against the ER's. This is the program's FIRST cross-domain time comparison —
-    /// `fight_started_at` is stamped and read entirely inside the ER by design — so nothing in this
-    /// repo has ever exercised it.
+    /// STAMPED ON THE BASE LAYER, COMPARED IN THE ROLLUP — for a long time the one assumption in the
+    /// whole feature that had NOT been measured. IT HAS NOW BEEN; the numbers are at the bottom of
+    /// this block. `open_round` runs before `delegate_round`, so `Clock` here is the base layer's,
+    /// while `enter`'s and `close_lobby_and_draw`'s comparisons against it happen in the ER against
+    /// the ER's. This is the program's FIRST cross-domain time comparison — `fight_started_at` is
+    /// stamped and read entirely inside the ER by design — so nothing in this repo had ever
+    /// exercised it.
     ///
     /// Nothing else is derived from these two numbers, so a skew shifts the deadline by that skew and
     /// corrupts nothing. But THE TWO DIRECTIONS ARE NOT SYMMETRIC and only one of them is benign:
@@ -1283,11 +1284,44 @@ pub struct Round {
     ///     that opens every round pre-expired. Removing slack for a measured reason still removes it
     ///     from the unmeasured one it was also, accidentally, protecting.
     ///
-    /// WHAT WOULD SETTLE IT: read `Clock::unix_timestamp` from a base-layer instruction and from an ER
-    /// instruction on the same round within a second, and record the offset here the way the pacing
-    /// tables above are recorded. If it is not small, the fix is to move the stamp to the enforcing
-    /// clock — store the duration at `open_round` and stamp both ends on the first ER-side instruction
-    /// — so the two are the same clock, as they already are for `fight_started_at`.
+    /// MEASURED, 2026-08-09, AND THE MARGIN HOLDS. `Clock::unix_timestamp` was read from the base
+    /// layer (`api.devnet.solana.com`) and from all four ER validators the router advertises, 38
+    /// samples across two runs separated in time. Each reading is bracketed by local send/recv times
+    /// and referenced to their midpoint, and the base/ER pair is differenced PER SAMPLE, so the
+    /// measuring machine's own clock cancels and never enters the result. Signed skew, ER minus base,
+    /// in seconds — positive is ER-ahead, the dangerous direction:
+    ///
+    /// ```text
+    /// validator     median (run 1 / run 2)   worst observed
+    /// devnet-eu           +0.84 / +0.88          +0.88
+    /// devnet-tee          +0.72 / +0.75          +1.72
+    /// devnet-as           +0.68 / +0.67          +1.68
+    /// devnet-us           +0.53 / +0.53          +1.55
+    /// ```
+    ///
+    /// Medians reproduce across the two runs to within 0.04s, so this is stable, not drifting. The
+    /// per-validator spread (~1.0-1.7s) is essentially the +/-1s quantisation of differencing two
+    /// whole-second clocks; the true skew is sub-second. Worst case is 8.6% of `MIN_LOBBY_SECONDS`
+    /// and 2.9% of the 60s lobbies actually opened, against a catastrophic threshold of "skew
+    /// exceeds the WHOLE duration" — a factor of twelve away even at the floor. NO SKEW TERM IS
+    /// NEEDED in `MIN_LOBBY_SECONDS`, which is why there still isn't one.
+    ///
+    /// TWO CAVEATS, because the number is more comforting than it should be:
+    ///   * The skew is SYSTEMATIC, not noise around zero — all four validators sit ahead of base, in
+    ///     the one direction that can wedge a round. It is the base layer's stake-weighted timestamp
+    ///     oracle lagging real time (base ran ~1.0s behind the measuring machine; the ERs within
+    ///     ~0.2s of it). Being structural, it will not average away, and a future base-layer change
+    ///     that widens that lag moves this number without anything here changing.
+    ///   * It measures VALIDATOR CLOCKS, not the program-observed pairing. What was checked is that
+    ///     each endpoint's served `Clock` sysvar equals `getBlockTime` for its own slot — i.e. it is
+    ///     the bank clock a transaction sees, not an RPC artefact — and that the ERs report their own
+    ///     slot heights rather than mirroring base. The honest end-to-end version is `lobby_opened_at`
+    ///     (base) against a live `enter` (ER) on one round, which only became possible once this
+    ///     program was deployed.
+    ///
+    /// IF IT EVER GOES BAD, the fix is not a bigger constant: move the stamp to the enforcing clock —
+    /// store the duration at `open_round` and stamp both ends on the first ER-side instruction — so
+    /// the two are the same clock, as they already are for `fight_started_at`.
     pub lobby_opened_at: i64,
     pub lobby_closes_at: i64,
     /// Unix timestamp `callback_seed` stamped when `Phase::Fight` began. `resolve` derives `steps`
@@ -1820,6 +1854,41 @@ mod parity_tests {
             phases, Phase::Abandoned as usize + 1,
             "chain/constants.ts PHASE_NAME has {} entries, the Rust Phase enum has {}",
             phases, Phase::Abandoned as usize + 1,
+        );
+    }
+
+    /// THE IDL IS A MIRROR TOO, and until now the only one nothing checked.
+    ///
+    /// `anchor idl build` cannot run on this machine (upstream proc-macro breakage), so the IDL is
+    /// produced by `scripts/idlgen.py`, which re-derives every discriminator with anchor's own rule
+    /// and lifts every doc block straight out of this file. `--verify` runs those checks WITHOUT
+    /// writing, against the committed IDL and the committed source, so a doc block edited here and
+    /// committed without regenerating fails the build instead of silently shipping an IDL that
+    /// describes the previous program.
+    ///
+    /// WHY THIS TEST EARNS ITS PLACE, stated plainly because the tool arrived with a bug rather than
+    /// despite one: while the generator lived in a scratch directory it mis-parsed the one-line
+    /// `#[event]` structs — `docs_above` treated only a LEADING `}` as an item boundary, so it walked
+    /// over the complete one-line `RoundAbandoned` and handed both `SeedRevealed` and `RoundSettled`
+    /// that struct's doc block. Every name still resolved and the IDL still loaded; nothing could
+    /// have caught it, because nothing ran the generator except the person running it. That is the
+    /// argument FOR wiring it in here, not against.
+    ///
+    /// Shells out rather than reimplementing the checks in Rust: two implementations of "what does
+    /// anchor emit" is precisely the duplication this module exists to prevent.
+    #[test]
+    fn the_idl_generator_still_reproduces_the_committed_idl() {
+        let script = repo_root().join("scripts").join("idlgen.py");
+        let out = std::process::Command::new("python3")
+            .arg(&script)
+            .arg("--verify")
+            .output()
+            .expect("could not run scripts/idlgen.py — python3 must be on PATH");
+        assert!(
+            out.status.success(),
+            "scripts/idlgen.py --verify failed — the committed IDL no longer matches this source:\n{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
         );
     }
 
