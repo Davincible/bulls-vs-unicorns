@@ -43,8 +43,36 @@ export interface ActiveSession {
   signTransaction: <T extends Transaction>(tx: T) => Promise<T>;
 }
 
+/** gum types its `error` as `string | null`. It is not: a failed `create_session` surfaces the raw
+ *  `SendTransactionError` OBJECT (`{signature, transactionMessage, transactionLogs,
+ *  programErrorStack}`). Rendering that straight into JSX throws "Objects are not valid as a React
+ *  child" and white-screens the whole app — found by running it, not by reading the `.d.ts`, which
+ *  says the opposite. Normalised here, at the boundary where gum's value enters our code, so no
+ *  consumer can be caught by it; and we pull the useful text out rather than flattening to
+ *  "[object Object]", because the reason a session failed is usually the only thing worth knowing
+ *  (most often: the burner wallet can't cover the session's top-up + fees). */
+function normalizeGumError(e: unknown): string | null {
+  if (e == null) return null;
+  if (typeof e === "string") return e;
+  if (typeof e === "object") {
+    const o = e as { transactionMessage?: unknown; message?: unknown; transactionLogs?: unknown };
+    const head = typeof o.transactionMessage === "string" ? o.transactionMessage
+      : typeof o.message === "string" ? o.message
+      : null;
+    // The program's own `Error Code: <name>` line, when there is one, is far more useful than the
+    // generic "Transaction simulation failed" wrapper around it.
+    const logs = Array.isArray(o.transactionLogs) ? o.transactionLogs : [];
+    const coded = logs.find((l): l is string => typeof l === "string" && l.includes("Error Code:"));
+    if (head && coded) return `${head} — ${coded.trim()}`;
+    if (head) return head;
+    if (coded) return coded.trim();
+  }
+  return String(e);
+}
+
 export interface SessionManager {
   isLoading: boolean;
+  /** Always a string or null — see `normalizeGumError`. gum's own type for this lies. */
   error: string | null;
   /** Non-null only once a session exists and is actually usable (a real keypair loaded, a real
    *  token PDA resolved). Null means "no session" — every call site falls back to direct wallet
@@ -121,13 +149,33 @@ export function useAppSessionManager(
     };
   }, [gum.sessionToken, gum.publicKey, gum.signTransaction, wallet.publicKey, targetProgram, cluster]);
 
+  // Checked BEFORE calling gum, because gum's own failure for this is a raw SendTransactionError
+  // whose readable text ("Attempt to debit an account but found no record of a prior credit") never
+  // mentions the actual problem — that the wallet has to cover the session key's top-up on top of
+  // fees. An unfunded burner is the single most likely reason a first-time user's "start session"
+  // fails, so it gets a message that says what to do instead of one that needs decoding.
   const createSession = useCallback(async () => {
+    const needed = SESSION_TOP_UP_LAMPORTS + 0.001 * 1_000_000_000; // top-up + headroom for fees/rent
+    const balance = await connection.getBalance(wallet.publicKey).catch(() => null);
+    if (balance !== null && balance < needed) {
+      throw new Error(
+        `wallet has ${(balance / 1_000_000_000).toFixed(4)} SOL but starting a session needs about ` +
+        `${(needed / 1_000_000_000).toFixed(3)} (it funds the session key so IT can pay for enter/extract). ` +
+        `Fund it first: bun scripts/fund-wallet.mjs ${wallet.publicKey.toBase58()}`,
+      );
+    }
     await gum.createSession(targetProgram, SESSION_TOP_UP_LAMPORTS, SESSION_VALID_MINUTES);
-  }, [gum, targetProgram]);
+  }, [gum, targetProgram, connection, wallet.publicKey]);
 
   const revokeSession = useCallback(async () => {
     await gum.revokeSession();
   }, [gum]);
 
-  return { isLoading: gum.isLoading, error: gum.error, active, createSession, revokeSession };
+  return {
+    isLoading: gum.isLoading,
+    error: normalizeGumError(gum.error),
+    active,
+    createSession,
+    revokeSession,
+  };
 }

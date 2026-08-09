@@ -113,6 +113,15 @@ at `24 * 60` (it throws "Expiry cannot be more than 24 hours" above that). Passi
 timestamp — the obvious reading of the name and type — throws. Since no source ships (see the entry
 below), the `.d.ts` is the only spec a consumer has, and it's wrong.
 
+**[BUG] `useSessionKeyManager`'s `error` is typed `string | null` but returns an OBJECT.** On a failed
+`create_session` it surfaces the raw `SendTransactionError` (`{signature, transactionMessage,
+transactionLogs, programErrorStack}`). Any consumer that trusts the type and renders it — which in
+React is the obvious thing to do, `<p>{error}</p>` — throws *"Objects are not valid as a React child"*
+and **white-screens the entire app**. A hook whose whole purpose is smoothing UX shouldn't be able to
+take the page down through its documented error channel. Found by clicking the button in a browser;
+the `.d.ts` says the opposite and TypeScript therefore can't catch it. We now normalise it at the
+boundary before it reaches any component.
+
 **[GAP] `SessionError::InvalidToken` is error code 6001** — which, for any Anchor program whose own
 second error variant is also 6001, collides on the wire. Ours is `ArenaError::RoundOutOfOrder`; both
 render as `0x1771`. A decoder using *our* IDL confidently reports a session-auth rejection as

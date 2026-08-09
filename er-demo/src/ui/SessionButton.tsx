@@ -7,6 +7,7 @@
 // wallet/connection/program-id wiring EnterForm.tsx and ExtractButton.tsx also need) and renders it.
 // No chain calls of its own.
 
+import { useState } from "react";
 import type { SessionManager } from "../chain/session/useSessionKeyManager.ts";
 
 function truncate(base58: string): string {
@@ -19,6 +20,15 @@ export interface SessionButtonProps {
 
 export function SessionButton({ session }: SessionButtonProps) {
   const { active, isLoading, error, createSession, revokeSession } = session;
+  // `void createSession()` would drop a thrown error as an unhandled rejection — including the
+  // useful pre-flight one ("wallet has X SOL but starting a session needs Y... fund it first"),
+  // which would then be invisible to exactly the person who needs it. Caught and shown.
+  const [localError, setLocalError] = useState<string | null>(null);
+  const run = (fn: () => Promise<void>) => async () => {
+    setLocalError(null);
+    try { await fn(); } catch (e) { setLocalError(e instanceof Error ? e.message : String(e)); }
+  };
+  const shown = localError ?? error;
 
   return (
     <section aria-label="session">
@@ -27,21 +37,25 @@ export function SessionButton({ session }: SessionButtonProps) {
         <p>
           session active — signing as <code title={active.signerPubkey.toBase58()}>{truncate(active.signerPubkey.toBase58())}</code>{" "}
           on behalf of your wallet. Enter and Extract no longer prompt for a signature.{" "}
-          <button type="button" disabled={isLoading} onClick={() => void revokeSession()}>
+          <button type="button" disabled={isLoading} onClick={() => void run(revokeSession)()}>
             {isLoading ? "revoking..." : "revoke session"}
           </button>
         </p>
       ) : (
         <p>
-          <button type="button" disabled={isLoading} onClick={() => void createSession()}>
+          <button type="button" disabled={isLoading} onClick={() => void run(createSession)()}>
             {isLoading ? "starting..." : "start session"}
           </button>{" "}
           one signature now, then Enter and Extract sign silently for the rest of this round.
         </p>
       )}
-      {error && (
-        <p className="session-error" role="alert">
-          session error: {error}
+      {shown && (
+        <p className="status-error" role="alert">
+          {/* `String(...)` is not redundant defensiveness: gum types this channel as `string | null`
+              and actually returns a SendTransactionError object, which React refuses to render and
+              which took the whole page down before useSessionKeyManager started normalising it.
+              Belt and braces — this component must not be the thing that white-screens a demo. */}
+          session error: {String(shown)}
         </p>
       )}
     </section>
