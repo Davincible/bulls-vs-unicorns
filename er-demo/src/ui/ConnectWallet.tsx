@@ -63,38 +63,58 @@ export function ConnectWallet({ keypair, connection }: ConnectWalletProps) {
   const isUnfunded = balanceLamports === 0;
 
   return (
-    // `wallet-strip` (App.css) lays this out as one horizontal row rather than a stack of
+    // `wallet-strip` (App.css) lays this out as one instrument row rather than a stack of
     // paragraphs: it's the full width of the page above the arena, and three stacked lines of
     // secondary information there pushed the canvas — the thing the demo is about — below the fold.
+    // Each fact is a labelled cell (micro-label over value), the same shape every other figure in
+    // the app is rendered with, so the row reads as a status bar instead of a sentence.
     <section aria-label="wallet" className="wallet-strip">
       <h2>Wallet</h2>
-      <p>
-        burner: <code title={pubkey}>{truncate(pubkey)}</code>{" "}
-        <button type="button" onClick={() => void handleCopy()}>
-          {copied ? "copied" : "copy"}
-        </button>
-      </p>
-      <p>
-        balance:{" "}
-        {balanceError !== null ? (
-          // Same reasoning as RoundPanel's poll error: this retries every BALANCE_POLL_MS, so it
-          // belongs in place rather than as a toast per attempt. Marked up as an error rather than
-          // reading as a plain balance value, which is what "error: ..." as bare text looked like.
-          <span className="status-error" role="alert">
-            error: {balanceError}
-          </span>
-        ) : balanceLamports === null ? (
-          "loading..."
-        ) : (
-          `${(balanceLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`
-        )}
-      </p>
+
+      <div className="wallet-cell">
+        <span className="wallet-cell__label">burner</span>
+        <span className="wallet-cell__value">
+          <code title={pubkey}>{truncate(pubkey)}</code>
+          <button
+            type="button"
+            className="btn--tiny"
+            /* The visible label alone ("copy") doesn't say WHAT gets copied once it's sitting in a
+               row beside a balance and a fund command. The accessible name does. */
+            aria-label="copy burner address to clipboard"
+            onClick={() => void handleCopy()}
+          >
+            {copied ? "copied" : "copy"}
+          </button>
+        </span>
+      </div>
+
+      <div className="wallet-cell">
+        <span className="wallet-cell__label">balance</span>
+        <span className="wallet-cell__value">
+          {balanceError !== null ? (
+            // Same reasoning as RoundPanel's poll error: this retries every BALANCE_POLL_MS, so it
+            // belongs in place rather than as a toast per attempt. Marked up as an error rather than
+            // reading as a plain balance value, which is what "error: ..." as bare text looked like.
+            <span className="status-error" role="alert">
+              error: {balanceError}
+            </span>
+          ) : balanceLamports === null ? (
+            <span className="status-muted">loading…</span>
+          ) : (
+            // The unit is never dropped — UI-REDESIGN-BRIEF.md Part 2: "every figure names its
+            // unit", written after this codebase shipped two separate unit bugs.
+            <>
+              {(balanceLamports / LAMPORTS_PER_SOL).toFixed(4)} <span className="status-muted">SOL</span>
+            </>
+          )}
+        </span>
+      </div>
+
       {isUnfunded && (
-        <p className="status-warn">
-          this wallet has no SOL and can't sign fee-paying transactions yet. Fund it from a terminal:
-          <br />
+        <div className="wallet-strip__warn" role="status">
+          <span>this wallet has no SOL and can&apos;t sign fee-paying transactions yet — fund it from a terminal:</span>
           <code>bun scripts/fund-wallet.mjs {pubkey}</code>
-        </p>
+        </div>
       )}
     </section>
   );

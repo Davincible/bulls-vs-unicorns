@@ -199,29 +199,42 @@ function App() {
         )}
 
         <div className="app-layout">
-          <div className="app-arena">
-            {showArena ? (
-              <PixiCanvas
-                fighters={renderFighters}
-                hitEvents={hitEvents}
-                fightStartedAtMs={fightStartedAtMs}
-                phase={round.phaseName}
-              />
-            ) : (
-              <div className="app-arena-placeholder" aria-label="arena-placeholder">
-                the arena appears once the lobby closes and fighters are locked in
-              </div>
-            )}
-            {/* The canvas is the thing everyone in the room is looking at, so the one sentence that
-                explains what they're looking at belongs under it, not in a sidebar panel they'd
-                have to go find. */}
-            <p className="app-arena-caption">
-              <span>
-                Every impact is a real on-chain exchange, replayed from this round's revealed seed —
-                the drifting and bouncing is cosmetic, the hits are not.
-              </span>
-              <span className="app-arena-phase">{round ? round.phaseName : "no round"}</span>
-            </p>
+          {/* The left column: the arena, and beneath it the verification panel. Both belong to the
+              same reading — watch the fight, then check the fight — and putting them in one column
+              also fills what was ~900px of dead space under a 540px canvas on a 1500px page. */}
+          <div className="app-stage">
+            <div className="app-arena">
+              {showArena ? (
+                <PixiCanvas
+                  fighters={renderFighters}
+                  hitEvents={hitEvents}
+                  fightStartedAtMs={fightStartedAtMs}
+                  phase={round.phaseName}
+                />
+              ) : (
+                <div className="app-arena-placeholder" aria-label="arena-placeholder">
+                  the arena appears once the lobby closes and fighters are locked in
+                </div>
+              )}
+              {/* The canvas is the thing everyone in the room is looking at, so the one sentence
+                  that explains what they're looking at belongs under it, not in a sidebar panel
+                  they'd have to go find. */}
+              <p className="app-arena-caption">
+                <span>
+                  Every impact is a real on-chain exchange, replayed from this round's revealed
+                  seed — the drifting and bouncing is cosmetic, the hits are not.
+                </span>
+                <span className="app-arena-phase">{round ? round.phaseName : "no round"}</span>
+              </p>
+            </div>
+
+            {/* 960px wide and directly under the arena, rather than a sixth panel in the 480px rail
+                where three of its nine comparison columns were permanently scrolled out of sight —
+                on the one screen snug-floating-mitten.md calls "THE highest-value screen in the app
+                for a judge". It renders from the moment a round is loaded (showing what it is
+                waiting for until then), so the claim is visible during the demo rather than
+                appearing only after everything is over. */}
+            <VerifyPanel round={round} />
           </div>
 
           <aside className="app-sidebar">
@@ -249,13 +262,6 @@ function App() {
             />
           </aside>
         </div>
-
-        {/* Full page width, below the layout, rather than as a sixth sidebar panel. Its comparison
-            table is 9 columns of on-chain-vs-replay numbers — in the 480px sidebar the last three
-            were permanently scrolled out of sight, on the one screen snug-floating-mitten.md calls
-            "THE highest-value screen in the app for a judge." It only renders once a round is
-            Settled, which is also exactly the moment there's nothing left to watch on the canvas. */}
-        {round?.phaseName === "Settled" && <VerifyPanel round={round} />}
       </main>
 
       {/* Last in the tree, fixed to the corner (App.css) — a confirmation or a failure has to stay

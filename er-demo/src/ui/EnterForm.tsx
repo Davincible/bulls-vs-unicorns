@@ -77,24 +77,62 @@ export function EnterForm({ program, router, keypair, arena, roundPda, session }
   return (
     <form aria-label="enter" onSubmit={(e) => void handleSubmit(e)}>
       <h2>Enter</h2>
-      <label>
-        side{" "}
-        <select value={side} onChange={(e) => setSide(Number(e.target.value) === 1 ? 1 : 0)}>
-          <option value={0}>0</option>
-          <option value={1}>1</option>
-        </select>
-      </label>{" "}
-      <label>
-        stake{" "}
+
+      {/* A real fieldset/legend around real radios rather than a <select> of "0" and "1".
+          Three reasons, in order of weight:
+            1. Side is the colour key the whole app is built on — side 0 is green and side 1 is
+               purple in the fighter table, the arena and the verify comparison. A dropdown reading
+               "0" was the one place that key was invisible, at the exact moment the user commits to
+               a side.
+            2. Two mutually-exclusive options is what a radio group is FOR; a two-item select hides
+               half the choice behind a click.
+            3. Grouping, the accessible name, and arrow-key traversal all come from the platform
+               here instead of being reimplemented on divs.
+          Selection is signalled by border + fill + dot as well as hue, so it never depends on
+          colour alone. The submitted values are unchanged: 0 and 1. */}
+      <fieldset className="field enter-sides">
+        <legend className="field__label">side</legend>
+        <div className="seg">
+          {([0, 1] as const).map((s) => (
+            <label key={s} className={`seg__opt seg__opt--${s === 0 ? "a" : "b"}`}>
+              <input
+                type="radio"
+                name="side"
+                value={s}
+                checked={side === s}
+                onChange={() => setSide(s)}
+              />
+              <span className="seg__dot" aria-hidden="true" />
+              side {s}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      <label className="field enter-stake">
+        <span className="field__label">stake</span>
         <input
           value={stakeInput}
           onChange={(e) => setStakeInput(e.target.value)}
           inputMode="numeric"
           aria-invalid={stake === null}
+          aria-describedby="enter-stake-hint"
         />
-      </label>{" "}
-      <button type="submit" disabled={!canSubmit}>
-        {pending ? "sending..." : "Enter"}
+        {/* The gross/net distinction is real and was previously invisible: `enter()` takes the GROSS
+            amount and stores `stake = net` after deducting the arena fee (programs/bulls-arena/src
+            /lib.rs), so the number typed here is NOT the number that shows up in the fighter table.
+            This codebase has already shipped two unit bugs; a UI that quietly renders two different
+            quantities under one word is how a third one happens. No fee RATE is quoted because this
+            component isn't given the Arena account and inventing one would be worse than silence. */}
+        <span className="note" id="enter-stake-hint">
+          {stake === null
+            ? "must be a whole number greater than zero"
+            : "gross — the arena fee is deducted on entry, so the fighter table will show slightly less"}
+        </span>
+      </label>
+
+      <button type="submit" className="btn--primary btn--block" disabled={!canSubmit}>
+        {pending ? "sending…" : "Enter the round"}
       </button>
     </form>
   );

@@ -32,22 +32,47 @@ export function SessionButton({ session }: SessionButtonProps) {
 
   return (
     <section aria-label="session">
-      <h2>Session</h2>
+      <h2>
+        Session
+        {/* State first, as a chip in the panel's own title bar. Whether a session is live changes
+            what pressing Enter/Extract will DO (silent vs. a signature prompt), so it belongs where
+            it can be read without parsing the sentence underneath. */}
+        <span className={active ? "chip chip--ok" : "chip chip--muted"}>
+          <span className="chip__dot" />
+          {active ? "active" : "none"}
+        </span>
+      </h2>
       {active ? (
-        <p>
-          session active — signing as <code title={active.signerPubkey.toBase58()}>{truncate(active.signerPubkey.toBase58())}</code>{" "}
-          on behalf of your wallet. Enter and Extract no longer prompt for a signature.{" "}
-          <button type="button" disabled={isLoading} onClick={() => void run(revokeSession)()}>
-            {isLoading ? "revoking..." : "revoke session"}
-          </button>
-        </p>
+        <>
+          <div className="session-row">
+            <span className="prose">
+              signing as <code title={active.signerPubkey.toBase58()}>{truncate(active.signerPubkey.toBase58())}</code> on
+              behalf of your wallet
+            </span>
+            <button type="button" disabled={isLoading} onClick={() => void run(revokeSession)()}>
+              {isLoading ? "revoking…" : "revoke session"}
+            </button>
+          </div>
+          <p className="note">Enter and Extract no longer prompt for a signature.</p>
+        </>
       ) : (
-        <p>
-          <button type="button" disabled={isLoading} onClick={() => void run(createSession)()}>
-            {isLoading ? "starting..." : "start session"}
-          </button>{" "}
-          one signature now, then Enter and Extract sign silently for the rest of this round.
-        </p>
+        <>
+          {/* Deliberately NOT the gold primary treatment. Gold marks "the action that matters right
+              now", and in this rail that is Enter (in Lobby) or Extract (in Fight) — a session is a
+              precondition that makes those two quieter, not a third thing competing with them. Two
+              gold buttons stacked in one rail would spend the accent and stop it meaning anything. */}
+          <button
+            type="button"
+            className="btn--block"
+            disabled={isLoading}
+            onClick={() => void run(createSession)()}
+          >
+            {isLoading ? "starting…" : "Start session"}
+          </button>
+          <p className="note">
+            One signature now, then Enter and Extract sign silently for the rest of this round.
+          </p>
+        </>
       )}
       {shown && (
         <p className="status-error" role="alert">

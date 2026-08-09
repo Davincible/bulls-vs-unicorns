@@ -1,136 +1,220 @@
-/* Deliberately plain — Phase 3's "done" criteria is raw state rendered as a table/list, not a
-   visual layer (that's Phase 4/PixiCanvas.tsx). This replaces the Vite starter template's decorative
-   rules entirely; nothing here styles anything App.tsx no longer renders.
+/* ============================================================================================
+   bulls-arena ER demo — application styles.
 
-   Phase 7 (polish) kept that restraint deliberately and did not re-skin anything: the changes below
-   are hierarchy, spacing, and status colour — making the plain look intentional rather than
-   unfinished — plus the one genuinely new surface, the fixed devnet badge. */
+   Direction: "a trading terminal that happens to be a game" (UI-REDESIGN-BRIEF.md Part 2).
+   Confident, quiet, dense with real numbers. Not a casino. The restraint IS the trust signal.
+
+   Four rules this file holds to, taken from SATRUSH-DASHBOARD-PROMPT.md's "why it works" table and
+   applied literally:
+
+     1. Hierarchy by OPACITY TIER, not by colour. --ink / --ink-soft / --ink-faint carry ~all of the
+        structure. Colour is reserved for meaning and stays scarce enough to mean something.
+     2. Colour has exactly four jobs, and no fifth: green = side 0 / verified, purple = side 1,
+        gold = "this is the live thing / the action", red = failure. Nothing is coloured to look nice.
+     3. Big numbers in a LIGHT weight. Bold + big is shouty; light + big is confident. Every large
+        figure here is weight 300-400.
+     4. A sub-caption under every stat. `1497000` is a number dump; `1497000 / sum of 2 stakes` is a
+        briefing. If a stat has no honest sub-caption it does not become a stat.
+
+   And two from the brief itself:
+     - Every figure names its unit. No bare numbers.
+     - A figure with no backing renders an em-dash, never `0`. Zero is a claim.
+
+   Layout is a fixed 1528px desktop composition (960 canvas + 24 gap + 480 rail + 2x32 gutter);
+   mobile is explicitly out of scope for this demo, so there are no breakpoints below that and no
+   pretending otherwise.
+   ============================================================================================ */
 
 .app {
-  text-align: left;
-  /* Top padding clears the fixed devnet badge (see `.devnet-badge` below) — the badge is out of
-     flow, so nothing else reserves room for it. Derived from the badge's own box, not eyeballed:
-     10px+10px padding + ~18px line = 38px, plus the 24px gutter the page had already. */
-  padding: 62px 32px 48px;
+  /* Top padding clears the fixed devnet strip, derived from its own box (10+10 padding + 18 line
+     = 38px) plus the page's own 24px gutter — not eyeballed, so it stays correct if the strip's
+     type size changes. */
+  padding: 62px 32px 56px;
   display: flex;
   flex-direction: column;
-  gap: 24px;
-}
-
-.app section,
-.app form {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 16px 20px;
-  background: var(--panel);
-  /* VerifyPanel's table is 9 columns wide — this keeps an unusually wide table scrolling within its
-     own section rather than forcing the whole page wider than the fixed layout above accounts for. */
-  overflow-x: auto;
-}
-
-.app table {
-  border-collapse: collapse;
-  width: 100%;
-  margin-top: 8px;
-}
-
-.app th,
-.app td {
-  border: 1px solid var(--border);
-  padding: 4px 10px;
+  gap: 20px;
   text-align: left;
-  font-size: 15px;
 }
 
 /* ============================================================================================
-   Devnet badge (ui/DevnetBadge.tsx)
+   DEVNET STRIP (ui/DevnetBadge.tsx)
 
-   Fixed, full-bleed, and colour-coded as a warning rather than as decoration. This app is a fork of
-   a real-money mainnet product; the devnet-only property is enforced in code (src/devnet-guard.ts)
-   and this strip is how that fact reaches someone who is only ever going to see the screen. Fixed
-   rather than static because the page is taller than a laptop viewport and a badge that scrolls
-   away is no badge at all.
+   A safety notice, not decoration — this app is a fork of a real-money mainnet product and nobody
+   watching a screen should be able to mistake one for the other. So it is solid, full-bleed, and
+   the single loudest surface in the design on purpose.
 
-   Amber is hard-coded rather than themed: a safety notice should not change appearance based on the
-   viewer's OS colour scheme, and both of these clear WCAG AA against each other.
+   Solid GOLD rather than the amber it used to be: amber #b45309 was off-palette (it matched nothing
+   else on the page, which made a safety notice read as a stray element), while gold is already the
+   product's own attention colour. Near-black-on-gold measures 12.1:1 — this is simultaneously the
+   most legible and the most prominent thing here, which is exactly right for the one line that
+   nobody is allowed to miss. It also gives the page a deliberate gold rule along its top edge
+   instead of a brown band.
    ============================================================================================ */
 .devnet-badge {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  z-index: 10;
+  z-index: 30;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 14px;
   padding: 10px 20px;
-  background: #b45309;
-  color: #fff7ed;
-  font-size: 13px;
+  background: var(--gold);
+  color: var(--on-accent);
+  font-family: var(--mono);
+  font-size: 12px;
   line-height: 18px;
-  text-align: left;
-  box-shadow: var(--shadow);
+  box-shadow: 0 2px 18px rgba(0, 0, 0, 0.5);
 }
 
 .devnet-badge__flag {
   font-weight: 700;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.16em;
   white-space: nowrap;
 }
 
 .devnet-badge__claim {
   white-space: nowrap;
+  /* Not a lighter colour — on a saturated fill an opacity tier is the only way to step text down
+     without introducing a fifth hue. */
+  opacity: 0.72;
 }
 
-/* Pushed to the far edge so the two halves read as separate claims: the left is what this is, the
-   right is the evidence for it (the actual endpoints, from chain/constants.ts). */
+/* Pushed to the far edge so the two halves read as two separate claims: the left says what this is,
+   the right is the EVIDENCE for it — the actual endpoints, straight from chain/constants.ts. */
 .devnet-badge__endpoints {
   margin-left: auto;
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 
 .devnet-badge__endpoints code {
-  background: rgba(0, 0, 0, 0.22);
-  color: #ffedd5;
-  font-size: 12px;
+  background: rgba(0, 0, 0, 0.16);
+  border: none;
+  color: var(--on-accent);
+  font-size: 11px;
   padding: 2px 7px;
+  opacity: 0.85;
 }
 
 /* ============================================================================================
-   Header
+   MASTHEAD
    ============================================================================================ */
+/* Brand and tagline side by side rather than stacked. Stacked, they cost ~150px of the fold and
+   left the right 55% of the masthead empty, which pushed the arena — the entire product — down the
+   page to buy nothing. On one line the same words cost ~60px and the composition reaches the full
+   width it actually occupies. */
 .app-header {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 28px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
 }
 
-/* index.css sizes h1 at 56px — a page-title size inherited from the Vite starter's centred blog
-   column. In an app whose centrepiece is a 960x540 canvas, that made the title, not the arena, the
-   largest thing on screen. */
 .app-header h1 {
-  font-size: 30px;
-  letter-spacing: -0.5px;
-  margin: 0;
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* A 3px gold rule standing in for a logo. The product has no mark of its own in this build, and an
+   invented one would be a lie about the brand; a rule is honest furniture that still gives the
+   wordmark something to sit against. */
+.app-header h1::before {
+  content: "";
+  width: 3px;
+  align-self: stretch;
+  min-height: 17px;
+  background: var(--gold);
+  border-radius: 2px;
 }
 
 .app-tagline {
-  max-width: 78ch;
-  color: var(--muted);
-  font-size: 16px;
+  flex: 1 1 auto;
+  /* Still capped: a measure much past ~100 characters stops being readable prose however much
+     horizontal room the layout happens to have. */
+  max-width: 104ch;
+  color: var(--ink-soft);
+  font-size: 13.5px;
+  line-height: 1.6;
 }
 
 /* ============================================================================================
-   Status vocabulary — one definition per meaning, shared by every panel.
+   PANELS — the one surface every section and form shares.
 
-   The `.extract-*` / `.session-error` names predate this and are kept as aliases rather than
-   renamed: ExtractButton.tsx and SessionButton.tsx are owned by other work in flight, and a CSS
-   grouping achieves the same single-source-of-truth without touching them. `.session-error` in
-   particular had no rule at all before this — SessionButton has been rendering session failures as
-   ordinary body text.
+   Slightly lighter than the page (never darker) so a panel reads as sitting ABOVE it. Pure-black
+   pages can't do this at all, which is the whole reason the palette is near-black.
+   ============================================================================================ */
+.app section,
+.app form {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+
+/* Panel titles are LABELS for the thing beneath them, not headings competing with the arena. At
+   index.css's 15px they read as six equal-weight shouts down the rail; as small letterspaced mono
+   caps they recede into furniture and let the numbers carry the panel. */
+.app section > h2,
+.app form > h2 {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* index.css zeroes every `p` margin globally, which is right for single-line panels and wrong for
+   Extract/Session/Verify, which each stack several. Applied as a sibling rule so it can never add
+   leading space to a panel's first paragraph. */
+.app section p + p,
+.app section p + button,
+.app section button + p,
+.app form p + p {
+  margin-top: 10px;
+}
+
+/* Small mono prose — explanations, reasons, disclaimers. The tier that says "supporting detail,
+   read it if you want it". */
+.note {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+
+.prose {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+
+/* ============================================================================================
+   STATUS VOCABULARY — one definition per meaning, shared by every panel.
+
+   The `.extract-*` / `.session-error` names predate this redesign and are kept as aliases rather
+   than renamed, so that a component owned by other work in flight keeps working untouched.
    ============================================================================================ */
 .status-error,
 .extract-error,
@@ -149,39 +233,1064 @@
 
 .status-muted,
 .extract-reason {
-  color: var(--muted);
+  color: var(--ink-faint);
 }
 
-/* A blocking, non-dismissible condition (currently: the IDL failing to load, which leaves nothing on
-   the page able to reach the chain). Distinct from a toast, which is for things that already
-   happened and are over. */
+/* A blocking, non-dismissible condition — currently only the IDL failing to load, which leaves
+   nothing on the page able to reach the chain. Distinct from a toast, which reports something that
+   already happened and is over. */
 .app-banner {
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
   padding: 12px 16px;
-  font-size: 15px;
+  font-size: 13.5px;
+  line-height: 1.55;
   overflow-wrap: anywhere;
 }
 
 .app-banner--error {
   border-color: var(--danger);
   color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
 }
 
 /* ============================================================================================
-   Toasts (ui/Toasts.tsx)
+   STAT CELLS — micro-label, value, sub-caption.
+
+   The workhorse of this design. Every figure the app knows gets rendered through this, which is
+   what makes a screen of raw u64s read as a briefing instead of a debug dump. The sub-caption is
+   mandatory by convention: it must say something the headline number does not.
+   ============================================================================================ */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr));
+  gap: 8px;
+}
+
+.stats--2 { --cols: 2; }
+.stats--3 { --cols: 3; }
+
+/* A cell that outranks the row it sits in — the round's pot, the verify seed. Spans the grid and
+   takes a larger figure, which is the "hero stat" shape at panel scale. */
+.stats .stat--wide,
+.verify-facts .stat--wide {
+  grid-column: 1 / -1;
+}
+
+.stats .stat--wide .stat__value {
+  font-size: 28px;
+}
+
+.stat {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.stat__label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* Weight 400 at 20px, deliberately. These are the largest figures on the page and bold would make
+   the rail shout over the arena; light+big is the confident register. */
+.stat__value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 20px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  margin-top: 3px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+/* Two readings of one fact shown inside a single stat value (verify's winner cell). The side tags
+   are scaled up to the value's own size so they read as the figure, not as annotations on it. */
+.stat__value .side-tag {
+  font-size: inherit;
+}
+
+.stat__value .side-tag::before {
+  width: 9px;
+  height: 9px;
+}
+
+.stat__sep {
+  color: var(--ink-dim);
+  margin: 0 10px;
+}
+
+.stat__value--a { color: var(--side-a); }
+.stat__value--b { color: var(--side-b); }
+.stat__value--gold { color: var(--gold); }
+
+/* An unbacked figure. The brief is explicit: `—`, never `0`, because zero is a claim.
+
+   --ink-faint, not --ink-dim. This started as --ink-dim on the reasoning that an em-dash is "not
+   really text" — it is, it scored 2.62:1, and a contrast sweep over the rendered page caught it.
+   The rule this file states about --ink-dim never carrying text has no exceptions, including the
+   ones that feel like they aren't text. */
+.stat__value--none {
+  color: var(--ink-faint);
+}
+
+.stat__sub {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  line-height: 1.45;
+  color: var(--ink-faint);
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+/* ============================================================================================
+   CHIPS — a single fact, boxed. Phase, verdict, per-row status.
+   ============================================================================================ */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 99px;
+  border: 1px solid var(--line-2);
+  color: var(--ink-soft);
+  background: var(--panel-2);
+  white-space: nowrap;
+}
+
+.chip--ok {
+  color: var(--side-a);
+  border-color: color-mix(in srgb, var(--side-a) 45%, transparent);
+  background: color-mix(in srgb, var(--side-a) 12%, transparent);
+}
+
+.chip--warn {
+  color: var(--gold);
+  border-color: color-mix(in srgb, var(--gold) 45%, transparent);
+  background: color-mix(in srgb, var(--gold) 12%, transparent);
+}
+
+.chip--bad {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.chip--muted {
+  color: var(--ink-faint);
+}
+
+/* The live-phase dot. The ONLY looping animation in the app, and it is a status signal (this round
+   is moving right now) rather than decoration — which is what earns it the exemption from this
+   design's otherwise flat, still register. Killed outright under prefers-reduced-motion. */
+.chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.chip--live .chip__dot {
+  animation: chip-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes chip-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+/* Side identity, used everywhere a side is named so that "side 0" is the same green in the fighter
+   table, the enter form, and the verify comparison — colour as a consistent key, not a per-panel
+   decision. */
+.side-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.side-tag::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--side-a);
+}
+
+.side-tag--b::before {
+  background: var(--side-b);
+}
+
+.side-tag--a { color: var(--side-a); }
+.side-tag--b { color: var(--side-b); }
+
+/* ============================================================================================
+   DATA TABLES
+
+   Hairline rows, no vertical rules, no zebra. The old table drew a full 1px box around every single
+   cell, which at six columns put more ink into the grid than into the data. Column alignment and a
+   single horizontal rule do the same job and let the numbers be the loudest thing in the panel.
+   ============================================================================================ */
+.app table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.app th,
+.app td {
+  border: none;
+  border-bottom: 1px solid var(--line);
+  padding: 7px 10px 7px 0;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.app thead th {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  border-bottom-color: var(--line-2);
+  white-space: nowrap;
+}
+
+.app tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Numeric columns right-align so digits stack; identity columns stay left. Applied by class rather
+   than by nth-child so a column reorder can't silently misalign the table. */
+.app .num {
+  text-align: right;
+  padding-right: 14px;
+  color: var(--ink);
+}
+
+.app .num--faint {
+  color: var(--ink-faint);
+}
+
+.app td.ident {
+  color: var(--ink-soft);
+}
+
+/* ============================================================================================
+   CONTROLS
+
+   Everything here was a raw browser default before — a grey bevelled `Enter` button and a white
+   text input on a dark panel. Nothing else in the design could survive that.
+   ============================================================================================ */
+.app button {
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s, filter 0.15s;
+}
+
+.app button:hover:not(:disabled) {
+  border-color: var(--ink-dim);
+  color: var(--ink);
+}
+
+.app button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.app button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* NOTE ON SELECTOR SHAPE: every button modifier below is written `.app button.btn--x`, not
+   `.btn--x`. The base rule above is `.app button` — one class plus one element, specificity (0,1,1)
+   — which outranks a bare single class (0,1,0) no matter where it sits in the file. Written the
+   obvious way, `.btn--primary` silently lost every property it shared with the base rule, and the
+   result was a gold-less "Enter the round" and a full-size "copy" chip that looked deliberate.
+   Caught in a screenshot, not by reading the CSS. */
+
+/* The one action that matters on this screen right now. Solid gold, near-black label, 12.1:1 — at
+   most one LIVE one of these is ever on screen (Enter belongs to Lobby, Extract to Fight). */
+.app button.btn--primary {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+
+.app button.btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  border-color: var(--gold);
+  color: var(--on-accent);
+}
+
+/* A disabled primary drops the gold entirely rather than fading it. At 0.4 opacity the fill became
+   a muddy olive block that still pulled the eye as hard as the live button above it — two "look
+   here" surfaces stacked in one rail, one of which could not be pressed. The accent is reserved for
+   things you can actually do; an unavailable action is furniture, and its reason line does the
+   talking. */
+.app button.btn--primary:disabled {
+  background: transparent;
+  border-color: var(--line-2);
+  color: var(--ink-faint);
+  opacity: 1;
+}
+
+.app button.btn--tiny {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.app input[type="text"],
+.app input:not([type]),
+.app select {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  width: 100%;
+}
+
+.app input[aria-invalid="true"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* A labelled control. The label is always VISIBLE — a placeholder is not a label, and every input
+   in this app holds a value someone is about to sign a transaction with. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.field__label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* A fieldset is the correct grouping element for the side radios, but its UA styling (a border, a
+   legend notched into it, inline padding) is furniture from a different era. Reset to a plain box;
+   the `.field__label` treatment on the legend carries the labelling. */
+.app fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.app fieldset > legend {
+  padding: 0;
+}
+
+/* Forms lay their controls out on one rhythm rather than each control carrying its own margin. */
+.app form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.app form > h2 {
+  margin-bottom: 0;
+}
+
+/* The stake hint doubles as its own validation message — same element, so an invalid value can
+   never push the layout by adding a line. It follows the input in source order, which is what
+   makes this sibling selector possible and what `aria-describedby` already points at. */
+.app input[aria-invalid="true"] ~ .note {
+  color: var(--danger);
+}
+
+/* Segmented control, built on real radio inputs so that arrow-key traversal, grouping and the
+   accessible name all come from the platform instead of being reimplemented with divs. The input
+   itself is visually hidden but still focusable and still hit-testable under its own label. */
+.seg {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.seg__opt {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  padding: 9px 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  /* 44px touch target — 9px padding + 12px line + 9px padding + borders lands just over it. */
+  min-height: 38px;
+}
+
+.seg__opt input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+}
+
+.seg__opt:hover {
+  color: var(--ink);
+}
+
+/* Selection is signalled by BOTH the side's colour and a filled dot + border, never by colour
+   alone — the palette's whole point is that side 0 is green and side 1 is purple, and a viewer who
+   can't separate those two hues still has the ring and the fill to read. */
+.seg__opt--a:has(input:checked) {
+  color: var(--side-a);
+  border-color: var(--side-a);
+  background: color-mix(in srgb, var(--side-a) 14%, transparent);
+}
+
+.seg__opt--b:has(input:checked) {
+  color: var(--side-b);
+  border-color: var(--side-b);
+  background: color-mix(in srgb, var(--side-b) 14%, transparent);
+}
+
+.seg__opt:has(input:focus-visible) {
+  box-shadow: var(--focus);
+}
+
+.seg__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  border: 1.5px solid currentColor;
+}
+
+.seg__opt:has(input:checked) .seg__dot {
+  background: currentColor;
+}
+
+/* ============================================================================================
+   LAYOUT — the canvas is the hero.
+
+   Deterministic widths rather than flex-grow, so the composition renders identically instead of
+   depending on how wide the window happens to be: 960 canvas + 24 gap + 480 rail.
+   ============================================================================================ */
+.app-layout {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+/* The left column. Holds the arena and — once a round settles — the verification panel, which is
+   what fills what used to be ~900px of dead space under a 540px-tall canvas on a 1500px page. */
+.app-stage {
+  flex: 0 0 960px;
+  width: 960px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* The centrepiece, framed as one object: canvas flush at the top, caption bar beneath it, one
+   border around both. `overflow: hidden` is what lets the canvas's square corners sit inside the
+   rounded frame — PixiCanvas renders its own inline-styled host div and exposes no class to hook,
+   so giving the frame to its parent is a cleaner seam than reaching into it. */
+.app-arena {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--panel);
+  box-shadow: var(--shadow-lg);
+  line-height: 0; /* kills the inline-block descender gap under the canvas element */
+}
+
+.app-arena-caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 11px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+/* The one live value readable without looking away from the canvas. Uppercase, letterspaced and at
+   full ink strength so it separates from the explanatory sentence sharing its bar — as plain
+   inherited caption text it was indistinguishable from the prose beside it. */
+.app-arena-phase {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+/* Lobby state. Not an error and not a spinner — the round genuinely has nothing to draw yet, so it
+   says so, at the canvas's exact dimensions so that the page doesn't jump when the fight starts.
+   The faint radial matches the Pixi backdrop's own clear colour so the empty frame reads as the
+   arena at rest rather than as a failed canvas. */
+.app-arena-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 960px;
+  height: 540px;
+  background: radial-gradient(130% 130% at 50% 0%, #141430, #0b0d12 72%);
+  color: var(--ink-faint);
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  padding: 0 48px;
+}
+
+.app-arena-placeholder::before {
+  content: "AWAITING LOCK-IN";
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--ink-dim);
+}
+
+.app-sidebar {
+  flex: 0 0 480px;
+  width: 480px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ============================================================================================
+   WALLET STRIP (ui/ConnectWallet.tsx)
+
+   Full page width above the arena, holding three short facts. Stacked as paragraphs it cost ~120px
+   of vertical space and pushed the arena toward the fold; as one instrument row it costs ~56px and
+   reads as what it is — a status bar. The funding hint (only present on an unfunded burner) breaks
+   to its own line rather than being squeezed in: it carries a 44-character pubkey and a command
+   meant to be selected and copied.
+   ============================================================================================ */
+.wallet-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 10px 26px;
+  padding: 12px 18px !important;
+}
+
+.wallet-strip > h2 {
+  margin: 0 !important;
+  align-self: center;
+  /* The rail panels' titles sit above their content; this one sits beside it, so it needs a right
+     edge to separate it from the first reading rather than 12px of bottom margin. */
+  padding-right: 22px;
+  border-right: 1px solid var(--line);
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+}
+
+.wallet-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wallet-cell__label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.wallet-cell__value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+/* Pushes the funding warning onto its own full-width line beneath the row. */
+.wallet-strip__warn {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--gold);
+}
+
+.wallet-strip__warn code {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 6px 10px;
+  color: var(--ink);
+  user-select: all; /* one click selects the whole command, which is the only reason it's shown */
+}
+
+/* ============================================================================================
+   ROUND PANEL (ui/RoundPanel.tsx)
+   ============================================================================================ */
+.round-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.round-head__no {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.round-fighters {
+  margin-top: 16px;
+}
+
+.round-fighters__title {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line-2);
+}
+
+/* Value-in-the-ring bar.
+
+   `hp` is initialised to the fighter's own stake (sim/erSim.ts: `stake: net, hp: net`) and `banked`
+   is hp that has been pulled out of reach, so hp + banked IS that fighter's current total value and
+   `stake` is where they started. That makes this bar an honest reading and not a decorative gauge:
+   the fill is what they hold, the notch is what they walked in with, so above the notch is up and
+   below it is down — readable at a glance across the whole table, which nine columns of raw u64
+   never were. Scaled against a max shared by every row so the rows are comparable to each other. */
+.hpbar {
+  position: relative;
+  height: 6px;
+  width: 100%;
+  min-width: 60px;
+  border-radius: 3px;
+  background: #0c0c14;
+  border: 1px solid var(--line);
+  overflow: hidden;
+  display: flex;
+}
+
+.hpbar__hp {
+  height: 100%;
+  background: var(--side-a);
+}
+
+.hpbar--b .hpbar__hp {
+  background: var(--side-b);
+}
+
+/* Banked value is gold everywhere in this app — it is the "safe, out of the fight" quantity, which
+   is the same thing Extract produces, so it gets the same colour there and here. */
+.hpbar__banked {
+  height: 100%;
+  background: var(--gold);
+}
+
+/* Where this fighter started. A hairline, not a label — it only has to be findable, not read. */
+.hpbar__mark {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 1px;
+  background: var(--ink);
+  opacity: 0.55;
+}
+
+.hpbar-cell {
+  width: 110px;
+  padding-right: 14px;
+}
+
+.round-empty {
+  margin-top: 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+/* Key for the value bar. A bar with no key is a decoration, and the non-obvious fact here — that
+   every row is drawn against ONE shared scale, not its own — has to be stated or the comparison
+   between rows is an invitation to misread. Hidden from assistive tech because it describes a
+   graphic that is itself redundant with the numeric columns beside it. */
+.bar-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ink-faint);
+}
+
+.bar-legend__k {
+  width: 9px;
+  height: 6px;
+  border-radius: 2px;
+  flex: none;
+  margin-left: 6px;
+}
+
+/* Two-tone, because the hp fill is drawn in the FIGHTER'S side colour — a solid green key would
+   have claimed hp is always green while every side-1 row on screen drew it purple. */
+.bar-legend__k--hp {
+  background: linear-gradient(90deg, var(--side-a) 0 50%, var(--side-b) 50% 100%);
+}
+
+.bar-legend__k--banked { background: var(--gold); }
+
+.bar-legend__k--mark {
+  width: 1px;
+  height: 9px;
+  border-radius: 0;
+  background: var(--ink);
+  opacity: 0.55;
+}
+
+/* --ink-faint, NOT --ink-dim: this file's rule is that --ink-dim never carries text, because it
+   fails AA. A legend caption is text. */
+.bar-legend__note {
+  margin-left: 2px;
+  color: var(--ink-faint);
+}
+
+/* Available to assistive tech, absent from the visual composition. Used for the verify table's
+   caption: a screen-reader user arriving at a nine-column table needs to be told what the two
+   repeated columns ARE, while a sighted reader already has the spanning headers above them. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ============================================================================================
+   EXTRACT (ui/ExtractButton.tsx)
+
+   The hackathon's core story beat, so the panel is built around one decision: a full-width gold
+   button, the consequence of pressing it stated immediately above it, and the rationale demoted to
+   a note underneath. It used to open with four lines of prose before the button appeared.
+   ============================================================================================ */
+.extract-callout {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border: 1px solid color-mix(in srgb, var(--gold) 40%, transparent);
+  background: color-mix(in srgb, var(--gold) 9%, transparent);
+  border-radius: 10px;
+}
+
+.extract-callout__value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 20px;
+  font-weight: 400;
+  color: var(--gold);
+}
+
+.extract-callout__sub {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
+
+.app button.btn--block {
+  width: 100%;
+  display: block;
+  padding: 11px 14px;
+  font-size: 13.5px;
+}
+
+.extract-sig {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.extract-sig code {
+  overflow-wrap: anywhere;
+  font-size: 10.5px;
+}
+
+/* ============================================================================================
+   SESSION (ui/SessionButton.tsx)
+   ============================================================================================ */
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.session-row code {
+  font-size: 11.5px;
+}
+
+/* ============================================================================================
+   VERIFY (ui/VerifyPanel.tsx) — THE screen.
+
+   snug-floating-mitten.md calls this the highest-value screen in the app for a judge, and the whole
+   product's claim rests on it: the chain's result and an independent in-tab re-derivation of it,
+   side by side, checkable rather than asserted. So it is the only accent-bordered element in the
+   design (SATRUSH's "one hero of the heroes" move), it sits at 960px directly under the arena
+   rather than in a 480px rail where three of its nine columns were permanently scrolled out of
+   sight, and it is built to read as EVIDENCE: verdict first, the inputs that produced it second,
+   then the full number-by-number comparison.
+   ============================================================================================ */
+.verify {
+  border-color: color-mix(in srgb, var(--gold) 34%, var(--line)) !important;
+  /* A barely-there accent wash. If it reads as "a coloured box" it is too strong. */
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--gold) 4%, transparent), transparent 220px),
+    var(--panel) !important;
+}
+
+.verify__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+/* The verdict. One line, stated as a conclusion, colour-coded — but never colour ALONE: the word
+   itself ("VERIFIED", "MISMATCH") carries the same meaning for a reader who can't use the hue. */
+.verify-verdict {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-2);
+  border-left-width: 3px;
+  background: var(--panel-2);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.verify-verdict--ok {
+  border-color: color-mix(in srgb, var(--side-a) 45%, transparent);
+  border-left-color: var(--side-a);
+  background: color-mix(in srgb, var(--side-a) 9%, transparent);
+}
+
+.verify-verdict--info {
+  border-color: color-mix(in srgb, var(--gold) 45%, transparent);
+  border-left-color: var(--gold);
+  background: color-mix(in srgb, var(--gold) 9%, transparent);
+}
+
+.verify-verdict--bad {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  border-left-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
+}
+
+.verify-verdict__mark {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  flex: none;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.verify-verdict--ok .verify-verdict__mark { color: var(--side-a); }
+.verify-verdict--info .verify-verdict__mark { color: var(--gold); }
+.verify-verdict--bad .verify-verdict__mark { color: var(--danger); }
+
+.verify__detail {
+  margin-top: 10px;
+  max-width: 96ch;
+}
+
+/* The four inputs the verdict was computed FROM. Laid out as stat cells like every other figure in
+   the app, one of which (the seed) is a 64-character hex and gets a full row to itself so it can
+   wrap without stretching a shared column — the previous grid sized a column to `max-content`
+   against that hex and pushed two of the four facts clean off the panel. */
+.verify-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 14px 0 0;
+}
+
+.verify-facts .stat--wide {
+  grid-column: 1 / -1;
+}
+
+.verify-facts .stat--wide .stat__value {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
+  color: var(--gold);
+}
+
+.verify-table {
+  margin-top: 18px;
+  overflow-x: auto;
+}
+
+/* Two-level header. The nine columns are really "identity, then three quantities measured twice,
+   then a verdict" — spanning the pairs makes that structure visible, so a reader can see they are
+   looking at the same numbers twice instead of decoding nine similar-looking labels. */
+.verify-table th.grp {
+  text-align: center;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-soft);
+  letter-spacing: 0.14em;
+}
+
+.verify-table th.grp--chain {
+  color: var(--ink-soft);
+}
+
+.verify-table th.grp--replay {
+  color: var(--gold);
+}
+
+.verify-table .sub th {
+  font-size: 9px;
+  color: var(--ink-faint);
+}
+
+/* A vertical hairline separating the on-chain group from the recomputed group — the seam the whole
+   panel is about. */
+.verify-table .seam {
+  border-left: 1px solid var(--line-2);
+  padding-left: 14px;
+}
+
+/* Rows that match get a green edge; rows that don't get gold or red. The scan target is "is this
+   whole column of edges green" — a judge reads the verdict in one pass without parsing any digits,
+   then checks the digits if they want to. */
+.verify-table tbody tr td:first-child {
+  border-left: 2px solid transparent;
+  padding-left: 8px;
+}
+
+.verify-table tr.row--match td:first-child { border-left-color: color-mix(in srgb, var(--side-a) 70%, transparent); }
+.verify-table tr.row--extracted td:first-child { border-left-color: var(--gold); }
+.verify-table tr.row--diverges td:first-child { border-left-color: var(--danger); }
+
+/* A cell whose two readings disagree. Tinted rather than merely coloured so it is impossible to
+   scan past — this is the one thing in the whole app that must never be missed if it happens. */
+.verify-table td.differs {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.verify-note {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+/* ============================================================================================
+   TOASTS (ui/Toasts.tsx)
 
    Fixed bottom-right: a signature confirmation or a failed transaction fires while the reader is
    scrolled down watching the canvas, and a message pinned to the top of the document would be
-   delivered to an empty room. Capped at 5 in the store, info toasts self-expire — so this stack has
-   a hard maximum height and can't creep up the viewport over a multi-round demo.
+   delivered to an empty room. Capped at 5 in the store and info toasts self-expire, so the stack
+   has a hard maximum height and can't creep up the viewport over a multi-round demo.
    ============================================================================================ */
 .toasts {
   position: fixed;
   right: 20px;
   bottom: 20px;
-  z-index: 20;
+  z-index: 40;
   width: 420px;
   max-width: calc(100vw - 40px);
   list-style: none;
@@ -198,17 +1307,26 @@
   align-items: flex-start;
   gap: 10px;
   padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-left-width: 4px;
-  border-radius: 6px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
-  font-size: 14px;
-  line-height: 140%;
+  border: 1px solid var(--line-2);
+  border-left-width: 3px;
+  border-radius: 10px;
+  background: rgba(10, 10, 20, 0.94);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-lg);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  animation: toast-in 0.18s ease-out;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
 }
 
 .toast--info {
-  border-left-color: var(--ok);
+  border-left-color: var(--side-a);
 }
 
 .toast--error {
@@ -216,9 +1334,9 @@
   color: var(--danger);
 }
 
-/* Transaction signatures are 88 characters with no spaces in them — without this they'd push the
-   toast wider than its own box. `max-height` + scroll keeps a pathologically long RPC error from
-   turning one toast into a full-height wall. */
+/* Transaction signatures are 88 characters with no spaces — without this they'd push the toast
+   wider than its own box. `max-height` + scroll keeps a pathologically long RPC error from turning
+   one toast into a full-height wall. */
 .toast__message {
   flex: 1 1 auto;
   min-width: 0;
@@ -229,214 +1347,16 @@
 
 .toast__dismiss {
   flex: 0 0 auto;
-  border: none;
-  background: none;
+  border: none !important;
+  background: none !important;
   color: inherit;
   cursor: pointer;
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1;
-  padding: 0 2px;
-  opacity: 0.6;
+  padding: 0 2px !important;
+  opacity: 0.55;
 }
 
 .toast__dismiss:hover {
   opacity: 1;
-}
-
-/* Integration pass — canvas prominent/large on the left, the plain-text panels (RoundPanel, Enter,
-   Extract, Verify) as a narrower sidebar to the right. Fixed desktop layout only, per the plan's 80/20
-   cut ("mobile responsiveness" is explicitly not in scope) — a judge's laptop, not a phone. Total
-   layout width is deterministic (32 + 960 + 24 + 480 + 32 = 1528px) rather than left to flex-grow, so
-   it renders identically rather than depending on exactly how wide the window happens to be — matches
-   index.css's own `#root { width: 1560px }` (also updated this pass — it was the actual ancestor
-   constraining this layout, not anything in this file; see that file's comment). Verified against a
-   real 1600x1000 browser viewport during this integration pass, with no page-level clipping. */
-.app-layout {
-  display: flex;
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 24px;
-}
-
-/* The centrepiece, framed as one panel: canvas flush at the top, caption bar beneath it, a single
-   border around both. `overflow: hidden` is what lets the canvas's square corners sit inside the
-   rounded frame — PixiCanvas.tsx renders its own positioned host div with inline styles and has no
-   class to hook, and giving the frame to its parent is a cleaner seam than reaching into it. */
-.app-arena {
-  flex: 0 0 auto;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-  background: var(--panel);
-  box-shadow: var(--shadow);
-  line-height: 0; /* kills the inline-block descender gap under the canvas element */
-}
-
-.app-arena-caption {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 10px 16px;
-  border-top: 1px solid var(--border);
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 145%;
-}
-
-/* The one live number worth reading without looking away from the canvas. Monospace so it doesn't
-   reflow the caption line as the phase name changes length (Lobby -> Drawing -> Fight -> Settled). */
-.app-arena-phase {
-  flex: 0 0 auto;
-  font-family: var(--mono);
-  font-size: 12px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-h);
-}
-
-.app-arena-placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 960px;
-  height: 540px;
-  /* No border of its own any more — `.app-arena` above is the frame now, and a second one inside it
-     read as a box in a box. */
-  color: var(--muted);
-  text-align: center;
-  line-height: 145%;
-  padding: 0 48px;
-  box-sizing: border-box;
-}
-
-.app-sidebar {
-  /* 480px comfortably fits RoundPanel's 6-column table without its own horizontal scroll (458px
-     measured in a real browser); VerifyPanel's denser 9-column comparison table still scrolls within
-     its own section at this width, which is the right outcome for that one, wider table, not a flaw —
-     see this file's `overflow-x: auto` rule above. */
-  flex: 0 0 480px;
-  width: 480px;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.app-sidebar section,
-.app-sidebar form {
-  box-sizing: border-box;
-  /* Flex items default to `min-width: auto`, which lets intrinsic content (VerifyPanel's 9-column
-     table, in particular) push them wider than the sidebar's fixed 440px rather than respecting it —
-     found by an actual screenshot at a real 1600px viewport still showing clipped content even after
-     the fixed-width sidebar fix above, not by reading the CSS. This is what makes `overflow-x: auto`
-     above actually take effect as a contained scrollbar instead of the whole section just growing. */
-  min-width: 0;
-  font-size: 15px;
-  line-height: 150%;
-}
-
-/* index.css's global h2 is 24px, which is the right weight for a page-level heading and far too
-   loud for six stacked panels — at that size every panel title competed with the canvas for
-   attention. Small, uppercase, muted reads as a label for what's below it, which is what these are. */
-.app section h2,
-.app form h2 {
-  font-size: 13px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin: 0 0 10px;
-}
-
-/* The wallet panel is the full page width, above the arena, and holds three short facts. Stacked as
-   paragraphs it cost ~120px of vertical space and pushed the canvas toward the fold; as one row it
-   costs ~40px and reads as a toolbar, which is what it is. The funding hint (only present on an
-   unfunded burner) wraps to its own line via `flex-basis: 100%` rather than being squeezed into the
-   row — it contains a full 44-character pubkey and a command meant to be copied. */
-.wallet-strip {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px 20px;
-  font-size: 15px;
-}
-
-.wallet-strip h2 {
-  margin: 0;
-}
-
-.wallet-strip .status-warn {
-  flex-basis: 100%;
-}
-
-/* Paragraphs inside a panel need room from each other — index.css zeroes every `p` margin globally
-   (right for the single-line panels Phase 3 had, wrong now that Extract/Session/Verify each stack
-   several). The wallet strip is excluded because it lays its children out with flex `gap`, which a
-   margin would stack on top of. */
-.app section:not(.wallet-strip) p + p,
-.app section:not(.wallet-strip) button + p,
-.app section:not(.wallet-strip) p + button,
-.app form p + p {
-  margin-top: 10px;
-}
-
-/* ExtractButton.tsx / VerifyPanel.tsx (Phase 5) — additive only, doesn't touch anything above.
-   Plain color-coded status text, matching this file's own "no styling investment beyond legibility"
-   precedent, but color-coded because ExtractButton/VerifyPanel are explicitly the two screens where
-   a judge needs to read status at a glance without parsing prose.
-   (Phase 7: the `.extract-*` colour rules that used to live here are gone — they're now aliases in
-   the shared status block near the top of this file, which is also where the dark-mode-safe values
-   live. Nothing in ExtractButton.tsx changed; only where its colours are defined.) */
-.verify-verdict {
-  font-weight: 600;
-  font-size: 1.05em;
-}
-.verify-verdict--ok {
-  color: var(--ok);
-}
-.verify-verdict--info {
-  color: var(--warn);
-}
-.verify-verdict--bad {
-  color: var(--danger);
-}
-
-/* VerifyPanel.tsx wraps each dt/dd pair in its own `<div>` (the correct HTML for a grouped
-   description list). That made the previous `grid-template-columns: max-content 1fr` on the `dl`
-   itself lay out the four WRAPPERS across two columns rather than the labels and values — and since
-   the first wrapper contains a 64-character seed hex, `max-content` sized column one to that, which
-   pushed "steps replayed" and "value conservation" clean out of the 480px sidebar. Two of this
-   panel's four verification facts were invisible, on the screen the plan calls the highest-value one
-   in the app. Found in a full-page screenshot, not by reading the CSS.
-
-   Stacked label-over-value instead of a two-column grid because no column split survives a 64-char
-   hex in a 440px panel; this way every fact fits at any value length. */
-.app dl.verify-facts {
-  display: grid;
-  /* `auto-fit`/`minmax` rather than a fixed column count so the four facts sit side by side at the
-     panel's full page width and fall back to a single column if it's ever placed somewhere narrow —
-     without this file needing to know where VerifyPanel is mounted. */
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 12px 28px;
-  margin: 12px 0;
-}
-.app dl.verify-facts > div {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0; /* lets the 64-char seed hex wrap inside its cell instead of widening the column */
-}
-.app dl.verify-facts dt {
-  color: var(--muted);
-  font-size: 13px;
-}
-.app dl.verify-facts dd {
-  margin: 0;
-}
-/* index.css makes `code` an inline-flex box, which never wraps — the seed would otherwise run off
-   the panel's edge rather than breaking onto a second line. */
-.app dl.verify-facts code {
-  display: inline-block;
-  max-width: 100%;
-  overflow-wrap: anywhere;
 }

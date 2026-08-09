@@ -1,135 +1,196 @@
+/* ============================================================================================
+   Design tokens.
+
+   This file used to carry the Vite starter's theme: an 18px light-mode blog column with a purple
+   link accent, plus a `prefers-color-scheme: dark` override. That is why the app read as a
+   prototype — the centrepiece is a 960x540 Pixi canvas that clears to #0b0d12, and it was being
+   pasted onto a white page. Nothing else had to be wrong for the whole thing to look unfinished.
+
+   The palette below is lifted from `web/index.html`, the mainnet product this demo is a fork of, so
+   the two read as one product family rather than two unrelated apps. UI-REDESIGN-BRIEF.md Part 6
+   names the same colours as non-negotiable: near-black, green #18e08a, purple #c46bff, gold #ffc048,
+   mono/sans pairing.
+
+   ONE DELIBERATE DEVIATION from the reference: its `--ink-faint: #5a6072` scores 2.88:1 on a panel
+   and 2.62:1 on a raised panel — it fails WCAG AA outright, and it is the colour the reference uses
+   for the ~10px uppercase micro-labels that this design leans on constantly. Copying it would have
+   copied a defect onto the exact text tier that carries every stat's caption. `--ink-faint` here is
+   #868da1 (5.94 / 5.44 / 4.95 on bg / panel / panel-2 — AA on all three). The original value is kept
+   as `--ink-dim` and is used ONLY for non-text marks: bar tracks, hairlines, empty-state glyphs.
+   Every value below was checked with a real WCAG relative-luminance calculation, not by eye.
+   ============================================================================================ */
+
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+  /* --- surfaces: near-black, never pure black, so panels can sit ABOVE the page ------------ */
+  --bg: #0a0b0f;
+  --panel: #141620;
+  --panel-2: #1c1f2b;
+  --line: #242732;
+  --line-2: #31353f;
 
-  /* Semantic status colours + a panel surface, added in the Phase 7 polish pass. `--muted` in
-     particular was already being referenced by App.css (as `var(--muted, #888)`) without ever having
-     been defined here, so every "secondary" piece of text in the app was silently falling back to a
-     grey that matches nothing else on the page. The hard-coded greens/reds that App.css and
-     ExtractButton/VerifyPanel had accumulated are now these, in one place, with dark-mode values
-     that actually clear the background they sit on. */
-  --muted: #8b8794;
-  --ok: #1a7f37;
-  --warn: #9a6700;
-  --danger: #cf222e;
-  --panel: #fdfdfd;
+  /* --- text: three strengths. Hierarchy is carried by opacity tier, not by colour. --------- */
+  --ink: #f2f4fa;      /* primary values, headings                         16.4:1 on panel */
+  --ink-soft: #969cb0; /* prose, secondary values                           6.6:1 on panel */
+  --ink-faint: #868da1;/* micro-labels, sub-captions                        5.4:1 on panel */
+  --ink-dim: #5a6072;  /* NON-TEXT ONLY — bar tracks, hairlines, glyphs */
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
+  /* --- meaning. Side 0 is green, side 1 is purple, everywhere, without exception. ---------- */
+  --side-a: #18e08a;
+  --side-a-dk: #0f9f63;
+  --side-b: #c46bff;
+  --side-b-dk: #8b3fd4;
+  --gold: #ffc048;   /* attention / live / the one action that matters right now */
+  --danger: #ff4d6d;
+  --crit: #ffe14d;
 
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
-  color-scheme: light dark;
+  /* Ink for text sitting ON a saturated accent fill. All clear AA against their own fill
+     (gold 12.1:1, green 11.3:1, purple 6.5:1). */
+  --on-accent: #0a0a10;
+
+  /* --- semantic aliases, so components name the MEANING and not the swatch --------------- */
+  --ok: var(--side-a);
+  --warn: var(--gold);
+  --muted: var(--ink-faint);
+  --text: var(--ink-soft);
+  --text-h: var(--ink);
+  --border: var(--line);
+  --code-bg: var(--panel-2);
+  --accent: var(--gold);
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.38);
+  --shadow-lg: 0 18px 50px rgba(0, 0, 0, 0.55);
+  --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--gold);
+
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --heading: var(--sans);
+
+  font: 15px/1.5 var(--sans);
+  /* Dark only, declared rather than inherited: the product's centrepiece is a near-black canvas,
+     and a light variant would be a second design to maintain that could only ever look wrong
+     around it. This tells the UA to render form controls and scrollbars dark too. */
+  color-scheme: dark;
   color: var(--text);
   background: var(--bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-
-  @media (max-width: 1024px) {
-    font-size: 16px;
-  }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-
-    --muted: #7d8290;
-    --ok: #3fb950;
-    --warn: #d29922;
-    --danger: #f85149;
-    --panel: #1b1d25;
-  }
-
-  #social .button-icon {
-    filter: invert(1) brightness(2);
-  }
-}
-
-#root {
-  /* Widened from the Vite starter template's original 1126px (a narrow centered blog-style column,
-     appropriate for the pre-Phase-3 placeholder page) to fit the integration pass's real layout:
-     canvas (960) + gap (24) + sidebar (440) + .app's own left/right padding (32 each) = 1488px. Found
-     by an actual screenshot at a real browser viewport still clipping the sidebar even after fixing
-     App.css's own widths — this was the actual constraining ancestor, not App.css. `border-inline`
-     (a decorative side-rule for the narrow blog column) is dropped for the same reason: it no longer
-     matches what's inside it. */
-  width: 1560px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
 body {
   margin: 0;
+  /* A very faint pool of light behind the top of the page, matching web/index.html's own `.app`
+     backdrop. Keeps a 1500px-tall near-black page from reading as a flat void without adding a
+     single element to look at. */
+  background:
+    radial-gradient(1200px 520px at 50% -12%, rgba(150, 160, 200, 0.05), transparent 65%),
+    var(--bg);
+  min-height: 100vh;
+}
+
+#root {
+  /* canvas (960) + gap (24) + sidebar (480) + .app's own 32px gutters = 1528. */
+  width: 1560px;
+  max-width: 100%;
+  margin: 0 auto;
+  text-align: left;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
 }
 
 h1,
-h2 {
+h2,
+h3 {
   font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
+  color: var(--ink);
+  margin: 0;
 }
 
 h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
-  }
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
+
 h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
-  }
+  font-size: 15px;
+  font-weight: 600;
 }
+
 p {
   margin: 0;
 }
 
+/* Every number in this app is evidence, and evidence has to line up in a column. Tabular figures
+   are not cosmetic here: without them a poll tick that changes 998000 -> 998001 visibly reflows
+   the row it lives in. */
 code,
-.counter {
+.mono {
   font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
+  font-size: 0.92em;
+  line-height: 1.4;
+  color: var(--ink);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+/* Native scrollbars render as a bright white bar over near-black panels — the single loudest thing
+   on the page if left alone, and this layout has two scroll containers (VerifyPanel's table, the
+   toast stack). Same fix web/index.html applies, for the same reason. */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-dim);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+}
+
+/* One focus treatment for the whole app. `:focus-visible` rather than `:focus` so a mouse click on
+   a button doesn't leave a ring behind, while keyboard traversal always shows exactly where it is.
+   The double ring (bg then gold) keeps it visible against both panel and accent-filled surfaces. */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+  border-radius: 6px;
+}
+
+/* Motion is used in exactly two places in this design (the live-phase pulse and toast entry), and
+   both of them are status signals rather than decoration — so both are switched off entirely for
+   anyone who has asked for that, rather than merely shortened. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }

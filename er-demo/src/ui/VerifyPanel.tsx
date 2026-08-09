@@ -19,6 +19,22 @@ function truncate(base58: string): string {
   return `${base58.slice(0, 4)}...${base58.slice(-4)}`;
 }
 
+/** Byte array -> lowercase hex. Local rather than `Buffer.from(...).toString("hex")` so this
+ *  component keeps needing nothing but its own props — the same self-containment its header comment
+ *  claims, which a node-polyfill import would quietly break. */
+function toHex(bytes: number[]): string {
+  return bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** The one-word conclusion, shown as a mark beside the sentence. It exists so the verdict survives
+ *  being read at a glance from across a room — and so the verdict is never carried by hue alone,
+ *  which is the accessibility failure a green/amber/red banner walks straight into. */
+const VERDICT_MARK: Record<VerifyResult["verdict"], string> = {
+  verified: "MATCH",
+  "extraction-likely": "PARTIAL",
+  mismatch: "MISMATCH",
+};
+
 const VERDICT_COPY: Record<VerifyResult["verdict"], { label: string; detail: string }> = {
   verified: {
     label: "VERIFIED — independent replay matches exactly",
@@ -54,19 +70,47 @@ const VERDICT_CLASS: Record<VerifyResult["verdict"], string> = {
   mismatch: "verify-verdict verify-verdict--bad",
 };
 
+/** One measured quantity, twice: what the chain settled to and what the in-tab replay produced.
+ *  A pair that disagrees is tinted on BOTH cells — the single thing in this app that must never be
+ *  scanned past — and a pair that agrees is left plain, so "no red anywhere" is the whole reading. */
+function Pair({ chain, replay, seam }: { chain: string; replay: string; seam?: boolean }) {
+  const differs = chain !== replay;
+  return (
+    <>
+      <td className={`num ${seam ? "seam" : ""} ${differs ? "differs" : ""}`}>{chain}</td>
+      <td className={`num ${differs ? "differs" : ""}`}>{replay}</td>
+    </>
+  );
+}
+
+const ROW_CLASS: Record<string, string> = {
+  match: "row--match",
+  "extracted?": "row--extracted",
+  diverges: "row--diverges",
+};
+
 function FighterRow({ fighter }: { fighter: VerifyResult["fighters"][number] }) {
   const status = fighter.matches ? "match" : fighter.extractionSignature ? "extracted?" : "diverges";
+  const chip =
+    status === "match" ? "chip chip--ok" : status === "extracted?" ? "chip chip--warn" : "chip chip--bad";
   return (
-    <tr>
-      <td title={fighter.wallet}>{truncate(fighter.wallet)}</td>
-      <td>{fighter.side}</td>
-      <td>{fighter.onChain.hp.toString()}</td>
-      <td>{fighter.recomputed.hp.toString()}</td>
-      <td>{fighter.onChain.banked.toString()}</td>
-      <td>{fighter.recomputed.banked.toString()}</td>
-      <td>{fighter.onChain.dead ? "yes" : "no"}</td>
-      <td>{fighter.recomputed.dead ? "yes" : "no"}</td>
-      <td>{status}</td>
+    <tr className={ROW_CLASS[status]}>
+      <td className="ident" title={fighter.wallet}>
+        {truncate(fighter.wallet)}
+      </td>
+      <td>
+        <span className={`side-tag side-tag--${fighter.side === 1 ? "b" : "a"}`}>{fighter.side}</span>
+      </td>
+      <Pair chain={fighter.onChain.hp.toString()} replay={fighter.recomputed.hp.toString()} seam />
+      <Pair chain={fighter.onChain.banked.toString()} replay={fighter.recomputed.banked.toString()} seam />
+      <Pair
+        chain={fighter.onChain.dead ? "yes" : "no"}
+        replay={fighter.recomputed.dead ? "yes" : "no"}
+        seam
+      />
+      <td className="seam">
+        <span className={chip}>{status}</span>
+      </td>
     </tr>
   );
 }
@@ -86,32 +130,73 @@ export function VerifyPanel({ round }: VerifyPanelProps) {
     }
   }, [canVerify, round]);
 
+  // The three not-yet states share the panel's own accent frame rather than degrading to bare text.
+  // This surface is the demo's headline claim, and a judge who scrolls past it mid-round should see
+  // a panel that is waiting, not one that looks broken or unfinished.
   if (round === null) {
     return (
-      <section aria-label="verify">
-        <h2>Verify</h2>
-        <p>no round loaded</p>
+      <section aria-label="verify" className="verify">
+        <div className="verify__head">
+          <h2>Verify</h2>
+          <span className="chip chip--muted">idle</span>
+        </div>
+        <p className="note">no round loaded</p>
       </section>
     );
   }
 
   if (!canVerify) {
+    const commitHex = toHex(round.seedCommit);
+    const committed = round.seedCommit.some((b) => b !== 0);
     return (
-      <section aria-label="verify">
-        <h2>Verify</h2>
-        <p>
-          verification runs once this round is Settled with a revealed seed (currently:{" "}
-          {round.phaseName}).
+      <section aria-label="verify" className="verify">
+        <div className="verify__head">
+          <h2>Verify</h2>
+          <span className="chip chip--muted">{round.phaseName}</span>
+        </div>
+        <p className="prose">
+          The independent replay runs the moment this round settles and its seed is revealed. Until
+          then there is nothing to check against — the result does not exist yet, on-chain or here.
         </p>
+
+        {/* The half of the fairness story that IS already available. `seedCommit` is sha256 of the
+            VRF output (programs/bulls-arena/src/lib.rs — `hashv(&[randomness])`), published before
+            the seed itself, and the seed revealed later has to hash to it. Showing it now is what
+            makes the later reveal checkable instead of something taken on trust, and it is real
+            on-chain data this panel was already being handed and had simply never displayed.
+            UI-REDESIGN-BRIEF.md Part 5 asks for exactly this.
+
+            No claim is made here about WHEN it was posted relative to entries opening: the program
+            writes it on two different paths (`open_round`'s argument, and the VRF callback), so
+            "before deploys opened" is not a property this component can prove from the account it
+            holds. It says what it can back and stops there. */}
+        {committed && (
+          <div className="verify-facts">
+            <div className="stat stat--wide">
+              <div className="stat__label">seed commit — sha256, already on-chain</div>
+              <div className="stat__value">{commitHex}</div>
+              <div className="stat__sub">
+                the seed revealed at fight start must hash to this value, so it cannot be swapped for
+                a more convenient one afterwards — that check is what the panel above runs once this
+                round settles
+              </div>
+            </div>
+          </div>
+        )}
       </section>
     );
   }
 
   if (computeError) {
     return (
-      <section aria-label="verify">
-        <h2>Verify</h2>
-        <p role="alert">could not run the independent replay: {computeError.message}</p>
+      <section aria-label="verify" className="verify">
+        <div className="verify__head">
+          <h2>Verify</h2>
+          <span className="chip chip--bad">error</span>
+        </div>
+        <p className="status-error note" role="alert">
+          could not run the independent replay: {computeError.message}
+        </p>
       </section>
     );
   }
@@ -121,60 +206,127 @@ export function VerifyPanel({ round }: VerifyPanelProps) {
   const copy = VERDICT_COPY[result.verdict];
 
   return (
-    <section aria-label="verify">
-      <h2>Verify — round #{round.roundNo.toString()}</h2>
+    // Read top to bottom as an argument: the conclusion, then why, then the inputs it was computed
+    // from, then every number that went into it. `.verify` is the only accent-bordered surface in
+    // the app — the "one hero of the heroes" move from SATRUSH-DASHBOARD-PROMPT.md, spent on the one
+    // screen whose entire job is to be believed.
+    <section aria-label="verify" className="verify">
+      <div className="verify__head">
+        <h2>Verify</h2>
+        <span className="chip">round #{round.roundNo.toString()}</span>
+      </div>
+
       <p className={VERDICT_CLASS[result.verdict]} role="status">
-        {copy.label}
+        <span className="verify-verdict__mark">{VERDICT_MARK[result.verdict]}</span>
+        <span>{copy.label}</span>
       </p>
-      <p>{copy.detail}</p>
+      <p className="prose verify__detail">{copy.detail}</p>
 
-      <dl className="verify-facts">
-        <div>
-          <dt>seed (on-chain, revealed)</dt>
-          <dd>
-            <code>{result.seedHex}</code>
-          </dd>
+      {/* The inputs the verdict was derived from. Rendered as stat cells like every other figure in
+          the app rather than as a description list: the old `dl` sized a shared grid column to a
+          64-character hex, which pushed two of these four facts clean off the panel — on the screen
+          the plan calls the highest-value one in the app. The seed now takes a full row of its own,
+          so no other fact has to share a column with it. */}
+      <div className="verify-facts">
+        <div className="stat stat--wide">
+          <div className="stat__label">seed — on-chain, revealed</div>
+          <div className="stat__value">{result.seedHex}</div>
+          <div className="stat__sub">
+            the chain's own randomness, published at fight start — and the only input the replay
+            below is driven by
+          </div>
         </div>
-        <div>
-          <dt>steps replayed</dt>
-          <dd>{result.steps} (= this round's on-chain tickCount)</dd>
-        </div>
-        <div>
-          <dt>winner — on-chain / recomputed</dt>
-          <dd>
-            side {result.winnerOnChain} / side {result.winnerRecomputed}{" "}
-            {result.winnerMatches ? "(match)" : "(differ)"}
-          </dd>
-        </div>
-        <div>
-          <dt>value conservation (on-chain)</dt>
-          <dd>
-            {result.totalValueOnChain.toString()} / pot {result.potOnChain.toString()}{" "}
-            {result.conservationHoldsOnChain ? "(holds)" : "(BROKEN)"}
-          </dd>
-        </div>
-      </dl>
 
-      <table>
-        <thead>
-          <tr>
-            <th>wallet</th>
-            <th>side</th>
-            <th>hp (chain)</th>
-            <th>hp (replay)</th>
-            <th>banked (chain)</th>
-            <th>banked (replay)</th>
-            <th>dead (chain)</th>
-            <th>dead (replay)</th>
-            <th>status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {result.fighters.map((f) => (
-            <FighterRow key={`${f.wallet}:${f.side}`} fighter={f} />
-          ))}
-        </tbody>
-      </table>
+        <div className="stat">
+          <div className="stat__label">steps replayed</div>
+          <div className="stat__value">{result.steps}</div>
+          <div className="stat__sub">= this round's on-chain tickCount</div>
+        </div>
+
+        <div className="stat">
+          <div className="stat__label">winner — chain / replay</div>
+          {/* "1 / 1" alone reads as a fraction, which is the wrong mental model for two independent
+              readings of the same fact. The unit is named on both, per the brief's no-bare-numbers
+              rule, and each side keeps its own colour key. */}
+          <div className="stat__value">
+            <span className={`side-tag side-tag--${result.winnerOnChain === 1 ? "b" : "a"}`}>
+              side {result.winnerOnChain}
+            </span>
+            <span className="stat__sep">/</span>
+            <span className={`side-tag side-tag--${result.winnerRecomputed === 1 ? "b" : "a"}`}>
+              side {result.winnerRecomputed}
+            </span>
+          </div>
+          <div className="stat__sub">
+            {result.winnerMatches
+              ? "on-chain and recomputed agree"
+              : "on-chain and recomputed DIFFER"}
+          </div>
+        </div>
+
+        <div className="stat">
+          <div className="stat__label">value conservation</div>
+          <div className={`stat__value ${result.conservationHoldsOnChain ? "" : "stat__value--none"}`}>
+            {result.conservationHoldsOnChain ? "holds" : "BROKEN"}
+          </div>
+          <div className="stat__sub">
+            {result.totalValueOnChain.toString()} held vs pot {result.potOnChain.toString()}
+          </div>
+        </div>
+      </div>
+
+      <div className="verify-table">
+        <table>
+          <caption className="visually-hidden">
+            Every fighter's final state as settled on-chain, beside the same figure recomputed
+            independently in this browser tab.
+          </caption>
+          <thead>
+            {/* Two-level header. These nine columns are really "identity, then three quantities
+                measured twice, then a verdict" — spanning the pairs makes that structure visible, so
+                a reader sees they are looking at the same numbers twice instead of decoding nine
+                similar-looking labels. */}
+            <tr>
+              <th aria-hidden="true" />
+              <th aria-hidden="true" />
+              <th className="grp grp--chain seam" colSpan={2} scope="colgroup">
+                hp
+              </th>
+              <th className="grp grp--chain seam" colSpan={2} scope="colgroup">
+                banked
+              </th>
+              <th className="grp grp--chain seam" colSpan={2} scope="colgroup">
+                dead
+              </th>
+              <th aria-hidden="true" />
+            </tr>
+            <tr className="sub">
+              <th scope="col">wallet</th>
+              <th scope="col">side</th>
+              <th className="num seam" scope="col">chain</th>
+              <th className="num" scope="col">replay</th>
+              <th className="num seam" scope="col">chain</th>
+              <th className="num" scope="col">replay</th>
+              <th className="num seam" scope="col">chain</th>
+              <th className="num" scope="col">replay</th>
+              <th className="seam" scope="col">status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {result.fighters.map((f) => (
+              <FighterRow key={`${f.wallet}:${f.side}`} fighter={f} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="note verify-note">
+        Nothing above was fetched from a server. The replay column is computed in this tab, by this
+        page, from the seed and entries the chain itself published. Any pair that disagrees is tinted
+        red: on a clean round there are none, and on a round where someone pulled out mid-fight the
+        tinted cells are exactly where that decision changed the outcome — which is the one thing a
+        replay driven only by the final seed structurally cannot reproduce.
+      </p>
     </section>
   );
 }

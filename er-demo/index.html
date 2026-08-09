@@ -4,7 +4,12 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>er-demo</title>
+    <!-- Paints the browser chrome and the pre-hydration canvas the page's own near-black, so a
+         reload doesn't flash a white document before React mounts. `color-scheme` here (as well as
+         in index.css) is what stops the UA drawing a white background for that first frame. -->
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0a0b0f" />
+    <title>bulls-arena — Ephemeral Rollup demo (devnet)</title>
   </head>
   <body>
     <div id="root"></div>

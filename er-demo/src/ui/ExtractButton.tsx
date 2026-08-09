@@ -102,34 +102,61 @@ export function ExtractButton({ program, router, keypair, round, roundPda, sessi
   };
 
   return (
+    // Ordered by what a player needs at the moment they need it, which is the reverse of how this
+    // panel used to read. It opened with four lines of prose about Ephemeral Rollups and put the
+    // button last; mid-fight, when this panel matters, nobody is reading a paragraph. So: the
+    // consequence of pressing it (an actual number), then the button, then the reason it exists
+    // demoted to a note underneath for whoever is reading the panel between rounds.
     <section aria-label="extract">
-      <h2>Extract</h2>
-      <p>
+      <h2>
+        Extract
+        {eligible && (
+          <span className="chip chip--warn chip--live">
+            <span className="chip__dot" />
+            available now
+          </span>
+        )}
+      </h2>
+
+      {fighterHp !== null && eligible && (
+        <div className="extract-callout">
+          <span className="stat__label">extracting now banks</span>
+          <span className="extract-callout__value">{fighterHp.toString()} hp</span>
+          <span className="extract-callout__sub">
+            You stop being a target for the rest of this fight — you&apos;re still in the round and
+            your banked value still counts when it settles, you just stop risking more of it.
+          </span>
+        </div>
+      )}
+
+      <button
+        type="button"
+        className="btn--primary btn--block"
+        disabled={!canClick}
+        onClick={() => void handleClick()}
+      >
+        {status.kind === "pending" ? "extracting…" : "Extract"}
+      </button>
+
+      {!eligible && reason && <p className="extract-reason note">{reason}</p>}
+
+      {status.kind === "success" && (
+        <p className="extract-success extract-sig" role="status">
+          <span>extracted</span>
+          <code title={status.signature}>{status.signature}</code>
+        </p>
+      )}
+      {status.kind === "error" && (
+        <p className="extract-error note" role="alert">
+          extract failed: {status.message}
+        </p>
+      )}
+
+      <p className="note">
         Pull your fighter out mid-fight: your current hp is locked in as banked winnings and you stop
         taking (or dealing) any more damage. This is the one decision only YOU can make in real time —
         it is why this fight runs on an Ephemeral Rollup instead of settling instantly.
       </p>
-      {fighterHp !== null && eligible && (
-        <p>
-          extracting now banks <strong>{fighterHp.toString()}</strong> hp. You stop being a target
-          for the rest of this fight — you're still in the round, your banked value still counts
-          when it settles, you just stop risking more of it.
-        </p>
-      )}
-      <button type="button" disabled={!canClick} onClick={() => void handleClick()}>
-        {status.kind === "pending" ? "extracting..." : "Extract"}
-      </button>
-      {!eligible && reason && <p className="extract-reason">{reason}</p>}
-      {status.kind === "success" && (
-        <p className="extract-success" role="status">
-          extracted — <code title={status.signature}>{status.signature}</code>
-        </p>
-      )}
-      {status.kind === "error" && (
-        <p className="extract-error" role="alert">
-          extract failed: {status.message}
-        </p>
-      )}
     </section>
   );
 }
