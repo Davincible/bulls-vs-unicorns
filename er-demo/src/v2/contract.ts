@@ -544,8 +544,20 @@ export {
 // is exactly one right one (see that module's note on the canonical cursor).
 export { EXTRACT_PENALTY_START_BPS } from "../sim/erSim.ts";
 
-/** The arena's deploy fee, matching `init_arena(fee_bps)` as deployed and the original's 0.2%. */
-export const FEE_BPS = 20;
+/** The arena's deploy fee.
+ *
+ *  THIS CONSTANT IS STRUCTURALLY WRONG AND IS A STOPGAP. `fee_bps` is not a compile-time fact: it is
+ *  a field on the Arena account that `set_fee_bps` may change at any moment, against players who are
+ *  mid-lobby, without a redeploy. It was moved 20 -> 100 on devnet while the site was live, and for
+ *  the minutes between that transaction and the next Vercel build every surface below — the intro
+ *  overlay a first-time player reads before anything else, the stake dock, the dashboard — quoted a
+ *  rate five times lower than the one the chain was actually charging.
+ *
+ *  The header of this file already states the rule this violates: a second hand-copy of a moving
+ *  constant is how a UI ends up describing a different game from the one being settled. The fix is
+ *  to read `Arena.fee_bps` and treat this as the pre-fetch fallback only. Until that lands, ANY
+ *  `set_fee_bps` MUST be followed by editing this line and redeploying, in that order. */
+export const FEE_BPS = 100;
 
 /** The original's convert fee. Simulated-ledger only. */
 export const CONVERT_BPS = 30;
