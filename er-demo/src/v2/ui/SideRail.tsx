@@ -431,7 +431,7 @@ function FighterTenant({ wallet }: { wallet: string }) {
           the difference went, which is the question a player opens this panel holding. Directly
           under the figures rather than at the foot of the panel, because it is the explanation of
           them — the all-time record below is a different subject entirely.
-          Scoped to the LIVE round: the window `CombatFeedProvider` keeps is the fight on screen, and
+          Scoped to the LIVE round: `useArena().combat` is a window over the fight on screen, and
           a settled round's exchanges would have to be replayed from its own account. Twelve rows is
           what a 420px rail holds without the panel becoming a scroll of its own. */}
       {f ? (
