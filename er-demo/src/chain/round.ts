@@ -18,7 +18,14 @@ import {
   delegationMetadataPdaFromDelegatedAccount,
   delegationRecordPdaFromDelegatedAccount,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { DEFAULT_EPHEMERAL_QUEUE, MAX_STEPS, PROGRAM_ID, SLOT_HASHES_SYSVAR, VRF_PROGRAM_ID } from "./constants.ts";
+import {
+  DEFAULT_EPHEMERAL_QUEUE,
+  DEFAULT_LOBBY_SECONDS,
+  MAX_STEPS,
+  PROGRAM_ID,
+  SLOT_HASHES_SYSVAR,
+  VRF_PROGRAM_ID,
+} from "./constants.ts";
 import type { BullsArenaProgram } from "./program.ts";
 
 const textEncoder = new TextEncoder();
@@ -79,12 +86,25 @@ export function initArena(
 }
 
 // ---- open_round -------------------------------------------------------------------------------
+// `lobbySeconds` is how long the lobby stays open, in seconds, from the moment the transaction lands.
+// The chain stamps both `lobby_opened_at` and `lobby_closes_at` from its own clock and clamps the
+// duration into [MIN_LOBBY_SECONDS, MAX_LOBBY_SECONDS] — so an out-of-range value opens a clamped
+// lobby rather than failing, and the round records what was actually used. Defaulted here rather than
+// made mandatory: every caller wants the same demo-cadence number, and the one that doesn't (a
+// verification script that has to wait the deadline out) is better off saying so explicitly.
 export function openRound(
   program: BullsArenaProgram,
-  params: { arena: PublicKey; round: PublicKey; authority: PublicKey; roundNo: bigint | number; seedCommit: Uint8Array },
+  params: {
+    arena: PublicKey; round: PublicKey; authority: PublicKey; roundNo: bigint | number;
+    seedCommit: Uint8Array; lobbySeconds?: number;
+  },
 ) {
   return program.methods
-    .openRound(new BN(params.roundNo.toString()), Array.from(params.seedCommit))
+    .openRound(
+      new BN(params.roundNo.toString()),
+      Array.from(params.seedCommit),
+      params.lobbySeconds ?? DEFAULT_LOBBY_SECONDS,
+    )
     .accounts({
       arena: params.arena,
       round: params.round,
@@ -244,6 +264,28 @@ export function resolve(program: BullsArenaProgram, params: { payer: PublicKey; 
       magicContext: MAGIC_CONTEXT_ID,
     })
     .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: CU_CEILING })]);
+}
+
+// ---- abandon_round — end a lobby that died under-subscribed ------------------------------------------
+//
+// For a round that reached `lobbyClosesAt` holding fewer than two fighters. It can never fight, so
+// this is the only thing left that can happen to it: it flips the phase to `Abandoned` and commits +
+// undelegates in the SAME call (settlement splits those into `resolve` + `closeRound` so a result is
+// readable in the rollup while players watch it — an abandoned round has no result and nobody
+// watching, so there is nothing to do between the halves).
+//
+// Permissionless, like `tick` and `resolve`: every precondition is on the account, so a round whose
+// operator has walked away does not need that operator to come back. Nothing is refunded because
+// nothing was ever custodied — see `abandon_round` in lib.rs.
+export function abandonRound(program: BullsArenaProgram, params: { payer: PublicKey; round: PublicKey }) {
+  return program.methods
+    .abandonRound()
+    .accounts({
+      payer: params.payer,
+      round: params.round,
+      magicProgram: MAGIC_PROGRAM_ID,
+      magicContext: MAGIC_CONTEXT_ID,
+    });
 }
 
 // ---- close_round — commit_and_undelegate back to the base layer -------------------------------------

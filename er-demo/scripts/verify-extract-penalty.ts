@@ -31,7 +31,8 @@
 
 import { assertDevnetUrl } from "../src/devnet-guard.ts";
 import {
-  BASE_RPC, canonicalCursor, PHASE_NAME, Phase, PROGRAM_ID, ROUTER_URL, stepsPerSecond,
+  BASE_RPC, canonicalCursor, MIN_LOBBY_SECONDS, PHASE_NAME, Phase, PROGRAM_ID, ROUTER_URL,
+  stepsPerSecond,
 } from "../src/chain/constants.ts";
 import { createProgram, type BullsArenaProgram, type RawRoundAccount } from "../src/chain/program.ts";
 import { sendTx } from "../src/chain/sendTx.ts";
@@ -62,6 +63,39 @@ const info = (s: string) => console.log(`  ${c.d}${s}${c.x}`);
 const warn = (s: string) => console.log(`  ${c.y}!${c.x} ${s}`);
 const heading = (s: string) => console.log(`\n${c.b}${s}${c.x}`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Margin added to the lobby wait below. `lobby_closes_at` is stamped from the BASE layer's clock in
+ *  `open_round` and compared against the ER's clock in `close_lobby_and_draw` (see `lobby_opened_at`'s
+ *  doc comment in lib.rs); the same wall clock, but the two nodes can disagree by a small skew.
+ *  Overshooting costs two seconds, waking early costs `LobbyStillOpen` and the whole run. */
+const CLOCK_SKEW_MARGIN_MS = 2_000;
+
+/** Sleep until this round's lobby deadline has passed, so `close_lobby_and_draw` is permitted.
+ *
+ *  The deadline is read off the FETCHED ROUND rather than reconstructed from the `lobbySeconds` this
+ *  script asked for: `open_round` clamps the duration and stamps the timestamp from the chain's own
+ *  `Clock`, so the account is the only place the real deadline exists. A script that slept a
+ *  hardcoded interval would be timing itself against a number it invented — exactly the habit
+ *  `Round.lobby_closes_at` was added to end. */
+async function waitForLobbyDeadline(round: RawRoundAccount): Promise<void> {
+  const closesAtSec = Number(round.lobbyClosesAt.toString());
+  const windowSeconds = closesAtSec - Number(round.lobbyOpenedAt.toString());
+  const deadlineMs = closesAtSec * 1000 + CLOCK_SKEW_MARGIN_MS;
+  let remainingMs = deadlineMs - Date.now();
+  if (remainingMs <= 0) {
+    info(`lobby deadline already passed (${windowSeconds}s window) — drawing immediately`);
+    return;
+  }
+  info(`lobby window ${windowSeconds}s, closes at ${new Date(closesAtSec * 1000).toLocaleTimeString()} — the draw is refused until then`);
+  // Repainted every second: a silent pause this long is indistinguishable from a hung RPC call.
+  while (remainingMs > 0) {
+    process.stdout.write(`  ${c.d}waiting out the lobby: ${Math.ceil(remainingMs / 1000)}s${c.x}\r`);
+    await sleep(Math.min(1000, remainingMs));
+    remainingMs = deadlineMs - Date.now();
+  }
+  process.stdout.write(`${" ".repeat(48)}\r`);
+  ok("lobby deadline passed — close_lobby_and_draw is now permitted");
+}
 const load = (p: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(p, "utf8"))));
 
 function describeError(e: unknown): string {
@@ -167,9 +201,14 @@ interface ExtractOutcome {
     roundPda = roundIx.roundPdaForRoundNo(roundNo, arenaPda);
     info(`round #${roundNo}  pda ${roundPda.toBase58()}`);
     signatures.openRound = (await sendTx(router,
+      // MIN_LOBBY_SECONDS, not the demo's DEFAULT_LOBBY_SECONDS: `close_lobby_and_draw` is refused
+      // until the deadline passes, and this round enters four fighters rather than filling to 16 (the
+      // one case the program lets you draw early), so the lobby is pure waiting between here and step
+      // 3. Take the floor — imported rather than restated, so this script cannot drift from the
+      // program's clamp the way a copied literal would.
       roundIx.openRound(authority, {
         arena: arenaPda, round: roundPda, authority: forkPayer.publicKey, roundNo,
-        seedCommit: crypto.getRandomValues(new Uint8Array(32)),
+        seedCommit: crypto.getRandomValues(new Uint8Array(32)), lobbySeconds: MIN_LOBBY_SECONDS,
       }), forkPayer, `open_round #${roundNo}`)).signature;
 
     signatures.delegateRound = (await sendTx(router,
@@ -208,6 +247,9 @@ interface ExtractOutcome {
     }
 
     heading("3. close_lobby_and_draw + the real VRF callback");
+    // All four fighters are in, so the lobby holds all it is going to. Wait out the deadline the round
+    // itself recorded before asking for the draw.
+    await waitForLobbyDeadline(await authority.account.round.fetch(roundPda));
     const status = (await router.getDelegationStatus(roundPda)) as { fqdn?: string };
     const fqdn = status.fqdn;
     if (!fqdn) throw new Error("no fqdn for the delegated round");

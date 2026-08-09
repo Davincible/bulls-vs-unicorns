@@ -35,8 +35,36 @@ export interface RoundState {
   penaltiesCollected: bigint;
   seedCommit: number[];
   seed: number[];
+  /** When the lobby opened and when it stops taking entries, in on-chain unix seconds.
+   *
+   *  THIS IS WHAT A LOBBY COUNTDOWN MUST BE DRAWN FROM. Both ends are enforced by the program —
+   *  `enter` refuses at or after `lobbyClosesAt`, `close_lobby_and_draw` refuses before it — so the
+   *  number on screen is the rule the chain is applying, not a client-side guess at when an operator
+   *  intends to close. `lobbyOpenedAt` is the other end a progress bar needs: remaining time comes
+   *  from the deadline, but the fraction elapsed needs the duration, and inventing that duration from
+   *  a client constant is the exact thing this field exists to stop.
+   *
+   *  ZERO MEANS THIS ROUND HAS NO DEADLINE, and that is a state to survive rather than an error. The
+   *  lobby fields arrived in a later revision of the program than the one that may be deployed; a
+   *  round opened by an earlier `open_round` carries no deadline at all and takes deposits for the
+   *  whole of its `Lobby` phase. Callers must read these through `data/liveRound.ts`, which turns a
+   *  zero into an explicit null rather than a timestamp in 1970. */
+  lobbyOpenedAt: bigint;
+  lobbyClosesAt: bigint;
   fightStartedAt: bigint;
   fighters: FighterState[];
+}
+
+/** A `BN` that may not be there at all, as a `bigint`.
+ *
+ *  Anchor decodes an account against whatever IDL this build shipped with, and that IDL can be a
+ *  revision AHEAD of the program actually deployed — which is the normal state of affairs for the
+ *  minutes or days between a program change and its deploy. Fields added in the newer revision come
+ *  back `undefined`, and `undefined.toString()` throws inside the poll: one field the chain has not
+ *  heard of yet, and the page can read no round at all. Zero is the honest stand-in, and every reader
+ *  of these fields treats zero as "not set" rather than as a timestamp. */
+function bnOr0(value: { toString(): string } | undefined | null): bigint {
+  return value === undefined || value === null ? 0n : BigInt(value.toString());
 }
 
 function toPlainRound(raw: RawRoundAccount): RoundState {
@@ -52,6 +80,11 @@ function toPlainRound(raw: RawRoundAccount): RoundState {
     penaltiesCollected: BigInt(raw.penaltiesCollected.toString()),
     seedCommit: raw.seedCommit,
     seed: raw.seed,
+    // `bnOr0`, not `raw.x.toString()`: decoded against a program revision that predates these fields
+    // they are simply absent, and dereferencing them there would throw inside a poll — turning "the
+    // chain is one deploy behind this build" into "the page cannot read any round at all".
+    lobbyOpenedAt: bnOr0(raw.lobbyOpenedAt),
+    lobbyClosesAt: bnOr0(raw.lobbyClosesAt),
     fightStartedAt: BigInt(raw.fightStartedAt.toString()),
     fighters: raw.fighters.slice(0, raw.fighterCount).map((f) => ({
       wallet: f.wallet,

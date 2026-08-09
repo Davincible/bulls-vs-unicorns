@@ -20,9 +20,9 @@
 
 import { assertDevnetUrl } from "../src/devnet-guard.ts";
 import {
-  BASE_RPC, PHASE_NAME, Phase, PROGRAM_ID, ROUTER_URL,
+  BASE_RPC, MIN_LOBBY_SECONDS, PHASE_NAME, Phase, PROGRAM_ID, ROUTER_URL,
 } from "../src/chain/constants.ts";
-import { createProgram } from "../src/chain/program.ts";
+import { createProgram, type RawRoundAccount } from "../src/chain/program.ts";
 import { sendTx } from "../src/chain/sendTx.ts";
 import { createBurnerWallet, loadOrCreateBurnerKeypair } from "../src/chain/useSigner.ts";
 import * as roundIx from "../src/chain/round.ts";
@@ -43,6 +43,40 @@ const info = (s: string) => console.log(`  ${c.d}${s}${c.x}`);
 const warn = (s: string) => console.log(`  ${c.y}!${c.x} ${s}`);
 const heading = (s: string) => console.log(`\n${c.b}${s}${c.x}`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Margin added to the lobby wait below. `lobby_closes_at` is stamped from the BASE layer's clock in
+ *  step 2 and compared against the ER's clock in step 5 (see `lobby_opened_at`'s doc comment in
+ *  lib.rs); the two are the same wall clock but can disagree by a small skew. Overshooting costs two
+ *  seconds, waking early costs `LobbyStillOpen` and the whole run. */
+const CLOCK_SKEW_MARGIN_MS = 2_000;
+
+/** Sleep until this round's lobby deadline has passed, so `close_lobby_and_draw` is permitted.
+ *
+ *  The deadline is read off the FETCHED ROUND rather than reconstructed from the `lobbySeconds` this
+ *  script asked for: `open_round` clamps the duration into [MIN_LOBBY_SECONDS, MAX_LOBBY_SECONDS] and
+ *  stamps the timestamp from the chain's own `Clock`, so the account is the only place the real
+ *  deadline exists. A verification script that slept a hardcoded interval instead would be checking
+ *  the chain against a number it made up — precisely the habit `Round.lobby_closes_at` was added to
+ *  end. */
+async function waitForLobbyDeadline(round: RawRoundAccount): Promise<void> {
+  const closesAtSec = Number(round.lobbyClosesAt.toString());
+  const windowSeconds = closesAtSec - Number(round.lobbyOpenedAt.toString());
+  const deadlineMs = closesAtSec * 1000 + CLOCK_SKEW_MARGIN_MS;
+  let remainingMs = deadlineMs - Date.now();
+  if (remainingMs <= 0) {
+    info(`lobby deadline already passed (${windowSeconds}s window) — drawing immediately`);
+    return;
+  }
+  info(`lobby window ${windowSeconds}s, closes at ${new Date(closesAtSec * 1000).toLocaleTimeString()} — the draw is refused until then`);
+  // Repainted every second: a silent pause this long is indistinguishable from a hung RPC call.
+  while (remainingMs > 0) {
+    process.stdout.write(`  ${c.d}waiting out the lobby: ${Math.ceil(remainingMs / 1000)}s${c.x}\r`);
+    await sleep(Math.min(1000, remainingMs));
+    remainingMs = deadlineMs - Date.now();
+  }
+  process.stdout.write(`${" ".repeat(48)}\r`);
+  ok("lobby deadline passed — close_lobby_and_draw is now permitted");
+}
 
 function describeError(e: unknown): string {
   if (e instanceof AnchorError) return `${e.error.errorCode.code} (${e.error.errorCode.number}): ${e.error.errorMessage}`;
@@ -121,7 +155,11 @@ const load = (p: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(rea
     {
       const { signature } = await sendTx(
         router,
-        roundIx.openRound(authority, { arena: arenaPda, round: roundPda, authority: forkPayer.publicKey, roundNo, seedCommit }),
+        // MIN_LOBBY_SECONDS, not the demo's DEFAULT_LOBBY_SECONDS: `close_lobby_and_draw` is refused
+        // until the deadline passes and this round enters two fighters rather than filling to 16, so
+        // the lobby is pure waiting between here and step 5. Take the floor the chain will accept —
+        // and take it from the shared constant, so this script cannot drift from the program's clamp.
+        roundIx.openRound(authority, { arena: arenaPda, round: roundPda, authority: forkPayer.publicKey, roundNo, seedCommit, lobbySeconds: MIN_LOBBY_SECONDS }),
         forkPayer,
         `open_round #${roundNo}`,
       );
@@ -178,6 +216,10 @@ const load = (p: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(rea
 
     // ---- close_lobby_and_draw — request VRF randomness -------------------------------------------
     heading("5. close_lobby_and_draw — request randomness from the VRF oracle");
+    // Both fighters are in, so the lobby holds all it is going to. Fetch the round and wait out the
+    // deadline it recorded — this is the first read of the round in the run, and step 6 re-reads it
+    // after the draw anyway.
+    await waitForLobbyDeadline(await authority.account.round.fetch(roundPda));
     // Resolve the SPECIFIC ER validator our round is delegated to, and send this one instruction
     // straight there — see chain/sendTx.ts's own "SDK SURPRISE #2" comment for why the generic
     // router refuses it outright.
@@ -298,6 +340,8 @@ const load = (p: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(rea
   pot             ${final.pot.toString()}
   fighter_count   ${final.fighterCount}
   tick_count      ${final.tickCount.toString()}  (steps run by resolve())
+  lobby_opened_at ${final.lobbyOpenedAt.toString()}
+  lobby_closes_at ${final.lobbyClosesAt.toString()}  (a ${Number(final.lobbyClosesAt.toString()) - Number(final.lobbyOpenedAt.toString())}s entry window; this script asked for ${MIN_LOBBY_SECONDS}s)
   fight_started_at ${final.fightStartedAt.toString()}`);
     for (let i = 0; i < final.fighterCount; i++) {
       const f = final.fighters[i]!;

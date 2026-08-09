@@ -1,0 +1,46 @@
+/* Coin artwork at text scale. See TokenIcon.tsx for why it is square and hairlined rather than a
+   rounded avatar — the page has no radius anywhere and this must not be the exception. */
+
+.tico {
+  display: inline-block;
+  flex: none;
+  vertical-align: -0.15em;
+  border: 1px solid var(--rule);
+  object-fit: cover;
+  /* The logos are dark artwork on a light page; a hairline keeps the lighter edges of the unicorn
+     from bleeding into the paper without putting a box around anything. */
+  background: var(--paper);
+}
+
+.tico--sm { width: 14px; height: 14px; }
+.tico--md { width: 20px; height: 20px; }
+.tico--lg { width: 34px; height: 34px; }
+
+/* The no-artwork fallback (SOL): a lettered mark in the token's colour, same footprint. */
+.tico--letter {
+  font: 400 9px/1 var(--mono);
+  letter-spacing: 0;
+  text-align: center;
+  text-transform: uppercase;
+}
+.tico--letter.tico--sm { line-height: 12px; }
+.tico--letter.tico--md { font-size: 12px; line-height: 18px; }
+.tico--letter.tico--lg { font-size: 20px; line-height: 32px; }
+
+.tlabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.tlabel-n {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* On the black chrome bars the hairline would disappear and the artwork needs to hold its own
+   against ink, so lift the border to something visible on black. */
+.chrome .tico { border-color: rgba(255, 255, 255, 0.28); background: transparent; }

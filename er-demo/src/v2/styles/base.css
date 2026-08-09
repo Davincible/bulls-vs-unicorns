@@ -1,0 +1,519 @@
+/* =============================================================================================
+   v2 DESIGN SYSTEM — "paper terminal"
+   =============================================================================================
+   The brief: plain white, black text, no cards, flat. Japanese/Swiss technical minimalism, in the
+   spirit of jonway.studio — hairline rules, tiny uppercase mono metadata, numbered sections, dense
+   tabular data, fixed black status chrome top and bottom. THE ONLY COLOUR ON THE PAGE IS THE GAME:
+   the two side colours appear on fighters, health bars and side markers, and nowhere else.
+
+   RULES, in force everywhere in v2/:
+     1. No border-radius. Anywhere. Not on buttons, not on inputs, not on the canvas.
+     2. No box-shadow, no gradients, no translucent panel fills. Separation comes from 1px rules
+        and whitespace only.
+     3. No filled "cards". A section is a heading + a rule + rows.
+     4. Every number is mono and tabular. Every label is `.u` (10px uppercase mono, tracked out).
+     5. Colour is reserved: `--a`/`--b` for the two sides, `--hot` for loss/danger, ink for
+        everything else. Never colour a heading, a border or a background with a side colour.
+     6. Motion is 120ms and linear-ish. Nothing bounces.
+   ============================================================================================= */
+
+:root {
+  /* --- ink ------------------------------------------------------------------------------- */
+  --paper: #ffffff;
+  --ink: #0b0b0b;
+  --ink-2: #4d4d4d;
+  --ink-3: #8a8a8a;
+  --ink-4: #b5b5b5;
+  --rule: #e4e4e4;
+  --rule-2: #cccccc;
+  --wash: #f6f6f6;
+
+  /* --- the game (the only colour) -------------------------------------------------------
+     SAMPLED FROM THE COINS' OWN LOGOS, not chosen. `web/src/ansem.jpg` and `web/src/uwu.jpg` were
+     decoded and bucketed by hue, counting only pixels with real chroma (sat > 45%, lightness
+     18-88%) — both logos are mostly black, and averaging that in returns mud.
+
+       ANSEM  hue 129, #2b8c39 — the bull's horns and the rays behind it. Taken as sampled.
+       UWU    hues 264-300, weighted mean #a00ad5 — the ring and the mane. Deepened one step to
+              #8f09bf: at the logo's own lightness it glares against a white page, and this is a
+              page whose whole argument is restraint. The hue is the coin's.
+       ACCENT #f7ce2b — the unicorn's coat, the single largest block of chroma in either logo.
+
+     `--accent` is allowed on the BLACK chrome bars only (the wins ticker), where yellow reads
+     clearly and the original game used a gold for exactly this. It must never touch white. */
+  --a: #2b8c39;          /* side 0 — ANSEM */
+  --b: #8f09bf;          /* side 1 — UWU */
+  --accent: #f7ce2b;     /* UWU coat yellow — on --ink backgrounds only */
+  --hot: #c4291a;        /* loss, death, danger */
+  --you: #0b0b0b;        /* "you" is marked with weight and a rule, not a colour */
+
+  /* --- type ------------------------------------------------------------------------------ */
+  --sans: "Helvetica Neue", Helvetica, Inter, "Segoe UI", Arial, sans-serif;
+  --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* --- metrics --------------------------------------------------------------------------- */
+  --chrome-h: 30px;      /* fixed black bars, top and bottom */
+  --gut: 24px;           /* page gutter */
+  --tick: 120ms;
+}
+
+* { box-sizing: border-box; }
+
+html,
+body,
+#v2-root {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: var(--paper);
+}
+
+body {
+  color: var(--ink);
+  font: 400 13px/1.45 var(--sans);
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection { background: var(--ink); color: var(--paper); }
+
+/* Scrollbars: hairline, never a chrome-coloured slab on a white page. */
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--rule-2); }
+*::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
+* { scrollbar-width: thin; scrollbar-color: var(--rule-2) transparent; }
+
+/* =============================================================================================
+   TYPE PRIMITIVES
+   ============================================================================================= */
+
+/* `.u` — the workhorse micro-label. Every column header, every field name, every status word. */
+.u {
+  font: 400 10px/1.2 var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.u--ink { color: var(--ink); }
+.u--faint { color: var(--ink-4); }
+
+/* `.idx` — the section index number ("00-1.2"). Sits beside a heading, never inside it. */
+.idx {
+  font: 400 10px/1.2 var(--mono);
+  letter-spacing: 0.08em;
+  color: var(--ink-4);
+  white-space: nowrap;
+}
+
+/* `.display` — the one big number or word per screen. Uppercase, tight, medium weight. */
+.display {
+  font: 500 clamp(34px, 5.4vw, 76px) / 0.9 var(--sans);
+  letter-spacing: -0.035em;
+  text-transform: uppercase;
+  margin: 0;
+}
+.display--mono {
+  font-family: var(--mono);
+  font-weight: 400;
+  letter-spacing: -0.045em;
+}
+
+/* `.h` — a section heading. */
+.h {
+  font: 500 17px/1.15 var(--sans);
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  margin: 0;
+}
+.h--sm { font-size: 13px; letter-spacing: -0.005em; }
+
+/* `.lede` — the one explanatory sentence a section is allowed. */
+.lede {
+  font: 400 12.5px/1.5 var(--sans);
+  color: var(--ink-2);
+  max-width: 64ch;
+  margin: 0;
+}
+
+/* `.num` — every figure on the page. Tabular so columns line up. */
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.num--lg { font-size: 19px; }
+.num--xl { font-size: 27px; letter-spacing: -0.035em; }
+.pos { color: var(--a); }
+.neg { color: var(--hot); }
+.dim { color: var(--ink-3); }
+
+/* A no-data cell reads "—", never "0" (UI-SPEC.md's rule). */
+.none { color: var(--ink-4); }
+
+/* `.sim` — the marker every simulated (non-chain) figure must carry. */
+.sim {
+  font: 400 9px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--paper);
+  background: var(--ink-4);
+  padding: 3px 4px;
+  vertical-align: 2px;
+}
+/* `.live` — its opposite: this number came off the chain. */
+.live {
+  font: 400 9px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--paper);
+  background: var(--ink);
+  padding: 3px 4px;
+  vertical-align: 2px;
+}
+
+a { color: inherit; text-decoration: none; border-bottom: 1px solid var(--rule-2); }
+a:hover { border-bottom-color: var(--ink); }
+
+/* =============================================================================================
+   PAGE FRAME
+   ============================================================================================= */
+
+/* Fixed black status bars, top and bottom — the reference site's signature, and the right home for
+   telemetry that must stay legible while the reader is scrolled into a table. */
+.chrome {
+  position: fixed;
+  left: 0;
+  right: 0;
+  height: var(--chrome-h);
+  background: var(--ink);
+  color: var(--paper);
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 12px;
+  z-index: 80;
+  font: 400 10px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.chrome--top { top: 0; border-bottom: 1px solid var(--ink); }
+.chrome--bottom { bottom: 0; }
+.chrome .u { color: rgba(255, 255, 255, 0.5); }
+.chrome-sep { color: rgba(255, 255, 255, 0.3); }
+.chrome-spacer { flex: 1; }
+
+.page {
+  padding: calc(var(--chrome-h) + 18px) var(--gut) calc(var(--chrome-h) + 64px);
+  max-width: 1680px;
+  margin: 0 auto;
+}
+
+/* The faint "+" survey marks from the reference. Decorative only, never over the canvas. */
+.marks {
+  position: relative;
+}
+.marks::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='9' height='9'><path d='M4.5 0v9M0 4.5h9' stroke='%23d8d8d8' stroke-width='1'/></svg>");
+  background-repeat: repeat;
+  background-size: 175px 135px;
+  background-position: 0 0;
+  opacity: 0.9;
+  z-index: 0;
+}
+.marks > * { position: relative; z-index: 1; }
+
+/* =============================================================================================
+   SECTIONS + RULES
+   ============================================================================================= */
+
+.rule { border-top: 1px solid var(--rule); }
+.rule--ink { border-top: 1px solid var(--ink); }
+
+/* A section: index + heading on one hairline-topped line, content beneath. No box, no padding box,
+   no background. */
+.sec { margin: 34px 0 0; }
+.sec > .sec-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  border-top: 1px solid var(--ink);
+  padding: 7px 0 12px;
+}
+.sec > .sec-head .sec-tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* =============================================================================================
+   ROWS + TABLES
+   ============================================================================================= */
+
+.rows { display: block; }
+
+.row {
+  display: grid;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 12px;
+}
+.row--head {
+  border-bottom: 1px solid var(--rule-2);
+  padding-bottom: 5px;
+}
+.row--head > * {
+  font: 400 10px/1.2 var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.row--click { cursor: pointer; }
+.row--click:hover { background: var(--wash); }
+.row--you { box-shadow: inset 2px 0 0 var(--ink); font-weight: 600; }
+.row--dead { color: var(--ink-4); }
+.row--dead .num { color: var(--ink-4); }
+.r { text-align: right; }
+
+/* =============================================================================================
+   BARS — the only place a side colour touches a rectangle
+   ============================================================================================= */
+
+.bar {
+  height: 4px;
+  background: var(--wash);
+  border: 1px solid var(--rule);
+  overflow: hidden;
+  position: relative;
+}
+.bar > i {
+  display: block;
+  height: 100%;
+  background: var(--ink);
+  transition: width var(--tick) linear;
+}
+.bar--a > i { background: var(--a); }
+.bar--b > i { background: var(--b); }
+.bar--lg { height: 9px; }
+
+/* The two-sided strength bar. Split, labelled, no rounding, no glow. */
+.split {
+  display: flex;
+  height: 22px;
+  border: 1px solid var(--ink);
+  overflow: hidden;
+  background: var(--paper);
+}
+.split > span {
+  display: flex;
+  align-items: center;
+  font: 400 10px/1 var(--mono);
+  letter-spacing: 0.1em;
+  color: var(--paper);
+  white-space: nowrap;
+  overflow: hidden;
+  transition: width var(--tick) linear;
+}
+.split > .split-a { background: var(--a); padding-left: 8px; }
+.split > .split-b { background: var(--b); justify-content: flex-end; padding-right: 8px; }
+
+/* =============================================================================================
+   CONTROLS
+   ============================================================================================= */
+
+.btn {
+  font: 400 11px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background var(--tick), color var(--tick), border-color var(--tick);
+}
+.btn:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { color: var(--ink-4); border-color: var(--rule-2); cursor: not-allowed; }
+.btn--fill { background: var(--ink); color: var(--paper); }
+.btn--fill:hover:not(:disabled) { background: var(--paper); color: var(--ink); }
+.btn--ghost { border-color: var(--rule-2); color: var(--ink-2); }
+.btn--ghost:hover:not(:disabled) { border-color: var(--ink); background: var(--ink); color: var(--paper); }
+.btn--sm { padding: 6px 9px; font-size: 10px; }
+.btn--wide { width: 100%; }
+/* The two deploy buttons, and only these, carry a side colour — as a 2px underline, not a fill. */
+.btn--a { box-shadow: inset 0 -3px 0 var(--a); }
+.btn--b { box-shadow: inset 0 -3px 0 var(--b); }
+.btn--a:hover:not(:disabled), .btn--b:hover:not(:disabled) { box-shadow: none; }
+
+/* Segmented control: one hairline box, dividers between, active is inverted. */
+.seg { display: inline-flex; border: 1px solid var(--rule-2); }
+.seg > button {
+  font: 400 10.5px/1 var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: var(--paper);
+  color: var(--ink-2);
+  border: 0;
+  border-right: 1px solid var(--rule-2);
+  padding: 8px 11px;
+  cursor: pointer;
+  transition: background var(--tick), color var(--tick);
+}
+.seg > button:last-child { border-right: 0; }
+.seg > button:hover { background: var(--wash); color: var(--ink); }
+.seg > button[aria-pressed="true"],
+.seg > button.on { background: var(--ink); color: var(--paper); }
+.seg > button:disabled { color: var(--ink-4); cursor: not-allowed; background: var(--paper); }
+
+/* Tabs: no box at all — an underline is the whole affordance. */
+.tabs { display: flex; gap: 18px; }
+.tabs > button {
+  font: 400 11px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  padding: 0 0 5px;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.tabs > button:hover { color: var(--ink); }
+.tabs > button.on { color: var(--ink); border-bottom-color: var(--ink); }
+
+input[type="text"],
+input[type="number"],
+select {
+  font: 400 13px/1 var(--mono);
+  color: var(--ink);
+  background: var(--paper);
+  border: 0;
+  border-bottom: 1px solid var(--ink);
+  padding: 7px 2px;
+  outline: none;
+  width: 100%;
+}
+input::placeholder { color: var(--ink-4); }
+input[type="range"] { width: 100%; accent-color: var(--ink); }
+input[type="checkbox"] { accent-color: var(--ink); }
+
+:focus-visible { outline: 1px solid var(--ink); outline-offset: 2px; }
+
+/* A key/value pair, stacked: value first, label under it. The page's basic unit of fact. */
+.kv { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.kv > .kv-v {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 17px;
+  letter-spacing: -0.025em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kv > .kv-n {
+  font: 400 9.5px/1.2 var(--mono);
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+/* A strip of them, separated by hairlines rather than boxed into tiles. */
+.kvs {
+  display: grid;
+  gap: 0;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+}
+.kvs > .kv { padding: 10px 16px; border-left: 1px solid var(--rule); }
+.kvs > .kv:first-child { padding-left: 0; border-left: 0; }
+
+/* =============================================================================================
+   SIDE MARKERS
+   ============================================================================================= */
+
+/* A 7px square, the smallest possible carrier of a side colour. */
+.mk { width: 7px; height: 7px; flex: none; display: inline-block; background: var(--ink); }
+.mk--a { background: var(--a); }
+.mk--b { background: var(--b); }
+.mk--dead { background: var(--ink-4); }
+
+/* =============================================================================================
+   OVERLAYS
+   ============================================================================================= */
+
+/* Full-bleed white takeover. No scrim colour games, no rounded sheet — the page simply becomes
+   the dialogue. */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  background: var(--paper);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(var(--chrome-h) + 24px) var(--gut);
+  overflow: auto;
+}
+.overlay-body { width: min(680px, 100%); }
+
+/* Toasts: bottom-left, above the bottom chrome, hairline-boxed, mono. */
+.toasts {
+  position: fixed;
+  left: var(--gut);
+  bottom: calc(var(--chrome-h) + 14px);
+  z-index: 110;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 6px;
+  max-width: min(520px, 60vw);
+  pointer-events: none;
+}
+.toast {
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  border-left-width: 3px;
+  padding: 7px 10px;
+  font: 400 11px/1.35 var(--mono);
+  overflow-wrap: anywhere;
+}
+.toast--err { border-left-color: var(--hot); }
+.toast--a { border-left-color: var(--a); }
+.toast--b { border-left-color: var(--b); }
+
+/* =============================================================================================
+   UTILITIES — a deliberately short list
+   ============================================================================================= */
+
+.stack { display: flex; flex-direction: column; }
+.stack--8 { gap: 8px; }
+.stack--14 { gap: 14px; }
+.stack--24 { gap: 24px; }
+.line { display: flex; align-items: center; gap: 10px; }
+.line--wrap { flex-wrap: wrap; }
+.push { margin-left: auto; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 34px; }
+.scroll-y { overflow-y: auto; }
+.nowrap { white-space: nowrap; }
+.trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.hide { display: none !important; }
+
+@media (max-width: 900px) {
+  :root { --gut: 14px; }
+  .two { grid-template-columns: 1fr; gap: 18px; }
+  .kvs { grid-auto-flow: row; }
+  .kvs > .kv { border-left: 0; border-top: 1px solid var(--rule); padding: 10px 0; }
+  .kvs > .kv:first-child { border-top: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

@@ -1,0 +1,21 @@
+/* The canvas fills its parent and nothing more. The PARENT owns the 1px black frame and the aspect
+   ratio (SPEC.md's canvas contract) — a border drawn here would sit inside the parent's own and
+   read as a double rule, and an aspect ratio chosen here would fight whatever layout the shell puts
+   this in.
+
+   `display: block` because an inline-level canvas inherits a text baseline and leaves a few px of
+   descender gap under it — which on a hairline-framed white page is instantly visible as the frame
+   not touching the field. */
+
+.arena-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* The default. The loop swaps to `pointer` over a fighter — crosshair is the resting state
+     because this is an instrument you read positions off, and it matches the original game. */
+  cursor: crosshair;
+  /* Stops a drag on the field from selecting the surrounding page text, and stops a touch drag from
+     scrolling the page while the pointer is on the arena. */
+  user-select: none;
+  touch-action: none;
+}

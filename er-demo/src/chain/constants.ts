@@ -39,8 +39,13 @@ export const DEFAULT_EPHEMERAL_QUEUE = new PublicKey("5hBR571xnXppuCPveTrctfTU7t
 export const VRF_PROGRAM_ID = new PublicKey("Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz");
 export const SLOT_HASHES_SYSVAR = new PublicKey("SysvarS1otHashes111111111111111111111111111");
 
-export const Phase = { Lobby: 0, Drawing: 1, Fight: 2, Settled: 3 } as const;
-export const PHASE_NAME = ["Lobby", "Drawing", "Fight", "Settled"] as const;
+// `Abandoned` is the terminal state of a lobby that reached `lobbyClosesAt` holding fewer than two
+// fighters: it can never fight (the program refuses entries past the deadline and refuses to draw
+// with one fighter), so `abandon_round` ends it rather than leaving it counting down at 0:00 forever.
+// A fifth phase rather than a flag on `Settled`, because nothing was settled — there is no winner, no
+// seed and no fight to verify, and a UI that read `Settled` would go looking for all three.
+export const Phase = { Lobby: 0, Drawing: 1, Fight: 2, Settled: 3, Abandoned: 4 } as const;
+export const PHASE_NAME = ["Lobby", "Drawing", "Fight", "Settled", "Abandoned"] as const;
 
 // ---- fight pacing — mirrored from programs/bulls-arena/src/lib.rs ------------------------------
 //
@@ -60,6 +65,65 @@ export const FIGHT_TIMEOUT_SECONDS = 120;
 
 export function stepsPerSecond(fighterCount: number): number {
   return fighterCount * STEPS_PER_FIGHTER_PER_SECOND;
+}
+
+// ---- the lobby deadline — mirrored from programs/bulls-arena/src/lib.rs -------------------------
+//
+// Chain facts, for the same reason the fight pacing above is: the program clamps `open_round`'s
+// `lobby_seconds` into [MIN, MAX] and decides both "may I still enter" and "may this be drawn" from
+// the stored deadline. A client that disagreed would draw a countdown the chain isn't keeping, which
+// is precisely the invented number `Round.lobby_closes_at` exists to delete.
+
+/** The floor `open_round` clamps up to: 20s, the length the off-chain engine's ONLINE lobby ran at
+ *  (`web/index.html`: `w.lobbyMs || 20000`) and therefore a window already proven long enough for a
+ *  human to see a round open and get into it.
+ *
+ *  The ER delegation hand-off comes OUT of that window rather than being added to it — the countdown
+ *  starts when `open_round` lands but nobody can enter until the round is delegated. That hand-off
+ *  was timed against real devnet at 1.70s and 1.87s, so a 20s lobby is ~18s genuinely enterable. It
+ *  was briefly 30 on the strength of `admin-open-round.mjs` polling ten times at one-second
+ *  intervals, which is where the script gives up, not how long the thing takes. See
+ *  `MIN_LOBBY_SECONDS` in lib.rs for the full account. */
+export const MIN_LOBBY_SECONDS = 20;
+/** The ceiling. It exists to catch milliseconds passed where seconds were meant, not to express a
+ *  view on pacing — see `MAX_LOBBY_SECONDS` in lib.rs. */
+export const MAX_LOBBY_SECONDS = 3_600;
+
+/** WHAT WE ACTUALLY OPEN LOBBIES AT — a product choice, not a chain rule, which is why it lives here
+ *  and not in lib.rs (the program only clamps; it has no opinion about pacing).
+ *
+ *  The off-chain engine's own comment on this number was "shorter = less dead air", and its online
+ *  default was 20 seconds of entry window. On-chain, three things that did not exist there sit inside
+ *  the same window: the ER delegation hand-off before anyone can enter at all (~2s, measured), a
+ *  session-key approval, and a router round-trip per entry. 60 leaves ~58 seconds of genuine entry
+ *  window — roughly three times the proven 20, which is the margin a first-time player fumbling a
+ *  wallet dialog actually needs — while keeping the whole round near two minutes (lobby, then a
+ *  20-85s fight), the cadence a keeper can reproduce with no gap between rounds.
+ *
+ *  It is deliberately well above `MIN_LOBBY_SECONDS`: the floor is the point at which the feature
+ *  breaks, not a suggestion, and running the demo at the floor would leave nothing for a slow RPC. */
+export const DEFAULT_LOBBY_SECONDS = 60;
+
+/** The Rust `lobby_is_open()` — true while the round is still taking entries. Whole seconds, because
+ *  the chain compares whole seconds; a client animating a smooth countdown should still gate the
+ *  ENTER button on this so the button dies at the same instant the program starts refusing.
+ *
+ *  ONLY MEANINGFUL IN `Lobby` PHASE, and that is a real trap rather than pedantry: a FULL round may
+ *  be drawn early (the program has nothing left to wait for once nobody else can enter), so a round
+ *  can be in Drawing or Fight with a deadline still in the future. Check the phase first; this
+ *  answers "has the clock run out", not "is this round still a lobby". */
+export function lobbyIsOpen(lobbyClosesAtSec: number, nowSec: number): boolean {
+  return Math.floor(nowSec) < lobbyClosesAtSec;
+}
+
+/** The Rust `lobby_is_dead()` — a lobby past its deadline holding fewer than two fighters. It can
+ *  never become a fight, and `abandon_round` is the only thing left that can happen to it. This is
+ *  what lets a UI say "this lobby expired without a fight" instead of showing 0:00 indefinitely.
+ *
+ *  Same caveat as `lobbyIsOpen`: only ask it of a round in `Lobby` phase. Once the phase is
+ *  `Abandoned` the chain has already said so and there is nothing left to derive. */
+export function lobbyIsDead(fighterCount: number, lobbyClosesAtSec: number, nowSec: number): boolean {
+  return !lobbyIsOpen(lobbyClosesAtSec, nowSec) && fighterCount < 2;
 }
 
 /** The Rust `canonical_cursor()`, in whole on-chain seconds — how far the fight has genuinely got.

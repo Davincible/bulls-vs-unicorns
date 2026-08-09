@@ -162,8 +162,32 @@ async function selectValidator(routerUrl, programId) {
   return { identity: new PublicKey(usable.identity), fqdn: usable.fqdn };
 }
 
-const Phase = { Lobby: 0, Drawing: 1, Fight: 2, Settled: 3 };
-const PHASE_NAME = ["Lobby", "Drawing", "Fight", "Settled"];
+const Phase = { Lobby: 0, Drawing: 1, Fight: 2, Settled: 3, Abandoned: 4 };
+const PHASE_NAME = ["Lobby", "Drawing", "Fight", "Settled", "Abandoned"];
+
+// The lobby this script opens, in seconds — the FLOOR the program clamps to (MIN_LOBBY_SECONDS in
+// lib.rs and in src/chain/constants.ts; a literal here only because this file is a standalone Node
+// script that deliberately imports nothing from src/), not the 60 the demo opens rounds at.
+// `close_lobby_and_draw` is refused until the deadline passes (`LobbyStillOpen`, 6015), and this
+// round enters two fighters rather than filling to 16, so every second of lobby is a second this
+// script sits idle before it can reach the VRF draw and the assertions past it. 20 is the shortest
+// wait the chain permits.
+//
+// It is also the tightest fit in this repo, and worth naming rather than discovering. The floor is
+// sized as the 20s the off-chain engine's online lobby ran at, with the ~2s ER delegation hand-off
+// (measured on devnet) coming OUT of that window rather than being added to it — so ~18s are
+// genuinely enterable. This script spends those 18s on four confirmed round-trips, not the usual two:
+// a `create_session`, the session-signed enter, the forged-signer negative control, and player B's
+// direct enter. If devnet is slow enough to push the last of them past the deadline, `enter` fails
+// with `LobbyClosed` (6014) — loud and accurately named. Read that as devnet latency and re-run; it
+// is not a session-keys regression.
+const LOBBY_SECONDS = 20;
+
+/** Margin added to the deadline wait below. `lobby_closes_at` is stamped from the BASE layer's clock
+ *  in `open_round` and compared against the ER's clock in `close_lobby_and_draw` (see
+ *  `lobby_opened_at`'s doc comment in lib.rs), so the two can disagree by a small skew. Overshooting
+ *  costs two seconds; waking early costs `LobbyStillOpen` and the whole run. */
+const CLOCK_SKEW_MARGIN_MS = 2_000;
 // A settling pause before `resolve`, local to this script. It is no longer named after an on-chain
 // constant: `MIN_FIGHT_SECONDS` was removed when the fight became stepped (a flat floor let a
 // permissionless caller settle a live fight at the moment it favoured them). `resolve` now needs the
@@ -177,6 +201,32 @@ const info = (s) => console.log(`  ${c.d}${s}${c.x}`);
 const warn = (s) => console.log(`  ${c.y}!${c.x} ${s}`);
 const heading = (s) => console.log(`\n${c.b}${s}${c.x}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Sleep until the round's lobby deadline has passed, because `close_lobby_and_draw` refuses before
+ *  it (`LobbyStillOpen`, 6015) on any round that is not full at 16 fighters — this one has two.
+ *
+ *  `lobbyClosesAt` is READ OFF THE ROUND ACCOUNT by the caller, never reconstructed as "LOBBY_SECONDS
+ *  after we sent open_round": the chain clamps the requested duration into [20, 3600] and stamps the
+ *  timestamp from its own clock, so only the account knows the real deadline. A script that slept a
+ *  hardcoded interval would be keeping a private countdown next to the chain's — the exact thing
+ *  `Round.lobby_closes_at` was added to delete. */
+async function waitForLobbyDeadline(lobbyClosesAt) {
+  const deadlineMs = Number(lobbyClosesAt) * 1000 + CLOCK_SKEW_MARGIN_MS;
+  let remainingMs = deadlineMs - Date.now();
+  if (remainingMs <= 0) {
+    info(`lobby deadline already passed — close_lobby_and_draw permitted immediately`);
+    return;
+  }
+  info(`lobby closes at ${new Date(Number(lobbyClosesAt) * 1000).toLocaleTimeString()}; close_lobby_and_draw is refused until then`);
+  // Repainted once a second so a human watching sees a countdown rather than a stalled script.
+  while (remainingMs > 0) {
+    process.stdout.write(`  ${c.d}waiting out the lobby: ${Math.ceil(remainingMs / 1000)}s${c.x}\r`);
+    await sleep(Math.min(1000, remainingMs));
+    remainingMs = deadlineMs - Date.now();
+  }
+  process.stdout.write(`${" ".repeat(48)}\r`);
+  ok("lobby deadline passed — close_lobby_and_draw is now permitted");
+}
 
 /// The program's own log lines, as one string. Every error-identity check in this file goes through
 /// here rather than through `instanceof anchor.AnchorError`: `sendTx` uses a plain web3.js
@@ -332,7 +382,7 @@ const signatures = {};
     info(`round #${roundNo}  pda ${roundPda.toBase58()}`);
     {
       const builder = authority.methods
-        .openRound(new BN(roundNo.toString()), Array.from(new Uint8Array(32)))
+        .openRound(new BN(roundNo.toString()), Array.from(new Uint8Array(32)), LOBBY_SECONDS)
         .accounts({ arena: arenaPda, round: roundPda, authority: forkPayer.publicKey, systemProgram: SystemProgram.programId });
       signatures.openRound = await sendTx(router, builder, forkPayer, `open_round #${roundNo}`);
     }
@@ -408,12 +458,18 @@ const signatures = {};
         .accounts({ arena: arenaPda, round: roundPda, player: playerA.publicKey, sessionToken: sessionTokenPda, signer: sessionKeypair.publicKey });
       signatures.enterSessionSigned = await sendTx(router, builder, sessionKeypair, "enter (session-key-signed)");
     }
+    // The deadline is taken from THIS fetch rather than from one added later, and that is exact rather
+    // than convenient: `lobby_closes_at` is written once by `open_round` and never touched again, so
+    // every later read returns the same number. Step 7 waits against it after player B has entered.
+    let lobbyClosesAt;
     {
       const round = await authority.account.round.fetch(roundPda);
       const fighter = round.fighters.slice(0, round.fighterCount).find((f) => f.wallet.equals(playerA.publicKey));
       if (!fighter) throw new Error("enter() landed but no fighter matching player A's pubkey was found");
       ok(`fighter attributed to PLAYER A's real wallet (${playerA.publicKey.toBase58()}), not the session key (${sessionKeypair.publicKey.toBase58()})`);
       info(`  side=${fighter.side} stake=${fighter.stake.toString()} hp=${fighter.hp.toString()}`);
+      lobbyClosesAt = round.lobbyClosesAt;
+      info(`  lobby window ${Number(round.lobbyClosesAt) - Number(round.lobbyOpenedAt)}s, closing at ${new Date(Number(round.lobbyClosesAt) * 1000).toLocaleTimeString()}`);
     }
 
     // ---- NEGATIVE CONTROL: enter(), forged signer presenting the real token ------------------------
@@ -440,6 +496,9 @@ const signatures = {};
 
     // ---- close_lobby_and_draw — request randomness ---------------------------------------------------
     heading("7. close_lobby_and_draw — request randomness from the VRF oracle");
+    // Both fighters are in, so the lobby holds everything it is going to; the deadline read in step 4
+    // is now the only thing standing between here and the draw.
+    await waitForLobbyDeadline(lobbyClosesAt);
     const DEFAULT_EPHEMERAL_QUEUE = new PublicKey("5hBR571xnXppuCPveTrctfTU7tJLSN94nq7kv7FRK5Tc");
     const VRF_PROGRAM_ID = new PublicKey("Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz");
     const SLOT_HASHES_SYSVAR = new PublicKey("SysvarS1otHashes111111111111111111111111111");

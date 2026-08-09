@@ -1,0 +1,13 @@
+# TEMPORARY RIG ARTEFACTS — see scripts/tmp-round-rig.mjs's header. Everything matching these
+# patterns is throwaway and is expected to be deleted along with the tmp-* scripts themselves.
+#
+# `.tmp-filler.json` is a KEYPAIR holding real (if worthless) devnet SOL. Nothing in this repo
+# commits a keypair — `.devnet/` is ignored at the repo root for exactly this reason — and a
+# generated burner is no different just because it is temporary.
+.tmp-*
+
+# The scratch DRIVERS themselves, not just their artefacts. `tmp-*` is this repo's convention for a
+# script written to prove one thing against devnet and then deleted; several outlive their session
+# because the agent that wrote them was interrupted. They are not part of the build and should never
+# reach a reviewer, but they are also not worth losing mid-investigation — so: ignored, not removed.
+tmp-*

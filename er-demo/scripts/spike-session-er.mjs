@@ -70,7 +70,20 @@ const BASE_RPC = "https://api.devnet.solana.com";
 assertDevnetUrl(ROUTER_URL, "Magic Router");
 assertDevnetUrl(BASE_RPC, "base devnet RPC");
 
-const Phase = { Lobby: 0, Drawing: 1, Fight: 2, Settled: 3 };
+const Phase = { Lobby: 0, Drawing: 1, Fight: 2, Settled: 3, Abandoned: 4 };
+
+// THE LOBBY MUST OUTLIVE THE SCRIPT — the ceiling, not the 30s floor the drawing verification scripts
+// use. `enter` refuses at or past `Round.lobby_closes_at` (`LobbyClosed`, 6014), and both of this
+// script's entries come late: the ER delegation hand-off in step 3 is polled for up to 10s before the
+// round is even reachable, then step 4 mints a session on the base layer, and only then does step 5
+// perform the one entry this whole spike exists to prove. The negative control in step 7 is later
+// still.
+//
+// 3600 is MAX_LOBBY_SECONDS from lib.rs — the largest value the program will not clamp down. This
+// spike never calls `close_lobby_and_draw`, so nothing here gains from the lobby closing, and a
+// tighter number would only be a guess at devnet latency whose loss would present as "session keys
+// do not work on an ER-delegated account" — the exact false negative this script must never produce.
+const LOBBY_SECONDS = 3600;
 
 const c = { r: "\x1b[31m", g: "\x1b[32m", y: "\x1b[33m", d: "\x1b[2m", b: "\x1b[1m", x: "\x1b[0m" };
 const ok = (s) => console.log(`  ${c.g}✓${c.x} ${s}`);
@@ -192,7 +205,7 @@ async function sendTx(methodsBuilder, signer, label, { endpoint } = {}) {
     info(`round #${roundNo}  pda ${roundPda.toBase58()}`);
     {
       const builder = authority.methods
-        .openRound(new BN(roundNo.toString()), Array.from(new Uint8Array(32)))
+        .openRound(new BN(roundNo.toString()), Array.from(new Uint8Array(32)), LOBBY_SECONDS)
         .accounts({ arena: arenaPda, round: roundPda, authority: forkPayer.publicKey, systemProgram: SystemProgram.programId });
       await sendTx(builder, forkPayer, `open_round #${roundNo}`);
     }

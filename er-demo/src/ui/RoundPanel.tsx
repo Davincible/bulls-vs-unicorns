@@ -16,12 +16,16 @@ function truncate(base58: string): string {
 
 /** Phase drives the panel's one coloured signal. Lobby is inert, Drawing and Fight are live (gold,
  *  the app's "happening right now" colour), Settled is done (green). The phase NAME is always
- *  printed alongside — the colour is a second channel, never the only one. */
+ *  printed alongside — the colour is a second channel, never the only one.
+ *
+ *  Abandoned is done but NOT green: a lobby that expired holding fewer than two fighters ended
+ *  without a fight, and colouring it like a completed round would say something untrue at a glance. */
 const PHASE_CHIP: Record<RoundState["phaseName"], string> = {
   Lobby: "chip chip--muted",
   Drawing: "chip chip--warn chip--live",
   Fight: "chip chip--warn chip--live",
   Settled: "chip chip--ok",
+  Abandoned: "chip chip--muted",
 };
 
 /** Every branch of this panel renders the same labelled landmark, so the accessible name and the

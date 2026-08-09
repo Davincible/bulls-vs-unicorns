@@ -48,6 +48,21 @@ if (/mainnet/i.test(BASE_RPC) || !/devnet/i.test(BASE_RPC)) {
   throw new Error(`base RPC could not be positively identified as devnet: ${BASE_RPC}. Refusing.`);
 }
 
+// THE LOBBY MUST OUTLIVE THE SCRIPT — this one wants the CEILING, not the floor the other
+// verification scripts use. `enter` now refuses at or past `Round.lobby_closes_at` (`LobbyClosed`,
+// 6014), and this script's positive entries are the first and the LAST things it does to the round:
+// step 3 enters player A, then steps 4 and 5 run a dozen negative controls, each of which is its own
+// confirmed devnet transaction (three `create_session` mints among them), and only then does step 6
+// enter player B. The wall-clock gap between the two positive enters is however long devnet takes to
+// confirm ~15 transactions in sequence, which has no useful upper bound.
+//
+// 3600 is MAX_LOBBY_SECONDS from lib.rs — the largest value the program will not clamp down. There is
+// no cost to it here and no shorter number that is honest: this round is never delegated, never drawn
+// and never resolved (see step 1's heading), so nothing in this script benefits from the lobby ever
+// closing. A tighter value would only be a guess at devnet's confirmation latency, and losing that
+// guess reads as a session-key regression in step 6 rather than as the timeout it actually is.
+const LOBBY_SECONDS = 3600;
+
 const c = { r: "\x1b[31m", g: "\x1b[32m", y: "\x1b[33m", d: "\x1b[2m", b: "\x1b[1m", x: "\x1b[0m" };
 const ok = (s) => console.log(`  ${c.g}✓${c.x} ${s}`);
 const info = (s) => console.log(`  ${c.d}${s}${c.x}`);
@@ -138,7 +153,7 @@ async function expectError(sendAttempt, expectedName, label) {
       [Buffer.from("round"), arenaPda.toBuffer(), u64le(roundNo)], PROGRAM_ID,
     );
     signatures.openRound = await authority.methods
-      .openRound(new BN(roundNo.toString()), Array.from(new Uint8Array(32)))
+      .openRound(new BN(roundNo.toString()), Array.from(new Uint8Array(32)), LOBBY_SECONDS)
       .accounts({ arena: arenaPda, round: roundPda, authority: forkPayer.publicKey, systemProgram: SystemProgram.programId })
       .rpc();
     ok(`open_round #${roundNo}  ${c.d}${roundPda.toBase58()}  ${signatures.openRound}${c.x}`);

@@ -50,6 +50,24 @@ const BASE_RPC = "https://api.devnet.solana.com";
 assertDevnetUrl(ROUTER_URL, "Magic Router");
 assertDevnetUrl(BASE_RPC, "base devnet RPC");
 
+// How long the lobby this script opens stays open, in seconds — `open_round`'s third argument, which
+// the chain turns into `Round.lobby_closes_at` and then ENFORCES: `enter` refuses past it and
+// `close_lobby_and_draw` refuses before it. So this is no longer a presenter's private intention, it
+// is the entry window every player and every keeper is held to, which is why the summary below prints
+// the deadline the chain came back with rather than echoing this number.
+//
+// 60 mirrors DEFAULT_LOBBY_SECONDS in src/chain/constants.ts — the same product choice, not a second
+// opinion. Its reasoning, in short: the off-chain engine ran a 20-second online lobby ("shorter = less
+// dead air"), and on-chain three things that did not exist there sit inside the same window — the ER
+// delegation hand-off before anyone can enter at all (~2s, measured against real devnet; this script
+// waits on exactly that hand-off in step 3 below), a session-key approval, and a router round-trip per
+// entry. 60 leaves ~58 seconds of genuine entry window, roughly three times the proven 20, while
+// keeping the whole round near two minutes.
+//
+// The chain clamps into [20, 3600], so an env override that is out of range opens a clamped lobby
+// rather than failing — another reason to print what the round actually recorded.
+const LOBBY_SECONDS = Number(process.env.LOBBY_SECONDS || 60);
+
 const c = { r: "\x1b[31m", g: "\x1b[32m", y: "\x1b[33m", d: "\x1b[2m", b: "\x1b[1m", x: "\x1b[0m" };
 const ok = (s) => console.log(`  ${c.g}✓${c.x} ${s}`);
 const info = (s) => console.log(`  ${c.d}${s}${c.x}`);
@@ -145,10 +163,21 @@ async function sendTx(router, methodsBuilder, signer, label) {
     const seedCommit = randomBytes(32); // vestigial since ER-060, any 32 bytes satisfies the on-chain format
     {
       const builder = authority.methods
-        .openRound(new BN(roundNo.toString()), Array.from(seedCommit))
+        .openRound(new BN(roundNo.toString()), Array.from(seedCommit), LOBBY_SECONDS)
         .accounts({ arena: arenaPda, round: roundPda, authority: forkPayer.publicKey, systemProgram: SystemProgram.programId });
       await sendTx(router, builder, forkPayer, `open_round #${roundNo}`);
     }
+    // Read the deadline back off the account rather than computing it from LOBBY_SECONDS and the local
+    // clock. Two reasons, both of which have bitten this repo before: the chain clamps the duration
+    // into [20, 3600] so the stored window can differ from what was asked for, and the timestamp comes
+    // from the base layer's `Clock`, not this machine's. Fetched on the BASE layer because that is
+    // where open_round ran and the round is not delegated yet — after step 3 the account is owned by
+    // the Delegation Program and Anchor's decoder refuses it.
+    const opened = await authorityBase.account.round.fetch(roundPda);
+    const lobbyOpenedAt = Number(opened.lobbyOpenedAt);
+    const lobbyClosesAt = Number(opened.lobbyClosesAt);
+    const lobbyWindowSeconds = lobbyClosesAt - lobbyOpenedAt;
+    ok(`lobby window ${lobbyWindowSeconds}s${lobbyWindowSeconds === LOBBY_SECONDS ? "" : ` ${c.y}(clamped from the requested ${LOBBY_SECONDS}s)${c.x}`}`);
 
     // ---- delegate_round -------------------------------------------------------------------------
     heading("3. delegate_round — hand the round to the ER validator");
@@ -184,8 +213,25 @@ async function sendTx(router, methodsBuilder, signer, label) {
       ok(`round owner is now the Delegation Program — ER-delegated and ready for players`);
     }
 
+    // The remaining window, not the configured one: the delegation hand-off above runs INSIDE the
+    // countdown (the clock started when open_round landed, several seconds ago), so the number a
+    // presenter needs is how long players actually have from this moment — which is also the number
+    // that shrinks if the hand-off was slow. Recomputed here rather than reused from above for that
+    // reason. Negative would mean the hand-off outlasted the whole lobby; say so plainly instead of
+    // printing a cheerful "-3s left".
+    const secondsLeft = lobbyClosesAt - Math.floor(Date.now() / 1000);
+    const deadlineLocal = new Date(lobbyClosesAt * 1000).toLocaleTimeString();
+
     console.log(`\n${c.g}${c.b}LOBBY OPEN${c.x} — round #${roundNo} is delegated and accepting enter().`);
     console.log(`  round pda: ${c.b}${roundPda.toBase58()}${c.x}`);
+    console.log(`  entries close: ${c.b}${deadlineLocal}${c.x} ${c.d}(unix ${lobbyClosesAt}, a ${lobbyWindowSeconds}s window)${c.x}`);
+    if (secondsLeft > 0) {
+      console.log(`  players have ${c.b}${secondsLeft}s${c.x} left to enter; close_lobby_and_draw is refused until then`);
+      console.log(`  ${c.d}(unless the round fills to 16 fighters, which may be drawn immediately)${c.x}`);
+    } else {
+      console.log(`  ${c.y}the lobby is ALREADY CLOSED — the delegation hand-off outlasted the ${lobbyWindowSeconds}s window.${c.x}`);
+      console.log(`  ${c.y}Nobody can enter this round; it can only be abandon_round()ed. Re-run with a larger LOBBY_SECONDS.${c.x}`);
+    }
     console.log(`  point the demo UI's roundPda at this address.`);
     process.exit(0);
   } catch (e) {

@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { nodePolyfills } from 'vite-plugin-node-polyfills'
@@ -34,4 +35,16 @@ export default defineConfig({
     react(),
     nodePolyfills({ include: ['buffer', 'process', 'crypto', 'stream', 'string_decoder'] }),
   ],
+  // Two entries. `index.html` is the existing app, untouched; `arena.html` is the v2 page
+  // (src/v2/), which shares only chain/ and sim/ with it — by import, never by mutation. Dev needs
+  // nothing here (Vite serves any .html in the root), but a build would silently ship only
+  // index.html without this.
+  build: {
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        arena: resolve(__dirname, 'arena.html'),
+      },
+    },
+  },
 })

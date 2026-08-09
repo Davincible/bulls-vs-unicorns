@@ -79,8 +79,23 @@ const DEFAULT_EPHEMERAL_QUEUE = new PublicKey("5hBR571xnXppuCPveTrctfTU7tJLSN94n
 const VRF_PROGRAM_ID = new PublicKey("Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz");
 const SLOT_HASHES_SYSVAR = new PublicKey("SysvarS1otHashes111111111111111111111111111");
 
-const Phase = { Lobby: 0, Drawing: 1, Fight: 2, Settled: 3 };
-const PHASE_NAME = ["Lobby", "Drawing", "Fight", "Settled"];
+const Phase = { Lobby: 0, Drawing: 1, Fight: 2, Settled: 3, Abandoned: 4 };
+const PHASE_NAME = ["Lobby", "Drawing", "Fight", "Settled", "Abandoned"];
+
+// The lobby this canary opens, in seconds — the FLOOR the program clamps to (MIN_LOBBY_SECONDS in
+// lib.rs; a literal here because this script predates er-demo and imports nothing from it),
+// deliberately not the 60 a demo round is opened at. `close_lobby_and_draw` is refused until the
+// deadline passes (`LobbyStillOpen`, 6015) unless the round is full at 16 fighters, and this one
+// enters two, so the wait is unavoidable. Every second of it is dead time before the canary reaches
+// the transition it exists to watch (step 6, the VRF callback), so take the shortest lobby the chain
+// will accept.
+const LOBBY_SECONDS = 20;
+
+/** Margin added to the deadline wait. `lobby_closes_at` is stamped from the BASE layer's clock in
+ *  `open_round` (step 2, before delegation) and compared against the ER's clock in
+ *  `close_lobby_and_draw` (step 5, after it) — see `lobby_opened_at`'s doc comment in lib.rs. The two
+ *  can disagree by a small skew; overshooting costs two seconds, waking early costs the run. */
+const CLOCK_SKEW_MARGIN_MS = 2_000;
 
 const c = { r: "\x1b[31m", g: "\x1b[32m", y: "\x1b[33m", d: "\x1b[2m", b: "\x1b[1m", x: "\x1b[0m" };
 const ok = (s) => console.log(`  ${c.g}✓${c.x} ${s}`);
@@ -88,6 +103,33 @@ const info = (s) => console.log(`  ${c.d}${s}${c.x}`);
 const warn = (s) => console.log(`  ${c.y}!${c.x} ${s}`);
 const heading = (s) => console.log(`\n${c.b}${s}${c.x}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Sleep until the round's lobby deadline has passed, so `close_lobby_and_draw` is permitted.
+ *
+ *  The deadline comes from the FETCHED ROUND, not from `LOBBY_SECONDS` plus the local clock. The
+ *  chain clamps the requested duration into [MIN, MAX] and stamps the timestamp from its own `Clock`,
+ *  so the account is the only thing that knows when the lobby really closes — and a canary that kept
+ *  its own copy of that number would be asserting against its own arithmetic rather than against the
+ *  chain, which is the failure this field was added to remove. */
+async function waitForLobbyDeadline(round) {
+  const deadlineMs = Number(round.lobbyClosesAt) * 1000 + CLOCK_SKEW_MARGIN_MS;
+  const windowSeconds = Number(round.lobbyClosesAt) - Number(round.lobbyOpenedAt);
+  let remainingMs = deadlineMs - Date.now();
+  if (remainingMs <= 0) {
+    info(`lobby deadline already passed (${windowSeconds}s window) — drawing immediately`);
+    return;
+  }
+  info(`lobby window ${windowSeconds}s, closes at ${new Date(Number(round.lobbyClosesAt) * 1000).toLocaleTimeString()} — the draw is refused until then`);
+  // Repainted every second: this is the longest deliberate pause in the canary, and a silent 30s gap
+  // is indistinguishable from a hung RPC call to whoever is watching it run.
+  while (remainingMs > 0) {
+    process.stdout.write(`  ${c.d}waiting out the lobby: ${Math.ceil(remainingMs / 1000)}s${c.x}\r`);
+    await sleep(Math.min(1000, remainingMs));
+    remainingMs = deadlineMs - Date.now();
+  }
+  process.stdout.write(`${" ".repeat(48)}\r`);
+  ok("lobby deadline passed — close_lobby_and_draw is now permitted");
+}
 
 /** Anchor wraps program-side custom errors in AnchorError; decode it instead of printing a stack. */
 function describeError(e) {
@@ -261,7 +303,7 @@ async function sendTx(methodsBuilder, signer, label, { blockhashAccounts, endpoi
     const seedCommit = randomBytes(32);
     {
       const builder = authority.methods
-        .openRound(new BN(roundNo.toString()), Array.from(seedCommit))
+        .openRound(new BN(roundNo.toString()), Array.from(seedCommit), LOBBY_SECONDS)
         .accounts({
           arena: arenaPda,
           round: roundPda,
@@ -326,6 +368,10 @@ async function sendTx(methodsBuilder, signer, label, { blockhashAccounts, endpoi
 
     // ---- close_lobby_and_draw — request VRF randomness -------------------------------------------
     heading("5. close_lobby_and_draw — request randomness from the VRF oracle");
+    // Both entries have landed, so the lobby is as full as it is going to get. Read the round back and
+    // wait out its deadline — this is the first read of the round in the run, and it is the round's
+    // own recorded deadline the wait is against, not the LOBBY_SECONDS asked for in step 2.
+    await waitForLobbyDeadline(await authority.account.round.fetch(roundPda));
     // Resolve the SPECIFIC ER validator our round is delegated to, and send this one instruction
     // straight there — see "SDK SURPRISE #2" above for why the generic router refuses it outright.
     const { fqdn: erValidatorFqdn } = await router.getDelegationStatus(roundPda);
@@ -460,6 +506,8 @@ async function sendTx(methodsBuilder, signer, label, { blockhashAccounts, endpoi
   pot             ${final.pot.toString()}
   fighter_count   ${final.fighterCount}
   tick_count      ${final.tickCount.toString()}  (steps run by resolve())
+  lobby_opened_at ${final.lobbyOpenedAt.toString()}
+  lobby_closes_at ${final.lobbyClosesAt.toString()}  (a ${Number(final.lobbyClosesAt) - Number(final.lobbyOpenedAt)}s entry window, clamped into [20, 3600] on-chain)
   fight_started_at ${final.fightStartedAt.toString()}`);
     for (let i = 0; i < final.fighterCount; i++) {
       const f = final.fighters[i];

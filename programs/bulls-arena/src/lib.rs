@@ -208,6 +208,142 @@ pub const MAX_STEPS: u64 = 4_000;
 /// 120s clears the longest lineup in the table above (16 fighters, 84.1s worst case) with margin.
 pub const FIGHT_TIMEOUT_SECONDS: i64 = 120;
 
+/// THE SHORTEST LOBBY THAT IS ACTUALLY ENTERABLE — the floor `open_round` clamps up to.
+///
+/// The deadline is stamped when `open_round` lands, but NOBODY CAN ENTER until `delegate_round` has
+/// handed the account to the ER, and that hand-off is not instant: `er-demo/scripts/admin-open-round
+/// .mjs` polls for the ownership change ten times at one-second intervals because it has been seen to
+/// need several. So the window a player actually gets is the duration MINUS the delegation lag, and a
+/// duration below that lag produces a lobby whose countdown has already expired by the time the first
+/// `enter` is even routable. That is the "zero-length lobby nobody can enter" bug, and it is not
+/// hypothetical here — it is the default outcome of picking the number the off-chain engine used.
+///
+/// 20s, matching the ONLINE off-chain engine (`web/index.html`: `w.lobbyMs || 20000`) — a lobby
+/// length already proven to be enough for a human to see a round open and get into it. The 9s in
+/// `engine/src/round.ts` is the LOCAL default, where the entrants are bots deployed by a timer with
+/// no wallet, session key or router round-trip involved, so it is not the relevant precedent.
+///
+/// THIS WAS 30 (= 20 + a 10s delegation budget) AND THE 10 WAS WRONG. That figure came from
+/// `admin-open-round.mjs` polling for the ownership change ten times at one-second intervals — but a
+/// poll CEILING is not a measurement, it is the point at which the script gives up. Timed against
+/// real devnet in this session, `delegate_round` confirmed in **1.70s and 1.87s**. Budgeting ten
+/// seconds into every lobby on the strength of a retry limit was a worst case stacked on top of a
+/// soft default, and it cost every round eight seconds of dead air that no player was ever using.
+///
+/// So the floor is the entry window itself, and the handoff comes out of it: a 20s lobby is ~18s
+/// genuinely enterable, which is materially the length the off-chain engine shipped. If the handoff
+/// ever regresses past a second or two the assertion in `the_lobby_duration_is_clamped_to_a_range_a_
+/// round_can_actually_use` is what should be updated — with a new measurement, not a new guess.
+///
+/// The floor exists to make the degenerate value impossible, not to suggest a length; any real lobby
+/// asks for more than this.
+pub const MIN_LOBBY_SECONDS: u32 = 20;
+
+/// THE CEILING, WHICH EXISTS TO CATCH A UNIT MISTAKE — not to express a view on pacing.
+///
+/// The one realistic way to get a multi-day lobby is passing MILLISECONDS to an instruction that
+/// takes seconds: every prior art in this repo is named `*_MS` (`LOBBY_MS = 9_000`, `w.lobbyMs ||
+/// 20000`), so `20_000` is exactly the number a hand or a port would carry across — and unclamped
+/// that is a five-and-a-half hour lobby that nobody watches expire. An hour is far longer than any
+/// round this project runs (the keeper reopens a lobby the moment the previous round settles, so the
+/// natural cadence is a minute or two) while still being a length an operator could have meant, which
+/// is the right place for a guard that must never reject a real intention.
+///
+/// CLAMPED, NOT REJECTED, and the clamp is not silent: `lobby_closes_at - lobby_opened_at` is on the
+/// account, so an operator who passed nonsense sees `3600` staring back at them the moment they read
+/// the round. Rejecting would turn a fat-fingered argument into a failed transaction mid-demo, and
+/// the value is a countdown, not a security parameter — nothing downstream is unsafe at any value in
+/// this range.
+pub const MAX_LOBBY_SECONDS: u32 = 3_600;
+
+/// How long the lobby `open_round` is opening will actually stay open. `u32` on the way in because a
+/// negative duration is not a thing an operator can mean, so it is not a state this program has to
+/// have an opinion about; `i64` on the way out because it is about to be added to a unix timestamp.
+pub fn clamp_lobby_seconds(requested: u32) -> i64 {
+    requested.clamp(MIN_LOBBY_SECONDS, MAX_LOBBY_SECONDS) as i64
+}
+
+/// BOTH ENDS OF THE LOBBY, from the chain's clock and the operator's requested duration. This is the
+/// whole of what `open_round` writes, and it lives here rather than inline in the instruction for one
+/// reason: inline, the clamp is unreachable from a native test, and "the stored window is always
+/// within [MIN, MAX]" — the property `Round.lobby_opened_at`'s doc comment promises anyone can check
+/// — would be a claim rather than something `the_stored_lobby_window_is_always_within_the_clamp`
+/// actually runs. Dropping `clamp_lobby_seconds` from an inline version passes every other test.
+pub fn lobby_window(now: i64, requested: u32) -> (i64, i64) {
+    // `saturating_add` rather than `checked_*` + an error: the addend is at most an hour, so the only
+    // way this overflows is a clock sysvar reporting a timestamp within an hour of `i64::MAX`, which
+    // is not a condition a round can do anything useful about.
+    (now, now.saturating_add(clamp_lobby_seconds(requested)))
+}
+
+/// IS THERE A FIGHT IN THIS LOBBY? One fighter is not a fight — nobody to exchange with, and
+/// `advance_fight` returns immediately below `n = 2`.
+///
+/// It exists as a function, rather than as `>= 2` written wherever it is needed, because two
+/// instructions must agree on it EXACTLY or a round falls between them: `close_lobby_and_draw`
+/// refuses without it and `abandon_round` requires its negation, so the two are exhaustive only while
+/// they mean the same thing by "enough". Written out twice, someone later raising the bar to two per
+/// SIDE closes the draw without opening the abandon — and a two-fighter lobby past its deadline would
+/// have no legal instruction at all, which is the permanently-stuck round this whole path exists to
+/// prevent. Named once, that mistake is impossible instead of merely unlikely.
+pub fn enough_to_fight(fighter_count: u16) -> bool {
+    fighter_count >= 2
+}
+
+/// THE ONE DEFINITION OF "THE DEADLINE HAS NOT PASSED". Three instructions and the whole UI turn on
+/// this comparison, and the failure mode of writing it out three times is not a compile error — it is
+/// a one-second window in which entries are refused AND the draw is refused (or, worse, both are
+/// allowed), from a `<` that should have been `<=`.
+///
+/// Phrasing `lobby_may_close` and `lobby_is_dead` in terms of this makes the windows complements BY
+/// CONSTRUCTION, so there is nothing left for a test to check about how they fit together — a test
+/// that "asserted the tiling" would be asserting `x != !x`. What is NOT structural is which side of
+/// the boundary the deadline second itself falls on, and that is pinned by concrete values in
+/// `the_deadline_second_belongs_to_the_draw_not_to_entries`.
+pub fn lobby_is_open(lobby_closes_at: i64, now: i64) -> bool {
+    now < lobby_closes_at
+}
+
+/// May the lobby be closed and the seed drawn?
+///
+/// The deadline is the normal answer. THE SECOND CLAUSE IS A DELIBERATE EARLY EXIT: once
+/// `fighter_count == MAX_FIGHTERS`, `enter` rejects every further entry with `RoundFull`, so waiting
+/// out the rest of the countdown cannot change the lineup by a single fighter — it can only add dead
+/// air to a round that is, as far as anyone watching is concerned, already assembled.
+///
+/// It hands nobody any power, which is the only reason it is safe to add. Closing early does not
+/// influence the seed (the VRF oracle produces it after this call, and nothing the caller supplies
+/// reaches it), and it cannot exclude an entrant, because a full lobby already excludes everyone —
+/// `enter` rejects on `RoundFull` before it reaches the top-up branch, so the LINEUP AND THE POT are
+/// both already frozen at sixteen whether this clause exists or not. That is the whole argument, and
+/// it does not rest on filling a lobby being expensive: `enter` requires only `stake > 0` and one
+/// wallet may hold both sides, so eight wallets can fill a round with dust for transaction fees. All
+/// such a griefer buys is choosing which SECOND the fight starts, and no quantity in this program is
+/// a function of that — the pace, the penalty horizon and the bell are all measured from
+/// `fight_started_at` itself.
+pub fn lobby_may_close(fighter_count: u16, lobby_closes_at: i64, now: i64) -> bool {
+    !lobby_is_open(lobby_closes_at, now) || (fighter_count as usize) >= MAX_FIGHTERS
+}
+
+/// THE DEAD LOBBY: past its deadline holding fewer than two fighters, so it can never become a fight.
+///
+/// This is a terminal state, not a slow one. `enter` refuses past the deadline — which is what makes
+/// the countdown mean what it says — so `fighter_count` can never rise again, and
+/// `close_lobby_and_draw`'s `>= 2` guard (which one fighter cannot satisfy, and a fight of one is not
+/// a fight) can never be satisfied either. Without a way out, such a round would sit in `Lobby`
+/// forever: this repo has already paid for two permanently-stuck rounds and the whole design of
+/// `FIGHT_TIMEOUT_SECONDS` is the promise not to add a third. `abandon_round` is that way out.
+///
+/// It is derivable from the account by anyone, in exactly this form, which is what lets the UI say
+/// "this lobby expired without a fight" instead of showing a dead countdown at 0:00 forever.
+///
+/// The `!enough_to_fight` is the SAME predicate `close_lobby_and_draw` requires — see that function
+/// for why it is named rather than written out, which is what makes these two exits exhaustive rather
+/// than merely adjacent.
+pub fn lobby_is_dead(fighter_count: u16, lobby_closes_at: i64, now: i64) -> bool {
+    !lobby_is_open(lobby_closes_at, now) && !enough_to_fight(fighter_count)
+}
+
 /// WHAT PULLING OUT COSTS AT THE OPENING BELL — and it decays to nothing by the end of the fight.
 ///
 /// THE BUG THIS CLOSES. Making the fight advance on-chain gave `extract` real teeth late in a round,
@@ -480,12 +616,21 @@ pub mod bulls_arena {
         Ok(())
     }
 
-    /// Open a round and publish the (now vestigial) seed commitment BEFORE anyone can enter.
+    /// Open a round, publish the (now vestigial) seed commitment BEFORE anyone can enter, and STAMP
+    /// THE DEADLINE the lobby closes at.
     ///
-    /// The ordering is the whole point: a commitment published after entries are known proves
-    /// nothing. Kept for format compatibility even though the real seed now comes from the VRF
+    /// The commitment's ordering is the whole point: a commitment published after entries are known
+    /// proves nothing. Kept for format compatibility even though the real seed now comes from the VRF
     /// oracle via `close_lobby_and_draw`/`callback_seed`, not from a value the operator chose here.
-    pub fn open_round(ctx: Context<OpenRound>, round_no: u64, seed_commit: [u8; 32]) -> Result<()> {
+    ///
+    /// `lobby_seconds` is a DURATION, not an absolute deadline, and that is the whole reason the
+    /// countdown can be trusted. An absolute `lobby_closes_at` supplied by the caller would be a
+    /// number relative to the caller's own clock, written into an account that everything else reads
+    /// against the chain's — so the operator's laptop being 40 seconds fast would silently shorten
+    /// every lobby, and nobody reading the round could tell. Taking a duration means the chain stamps
+    /// both ends itself and the only clock involved is the one the guards use.
+    pub fn open_round(ctx: Context<OpenRound>, round_no: u64, seed_commit: [u8; 32], lobby_seconds: u32) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
         let arena = &mut ctx.accounts.arena;
         require!(round_no == arena.round_counter + 1, ArenaError::RoundOutOfOrder);
 
@@ -500,11 +645,17 @@ pub mod bulls_arena {
         r.penalties_collected = 0;
         r.fighter_count = 0;
         r.tick_count = 0;
+        (r.lobby_opened_at, r.lobby_closes_at) = lobby_window(now, lobby_seconds);
         r.fight_started_at = 0;   // meaningful only from callback_seed onward
         r.bump = ctx.bumps.round;
 
         arena.round_counter = round_no;
-        emit!(RoundOpened { round_no, seed_commit });
+        emit!(RoundOpened {
+            round_no,
+            seed_commit,
+            lobby_opened_at: r.lobby_opened_at,
+            lobby_closes_at: r.lobby_closes_at,
+        });
         Ok(())
     }
 
@@ -530,6 +681,18 @@ pub mod bulls_arena {
     /// `stake` is the GROSS amount; the fee is taken here so the on-chain arithmetic matches the
     /// engine's, where a stake is recorded net of the deploy fee.
     ///
+    /// THE DEADLINE IS ENFORCED HERE, not only at the draw, and that is what makes the countdown on
+    /// screen honest rather than advisory. If entries were still accepted past `lobby_closes_at` — as
+    /// they would be if only `close_lobby_and_draw` checked it — then "entries close in 0:07" would
+    /// mean "the operator MAY close in 0:07", the button would keep working after zero, and the
+    /// number would be back to describing an intention instead of a rule. It also fixes the lineup at
+    /// a knowable instant: `fighter_count` stops moving at the deadline, and the fight's pace and
+    /// penalty horizon are both functions of it.
+    ///
+    /// The cost of saying it here is one `Clock::get()` on the round's hottest instruction, which is
+    /// a sysvar read of a value the runtime already has — the same call `tick`, `extract` and
+    /// `resolve` each already make.
+    ///
     /// SESSION KEYS (Phase 6). `#[session_auth_or]` runs BEFORE the body below: if `session_token`
     /// is present and valid (a real PDA, unexpired, bound to this program as `target_program` and
     /// to `player` as its `authority`), the transaction may be signed by the session key instead of
@@ -543,11 +706,16 @@ pub mod bulls_arena {
     )]
     pub fn enter(ctx: Context<Enter>, side: u8, stake: u64) -> Result<()> {
         let arena_fee = ctx.accounts.arena.fee_bps as u64;
+        let now = Clock::get()?.unix_timestamp;
         let r = &mut ctx.accounts.round;
         require!(r.phase == Phase::Lobby as u8, ArenaError::NotInLobby);
         require!(side == 0 || side == 1, ArenaError::BadSide);
         require!(stake > 0, ArenaError::ZeroStake);
+        // Checked separately from the deadline, and before it, so a player who arrives at a full
+        // lobby is told the lobby is FULL rather than that they were too slow — two different things
+        // to be told, and only one of them is worth waiting for the next round over.
         require!((r.fighter_count as usize) < MAX_FIGHTERS, ArenaError::RoundFull);
+        require!(lobby_is_open(r.lobby_closes_at, now), ArenaError::LobbyClosed);
 
         // One entry per wallet per side — a repeat tops up rather than spawning a second fighter,
         // mirroring the engine, where a duplicate id merges into the existing entry.
@@ -848,11 +1016,26 @@ pub mod bulls_arena {
     /// seeds offline against the EXPECTED lobby and committing to the most favourable one. With the
     /// house fielding most of the fighters, that was not theoretical. The operator no longer
     /// chooses the seed at all.
+    ///
+    /// IT NOW REFUSES BEFORE THE DEADLINE (or before the lobby is full — see `lobby_may_close`). The
+    /// operator used to decide when a lobby ended, which made the end of a lobby an intention rather
+    /// than a fact, and left the countdown a client wants to draw as a guess about that intention.
+    /// With this guard the countdown is the rule: the transaction that ends the lobby cannot land
+    /// early, so `lobby_closes_at` is the earliest instant a fight can possibly begin, verifiable by
+    /// anyone against the account.
+    ///
+    /// THE `>= 2` GUARD BELOW IS NOW LOAD-BEARING RATHER THAN A FORMALITY. Before the deadline, an
+    /// under-subscribed lobby could simply be left open until it filled. It cannot now — `enter`
+    /// refuses past the deadline — so a lobby that reaches it holding fewer than two fighters is
+    /// finished, and this instruction is the thing that must never pretend otherwise. `abandon_round`
+    /// is where such a round goes; see `lobby_is_dead`.
     pub fn close_lobby_and_draw(ctx: Context<DrawSeed>, client_seed: [u8; 32]) -> Result<()> {
         {
+            let now = Clock::get()?.unix_timestamp;
             let r = &mut ctx.accounts.round;
             require!(r.phase == Phase::Lobby as u8, ArenaError::NotInLobby);
-            require!(r.fighter_count >= 2, ArenaError::NotEnoughFighters);
+            require!(lobby_may_close(r.fighter_count, r.lobby_closes_at, now), ArenaError::LobbyStillOpen);
+            require!(enough_to_fight(r.fighter_count), ArenaError::NotEnoughFighters);
             r.phase = Phase::Drawing as u8;
         }
         // SEC finding (independent review): `accounts_metas: None` meant the oracle's callback into
@@ -896,6 +1079,78 @@ pub mod bulls_arena {
         Ok(())
     }
 
+    /// THE WAY OUT FOR A LOBBY THAT DIED UNDER-SUBSCRIBED — the deadline's other half.
+    ///
+    /// Adding a deadline created a state that could not previously exist: a round past
+    /// `lobby_closes_at` holding fewer than two fighters. It can never fight (`enter` refuses past the
+    /// deadline, so `fighter_count` cannot rise, and `close_lobby_and_draw` needs two), so without
+    /// this it would sit in `Lobby` forever — delegated to an ER validator, counted by every history
+    /// query, showing a countdown that expired and never resolved into anything. This repo has two
+    /// permanently-stuck rounds in its history already and treats "a round can always reach a terminal
+    /// state" as a promise (see `FIGHT_TIMEOUT_SECONDS`); a deadline without this instruction would
+    /// have quietly broken that promise for the one case it introduced.
+    ///
+    /// EXTENDING THE DEADLINE WAS THE OTHER OPTION, AND IT IS THE WRONG ONE. A lobby that reopens
+    /// itself when nobody shows up is a countdown that can be moved, which is exactly the "invented
+    /// number" this whole change exists to delete — a clock a client cannot trust to mean what it says
+    /// is worse than no clock. `Abandoned` says the true thing plainly, and the UI can say it too.
+    ///
+    /// PERMISSIONLESS, for the same reason `tick` and `resolve` are: every precondition is chain
+    /// truth (the phase, the deadline, the frozen count) and nothing about the outcome is chosen by
+    /// the caller. A round whose operator has walked away must not need that operator to come back.
+    ///
+    /// WHAT THIS DOES NOT COVER, said plainly rather than left to be discovered: `Phase::Drawing`
+    /// still has no exit. `close_lobby_and_draw` moves a round there and then depends on the VRF
+    /// oracle to call `callback_seed`, which only the VRF program may call — so if the callback never
+    /// lands (queue down, callback transaction fails, validator restart between request and delivery)
+    /// the round sits in `Drawing` forever with no instruction any signer can send. That hole
+    /// PREDATES the lobby deadline and this change narrows rather than widens the way in (reaching
+    /// `Drawing` now requires the deadline as well as two fighters), so closing it is separate work,
+    /// not a regression to fix here. The shape of the fix, for whoever picks it up: stamp the moment
+    /// the draw was requested — `fight_started_at` is 0 until `callback_seed` overwrites it and is
+    /// read nowhere outside `Phase::Fight`, so it costs no account bytes — and let `abandon_round`
+    /// also accept a `Drawing` round whose oracle has been silent for longer than a measured timeout.
+    /// An abandoned `Drawing` round is the same terminal state for the same reason: no seed, no
+    /// fight, no winner, nothing custodied. A late callback then fails harmlessly on its own
+    /// `Phase::Drawing` guard.
+    ///
+    /// NOTHING IS REFUNDED, BECAUSE NOTHING WAS TAKEN. This program custodies no balances at all (see
+    /// the file header) — `enter` records a stake, it does not move one — so an abandoned round owes
+    /// nobody anything on-chain. Any single fighter who entered is recorded in `fighters` exactly as
+    /// they were, for the off-chain ledger to settle to zero against, and their `stake`/`hp` are
+    /// untouched so the round still reads as what it was.
+    ///
+    /// ONE INSTRUCTION WHERE SETTLEMENT TAKES TWO (`resolve` then `close_round`). That split exists so
+    /// a settled round's result is committed to the base layer while players are still watching it in
+    /// the rollup, and undelegated separately afterwards. An abandoned round has no result to publish
+    /// and nobody watching, so there is nothing to do between the two halves: it commits and
+    /// undelegates in one call, and the keeper's recovery path is a single transaction.
+    pub fn abandon_round(ctx: Context<Resolve>) -> Result<()> {
+        {
+            let now = Clock::get()?.unix_timestamp;
+            let r = &mut ctx.accounts.round;
+            require!(r.phase == Phase::Lobby as u8, ArenaError::NotInLobby);
+            require!(
+                lobby_is_dead(r.fighter_count, r.lobby_closes_at, now),
+                ArenaError::LobbyNotAbandonable
+            );
+            r.phase = Phase::Abandoned as u8;
+            emit!(RoundAbandoned { round_no: r.round_no, fighter_count: r.fighter_count });
+        }
+
+        // Same reason as `resolve`: Anchor serialises on return, the commit reads account info DURING
+        // the instruction, so without this the committed bytes still say `Lobby`.
+        ctx.accounts.round.exit(&crate::ID)?;
+        MagicIntentBundleBuilder::new(
+            ctx.accounts.payer.to_account_info(),
+            ctx.accounts.magic_context.to_account_info(),
+            ctx.accounts.magic_program.to_account_info(),
+        )
+        .commit_and_undelegate(&[ctx.accounts.round.to_account_info()])
+        .build_and_invoke()?;
+        Ok(())
+    }
+
     /// Final commit + hand the account back to the base layer.
     pub fn close_round(ctx: Context<Resolve>) -> Result<()> {
         require!(ctx.accounts.round.phase == Phase::Settled as u8, ArenaError::NotSettled);
@@ -929,8 +1184,12 @@ pub struct Fighter {
     pub banked: u64,    // 8  — value raided from the other side
 } // 58 B
 
+/// `Abandoned` is the terminal state of a lobby that reached its deadline without enough fighters to
+/// hold a fight — see `abandon_round`. It is a fifth PHASE rather than a flag on `Settled` because
+/// nothing was settled: there is no winner, no seed, no fight to verify, and a client that read
+/// `Settled` would go looking for all three. Appended, so every existing phase keeps its number.
 #[repr(u8)]
-pub enum Phase { Lobby = 0, Drawing = 1, Fight = 2, Settled = 3 }
+pub enum Phase { Lobby = 0, Drawing = 1, Fight = 2, Settled = 3, Abandoned = 4 }
 
 #[account]
 pub struct Arena {
@@ -977,6 +1236,60 @@ pub struct Round {
     pub penalties_collected: u64,
     pub seed_commit: [u8; 32],
     pub seed: [u8; 32],
+    /// WHEN THE LOBBY OPENED, AND WHEN IT STOPS TAKING ENTRIES — the countdown, as chain truth.
+    ///
+    /// WHY THESE ARE ON THE ACCOUNT AT ALL. A lobby used to stay open until an operator chose to call
+    /// `close_lobby_and_draw`, and the only timestamp a round carried was `fight_started_at` — which
+    /// does not exist yet while the lobby is open. So a UI counting down to "entries close in 0:12"
+    /// was counting down to a number it had invented, describing an intention the chain had never
+    /// been told about. Every other figure this project puts on screen is re-derivable from the
+    /// account by a sceptic; the countdown was the one that wasn't. Now `lobby_closes_at - now` is
+    /// the number, `enter` refuses past it and `close_lobby_and_draw` refuses before it, so the clock
+    /// on screen is the same clock the program is enforcing.
+    ///
+    /// BOTH ENDS, NOT JUST THE DEADLINE — the second timestamp earns its eight bytes twice:
+    ///   * A progress bar needs the DURATION, not the remaining time. The off-chain original drew
+    ///     exactly this bar (`web/index.html`: `roundbar.style.width = (1 - left/LMS) * 100 + "%"`),
+    ///     and with only `lobby_closes_at` a client would have to supply `LMS` from a constant of its
+    ///     own — the same invented number moved to a different file.
+    ///   * It makes `open_round`'s clamp self-evident instead of taken on trust:
+    ///     `lobby_closes_at - lobby_opened_at` IS the duration the chain used, so an operator who
+    ///     passed nonsense sees the clamped value by reading the round, and anyone can check it lies
+    ///     within [MIN_LOBBY_SECONDS, MAX_LOBBY_SECONDS] without going to find the opening
+    ///     transaction's block time.
+    ///
+    /// STAMPED ON THE BASE LAYER, COMPARED IN THE ROLLUP, and this is the one assumption in the whole
+    /// feature that has NOT been measured. `open_round` runs before `delegate_round`, so `Clock` here
+    /// is the base layer's, while `enter`'s and `close_lobby_and_draw`'s comparisons against it happen
+    /// in the ER against the ER's. This is the program's FIRST cross-domain time comparison —
+    /// `fight_started_at` is stamped and read entirely inside the ER by design — so nothing in this
+    /// repo has ever exercised it.
+    ///
+    /// Nothing else is derived from these two numbers, so a skew shifts the deadline by that skew and
+    /// corrupts nothing. But THE TWO DIRECTIONS ARE NOT SYMMETRIC and only one of them is benign:
+    ///   * ER clock BEHIND the base layer: the lobby simply lasts longer than asked. Harmless.
+    ///   * ER clock AHEAD by more than the whole duration: the round opens ALREADY EXPIRED. Every
+    ///     `enter` fails `LobbyClosed`, the lobby reaches its deadline at zero fighters, and the only
+    ///     outcome is `abandon_round` — for every round, forever, reported as an error that names the
+    ///     wrong cause. `MIN_LOBBY_SECONDS` (20) is the entire margin against this and carries no term
+    ///     for clock skew, because there is no measurement to put one on.
+    ///
+    ///     AND THAT MARGIN HAS SINCE BEEN CUT, WHICH IS WORTH STATING PLAINLY RATHER THAN LEAVING FOR
+    ///     SOMEONE TO DISCOVER. The floor was 30 = a 20s entry window + a 10s delegation budget. The
+    ///     10 was then shown to be wrong — it came from `admin-open-round.mjs`'s poll CEILING, and the
+    ///     hand-off measures 1.70s/1.87s against live devnet — so the floor came down to 20. That
+    ///     reasoning is sound about DELEGATION and says nothing whatever about SKEW: the same ten
+    ///     seconds happened to be the only thing standing between an unmeasured skew and a program
+    ///     that opens every round pre-expired. Removing slack for a measured reason still removes it
+    ///     from the unmeasured one it was also, accidentally, protecting.
+    ///
+    /// WHAT WOULD SETTLE IT: read `Clock::unix_timestamp` from a base-layer instruction and from an ER
+    /// instruction on the same round within a second, and record the offset here the way the pacing
+    /// tables above are recorded. If it is not small, the fix is to move the stamp to the enforcing
+    /// clock — store the duration at `open_round` and stamp both ends on the first ER-side instruction
+    /// — so the two are the same clock, as they already are for `fight_started_at`.
+    pub lobby_opened_at: i64,
+    pub lobby_closes_at: i64,
     /// Unix timestamp `callback_seed` stamped when `Phase::Fight` began. `resolve` derives `steps`
     /// from elapsed real time against this — see the constants near `DUST` for why.
     pub fight_started_at: i64,
@@ -984,8 +1297,18 @@ pub struct Round {
 }
 impl Round {
     // 8 discriminator + 32 arena + 8 round_no + 1 phase + 1 winner + 1 bump + 2 count
-    // + 8 ticks + 8 pot + 8 penalties_collected + 32 commit + 32 seed + 8 fight_started_at + fighters
-    pub const SIZE: usize = 8 + 32 + 8 + 1 + 1 + 1 + 2 + 8 + 8 + 8 + 32 + 32 + 8 + (58 * MAX_FIGHTERS);
+    // + 8 ticks + 8 pot + 8 penalties_collected + 32 commit + 32 seed
+    // + 8 lobby_opened_at + 8 lobby_closes_at + 8 fight_started_at + fighters
+    //
+    // 1,093 bytes, up from 1,077. The two lobby timestamps cost sixteen of them, i.e. 111,360 more
+    // lamports of rent-exempt deposit per round (16 × 6,960 = 0.00011 SOL) — worth stating because
+    // this program's payer is a rate-limited faucet, and worth keeping in proportion: it is a
+    // hundred-thousandth of what a round already costs to open.
+    //
+    // Checked rather than recited: `the_account_is_exactly_the_size_its_layout_needs` borsh-encodes a
+    // real `Round` and asserts the length, so a field added without touching this line fails a native
+    // test instead of failing on devnet as a serialisation error nobody can read.
+    pub const SIZE: usize = 8 + 32 + 8 + 1 + 1 + 1 + 2 + 8 + 8 + 8 + 32 + 32 + 8 + 8 + 8 + (58 * MAX_FIGHTERS);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1135,7 +1458,13 @@ pub struct Resolve<'info> {
 
 // ---------------------------------------------------------------------------------------------
 
-#[event] pub struct RoundOpened { pub round_no: u64, pub seed_commit: [u8; 32] }
+/// Carries the deadline as well as the commitment, so a listener that never fetches the account can
+/// still draw the same countdown — the log is the one place a client learns a round exists at all.
+#[event] pub struct RoundOpened { pub round_no: u64, pub seed_commit: [u8; 32], pub lobby_opened_at: i64, pub lobby_closes_at: i64 }
+/// A lobby that reached its deadline without enough fighters to hold a fight — see `abandon_round`.
+/// `fighter_count` is included because it is the whole story: 0 means nobody came, 1 means one wallet
+/// was left standing alone, and neither is a fight.
+#[event] pub struct RoundAbandoned { pub round_no: u64, pub fighter_count: u16 }
 #[event] pub struct SeedRevealed { pub round_no: u64, pub seed: [u8; 32] }
 #[event] pub struct RoundSettled { pub round_no: u64, pub winner: u8, pub pot: u64 }
 /// `steps` is how many this call actually ran (0 when the fight was already up to date), `cursor` is
@@ -1164,6 +1493,10 @@ pub enum ArenaError {
     #[msg("nothing in the ring to extract")] NothingToExtract,
     #[msg("arithmetic overflow")] MathOverflow,
     #[msg("both sides still have fighters standing and the bell has not rung")] FightNotOverYet,
+    // Appended, so every error above keeps the code a deployed client may already be matching on.
+    #[msg("the lobby deadline has passed — this round is no longer taking entries")] LobbyClosed,
+    #[msg("the lobby deadline has not passed and the round is not full")] LobbyStillOpen,
+    #[msg("this lobby can still become a fight — it may not be abandoned")] LobbyNotAbandonable,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1418,6 +1751,78 @@ mod parity_tests {
     /// the browser told them another, which is the same class of failure `run_fight_matches_the_
     /// typescript_mirror_exactly` exists to prevent. So this reads the mirrors' own source and
     /// compares the numbers, rather than trusting that somebody remembered.
+    /// The repo root, from this crate's manifest — every mirror path below is relative to it.
+    fn repo_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+    }
+
+    /// Pull `NAME = <integer>` out of a TypeScript source, ignoring `_` digit separators and BigInt
+    /// `n` suffixes. Hoisted out of the penalty-curve test below so the constants test can use the
+    /// same parser rather than growing a second one — a duplicated parser is its own drift risk, and
+    /// this module exists to stop exactly that.
+    fn scalar(src: &str, name: &str) -> u64 {
+        let start = src.find(name).unwrap_or_else(|| panic!("{} missing from the mirror", name));
+        let eq = start + src[start..].find('=').expect("no = after the name");
+        let tail = &src[eq + 1..];
+        let end = tail.find(|c: char| c == ';' || c == '\n').unwrap_or(tail.len());
+        tail[..end].trim().replace('_', "").replace('n', "").parse().expect("not a number")
+    }
+
+    /// EVERY CHAIN FACT THE BROWSER HAND-COPIES, checked against the constant it was copied from.
+    ///
+    /// `er-demo/src/chain/constants.ts` calls itself the mirror of this file and was checked by
+    /// nobody — the penalty-curve test below reads only the two fight simulators. That mattered
+    /// immediately: the lobby deadline added two more copied constants (`MIN_LOBBY_SECONDS`,
+    /// `MAX_LOBBY_SECONDS`) to a file already carrying the fight pacing, and a client whose floor
+    /// disagreed with the program's would offer an operator a lobby length the chain then silently
+    /// clamped — the "your number and my number differ" failure this repo has now been bitten by
+    /// twice.
+    #[test]
+    fn the_browser_carries_the_same_chain_constants() {
+        let src = std::fs::read_to_string(repo_root().join("er-demo/src/chain/constants.ts"))
+            .expect("could not read er-demo/src/chain/constants.ts");
+
+        // Matched on the DECLARATION (`export const NAME`), not the bare name: every one of these
+        // also appears in that file's prose, and a parser that grabbed the first mention would be
+        // checking a comment rather than a value.
+        for (name, expected) in [
+            ("export const STEPS_PER_FIGHTER_PER_SECOND", STEPS_PER_FIGHTER_PER_SECOND),
+            ("export const MAX_STEPS", MAX_STEPS),
+            ("export const FIGHT_TIMEOUT_SECONDS", FIGHT_TIMEOUT_SECONDS as u64),
+            ("export const MIN_LOBBY_SECONDS", MIN_LOBBY_SECONDS as u64),
+            ("export const MAX_LOBBY_SECONDS", MAX_LOBBY_SECONDS as u64),
+        ] {
+            assert_eq!(scalar(&src, name), expected, "chain/constants.ts drifted on {}", name);
+        }
+
+        // The demo's own lobby length is NOT a chain fact — the program only clamps, it has no view
+        // on pacing — but it has to be a value the program will actually honour, or every round the
+        // app opens is silently clamped to something else.
+        let default_lobby = scalar(&src, "export const DEFAULT_LOBBY_SECONDS");
+        assert_eq!(
+            default_lobby, clamp_lobby_seconds(default_lobby as u32) as u64,
+            "DEFAULT_LOBBY_SECONDS ({}) is outside [{}, {}] and would be clamped on-chain",
+            default_lobby, MIN_LOBBY_SECONDS, MAX_LOBBY_SECONDS,
+        );
+
+        // The phase table is a mirror too, and the one whose drift is hardest to see: a missing name
+        // makes `PHASE_NAME[phase]` undefined, which `useRound.ts` turns into "Lobby" — a settled or
+        // abandoned round rendering as an open, enterable lobby.
+        let phases = src
+            .find("export const PHASE_NAME")
+            .map(|at| {
+                let open = at + src[at..].find('[').expect("no [ after PHASE_NAME");
+                let close = open + src[open..].find(']').expect("unterminated PHASE_NAME");
+                src[open + 1..close].matches('"').count() / 2
+            })
+            .expect("PHASE_NAME missing from chain/constants.ts");
+        assert_eq!(
+            phases, Phase::Abandoned as usize + 1,
+            "chain/constants.ts PHASE_NAME has {} entries, the Rust Phase enum has {}",
+            phases, Phase::Abandoned as usize + 1,
+        );
+    }
+
     #[test]
     fn the_typescript_mirrors_carry_the_same_penalty_curve() {
         /// Pull `NAME = [ ... ]` out of a TypeScript source and parse the integers, ignoring line
@@ -1437,15 +1842,7 @@ mod parity_tests {
                 .map(|t| t.parse::<u64>().unwrap_or_else(|_| panic!("not a number: {:?}", t)))
                 .collect()
         }
-        fn scalar(src: &str, name: &str) -> u64 {
-            let start = src.find(name).unwrap_or_else(|| panic!("{} missing from the mirror", name));
-            let eq = start + src[start..].find('=').expect("no = after the name");
-            let tail = &src[eq + 1..];
-            let end = tail.find(|c: char| c == ';' || c == '\n').unwrap_or(tail.len());
-            tail[..end].trim().replace('_', "").replace('n', "").parse().expect("not a number")
-        }
-
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let root = repo_root();
         let mirrors = ["engine/src/er-sim.ts", "er-demo/src/sim/erSim.ts"];
         let expected: Vec<u64> = PENALTY_HORIZON_STEPS.iter().map(|&h| h as u64).collect();
 
@@ -1560,5 +1957,227 @@ mod parity_tests {
 
         assert_eq!(untouched, ticked);
         assert_eq!(settle_sides(&untouched, 4), settle_sides(&ticked, 4));
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE LOBBY DEADLINE. Native host tests, same command as the parity module above.
+//
+// What these are protecting is a PROMISE MADE TO THE SCREEN: the countdown a client draws from
+// `lobby_closes_at` is only worth drawing if the program refuses entries after it and refuses the
+// draw before it. Every test below is phrased in the same pure predicates the instructions call
+// (`lobby_is_open`, `lobby_may_close`, `lobby_is_dead`, `clamp_lobby_seconds`) rather than restating
+// their conditions — this repo has been bitten twice by a test that described the code instead of
+// running it (`bench_fight` drifting from `run_fight`, the DUST floor), and a re-description of a
+// boundary condition is exactly the kind that agrees right up until the `<` should have been `<=`.
+// ---------------------------------------------------------------------------------------------
+#[cfg(test)]
+mod lobby_tests {
+    use super::*;
+
+    const OPENED: i64 = 1_700_000_000;
+
+    /// The two bugs the clamp exists to make unrepresentable, from both ends: a lobby too short for
+    /// anyone to enter, and a lobby nobody will still be watching when it closes.
+    #[test]
+    fn the_lobby_duration_is_clamped_to_a_range_a_round_can_actually_use() {
+        // Zero is the degenerate case the brief for this field named: the countdown would already be
+        // over when `delegate_round` lands, so the lobby could never accept a single entry.
+        assert_eq!(clamp_lobby_seconds(0), MIN_LOBBY_SECONDS as i64);
+        assert_eq!(clamp_lobby_seconds(1), MIN_LOBBY_SECONDS as i64);
+        assert_eq!(clamp_lobby_seconds(MIN_LOBBY_SECONDS - 1), MIN_LOBBY_SECONDS as i64);
+        // Milliseconds passed where seconds were meant — the realistic way to get a multi-day lobby,
+        // given every prior art in this repo is named `*_MS`. 20_000 ms is 5.5 hours unclamped.
+        assert_eq!(clamp_lobby_seconds(20_000), MAX_LOBBY_SECONDS as i64);
+        assert_eq!(clamp_lobby_seconds(u32::MAX), MAX_LOBBY_SECONDS as i64);
+        // ...and in between, the operator's number is used exactly as given.
+        for requested in [MIN_LOBBY_SECONDS, 45, 60, 120, 600, MAX_LOBBY_SECONDS] {
+            assert_eq!(clamp_lobby_seconds(requested), requested as i64);
+        }
+
+        // The floor's DERIVATION, as an assertion rather than a number to take on faith. The bug it
+        // exists to prevent is a lobby whose countdown expires before a player could have entered it
+        // at all — the deadline is stamped by `open_round`, but nobody can enter until
+        // `delegate_round` has handed the account to the ER.
+        //
+        // The handoff figure is MEASURED, and that matters: it was 10 here, taken from
+        // `admin-open-round.mjs` polling ten times at one-second intervals, which is the point the
+        // script gives up rather than how long the thing takes. Timed against real devnet:
+        // 1.70s and 1.87s. 3 is that, doubled, and it is the number to revisit — with a stopwatch —
+        // if the handoff ever regresses.
+        const DELEGATION_HANDOFF_SECONDS: u32 = 3;
+        assert!(
+            MIN_LOBBY_SECONDS > DELEGATION_HANDOFF_SECONDS,
+            "a lobby must outlive the delegation hand-off, or nobody can ever enter it",
+        );
+        // And what is left over has to be a window a human can actually act inside. 15s is the floor
+        // below which this stops being a lobby and starts being a formality — deliberately under the
+        // off-chain engine's 20s default, because that default was a chosen round number and this is
+        // the point at which the feature breaks.
+        assert!(
+            MIN_LOBBY_SECONDS - DELEGATION_HANDOFF_SECONDS >= 15,
+            "the entry window left after the hand-off must still be one a player can use",
+        );
+        assert!(MIN_LOBBY_SECONDS < MAX_LOBBY_SECONDS);
+    }
+
+    /// WHICH SIDE OF THE BOUNDARY THE DEADLINE SECOND FALLS ON — the one thing about the two windows
+    /// that is a decision rather than a consequence.
+    ///
+    /// That they tile at all is structural: `lobby_may_close` and `lobby_is_dead` are both phrased in
+    /// terms of `lobby_is_open`, so "either taking entries or closeable, never both, never neither"
+    /// holds for any definition of the boundary and a test asserting it would be asserting `x != !x`.
+    /// What is NOT structural is the direction of the inequality, and it decides real behaviour: the
+    /// deadline second belongs to the DRAW. "Entries close at 12:00:30" has to mean 12:00:30 is too
+    /// late, because that is what a countdown reaching 0:00 means to the person reading it — and if
+    /// it meant the opposite, an entry could land in the same second the lineup was frozen for the
+    /// draw, which is the one moment `fighter_count` must not move.
+    #[test]
+    fn the_deadline_second_belongs_to_the_draw_not_to_entries() {
+        let closes_at = OPENED + 60;
+
+        // Concrete values on both sides of the boundary, so a `<` silently becoming `<=` fails here
+        // rather than showing up as a one-second window nobody can act in.
+        assert!(lobby_is_open(closes_at, closes_at - 1), "one second early is still open");
+        assert!(!lobby_is_open(closes_at, closes_at), "the deadline second is closed to entries");
+        assert!(!lobby_may_close(2, closes_at, closes_at - 1), "...and not yet drawable");
+        assert!(lobby_may_close(2, closes_at, closes_at), "...but drawable from that second on");
+    }
+
+    /// The guard `close_lobby_and_draw` runs, exercised through the function the instruction itself
+    /// calls. Before this existed the operator decided when a lobby ended; now the clock does.
+    #[test]
+    fn a_lobby_may_not_be_drawn_before_its_deadline() {
+        let closes_at = OPENED + 60;
+        for fighters in [2u16, 3, 8, 15] {
+            assert!(!lobby_may_close(fighters, closes_at, OPENED), "an empty countdown is not a deadline");
+            assert!(!lobby_may_close(fighters, closes_at, closes_at - 1), "one second early is early");
+            assert!(lobby_may_close(fighters, closes_at, closes_at), "the deadline must actually arrive");
+            assert!(lobby_may_close(fighters, closes_at, closes_at + 3_600));
+        }
+    }
+
+    /// The early exit, and the reason it gives nobody anything: a full lobby cannot gain a fighter, so
+    /// the only thing waiting out the countdown produces is dead air.
+    #[test]
+    fn a_full_lobby_may_be_drawn_the_instant_it_fills() {
+        let closes_at = OPENED + 600;
+        let full = MAX_FIGHTERS as u16;
+
+        assert!(lobby_may_close(full, closes_at, OPENED), "a full lobby has nothing left to wait for");
+        // One short of full is NOT enough — the sixteenth entry is still possible, and cutting the
+        // lobby short there would be an operator excluding a player who was entitled to enter.
+        assert!(!lobby_may_close(full - 1, closes_at, OPENED));
+        // And a full lobby is never dead — it has the most fighters a round can hold.
+        assert!(!lobby_is_dead(full, closes_at, closes_at + 1));
+    }
+
+    /// THE DEGENERATE PATH, stated exactly. It should practically never happen — house wallets keep
+    /// lobbies populated — but "practically never" is how the two permanently-stuck rounds in this
+    /// repo's history got their guards left out, so the state is defined rather than assumed away.
+    #[test]
+    fn an_under_subscribed_lobby_is_dead_exactly_when_it_can_no_longer_fight() {
+        let closes_at = OPENED + 60;
+
+        // Before the deadline nothing is dead: one more `enter` can still turn a lonely lobby into a
+        // fight, so `abandon_round` must refuse.
+        for fighters in 0u16..=MAX_FIGHTERS as u16 {
+            assert!(!lobby_is_dead(fighters, closes_at, closes_at - 1), "{} fighters, still enterable", fighters);
+        }
+
+        // After it, THE TWO EXITS PARTITION THE STATE. A lobby at its deadline is either drawable or
+        // abandonable — never both (which would let the same round be drawn and written off), and
+        // never neither (which is the permanently-stuck round this whole path exists to prevent).
+        // Stated against the FULL guard each instruction applies, not against half of it: the draw
+        // needs `lobby_may_close` AND two fighters, and `abandon_round` needs `lobby_is_dead`.
+        for fighters in 0u16..=MAX_FIGHTERS as u16 {
+            let drawable = lobby_may_close(fighters, closes_at, closes_at) && enough_to_fight(fighters);
+            let abandonable = lobby_is_dead(fighters, closes_at, closes_at);
+            assert_ne!(
+                drawable, abandonable,
+                "{} fighters at the deadline: drawable={} abandonable={} — exactly one must hold",
+                fighters, drawable, abandonable,
+            );
+        }
+
+        // Nobody came at all is the same terminal state as one wallet left standing alone — there is
+        // no fight in either, and the program custodies nothing, so there is nothing else to do.
+        assert!(lobby_is_dead(0, closes_at, closes_at + 86_400));
+        assert!(lobby_is_dead(1, closes_at, closes_at + 86_400));
+    }
+
+    /// WHAT `open_round` ACTUALLY WRITES, which no other test in this module reaches.
+    ///
+    /// Everything else here exercises the guards in isolation, and all of them pass against an
+    /// `open_round` that stamped `now + lobby_seconds` with the clamp dropped entirely — the single
+    /// mutation `MIN_LOBBY_SECONDS` and `MAX_LOBBY_SECONDS` exist to prevent. This runs the exact
+    /// composition the instruction runs, and asserts the property `Round.lobby_opened_at`'s doc
+    /// comment promises a sceptic can check for themselves: the stored window is the requested one,
+    /// clamped, and always inside the published range.
+    #[test]
+    fn the_stored_lobby_window_is_always_within_the_clamp() {
+        for requested in [0u32, 1, 29, MIN_LOBBY_SECONDS, 45, 60, 600, MAX_LOBBY_SECONDS, 20_000, u32::MAX] {
+            let (opened_at, closes_at) = lobby_window(OPENED, requested);
+            let window = closes_at - opened_at;
+
+            assert_eq!(opened_at, OPENED, "the open timestamp is the chain's clock, untouched");
+            assert_eq!(window, clamp_lobby_seconds(requested), "requested {}", requested);
+            assert!(
+                (MIN_LOBBY_SECONDS as i64..=MAX_LOBBY_SECONDS as i64).contains(&window),
+                "requested {} stored a {}s window, outside the published range", requested, window,
+            );
+            // The deadline must be strictly ahead of the stamp, or the round opens already expired
+            // and `lobby_is_open` is false from the first instant — a lobby nobody can enter.
+            assert!(lobby_is_open(closes_at, opened_at), "requested {} opened already closed", requested);
+        }
+
+        // Clock skew cannot make the window negative, and a timestamp near the end of time saturates
+        // rather than wrapping into the past.
+        let (_, closes_at) = lobby_window(i64::MAX, MAX_LOBBY_SECONDS);
+        assert_eq!(closes_at, i64::MAX);
+    }
+
+    /// `Round::SIZE` is what `#[account(init, space = ...)]` allocates. Get it wrong by the eight bytes
+    /// a new field costs and the account is a byte-for-byte plausible round that fails to serialise
+    /// the moment anything writes past the end — on devnet, as a runtime error nobody can read. So the
+    /// size is MEASURED off a real borsh encoding here rather than recited from the comment above it.
+    ///
+    /// The second assertion is the 4 KB STACK, which this program has already been bitten by once:
+    /// `Account<'info, Round>` deserialises onto the stack, and at 40 fighters devnet reported the
+    /// overflow as "Access violation reading 8 bytes at address 0x18" — a message that names neither
+    /// the stack nor the size (see `MAX_FIGHTERS`). MEASURED with the two new timestamps in: 1,184 B
+    /// of a 4,096 B frame, up from 1,168. The margin is recorded as a number rather than asserted to
+    /// be "plenty", and the bound is checked rather than remembered.
+    #[test]
+    fn the_account_is_exactly_the_size_its_layout_needs() {
+        let round = Round {
+            arena: Pubkey::default(),
+            round_no: 1,
+            phase: Phase::Lobby as u8,
+            winner: 0,
+            bump: 255,
+            fighter_count: 0,
+            tick_count: 0,
+            pot: 0,
+            penalties_collected: 0,
+            seed_commit: [0u8; 32],
+            seed: [0u8; 32],
+            lobby_opened_at: OPENED,
+            lobby_closes_at: OPENED + 60,
+            fight_started_at: 0,
+            fighters: [Fighter::default(); MAX_FIGHTERS],
+        };
+        // `AnchorSerialize::serialize` rather than a hand-added-up byte count: it is the SAME encoder
+        // `#[account]`'s own `exit` uses to write the account back, which is the only reason measuring
+        // it here proves anything about `space = Round::SIZE`.
+        let mut encoded = Vec::<u8>::new();
+        round.serialize(&mut encoded).expect("a Round must borsh-encode");
+        assert_eq!(
+            8 + encoded.len(), Round::SIZE,
+            "Round::SIZE ({}) does not match 8 + the real encoding ({})", Round::SIZE, 8 + encoded.len(),
+        );
+
+        let stack = core::mem::size_of::<Round>();
+        assert!(stack < 2_048, "Round is {} B on the stack — the frame is 4 KB, see MAX_FIGHTERS", stack);
     }
 }

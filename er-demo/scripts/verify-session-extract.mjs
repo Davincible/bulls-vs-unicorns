@@ -42,7 +42,22 @@ const SLOT_HASHES = new PublicKey("SysvarS1otHashes111111111111111111111111111")
 const MAGIC_PROGRAM = new PublicKey("Magic11111111111111111111111111111111111111");
 const MAGIC_CONTEXT = new PublicKey("MagicContext1111111111111111111111111111111");
 const DELEGATION_PROGRAM = new PublicKey("DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh");
-const PHASE = ["Lobby", "Drawing", "Fight", "Settled"];
+const PHASE = ["Lobby", "Drawing", "Fight", "Settled", "Abandoned"];
+
+// The lobby this script opens, in seconds. The FLOOR the program clamps to (MIN_LOBBY_SECONDS in
+// lib.rs and in src/chain/constants.ts — a literal here only because this file is a standalone Node
+// script that deliberately imports nothing from src/), not the 60 the demo opens rounds at:
+// `close_lobby_and_draw` is refused until the deadline passes, and this round enters two fighters
+// rather than filling to 16, so every second of lobby is a second this script sits waiting before it
+// can reach the thing it actually verifies. 20 is the shortest wait the chain permits.
+const LOBBY_SECONDS = 20;
+
+/** Margin added to every deadline wait. The deadline is stamped from the BASE layer's clock in
+ *  `open_round` and compared against the ER's clock in `close_lobby_and_draw` (see
+ *  `lobby_opened_at`'s doc comment in lib.rs), so the two can disagree by a small skew. Waiting past
+ *  the deadline by more than that skew costs a couple of seconds; waking a moment early costs a
+ *  LobbyStillOpen failure and the whole run. */
+const CLOCK_SKEW_MARGIN_MS = 2_000;
 const opts = { commitment: "confirmed", preflightCommitment: "confirmed" };
 
 const load = (p) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(p, "utf8"))));
@@ -82,7 +97,13 @@ async function readRound(conn, roundPda) {
   // from extract penalties. A hand-rolled decoder is exactly the thing a new field breaks silently:
   // skip it without reading it and every fighter below is decoded 8 bytes early, which produces
   // plausible-looking nonsense rather than an error.
-  const penaltiesCollected = d.readBigUInt64LE(o); o += 8 + 32 + 32 + 8;
+  const penaltiesCollected = d.readBigUInt64LE(o); o += 8 + 32 + 32;
+  // ...and it happened again, exactly as predicted above: `lobby_opened_at` and `lobby_closes_at`
+  // landed HERE, between `seed` and `fight_started_at`, and this decoder read every fighter 16 bytes
+  // early until these two lines existed. Read rather than skipped, because `lobby_closes_at` is not
+  // incidental to this script — step 4 waits on it.
+  const lobbyOpenedAt = d.readBigInt64LE(o); o += 8;
+  const lobbyClosesAt = d.readBigInt64LE(o); o += 8 + 8;   // + fight_started_at, still unused here
   const fighters = [];
   for (let i = 0; i < fighterCount; i++) {
     const b = o + i * 58;
@@ -91,7 +112,34 @@ async function readRound(conn, roundPda) {
       stake: d.readBigUInt64LE(b + 34), hp: d.readBigUInt64LE(b + 42), banked: d.readBigUInt64LE(b + 50),
     });
   }
-  return { phase, fighterCount, pot, penaltiesCollected, fighters };
+  return { phase, fighterCount, pot, penaltiesCollected, lobbyOpenedAt, lobbyClosesAt, fighters };
+}
+
+/** Sleep until the round's own `lobby_closes_at` has passed, because `close_lobby_and_draw` refuses
+ *  before it (`LobbyStillOpen`, 6015). The deadline is READ OFF THE FETCHED ACCOUNT rather than
+ *  reconstructed as "LOBBY_SECONDS after we sent open_round": the chain clamps the duration and
+ *  stamps the timestamp from its own clock, so the account is the only thing that knows the real
+ *  deadline — and a script that hardcodes the number is the invented countdown that `lobby_closes_at`
+ *  exists to delete. A full round is 16 fighters, which may be drawn immediately; this script enters
+ *  two, so it always waits. */
+async function waitForLobbyDeadline(round) {
+  const deadlineMs = Number(round.lobbyClosesAt) * 1000 + CLOCK_SKEW_MARGIN_MS;
+  const windowSeconds = Number(round.lobbyClosesAt - round.lobbyOpenedAt);
+  let remainingMs = deadlineMs - Date.now();
+  if (remainingMs <= 0) {
+    info(`lobby deadline already passed (${windowSeconds}s window) — drawing immediately`);
+    return;
+  }
+  info(`lobby closes at ${new Date(Number(round.lobbyClosesAt) * 1000).toLocaleTimeString()} ` +
+    `(${windowSeconds}s window) — close_lobby_and_draw is refused until then`);
+  // Ticked once a second so a human watching can see it counting rather than wondering if it hung.
+  while (remainingMs > 0) {
+    process.stdout.write(`  ${c.d}waiting out the lobby: ${Math.ceil(remainingMs / 1000)}s${c.x}\r`);
+    await sleep(Math.min(1000, remainingMs));
+    remainingMs = deadlineMs - Date.now();
+  }
+  process.stdout.write(`${" ".repeat(48)}\r`);
+  ok(`lobby deadline passed — close_lobby_and_draw is now permitted`);
 }
 
 (async () => {
@@ -109,7 +157,7 @@ async function readRound(conn, roundPda) {
 
   head(`1. open_round #${roundNo} + delegate`);
   sigs.openRound = await send(base, [await authorityProg.methods
-    .openRound(new BN(roundNo.toString()), Array.from(randomBytes(32)))
+    .openRound(new BN(roundNo.toString()), Array.from(randomBytes(32)), LOBBY_SECONDS)
     .accounts({ arena: arenaPda, round: roundPda, authority: forkPayer.publicKey, systemProgram: SystemProgram.programId })
     .instruction()], [forkPayer], `open_round #${roundNo}`);
 
@@ -169,6 +217,12 @@ async function readRound(conn, roundPda) {
   const { fqdn } = await router.getDelegationStatus(roundPda);
   const roundValidator = new Connection(fqdn, "confirmed");
   info(`round's own validator: ${fqdn}`);
+
+  // Both entries have landed, so the lobby holds everything it is going to. Read the round back from
+  // the validator that hosts it — the same node whose clock will judge the deadline — and wait the
+  // lobby out before asking it to draw.
+  await waitForLobbyDeadline(await readRound(roundValidator, roundPda));
+
   const [programIdentity] = PublicKey.findProgramAddressSync([Buffer.from("identity")], PROGRAM_ID);
   sigs.closeLobby = await send(roundValidator, [await erProg.methods
     .closeLobbyAndDraw(Array.from(randomBytes(32)))

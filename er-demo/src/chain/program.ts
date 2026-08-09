@@ -61,6 +61,14 @@ export interface RawRoundAccount {
   penaltiesCollected: BN;
   seedCommit: number[];
   seed: number[];
+  /** On-chain unix seconds: when `open_round` stamped the lobby, and when it stops taking entries.
+   *  The program enforces both ends (`enter` refuses at or after `lobbyClosesAt`,
+   *  `close_lobby_and_draw` refuses before it), so a countdown drawn from these is the same clock the
+   *  chain is keeping — see `Round.lobby_opened_at` in lib.rs. Both are needed, not just the
+   *  deadline: the remaining time comes from `lobbyClosesAt`, but a progress bar needs the duration,
+   *  which is the difference. */
+  lobbyOpenedAt: BN;
+  lobbyClosesAt: BN;
   fightStartedAt: BN;
   fighters: RawFighter[];
 }
@@ -77,7 +85,10 @@ export interface RawArenaAccount {
 export interface BullsArenaProgram {
   methods: {
     initArena(feeBps: number, tokenA: PublicKey, tokenB: PublicKey): MethodsBuilder;
-    openRound(roundNo: BN, seedCommit: number[]): MethodsBuilder;
+    /** `lobbySeconds` is a DURATION the chain adds to its own clock, clamped on-chain to
+     *  [MIN_LOBBY_SECONDS, MAX_LOBBY_SECONDS] — passing an out-of-range value succeeds with the
+     *  clamped one rather than failing, and the round records what was actually used. */
+    openRound(roundNo: BN, seedCommit: number[], lobbySeconds: number): MethodsBuilder;
     delegateRound(roundNo: BN): MethodsBuilder;
     enter(side: number, stake: BN): MethodsBuilder;
     closeLobbyAndDraw(clientSeed: number[]): MethodsBuilder;
@@ -85,6 +96,10 @@ export interface BullsArenaProgram {
     tick(steps: number): MethodsBuilder;
     extract(): MethodsBuilder;
     resolve(): MethodsBuilder;
+    /** The terminal state for a lobby that hit its deadline with fewer than two fighters — it can
+     *  never fight, so this ends it and undelegates in one call. Permissionless; every precondition
+     *  is on the account. See `abandon_round` in lib.rs. */
+    abandonRound(): MethodsBuilder;
     closeRound(): MethodsBuilder;
   };
   account: {

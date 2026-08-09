@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>ANSEM ⚔ UWU — ARENA</title>
+  </head>
+  <body>
+    <!-- The v2 page. A SECOND Vite entry rather than a route inside the existing app: the old
+         React app (index.html -> src/main.tsx) is being worked on in parallel, and a separate entry
+         means this design shares nothing mutable with it — no router, no shared root, no edits to
+         src/main.tsx or src/App.tsx. It reuses the app's chain/ and sim/ modules by import only.
+         Dev: http://localhost:5173/arena.html -->
+    <div id="v2-root"></div>
+    <script type="module" src="/src/v2/main.tsx"></script>
+  </body>
+</html>

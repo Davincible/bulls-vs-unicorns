@@ -35,6 +35,10 @@ function mockRound(fighters: FighterState[], overrides: Partial<RoundState> = {}
     penaltiesCollected: 0n,
     seedCommit: [],
     seed: Array.from({ length: 32 }, (_, i) => i),
+    // The lobby deadline. Verification never reads it — a settled round is checked against its seed
+    // and its fighters — but `RoundState` carries it, so the fixture has to be a whole round.
+    lobbyOpenedAt: 1_700_000_000n,
+    lobbyClosesAt: 1_700_000_060n,
     fightStartedAt: 0n,
     fighters,
     ...overrides,

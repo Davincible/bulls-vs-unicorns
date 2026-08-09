@@ -1,0 +1,417 @@
+/* =============================================================================================
+   THE FOUR DATA SCREENS — 01 leaderboard, 02 dashboard, 03 referrals, 04 history
+   =============================================================================================
+   Layout only. Every colour, rule weight, type size and control here comes from `styles/base.css`
+   (whose header comment is the law) — this file adds the things a design system can't know in
+   advance: how many columns each table has, and where the page's left index gutter sits.
+
+   TWO NAMING RULES, both learned the hard way:
+
+     1. Every rule is SCOPED UNDER `.scr`. `main.tsx` imports `base.css` after `App.tsx`, so a
+        bundler is free to insert this file's rules BEFORE the design system's. Scoping gives every
+        override a specificity of (0,2,0) against base.css's (0,1,0), so cascade ORDER stops
+        mattering and these rules win regardless.
+
+     2. Every class is PREFIXED `sc-`. Scoping stops this file leaking out; the prefix stops other
+        files leaking IN. `ArenaView.css` already owns an unscoped `.hero` with a `min-height` on
+        it, and for a while this screen's hero figure silently inherited it and left 90px of
+        nothing under the number. Shared, unprefixed names in a codebase four people are writing at
+        once is not a style question — it is a correctness one.
+
+   COLUMN WIDTHS live in a `--cols` custom property set on the table container and inherited by its
+   rows, so a breakpoint re-templates a whole table in one declaration. They are NOT inline styles:
+   an inline `style` outranks every media query and would strand the phone layout at desktop widths.
+   ============================================================================================= */
+
+/* ---------------------------------------------------------------------------------------------
+   SCREEN HEAD — the reference's signature: a numbered index in a left gutter, one enormous word,
+   and the provenance of everything below it in a right-hand column. No box, no bar, no rule.
+   --------------------------------------------------------------------------------------------- */
+
+.scr-head {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) minmax(0, 280px);
+  column-gap: 28px;
+  align-items: start;
+  padding: 2px 0 26px;
+}
+.scr-head > .idx {
+  grid-column: 1;
+  text-align: right;
+  padding-top: 0.6em;
+}
+.scr-head-main { grid-column: 2; min-width: 0; }
+.scr-head-main > .display { margin-bottom: 13px; }
+.scr-head-meta {
+  grid-column: 3;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 0.75em;
+}
+.scr-head-meta > span { display: block; }
+
+/* ---------------------------------------------------------------------------------------------
+   TABLES
+   --------------------------------------------------------------------------------------------- */
+
+/* One line per row, always. A wrapped cell breaks the whole grid's rhythm, so cells clip instead —
+   the full value stays available in the cell's `title`. */
+.scr .sc-tbl .row {
+  grid-template-columns: var(--cols);
+  white-space: nowrap;
+}
+.scr .sc-tbl .row > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* THE THREE LEADERBOARDS ARE "IDENTITY · RAIL · FIGURES", and all three in the same order.
+   Before this they were "identity(1fr) · figures", which on a 1392px page handed the name column
+   666px to hold 114px of name — a 550px void with nothing to carry the eye from `LUMEN_66` across
+   to its P/L. A 52-row table read that way is a row-misreading machine. So the name is capped at a
+   measure it can actually use and the slack goes to a BAR, which is both the rail the eye was
+   missing and a real figure: the fight's health on 01-1, the size of the P/L on 01-2, the size of
+   the profit on 01-3. It is also why the three tabs no longer re-flow into each other — the column
+   skeleton is now the same on all three. */
+/* 01-1's rail is CAPPED where the other two run to `1fr`, and the difference is colour. The health
+   bar is the one rail carrying a side colour, there are up to sixteen of them stacked, and in Lobby
+   every one is at 100% — run to full width they stopped being nine hairlines and became a field of
+   saturated green and purple, on a page whose first rule is that the game is the only colour on it.
+   At this width it still reads as a comparison mid-fight, which is the only time it says anything.
+   The slack lands on STATUS instead: last column, one left-aligned word, so what is left over is
+   trailing air after the row rather than a hole punched through the middle of it. */
+.scr .sc-tbl--lbr { --cols: 30px 84px minmax(140px, 320px) minmax(110px, 320px) 96px 96px 108px minmax(84px, 1fr); }
+.scr .sc-tbl--lba { --cols: 30px minmax(140px, 300px) minmax(60px, 1fr) 70px 90px 112px 120px 128px 88px; }
+.scr .sc-tbl--lbh { --cols: 30px 84px minmax(140px, 300px) minmax(60px, 1fr) 78px 190px 74px 120px; }
+
+/* The magnitude rail. `.bar`'s own track (hairline box, `--wash` fill) is what makes it a RAIL and
+   not just a mark: every row gets a continuous 1px line spanning the gap, filled or not. `--hot` on
+   a loss because that is the one thing `--hot` is for, and because a rail that grew the same way for
+   a win and a wipeout would be measuring magnitude while implying direction. */
+.scr .sc-scale { display: block; }
+.scr .sc-scale--neg .bar > i { background: var(--hot); }
+.scr .sc-tbl--mine { --cols: 74px 122px 74px 112px 120px 124px 22px; }
+.scr .sc-tbl--rnd { --cols: 86px minmax(120px, 1fr) 100px 116px 100px 22px; }
+.scr .sc-tbl--plr { --cols: minmax(160px, 1fr) 112px 112px 120px 124px; }
+
+/* A status word sits beside a right-aligned money column; without its own inset the two run
+   together into "$1.70 ALIVE". */
+.scr .sc-st { padding-left: 12px; }
+
+/* A summing row. NOT `.row--head`, which greys every cell it contains and would silently kill the
+   pos/neg colour on the one figure in the row that carries a sign. */
+.scr .sc-total {
+  border-top: 1px solid var(--ink);
+  border-bottom: 0;
+  padding-top: 9px;
+}
+
+/* Long boards scroll in their own box with the header pinned, so the page body never grows a
+   40-row tail the reader has to scroll past to reach the next section. */
+.scr .sc-wrap {
+  max-height: min(62vh, 640px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.scr .sc-wrap .row--head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--paper);
+}
+
+/* A sortable column header. Reads as a label until you hover it, which is the point: the table is
+   the thing, the control is not. */
+.scr .row--head button {
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.scr .row--head button:hover { color: var(--ink); }
+.scr .row--head .r button { float: right; }
+.scr .row--head [aria-sort]:not([aria-sort="none"]) button { color: var(--ink); }
+
+/* A row that is itself the disclosure control. A real <button>, so focus, Enter, Space and a focus
+   ring all come for free — no key handlers, no tabindex, no roles to get wrong. */
+.scr .sc-rowbtn {
+  width: 100%;
+  font-family: var(--sans);
+  font-size: 12px;
+  text-align: left;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  cursor: pointer;
+}
+.scr .sc-rowbtn:hover { background: var(--wash); }
+.scr .sc-rowbtn[aria-expanded="true"] { border-bottom-color: var(--ink); }
+
+.scr .sc-chev {
+  display: block;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--ink-3);
+  transition: transform var(--tick) linear;
+}
+.scr .sc-chev--on { transform: rotate(90deg); color: var(--ink); }
+
+/* The body of an expanded row. Indented behind a hairline so the nesting is visible without a
+   fill, a card or a shadow. */
+.scr .sc-det {
+  padding: 14px 0 20px 20px;
+  border-left: 1px solid var(--rule-2);
+  border-bottom: 1px solid var(--rule);
+  margin-left: 4px;
+}
+
+/* A side cell: the 7px colour square and the token's NAME. The name is not decoration — colour
+   alone must never be the only carrier of which side a row is on. */
+.scr .sc-side { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.scr .sc-side > .u { overflow: hidden; text-overflow: ellipsis; }
+
+/* Name + wallet on one line: the name carries, the key proves. */
+.scr .sc-who { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.scr .sc-who-n { overflow: hidden; text-overflow: ellipsis; }
+.scr .sc-who-k { font: 400 10px/1 var(--mono); color: var(--ink-4); flex: none; }
+
+/* ---------------------------------------------------------------------------------------------
+   DASHBOARD — hero figure and fact groups
+   --------------------------------------------------------------------------------------------- */
+
+/* Subordinate to the screen word above it, but still the biggest FIGURE on the page. They don't
+   compete: one is a word in the sans, the other is money in the mono. */
+.scr .sc-hero { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; padding: 2px 0 26px; }
+.scr .sc-hero-fig { font-size: clamp(30px, 4.4vw, 54px); }
+.scr .sc-hero-sub { font-size: 13px; color: var(--ink-2); max-width: 46ch; }
+
+/* Groups of facts, separated by hairlines. NOT tiles: no fill, no border box, no radius. */
+.scr .sc-g4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.scr .sc-g2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.scr .sc-grp { border-left: 1px solid var(--rule); padding: 0 18px; min-width: 0; }
+.scr .sc-grp:first-child { border-left: 0; padding-left: 0; }
+.scr .sc-grp-h { display: flex; align-items: center; gap: 7px; padding-bottom: 9px; }
+
+/* One fact: name on the left, figure on the right, hairline above. Most of this screen is a
+   hundred of these and nothing else. */
+.scr .sc-fx {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 0;
+  border-top: 1px solid var(--rule);
+}
+.scr .sc-fx-n {
+  font: 400 10px/1.3 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.scr .sc-fx-v {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  letter-spacing: -0.02em;
+  text-align: right;
+  white-space: nowrap;
+}
+/* The one place a fact is allowed a sentence: why a figure reads `—`, or what it is measured
+   against. Spans both columns and wraps like prose, because it is prose. */
+.scr .sc-fx-note {
+  grid-column: 1 / -1;
+  font: 400 10.5px/1.45 var(--sans);
+  color: var(--ink-3);
+  white-space: normal;
+  margin-top: 3px;
+  max-width: 42ch;
+}
+
+/* The legend under a split bar: the two token names, each against its own end. */
+.scr .sc-splitleg { display: flex; justify-content: space-between; gap: 12px; padding-top: 6px; }
+
+/* ---------------------------------------------------------------------------------------------
+   REFERRALS
+   --------------------------------------------------------------------------------------------- */
+
+/* ONE MEASURE FOR THE WHOLE SCREEN. Referrals has no table to justify a full-bleed row, and at
+   1440px it was setting a 450-character URL in a 1600px box and four facts across 1392px — the two
+   that read `—` were 348px apart from their own labels' neighbours. The prose below already sits on
+   a measure (`.sc-terms`, 82ch); giving the link and the figures one too is what turns three
+   full-width bands into a column with a spine. */
+.scr .sc-refmeasure { max-width: 820px; }
+
+/* The line under the figures that says what they are worth and why two of them are dashes. It is a
+   `.lede`; this only gives it the air a strip of `.kv`s doesn't provide on its own. */
+.scr .sc-refnote { margin: 14px 0 0; }
+
+.scr .sc-linkrow { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; }
+.scr .sc-linkbox {
+  flex: 1 1 320px;
+  min-width: 0;
+  border: 1px solid var(--rule-2);
+  padding: 10px 12px;
+  font: 400 12px/1.35 var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+}
+/* The share control is a link, not a button — it opens a new tab, and that must be true in the
+   status bar as well as in the handler. It just wears the button's clothes. */
+.scr a.btn { border-bottom: 0; display: inline-flex; align-items: center; }
+.scr a.btn:hover { border-bottom: 0; }
+
+/* A numbered statement of the deal. The index numbers do the work a bullet would. */
+.scr .sc-terms { display: grid; gap: 0; max-width: 82ch; }
+.scr .sc-term {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--rule);
+}
+.scr .sc-term > p { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
+.scr .sc-term > p > b { color: var(--ink); font-weight: 500; }
+
+/* ---------------------------------------------------------------------------------------------
+   RESPONSIVE — one column, fewer columns, never a horizontal scrollbar on the body
+   --------------------------------------------------------------------------------------------- */
+
+@media (max-width: 1100px) {
+  .scr-head { grid-template-columns: 60px minmax(0, 1fr); }
+  .scr-head-meta { grid-column: 2; grid-row: 2; padding-top: 4px; }
+  .scr .sc-g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .scr .sc-g4 > .sc-grp:nth-child(3) { border-left: 0; padding-left: 0; }
+  .scr .sc-g4 > .sc-grp:nth-child(n + 3) {
+    border-top: 1px solid var(--rule);
+    padding-top: 16px;
+    margin-top: 16px;
+  }
+}
+
+/* THE THREE LEADERBOARDS SHED COLUMNS TWO STEPS EARLIER THAN THE OTHER SCREENS, because they carry
+   two more columns than the other screens do. Measured before it was written: between 721px and
+   ~900px all three boards were 80-140px wider than `.sc-wrap`, so a tablet got a table that scrolled
+   sideways inside its own box with eight columns crushed to their minimums. Both blocks are scoped
+   to `--lbr/--lba/--lbh` rather than to `.sc-s` at large: History and Dashboard share that class and
+   their own squeeze is theirs to price. */
+
+/* ONE BAND, AND ONLY THIS BAND, LOSES THE RAIL. Above it the row is wide enough to need one; below
+   it the board has dropped to five columns and is wide enough to afford one again. In between the
+   full column set is still on screen and there is no slack left to draw in — this is the only width
+   at which the rail would be squeezing the figures rather than filling a gap between them. */
+@media (min-width: 901px) and (max-width: 999px) {
+  .scr .sc-w { display: none !important; }
+
+  .scr .sc-tbl--lba { --cols: 30px minmax(120px, 1fr) 64px 84px 104px 112px 124px 84px; }
+  .scr .sc-tbl--lbh { --cols: 30px 84px minmax(140px, 1fr) 78px 190px 74px 120px; }
+}
+
+@media (max-width: 900px) {
+  .scr .sc-tbl--lbr .sc-s,
+  .scr .sc-tbl--lba .sc-s,
+  .scr .sc-tbl--lbh .sc-s { display: none !important; }
+
+  /* What survives is the answer to "who is ahead, and by how much": the ranking figure, the one word
+     or percentage that qualifies it, and the rail that lets a row be placed against its neighbours
+     without reading either. Everything dropped is workings. */
+  .scr .sc-tbl--lbr { --cols: 26px 74px minmax(120px, 1fr) minmax(90px, 240px) 104px 68px; }
+  .scr .sc-tbl--lba { --cols: 26px minmax(110px, 1fr) minmax(60px, 240px) 74px 112px 66px; }
+  .scr .sc-tbl--lbh { --cols: 26px 74px minmax(110px, 1fr) minmax(60px, 240px) 62px 112px; }
+}
+
+@media (max-width: 720px) {
+  .scr-head { grid-template-columns: minmax(0, 1fr); row-gap: 8px; }
+  .scr-head > .idx { grid-column: 1; text-align: left; padding-top: 0; }
+  .scr-head-main { grid-column: 1; }
+  .scr-head-meta { grid-column: 1; grid-row: auto; }
+
+  /* Secondary columns are dropped rather than squeezed: a one-line row is the whole idea, and a
+     table that scrolls sideways inside a phone is a table nobody reads. */
+  .scr .sc-s { display: none !important; }
+
+  /* And here the rail and the health bar go too. Both are comparisons, and a comparison needs enough
+     width to be read as one — at 390px a 60px bar is a smudge next to the figure it redraws, and the
+     figure is the thing. */
+  .scr .sc-w,
+  .scr .sc-hp { display: none !important; }
+
+  /* Tighter gutters between cells so a phone can still carry five real columns. */
+  .scr .sc-tbl .row { gap: 8px; }
+
+  .scr .sc-tbl--lbr { --cols: 22px 58px minmax(0, 1fr) 82px 50px; }
+  .scr .sc-tbl--lba { --cols: 22px minmax(0, 1fr) 60px 90px 54px; }
+  .scr .sc-tbl--lbh { --cols: 22px 58px minmax(0, 1fr) 50px 90px; }
+  .scr .sc-tbl--mine { --cols: 52px minmax(0, 1fr) 58px 90px 16px; }
+  .scr .sc-tbl--rnd { --cols: 56px minmax(0, 1fr) 90px 16px; }
+  .scr .sc-tbl--plr { --cols: minmax(0, 1fr) 74px 90px; }
+  .scr .sc-st { padding-left: 0; }
+
+  .scr .sc-g4,
+  .scr .sc-g2 { grid-template-columns: minmax(0, 1fr); }
+  .scr .sc-grp {
+    border-left: 0;
+    padding: 0;
+    border-top: 1px solid var(--rule);
+    padding-top: 14px;
+    margin-top: 14px;
+  }
+  .scr .sc-grp:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+  .scr .sc-g4 > .sc-grp:nth-child(n + 3) { margin-top: 14px; padding-top: 14px; }
+
+  /* The wallet key is a proof, not a label. On a phone it costs 70px that the name needs, and the
+     full key is still on the row's `title`. */
+  .scr .sc-who-k { display: none; }
+
+  /* A section's tools (tabs, totals) drop under its heading rather than fighting it for a line —
+     scoped to this screen so the shared `.sec-head` keeps its desktop behaviour everywhere else. */
+  .scr .sec > .sec-head { flex-wrap: wrap; row-gap: 10px; }
+  .scr .sec > .sec-head .sec-tools { margin-left: 0; width: 100%; }
+  .scr .tabs { flex-wrap: wrap; gap: 16px; }
+  .scr .tabs > button { white-space: nowrap; }
+
+  .scr .sc-wrap { max-height: none; }
+
+  /* THE COLUMN HEADER DID NOT STICK ON A PHONE AT ALL — measured, not guessed: scrolled 1400px into
+     the 52-row all-time board its `top` was −791px, i.e. long gone, and rows 15 through 52 were five
+     unlabelled columns of numbers.
+     Two causes, one per line below.
+       1. `max-height: none` above leaves `overflow-y: auto` in force, and an `overflow: auto` box is
+          a scroll container whether or not it overflows. Sticky resolves against the nearest
+          SCROLLING ANCESTOR, so the header was pinned to a scrollport that never moves while the
+          thing actually scrolling was the page. There is no longer anything to clip, so releasing
+          the overflow costs no layout and hands the job to the page.
+       2. Once the page is the scrollport, `top: 0` parks the header underneath the fixed black top
+          bar. Offset it by exactly that bar.
+     Both scoped to the three leaderboards — every long `.sc-wrap` table has this and it belongs in
+     the shared rule, but History and Dashboard are being edited in parallel.
+
+     STILL OCCLUDED BY `.sbar`, AND DELIBERATELY NOT PAPERED OVER. `ui/StickyStatus.tsx`'s round
+     strip is `position: fixed; top: var(--chrome-h); z-index: 75`, it reveals after `--sbar-reveal`
+     of scroll — which on a leaderboard is precisely when you are inside the table — and it is
+     CONTENT-SIZED: 62px where it wraps on a phone, ~40px where it doesn't. There is no constant to
+     subtract, and writing `62px` here would be a number that is wrong at every other width and stale
+     the first time that component changes. So the offset asks for a height `ui/` does not yet
+     publish and falls back to zero, which is exactly today's behaviour. Completing it is one line in
+     `shell.css` (`--sbar-h` on `:root`, or measured onto it) and is that module's to make. */
+  .scr .sc-wrap:has(.sc-tbl--lbr),
+  .scr .sc-wrap:has(.sc-tbl--lba),
+  .scr .sc-wrap:has(.sc-tbl--lbh) { overflow: visible; }
+
+  .scr .sc-tbl--lbr .row--head,
+  .scr .sc-tbl--lba .row--head,
+  .scr .sc-tbl--lbh .row--head { top: calc(var(--chrome-h) + var(--sbar-h, 0px)); }
+
+  .scr .sc-det { padding-left: 12px; }
+  .scr .sc-term { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+}
