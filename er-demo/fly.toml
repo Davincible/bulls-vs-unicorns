@@ -112,6 +112,29 @@ primary_region = "fra"
   # standing in the lobby. If this deploy crash-loops at startup, that is the check firing, and the
   # fix is to deploy the program — not to set this to "0" and lose the 97%.
   KEEPER_HOLD_OPEN = "1"
+  # THE BACKSTOP: 7 days, which is MAX_LOBBY_SECONDS — the longest the program will clamp to.
+  #
+  # The default is one hour, and one hour was never an optimum: it is the length that was MEASURED
+  # (24 clean probes over 3,600s of continuous ER delegation) and the constant was set to the
+  # experiment. The backstop only fires when NOBODY came — a real player's arrival closes the lobby
+  # immediately either way — so lengthening it cannot make a single person wait. What it removes is
+  # the abandon/open/delegate cycle that an empty arena performs on itself, measured at ~0.00041 SOL
+  # once close_round_account is reclaiming rent:
+  #
+  #     1 hour    24 cycles/day   ~0.0098   SOL/day
+  #     7 days     0.14/day       ~0.00006  SOL/day     <- here, ~170x less
+  #
+  # WHAT THIS DOES NOT TRADE AWAY. The obvious objection is that a wedged round would now linger for
+  # a week. It would not: `wedgeAndMoveOn` opens the next round the moment it detects a round stuck
+  # in Drawing without a VRF callback, and never consults this value. Wedge recovery is not gated on
+  # the backstop.
+  #
+  # WHAT IT DOES TRADE AWAY, honestly: a round is delegated for the whole lobby, so if the ER
+  # validator dies while a lobby is idle, `abandon_round` cannot undelegate it and that round can sit
+  # until the backstop finally fires — up to a week now, rather than up to an hour. That strands one
+  # round's ~0.0085 SOL for that long. It is a real cost and it is smaller than the one being
+  # removed, but it is the reason this line names a trade rather than just a number.
+  KEEPER_HOLD_OPEN_LOBBY_SECONDS = "604800"
 
   # Both URLs are run through assertDevnetUrl at boot, on every endpoint including the ER
   # validator's fqdn. A mainnet URL arriving here or through `fly secrets` fails the process loudly
