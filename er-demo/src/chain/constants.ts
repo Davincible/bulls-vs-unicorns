@@ -12,22 +12,46 @@ export const BASE_RPC = "https://api.devnet.solana.com";
 assertDevnetUrl(ROUTER_URL, "Magic Router");
 assertDevnetUrl(BASE_RPC, "base devnet RPC");
 
-// The deployed bulls-arena program (v4 address). Matches idl.address in
+// The deployed bulls-arena program (v7 address). Matches idl.address in
 // public/idl/bulls_arena.json — asserted equal at runtime in idl.ts rather than trusted blindly.
 //
-// v4 for the same infrastructure reason v2 and v3 existed, now observed a fourth time: MagicBlock's
-// ER validators clone a program's bytecode on first use and don't re-clone it after a base-layer
-// upgrade (MAGICBLOCK_FEEDBACK.md). The extract-penalty build was upgraded into v3 on the base layer
-// and all four validators the router advertises were STILL serving the previous build immediately
-// afterward — byte-compared, not guessed (`scripts/erValidator.ts`). The cache is keyed by program
-// id, so a fresh id sidesteps it. v1 (F59NksP2…), v2 (4uqVSyHt…), v3 (8s3x42af…), v4 (CchN3JPW…)
-// and v5 (CH7K8rDX…) remain valid deployments of this same source and every verification signature
-// recorded against them still stands — see lib.rs's declare_id! note.
+// v7 for the same infrastructure reason every id since v2 existed, now observed a seventh time:
+// MagicBlock's ER validators clone a program's bytecode on first use and don't re-clone it after a
+// base-layer upgrade (MAGICBLOCK_FEEDBACK.md). The extract-penalty build was upgraded into v3 on the
+// base layer and all four validators the router advertises were STILL serving the previous build
+// immediately afterward — byte-compared, not guessed (`scripts/erValidator.ts`). The cache is keyed
+// by program id, so a fresh id sidesteps it.
+//
+// v1 (F59NksP2…), v2 (4uqVSyHt…), v3 (8s3x42af…) and v6 (D5S8oJ3s…) remain deployments of this same
+// source. v4 (CchN3JPW…) and v5 (CH7K8rDX…) DO NOT — both were closed on 2026-08-10 to fund this
+// deploy, reclaiming 4.72 SOL between them, and a closed program id can never be redeployed. Their
+// ledger history and every signature recorded against them are untouched; the executables are gone.
+// See lib.rs's declare_id! note for the two closing signatures.
 //
 // A ROUND NUMBER FROM AN OLDER ID DOES NOT EXIST HERE: a new program id has its own Arena PDA and its
 // own counter, so this deployment's rounds start again at #1. App.tsx already follows the arena's own
 // `round_counter`, so nothing needs to be told; its `DEFAULT_ROUND_NO` is only a pre-load placeholder.
-export const PROGRAM_ID = new PublicKey("D5S8oJ3sArpJ39zBG2N6PgxwWjVogWpemeJ9ryn9zhhM");
+export const PROGRAM_ID = new PublicKey("EpRY6fkv4RcazjYSJyk8rppeVTVMcWhCcVtTVrKkTLT4");
+
+// ---- round retention — mirrored from programs/bulls-arena/src/lib.rs ---------------------------
+//
+// HOW MANY OF THE NEWEST ROUNDS THE CHAIN GUARANTEES ARE STILL FETCHABLE. `close_round_account`
+// reclaims a finished round's ~0.008561 SOL rent — 95.4% of what a round costs — and this is the
+// floor it refuses to cross, enforced on chain rather than by the keeper so that no client has to
+// trust an operator's configuration for it.
+//
+// IT IS HERE BECAUSE IT IS A LABELLING RULE, not because anything in the browser calls the
+// instruction (nothing does — the keeper owns that). Round history is now a rolling window of this
+// many rounds, so every figure derived from the round log is a newest-N statistic: `useHistory`
+// reads round accounts by address, a closed round comes back `null`, and the row silently vanishes.
+// SPEC.md already forbids labelling `sideRecord` "all time" for exactly this reason; that rule now
+// binds standings, the leaderboard, the hall of fame and the dashboard too, and this constant is the
+// number those captions must state. The `Treasury` account is the one honest source of an all-time
+// figure, because `sweep_house_take` accumulates into it before the round it came from is destroyed.
+//
+// Checked against the Rust by `the_browser_carries_the_same_chain_constants` — a window the client
+// advertises but the program does not enforce would be the worst of both.
+export const MIN_RETAINED_ROUNDS = 20;
 
 // Verified from the ephemeral-vrf-sdk crate source (MEGA_QUEUE.md ER-060) — the EPHEMERAL queue,
 // not the base one, because by the time close_lobby_and_draw runs the round is already

@@ -206,8 +206,16 @@ export function enter(
 // WITH it — and it must be the arena's own authority, or the program answers `NotTheAuthority` rather
 // than falling through — the deadline is bypassed and the fight starts now. That is what lets a
 // keeper hold ONE lobby open indefinitely and begin the moment a real player joins, instead of
-// cycling rounds on a timer. The saving is rent: nothing ever closes a `Round` account, so every
-// cycle permanently locks ~0.0085 SOL whether or not anybody played.
+// cycling rounds on a timer. The saving is rent: every cycle sinks ~0.0085 SOL into a `Round`
+// account whether or not anybody played.
+//
+// THAT RENT IS NO LONGER PERMANENT, WHICH IS A CHANGE FROM WHAT THIS NOTE USED TO SAY. It read
+// "nothing ever closes a `Round` account"; as of v7 `closeRoundAccount` does, once a round is
+// settled, swept and older than `MIN_RETAINED_ROUNDS`. The argument for holding a lobby open
+// survives intact but is now about float rather than loss — an empty cycle ties up the deposit
+// until the round ages out of the retention window, instead of forfeiting it forever. Twenty
+// rounds of standing rent is ~0.171 SOL, so cycling on a timer is still the more expensive way
+// to run this.
 //
 // It cannot influence the OUTCOME, which is the question to ask of any privileged call in this
 // program. The VRF seed is requested by this instruction and delivered afterwards by `callback_seed`,
@@ -408,5 +416,45 @@ export function sweepHouseTake(
       arena: params.arena,
       round: params.round,
       treasury: params.treasury,
+    });
+}
+
+// ---- close_round_account — reclaim a finished round's rent ---------------------------------------
+//
+// THE ONLY INSTRUCTION IN THIS PROGRAM THAT DESTROYS ANYTHING. A `Round` is 1,102 bytes and its
+// rent-exempt deposit is ~0.008561 SOL — 95.4% of the 0.008971 a whole round costs to run, measured
+// on v6 rounds #3 and #4 — and until v7 nothing ever reclaimed a lamport of it. This hands the
+// deposit back to the authority that paid it at `openRound`.
+//
+// FOUR CONDITIONS, ALL ENFORCED ON CHAIN, none of them the caller's to decide:
+//   * the round is `Settled` or `Abandoned`                        — else `RoundNotTerminal`
+//   * `sweepHouseTake` has already run on it                       — else `RoundNotSwept`
+//   * `roundNo + MIN_RETAINED_ROUNDS <= arena.round_counter`       — else `RoundTooRecent`
+//   * the signer is the arena's authority (`has_one`)              — else anchor's `ConstraintHasOne`
+//
+// AUTHORITY-SIGNED, UNLIKE `sweepHouseTake`, and the difference is deliberate rather than
+// inconsistent: a sweep only moves counters to a seed-derived destination, so a stranger running it
+// does the operator a favour. This deletes an arena's history, which is not a favour anyone can do
+// on someone else's behalf.
+//
+// THE RETENTION WINDOW IS WHAT MAKES IT SAFE FOR THE UI. `useHistory` reads rounds by address with
+// `fetchNullable` and drops nulls, so a closed round leaves the log silently — no error, no gap
+// marker — and nothing in `src/` reads events, so there is no path that reconstructs it. The chain
+// guaranteeing the newest `MIN_RETAINED_ROUNDS` rounds still exist is the entire safety argument,
+// which is why that floor is in the program and not in the keeper's config. Its corollary is that
+// anything derived from the round log is a newest-N statistic and may not be labelled "all time".
+//
+// Like `sweepHouseTake`, callable only once the round has UNDELEGATED: while delegated the account is
+// owned by the Delegation Program and `Account<Round>` fails the owner check before it reads a byte.
+export function closeRoundAccount(
+  program: BullsArenaProgram,
+  params: { arena: PublicKey; round: PublicKey; authority: PublicKey; roundNo: bigint | number },
+) {
+  return program.methods
+    .closeRoundAccount(new BN(params.roundNo.toString()))
+    .accounts({
+      arena: params.arena,
+      round: params.round,
+      authority: params.authority,
     });
 }

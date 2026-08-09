@@ -42,24 +42,47 @@ use ephemeral_rollups_sdk::vrf::types::SerializableAccountMeta;
 // and a wallet popup there undercuts the "real-time because of the ER" pitch worse than one at entry.
 use session_keys::{session_auth_or, Session, SessionError, SessionToken};
 
-// v6 ADDRESS, and the reason is infrastructure, not code — for the SIXTH time, from the same cause.
+// v7 ADDRESS, and the reason is infrastructure, not code — for the SEVENTH time, from the same cause.
 //
 // MagicBlock's ER validators clone a program's executable bytecode on first use and do not re-clone
 // it after a base-layer upgrade (MAGICBLOCK_FEEDBACK.md). The cache is keyed by PROGRAM ID, so a
 // fresh id has no stale clone anywhere and the first delegation pulls the current build. v1
 // (F59NksP2bYZhP4wD7fgR1sP729UHNPitrBiYrrKF1sYW), v2 (4uqVSyHtx7CBaXUL2qy7cN4eV3MzqmvucapGHN1imFYm),
-// v3 (8s3x42af7gcNXDCTNheDtteQxeBS2D1p9xuU8C5Jgfrt), v4
-// (CchN3JPWta2uVxKhwScBQhtPG5gpsaRzf3RA4aPCDam2) and v5
-// (CH7K8rDXgPQRs9CCHG9EK5kd1YSDZyPkCDGArcz4PSNP) are all still valid deployments of this same
-// source, and every verification signature recorded against them stands.
+// v3 (8s3x42af7gcNXDCTNheDtteQxeBS2D1p9xuU8C5Jgfrt) and v6
+// (D5S8oJ3sArpJ39zBG2N6PgxwWjVogWpemeJ9ryn9zhhM) are deployments of this same source, and every
+// verification signature recorded against any id stands — the ledger keeps them whether or not the
+// program is still there.
 //
-// WHAT v6 CARRIES that no prior id ever executed: the house fee now has somewhere to go. Until this
-// build `fee_bps` was subtracted from every entry and then discarded — charged to players, credited
-// to nobody. `Round.fees_collected` records it, a `Treasury` PDA holds it, and `sweep_house_take`
-// moves it once per round under `house_swept`. Alongside it: an authority-signed early close on
-// `close_lobby_and_draw`, and two economic corrections to the fight itself (damage reads both
-// fighters rather than only the opposing stake, which was farmable by splitting one stake across
-// wallets; and the defender re-draw no longer pays ~15% for entry order).
+// v4 AND v5 NO LONGER EXIST, AND THAT IS A CHANGE FROM WHAT THIS NOTE USED TO CLAIM. It said all
+// five prior ids "are all still valid deployments"; on 2026-08-10 the two most recent superseded
+// ones were closed with `solana program close` to pay for this deploy, because a fresh-id deploy
+// costs ~2.5 SOL and the payer held 1.919:
+//   * v4 CchN3JPWta2uVxKhwScBQhtPG5gpsaRzf3RA4aPCDam2 — 2.43720408 SOL reclaimed, sig
+//     qnTfCJQLeNEEfJRxu6wbGHDXydc3ddTQ9WMZdRMEGmnSE6FbL1czntHmVohDw4Fg9pAXyeU3NH7EVJAtTnzCU4j
+//   * v5 CH7K8rDXgPQRs9CCHG9EK5kd1YSDZyPkCDGArcz4PSNP — 2.28341592 SOL reclaimed, sig
+//     2rPvKhKpkNFioydPNHMPfcT6PW4aP3bapJYn46KYmUAgYfhpoD3FmJSP8Jj5BGM5VuraBusHgv3Zi2KK5jG22C7
+// A closed program id is dead forever — it cannot be redeployed — so those two are gone as
+// EXECUTABLES. Their transaction history is untouched and any recorded signature still replays
+// against the ledger. v1-v3 were left alone: they predate the measurement and nobody costed them.
+// The correction is written here rather than made silently because the previous sentence was a
+// promise about what a reader could still go and run, and it is no longer true of two of the five.
+//
+// WHAT v6 CARRIED that no prior id executed: the house fee finally had somewhere to go — until that
+// build `fee_bps` was subtracted from every entry and then discarded, charged to players and
+// credited to nobody. `Round.fees_collected` records it, a `Treasury` PDA holds it, and
+// `sweep_house_take` moves it once per round under `house_swept`. Alongside it: an authority-signed
+// early close on `close_lobby_and_draw`, and two economic corrections to the fight itself (damage
+// reads both fighters rather than only the opposing stake, which was farmable by splitting one stake
+// across wallets; and the defender re-draw no longer pays ~15% for entry order).
+//
+// WHAT v7 ADDS: `close_round_account`, the first instruction in this program that destroys anything.
+// Round PDA rent was 95.4% of what a round costs (0.008561 of 0.008971 SOL, measured on v6 rounds #3
+// and #4) and nothing had ever reclaimed a lamport of it, because until now nothing could. Rounds
+// that are settled, swept and older than `MIN_RETAINED_ROUNDS` now return their deposit to the
+// authority that paid it. The direct consequence — round history becomes a rolling twenty-round
+// window, so nothing derived from the round log may be labelled "all time" any more — is written up
+// at `MIN_RETAINED_ROUNDS` and is the reason that constant is enforced on chain rather than by the
+// keeper.
 //
 // EVERY PRIOR ID IS WRITTEN DOWN HERE FOR A REASON THAT HAS NOW BEEN PAID FOR TWICE. The id appears
 // in the IDL in TWO encodings — as a base58 `address` string, and as a 32-byte array under
@@ -83,7 +106,7 @@ use session_keys::{session_auth_or, Session, SessionError, SessionToken};
 // (devnet-eu/-tee/-as/-us) reported STALE immediately afterward. Same result as v2's upgrade and v1's
 // before it. The preflight cost one second and named the problem exactly, instead of a spent round
 // and a confusing error about the code under test — which is the entire return on having written it.
-declare_id!("D5S8oJ3sArpJ39zBG2N6PgxwWjVogWpemeJ9ryn9zhhM"); // devnet keypair: .devnet/program-keypair-v6.json
+declare_id!("EpRY6fkv4RcazjYSJyk8rppeVTVMcWhCcVtTVrKkTLT4"); // devnet keypair: .devnet/program-keypair-v7.json
 
 pub const ARENA_SEED: &[u8] = b"arena";
 pub const ROUND_SEED: &[u8] = b"round";
@@ -100,6 +123,45 @@ pub const ROUND_SEED: &[u8] = b"round";
 /// arena's house account" is exactly that owner — it can sign the transfer out. Had this been three
 /// fields on `Arena`, the arrival of real tokens would have needed a new account anyway.
 pub const TREASURY_SEED: &[u8] = b"treasury";
+
+/// HOW MANY OF THE NEWEST ROUNDS `close_round_account` MUST LEAVE ALONE. The retention window, as a
+/// chain rule rather than a keeper's good manners.
+///
+/// WHAT IT COSTS TO NOT HAVE THIS. A `Round` is 1,102 bytes, and 928 of them are
+/// `fighters: [Fighter; 16]` — sixteen slots rented forever by rounds that field four. Measured
+/// against v6 rounds #3 and #4: 0.008971 SOL per round all-in, of which 0.008561 (95.4%) is Round
+/// PDA rent that nothing ever reclaimed. (`delegate_round`'s 0.003221 is NOT in that figure: it
+/// comes back at undelegation, so it is float, not cost.) Reclaiming the rent takes the per-round
+/// cost to ~0.00041, a factor of 22 — against the 1.919 SOL the payer held when this was measured,
+/// the difference between ~215 rounds of runway and ~4,700. That balance is named rather than
+/// called "the current payer" because it has since changed twice (closing v4/v5 added 4.72, this
+/// deploy spent ~2.57), and a runway figure that silently re-anchors to whatever the balance is
+/// today is a number nobody can check.
+///
+/// WHY THE FLOOR IS ON THE CHAIN AND NOT IN THE KEEPER. The keeper is the only thing that will
+/// routinely call `close_round_account`, so a `MIN_RETAINED_ROUNDS` living in `config.ts` would look
+/// identical in every normal run. The difference shows up exactly once, when someone edits that
+/// number to 0 to reclaim a bit more rent, or runs a second tool against the same arena, or fat-
+/// fingers a backfill script — and the history a player is looking at right now disappears under
+/// them. "The most recent N rounds always exist" is a property of the arena, so it belongs where
+/// nobody can misconfigure it, and a client may state it as a fact rather than as a hope about the
+/// operator.
+///
+/// WHY 20 AND NOT SOME OTHER NUMBER. It is the shortest window that is longer than every consumer
+/// of round history in this repo: the round log renders the newest handful, and a player who steps
+/// away for the length of a coffee comes back to a page whose entire visible history is still
+/// fetchable. It is also cheap, and BOUNDED, which is the property that matters: 20 rounds of
+/// retained rent is 20 × 0.008561 = 0.171 SOL of standing float — around 4% of the ~4.1 SOL the
+/// payer is left with after this deploy — and unlike the leak it replaces it does not grow with the
+/// number of rounds ever played. Twenty is a constant; "forever" was not.
+///
+/// THE COROLLARY, WHICH IS NOT OPTIONAL. Round history is now a rolling window, so anything derived
+/// from the round LOG is a newest-N statistic and may not be labelled "all time". SPEC.md already
+/// carries that rule for `sideRecord`; it now binds standings, the leaderboard, the hall of fame and
+/// the dashboard too. The `Treasury` account is the exception and the reason it exists: its totals
+/// are accumulated at sweep time and survive the round they came from, so a figure read from
+/// `Treasury` is genuinely all-time and may say so.
+pub const MIN_RETAINED_ROUNDS: u64 = 20;
 
 /// Hard ceiling on fighters in one round. Sized so the whole round is ONE account and therefore one
 /// atomic commit.
@@ -964,6 +1026,65 @@ fn apply_sweep(r: &mut Round, t: &mut Treasury) -> Result<(u64, u64)> {
     Ok((fees, penalties))
 }
 
+/// EVERY CONDITION `close_round_account` REFUSES ON — the three checks that stand between a round's
+/// rent and the authority, hoisted out of the instruction for the reason `apply_sweep` was.
+///
+/// This one is hoisted with more cause than either of its neighbours, because the instruction body
+/// it belongs to has NOTHING else in it. Anchor's `close = authority` constraint does the actual
+/// destruction in `exit`, after the body returns — so if these `require!`s lived inline, the entire
+/// correctness of an irreversible instruction would be three lines that no native test could reach,
+/// and a deleted guard would be caught by nothing at all until it deleted somebody's history on
+/// devnet. As a function it is executed by `the_retention_window_is_not_advisory` and the two tests
+/// beside it.
+///
+/// The authority check is deliberately NOT here: it is `has_one = authority` on the context, which
+/// Anchor enforces before this is reached. Restating it as a fourth `require!` would be a second
+/// implementation of the same rule, and the one that drifts is always the copy.
+fn check_close_permitted(r: &Round, arena_round_counter: u64) -> Result<()> {
+    // TERMINAL ONLY. Nothing about a live round is finished being written, and this is destruction
+    // rather than a counter bump — the phase guard here is doing the same job it does in
+    // `apply_sweep`, one step further along.
+    require!(
+        r.phase == Phase::Settled as u8 || r.phase == Phase::Abandoned as u8,
+        ArenaError::RoundNotTerminal
+    );
+
+    // THE BOOKS BEFORE THE RECORD. `fees_collected` and `penalties_collected` exist only on this
+    // account, so closing an unswept round forfeits that round's house take permanently and
+    // silently — `Treasury.rounds_swept` would simply never reach `round_counter` and no one could
+    // say which round was missing, because the round is gone. Requiring the flag makes "the books
+    // are aggregated before the record dies" an ordering the chain enforces rather than a step in a
+    // keeper's loop that a crash can skip.
+    require!(r.house_swept, ArenaError::RoundNotSwept);
+
+    // THE RETENTION WINDOW. `round_counter` is the highest round_no ever opened (`open_round`
+    // requires `round_no == round_counter + 1` and then assigns), so the newest
+    // `MIN_RETAINED_ROUNDS` rounds are exactly those with `round_no > round_counter -
+    // MIN_RETAINED_ROUNDS`, and this is that comparison rearranged to avoid the underflow the
+    // subtraction form has while an arena is younger than its own window.
+    //
+    // `checked_add`, WITH OVERFLOW TREATED AS "TOO RECENT" rather than as an arithmetic fault. This
+    // was `saturating_add` first, on the reasoning that saturation only ever makes the left side
+    // larger and so could only ever REFUSE a close that exact arithmetic would have permitted. That
+    // reasoning is wrong, and `the_retention_window_is_not_advisory` caught it: at
+    // `round_no == round_counter == u64::MAX` the saturated sum is `u64::MAX`, which compares EQUAL
+    // rather than greater — so the one round the window most needs to protect, the newest one, would
+    // have been permitted to close. Saturation loses exactly the information the comparison depends
+    // on.
+    //
+    // `None` therefore means "so far out that the sum does not fit", which is unreachable below
+    // round number 18 quintillion but is answered here rather than assumed away — and answered with
+    // a refusal, because refusing to close is always the recoverable direction. It is not
+    // `MathOverflow`: nothing overflowed that the caller did wrong, and `RoundTooRecent` is the
+    // truthful description of a round the window will not release.
+    require!(
+        r.round_no.checked_add(MIN_RETAINED_ROUNDS)
+            .is_some_and(|oldest_retained| oldest_retained <= arena_round_counter),
+        ArenaError::RoundTooRecent
+    );
+    Ok(())
+}
+
 #[ephemeral]
 #[program]
 pub mod bulls_arena {
@@ -1677,6 +1798,77 @@ pub mod bulls_arena {
         });
         Ok(())
     }
+
+    /// RECLAIM A FINISHED ROUND'S RENT — the last step of a round's life, and the only one that
+    /// destroys something.
+    ///
+    /// WHAT IT IS FOR, MEASURED. A `Round` is 1,102 bytes and its rent-exempt deposit is 0.008561
+    /// SOL, which is 95.4% of the 0.008971 SOL a whole round costs to run (v6 rounds #3 and #4).
+    /// Every round this arena has ever held is still paying it, forever, for sixteen fighter slots
+    /// on a fight that fielded four. Nothing reclaimed it because nothing could: until now there was
+    /// no instruction that closed a round account. With this, per-round cost falls to ~0.00041 and
+    /// the payer's runway goes from ~215 rounds to ~4,700.
+    ///
+    /// THE THREE REFUSALS ARE IN `check_close_permitted`, which is where the reasoning for each one
+    /// is written and where the tests reach them. In short: terminal phase only, house take swept
+    /// first, and older than `MIN_RETAINED_ROUNDS`. The fourth condition — that the caller is the
+    /// arena's authority — is `has_one = authority` on the context, and the fifth — that the round
+    /// is not still delegated to a rollup — is `Account<'info, Round>` refusing an account the
+    /// Delegation Program owns. See `CloseRoundAccount` for both, including why neither is restated
+    /// as a `require!` here.
+    ///
+    /// THE SWEPT-FIRST RULE STRANDS NOTHING, which is the one thing about it worth checking rather
+    /// than assuming, because a precondition some rounds can never satisfy is a leak dressed as a
+    /// guard. The question is whether a round can exist that can never be swept but could otherwise
+    /// have been closed. There are three kinds of round and none of them is that:
+    ///   * UNDELEGATED AND TERMINAL — `Settled` or `Abandoned`, back under this program. Sweepable
+    ///     by anyone: `sweep_house_take` is permissionless, so the flag can be satisfied without the
+    ///     operator, at any time, by whoever wants the close to proceed. Nothing is stranded.
+    ///   * STILL DELEGATED — owned by the Delegation Program, so it fails `Account<Round>`'s owner
+    ///     check in BOTH instructions. Unsweepable and uncloseable together, so the sweep rule costs
+    ///     it nothing that delegation was not already costing it. The `Phase::Drawing` hole that
+    ///     `abandon_round` documents — a round whose VRF callback never lands, which therefore never
+    ///     undelegates — lives here.
+    ///   * OPENED BUT NEVER DELEGATED, and this one is easy to miss because it breaks the tidy
+    ///     two-way split. `open_round` and `delegate_round` are separate transactions, so a keeper
+    ///     that dies between them leaves a round this program still owns, in `Lobby`, which passes
+    ///     the owner check. It is refused by the PHASE guard rather than by the sweep rule — and it
+    ///     is refused only FOR NOW, not forever: `delegate_round` carries no phase or age
+    ///     constraint, so the authority can pick such a round up at any later time and walk it
+    ///     delegate -> abandon -> sweep -> close like any other. Its rent is deferred, not lost.
+    /// So no round is permanently stranded by anything here, and the sweep rule in particular
+    /// strands nothing at all: in the first case it is satisfiable by anyone, and in the other two
+    /// the round is already refused by something that has nothing to do with the house take.
+    ///
+    /// THIS IS OBSERVED, NOT ARGUED. `verify-round-close.ts` opens 22 rounds and works only three of
+    /// them, deliberately leaving nineteen sitting in `Lobby` — exactly the third case — and prints
+    /// the rent they hold. They are recoverable by the path above, which is why the script calls
+    /// them deferred rather than lost.
+    ///
+    /// ITS ONE REAL DEPENDENCY is that `init_treasury` has been run, since an arena without a
+    /// treasury cannot sweep and therefore cannot close. That is the forgettable step
+    /// `init_treasury`'s own note calls out, and it fails the same way here as there: loudly, on the
+    /// sweep, one transaction from fixed.
+    ///
+    /// WHAT IT DOES TO ANYONE READING HISTORY, confirmed rather than hoped for. `useHistory` fetches
+    /// rounds by address with `fetchNullable` and its caller drops nulls, so a closed round leaves
+    /// the log silently — no error, no gap, no retry storm. Nothing in `er-demo/src/` reads events,
+    /// so there is NO fallback that reconstructs a closed round: the retention window is not a
+    /// convenience, it is the entire reason this is safe. And because the window is enforced here
+    /// rather than in the caller, "the newest `MIN_RETAINED_ROUNDS` rounds are always fetchable" is
+    /// something a client may rely on.
+    pub fn close_round_account(ctx: Context<CloseRoundAccount>, _round_no: u64) -> Result<()> {
+        let r = &ctx.accounts.round;
+        check_close_permitted(r, ctx.accounts.arena.round_counter)?;
+
+        // Read BEFORE returning: `close = authority` moves the lamports in Anchor's `exit`, after
+        // this body, so this is the deposit that is about to go back rather than a guess at it.
+        emit!(RoundAccountClosed {
+            round_no: r.round_no,
+            lamports_returned: r.to_account_info().lamports(),
+        });
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2050,6 +2242,91 @@ pub struct SweepHouseTake<'info> {
     pub treasury: Account<'info, Treasury>,
 }
 
+/// THE MIRROR OF `OpenRound`, AND IT IS WORTH READING THE TWO TOGETHER. `open_round` is
+/// `init, payer = authority`; this is `close = authority`. The same key puts the rent up and the
+/// same key gets it back, which is why `close` names `authority` and not a caller-supplied
+/// recipient — a recipient argument would be an account the caller chooses, on an instruction whose
+/// whole output is money.
+///
+/// "THE SAME KEY" IS A GUARANTEE HERE, NOT A LIKELIHOOD, and it rests on something outside this
+/// struct: `Arena.authority` is written once by `init_arena` and there is no setter for it anywhere
+/// in this program. So the key `has_one` checks today is necessarily the key that funded every
+/// `open_round` this arena has ever done. IF A `set_authority` IS EVER ADDED, THIS STOPS BEING TRUE
+/// — rent from rounds the old authority paid for would land with the new one — and whoever adds it
+/// owes this instruction a decision rather than a surprise.
+///
+/// SIGNED, WHERE `SweepHouseTake` IS NOT, and the asymmetry is the point rather than an oversight.
+/// A sweep is permissionless because every precondition is chain truth and the outcome is a counter
+/// moving to a seed-derived destination — a stranger running it does the operator's work for them.
+/// This instruction DESTROYS THE ON-CHAIN RECORD OF A ROUND, which is not a favour anyone can do on
+/// someone else's behalf: the same argument that makes a sweep safe to leave open ("nothing about
+/// the outcome is chosen by the caller") says nothing about whether the outcome should happen at
+/// all, and here that is the entire question. `has_one = authority` on `arena` is the whole
+/// authorization, exactly as in `OpenRound`, `SetFeeBps` and `DelegateRound`.
+///
+/// THERE IS NO `is_delegated` CHECK HERE AND ONE MUST NOT BE ADDED. Not because delegation does not
+/// matter — closing a round the rollup is still writing is the worst thing this instruction could
+/// do — but because `round: Account<'info, Round>` already refuses it, EARLIER than a `require!`
+/// could, and a hand-written guard would be a strictly weaker copy of a check that has already run.
+/// This was verified against the vendored source rather than assumed, and the details are the point:
+///
+///   * `Account::try_from` (anchor-lang 1.0.2, `src/accounts/account.rs:318`) compares `info.owner`
+///     against `T::owner()` — `crate::ID`, from `#[account]` — and returns
+///     `AccountOwnedByWrongProgram` (3007) BEFORE the first byte of data is read on line 322.
+///   * Delegation reassigns the base-layer PDA to `DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh`
+///     (`ephemeral-rollups-sdk` 0.16.2, `src/cpi.rs:130-140`), so a delegated round fails there.
+///   * No constraint can reorder that. `anchor-syn`'s codegen deserialises every non-`init`/`zero`
+///     field before it emits a single constraint (`codegen/accounts/try_accounts.rs:255-264`), so
+///     `mut`, `seeds`/`bump`, `has_one` and `close` all run after. `Box` forwards unchanged.
+///
+/// THE ORDERING IS THE LOAD-BEARING HALF, NOT THE OWNER CHECK ALONE, and this is the part that would
+/// be easy to get wrong twice. A committed-but-not-undelegated round is written back INTO its
+/// base-layer account by the Delegation Program's `Finalize` while that account stays DLP-owned — so
+/// the base layer can hold perfectly valid, current, `Settled` `Round` bytes for a round that is
+/// still live in the rollup. A guard that read those bytes would pass. The owner check does not,
+/// because it runs before there are any bytes to read.
+///
+/// SAY IT PRECISELY, THOUGH: this is a BASE-LAYER guard, not a universal impossibility. Inside the
+/// ER the very same type deserialises the very same delegated account without complaint — that is
+/// how `enter`, `tick`, `extract` and `resolve` work on a round that is delegated for its whole
+/// playable life. What the type buys is execution-layer segregation: base-layer-only instructions
+/// cannot touch a round that is currently live in a rollup. `SweepHouseTake` documents the same
+/// property; this note is longer only because the consequence of getting it wrong here is permanent.
+///
+/// SO WHAT STOPS THIS INSTRUCTION IF IT IS SUBMITTED TO A ROLLUP, where the owner check does NOT
+/// refuse it? Two things, neither of them the owner check, and it is worth naming them because the
+/// paragraph above would otherwise read as the whole answer:
+///   * `require!(r.house_swept)`. That flag is set only by `apply_sweep`, and `SweepHouseTake` names
+///     `treasury` — an account that is never delegated and therefore not writable from inside a
+///     rollup. A round can never have been swept IN the ER, so a close submitted there always meets
+///     `RoundNotSwept` first.
+///   * `authority` is `mut`, and it is an ordinary undelegated wallet. A rollup transaction cannot
+///     write a base-layer account, so there is nowhere for `close = authority` to put the lamports.
+/// Two independent barriers, on top of a phase that by then can only have been reached on the base
+/// layer anyway. Nothing here relies on a validator declining to try.
+///
+/// THE ADDRESS CANNOT BE RESURRECTED, which is what makes closing safe rather than merely tidy. The
+/// PDA is seeded by `round_no`, and `open_round` is `init` with
+/// `require!(round_no == arena.round_counter + 1)` against a counter that only ever increases — so
+/// once round N is closed, no later `open_round` can ever be for round N, and the freed address
+/// stays dead forever. A closed round can never come back holding different numbers.
+///
+/// `Box`ED FOR THE SAME 4 KB STACK `SweepHouseTake` hit — see that struct's note. This context names
+/// one fewer account than that one, so it may well fit unboxed; that is not a reason to find out on
+/// devnet, where the symptom is "Access violation reading 8 bytes at address 0x18" and `build-sbf`
+/// reports the real cause on stdout while exiting 0.
+#[derive(Accounts)]
+#[instruction(round_no: u64)]
+pub struct CloseRoundAccount<'info> {
+    #[account(seeds = [ARENA_SEED], bump = arena.bump, has_one = authority)]
+    pub arena: Account<'info, Arena>,
+    #[account(mut, close = authority, has_one = arena,
+              seeds = [ROUND_SEED, arena.key().as_ref(), &round_no.to_le_bytes()], bump = round.bump)]
+    pub round: Box<Account<'info, Round>>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+}
+
 #[derive(Accounts)]
 #[instruction(round_no: u64)]
 pub struct OpenRound<'info> {
@@ -2251,6 +2528,20 @@ pub struct Resolve<'info> {
 /// listener that never fetches the `Treasury` account still has the current position. Emitted once
 /// per round and never again — `Round.house_swept` makes a second one impossible.
 #[event] pub struct HouseSwept { pub round_no: u64, pub fees: u64, pub penalties: u64, pub fees_accrued: u64, pub penalties_accrued: u64 }
+/// A round's ACCOUNT was closed and its rent reclaimed — the round itself is unchanged history, but
+/// it is no longer fetchable by address.
+///
+/// THE ONE THING THIS SAYS THAT NOTHING ELSE DOES is that the gap is deliberate. After this fires,
+/// `Arena.round_counter` counts rounds that no longer have accounts, so anything reconciling the
+/// counter against what it can fetch sees holes; without this event a hole from a reclaimed round is
+/// indistinguishable from a round that failed to open, or from an RPC that dropped a response.
+///
+/// `lamports_returned` is the measurement, published rather than inferred. Rent reclaim is the
+/// entire justification for this instruction existing, and differencing two balance queries around
+/// the transaction attributes every other lamport that moved in the same block to it. This is the
+/// number itself, read off the account immediately before Anchor's `close` hands it back — the same
+/// discipline `Entered` applies to the fee it would otherwise be impossible to check.
+#[event] pub struct RoundAccountClosed { pub round_no: u64, pub lamports_returned: u64 }
 /// Entry was re-priced. Both ends, because "the fee is now 100 bps" is only half a fact — what an
 /// auditor reconciling a round against a rate needs is which rate stopped applying and when.
 #[event] pub struct FeeBpsChanged { pub arena: Pubkey, pub previous: u16, pub current: u16 }
@@ -2278,6 +2569,9 @@ pub enum ArenaError {
     #[msg("this round has not finished — its house take cannot be swept yet")] RoundNotTerminal,
     #[msg("this round's house take has already been swept")] AlreadySwept,
     #[msg("only the arena's authority may close a lobby before its deadline")] NotTheAuthority,
+    // Appended, same rule as above — `close_round_account`'s two refusals.
+    #[msg("this round's house take has not been swept — sweep it before closing the account")] RoundNotSwept,
+    #[msg("this round is inside the retention window and may not be closed yet")] RoundTooRecent,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2790,6 +3084,11 @@ mod parity_tests {
             ("export const FIGHT_TIMEOUT_SECONDS", FIGHT_TIMEOUT_SECONDS as u64),
             ("export const MIN_LOBBY_SECONDS", MIN_LOBBY_SECONDS as u64),
             ("export const MAX_LOBBY_SECONDS", MAX_LOBBY_SECONDS as u64),
+            // The retention window. The browser never CALLS `close_round_account`, but it has to
+            // state the window in every caption derived from the round log — and a client that
+            // advertised a wider window than the program enforces would be promising history the
+            // chain had already deleted.
+            ("export const MIN_RETAINED_ROUNDS", MIN_RETAINED_ROUNDS),
         ] {
             assert_eq!(scalar(&src, name), expected, "chain/constants.ts drifted on {}", name);
         }
@@ -3617,6 +3916,162 @@ mod house_tests {
             r.phase = phase as u8;
             let mut t = fresh_treasury();
             assert_eq!(apply_sweep(&mut r, &mut t).unwrap(), (2_000, 0));
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // CLOSING A ROUND ACCOUNT. The same discipline as the sweep tests above and for a sharper
+    // reason: `close_round_account`'s instruction body has nothing in it but
+    // `check_close_permitted` and an event. Anchor's `close = authority` does the destruction
+    // afterwards, in `exit`. So these three tests are the ENTIRE executable statement of when a
+    // round may be destroyed, and every one of them runs the real function rather than restating
+    // it.
+    //
+    // Each asserts the SPECIFIC error, not merely `is_err()`. Three guards refusing into one
+    // `Result` means a test that only checks "it failed" passes when the wrong guard fires — and
+    // would keep passing after the guard it was written for was deleted, which is the exact failure
+    // these are supposed to make impossible.
+    // -----------------------------------------------------------------------------------------
+
+    /// A round as the keeper leaves it once everything is finished: settled, and swept.
+    fn closeable_round(round_no: u64) -> Round {
+        let mut r = fresh_round();
+        r.round_no = round_no;
+        r.phase = Phase::Settled as u8;
+        r.house_swept = true;
+        r
+    }
+
+    /// The anchor error code a refusal actually carried. Panics if the call was PERMITTED, which is
+    /// the mutation this whole module exists to catch.
+    fn refusal(r: &Round, round_counter: u64) -> u32 {
+        match check_close_permitted(r, round_counter) {
+            Ok(()) => panic!("round {} was permitted to close against counter {}",
+                             r.round_no, round_counter),
+            Err(anchor_lang::error::Error::AnchorError(e)) => e.error_code_number,
+            Err(other) => panic!("unexpected error shape: {:?}", other),
+        }
+    }
+
+    fn code(e: ArenaError) -> u32 { e as u32 + anchor_lang::error::ERROR_CODE_OFFSET }
+
+    /// THE RETENTION WINDOW IS A RULE, NOT A SUGGESTION — and it retains EXACTLY the number it says.
+    ///
+    /// Counted rather than spot-checked, because every plausible mistake here is an off-by-one and a
+    /// spot check at a round number someone chose is exactly what an off-by-one survives. Sweeping
+    /// the whole range and asserting the SIZE of the retained set pins both edges at once: retain 19
+    /// and it fails, retain 21 and it fails, drop the guard entirely and it fails with 0.
+    #[test]
+    fn the_retention_window_is_not_advisory() {
+        assert_eq!(MIN_RETAINED_ROUNDS, 20, "the published retention window");
+
+        // A mature arena: 25 rounds opened, all of them finished and swept.
+        let counter = 25u64;
+        let retained: Vec<u64> = (1..=counter)
+            .filter(|&n| check_close_permitted(&closeable_round(n), counter).is_err())
+            .collect();
+        assert_eq!(
+            retained.len() as u64, MIN_RETAINED_ROUNDS,
+            "expected exactly {} rounds to be retained, got {:?}", MIN_RETAINED_ROUNDS, retained,
+        );
+        // ...and it is the NEWEST N that survive, not just N of them.
+        assert_eq!(retained, (6..=25).collect::<Vec<u64>>());
+
+        // The boundary, named, with the reason each side falls where it does.
+        check_close_permitted(&closeable_round(5), counter)
+            .expect("5 + 20 == 25, the oldest round outside the window");
+        assert_eq!(
+            refusal(&closeable_round(6), counter), code(ArenaError::RoundTooRecent),
+            "6 + 20 == 26 > 25 — the newest of the twenty retained",
+        );
+
+        // A YOUNG ARENA MUST NOT UNDERFLOW. `round_counter - MIN_RETAINED_ROUNDS` is the natural way
+        // to write this guard and it wraps to ~1.8e19 here, permitting every round in existence.
+        // The `checked_add` form the guard actually uses has no such case, and these assertions are
+        // what would catch a rewrite into the subtraction.
+        for counter in [0u64, 1, 19, 20] {
+            for round_no in 1..=counter.max(1) {
+                assert_eq!(
+                    refusal(&closeable_round(round_no), counter), code(ArenaError::RoundTooRecent),
+                    "arena younger than its own window: round {} of {}", round_no, counter,
+                );
+            }
+        }
+
+        // THE OTHER END OF THE SAME ARITHMETIC, AND THIS ONE HAS ALREADY EARNED ITS PLACE. The guard
+        // was written with `saturating_add` on the argument that saturation can only ever refuse a
+        // close it should have permitted. Wrong: at the ceiling the saturated sum equals the counter
+        // instead of exceeding it, so the NEWEST round in existence — the one the window exists to
+        // protect — was permitted to close. This line is what said so.
+        assert_eq!(
+            refusal(&closeable_round(u64::MAX), u64::MAX), code(ArenaError::RoundTooRecent),
+            "the newest round must be retained even when its number is at the ceiling",
+        );
+        // One below the ceiling, where the sum genuinely cannot fit — refused, not faulted.
+        assert_eq!(
+            refusal(&closeable_round(u64::MAX - 1), u64::MAX), code(ArenaError::RoundTooRecent),
+            "an unrepresentable sum must refuse rather than wrap",
+        );
+    }
+
+    /// THE BOOKS BEFORE THE RECORD. `fees_collected` and `penalties_collected` live nowhere but the
+    /// round account, so closing an unswept round burns that round's house take permanently — and
+    /// invisibly, because afterwards there is no account left to notice is missing.
+    ///
+    /// The second half is what makes this a test rather than an assertion of the obvious: the SAME
+    /// round, with only `house_swept` flipped, must be permitted. Without it, a guard that refused
+    /// everything would pass.
+    #[test]
+    fn an_unswept_round_cannot_be_closed() {
+        let counter = 100u64;
+
+        for phase in [Phase::Settled, Phase::Abandoned] {
+            let mut r = closeable_round(1);
+            r.phase = phase as u8;
+            r.house_swept = false;
+            // It is terminal and far outside the window — the ONLY thing wrong with it is the flag.
+            assert_eq!(
+                refusal(&r, counter), code(ArenaError::RoundNotSwept),
+                "phase {} unswept", phase as u8,
+            );
+
+            r.house_swept = true;
+            check_close_permitted(&r, counter)
+                .expect("the same round, swept, must close — otherwise this test proves nothing");
+        }
+    }
+
+    /// A ROUND STILL IN PLAY IS NOT A ROUND TO DELETE. The phase guard is the same one `apply_sweep`
+    /// makes, one step further along and with a worse failure if it is missing: a swept-but-unfinished
+    /// round cannot exist today, so the only thing standing between this instruction and a live
+    /// lobby is this check.
+    ///
+    /// Every non-terminal round here is given `house_swept = true` and an ancient round number on
+    /// purpose. That state is unreachable in practice — `apply_sweep` will not set the flag before a
+    /// round is terminal — but constructing it is the only way to isolate THIS guard: with a
+    /// realistic `house_swept = false` the round would be refused by the sweep check instead, and
+    /// deleting the phase guard would not change the answer.
+    #[test]
+    fn a_round_still_in_play_cannot_be_closed() {
+        let counter = 100u64;
+
+        for phase in [Phase::Lobby, Phase::Drawing, Phase::Fight] {
+            let mut r = closeable_round(1);
+            r.phase = phase as u8;
+            assert_eq!(
+                refusal(&r, counter), code(ArenaError::RoundNotTerminal),
+                "phase {} must not be closeable", phase as u8,
+            );
+        }
+
+        // Both terminal phases close. An abandoned lobby's account is rent like any other — more
+        // wasteful, if anything, since nobody fought in it.
+        for phase in [Phase::Settled, Phase::Abandoned] {
+            let mut r = closeable_round(1);
+            r.phase = phase as u8;
+            check_close_permitted(&r, counter).unwrap_or_else(|e| {
+                panic!("phase {} must be closeable, got {:?}", phase as u8, e)
+            });
         }
     }
 

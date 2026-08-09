@@ -191,6 +191,19 @@ export interface BullsArenaProgram {
     /** `roundNo` is a seeds argument — the program derives the round PDA from it and checks it
      *  against the account passed in, so it is not redundant with `accounts({ round })`. */
     sweepHouseTake(roundNo: BN): MethodsBuilder;
+    /** v7's `close_round_account` — the first instruction in this program that DESTROYS anything,
+     *  handing a finished round's ~0.0086 SOL rent deposit back to the authority that paid it.
+     *
+     *  DECLARED AHEAD OF THE IDL, exactly as the three above were and for the reason the note above
+     *  spells out: this interface is hand-written against lib.rs, while Anchor builds from the IDL
+     *  fetched at runtime. Until the served IDL carries `close_round_account`,
+     *  `program.methods.closeRoundAccount` is `undefined` and calling it throws — which is why the
+     *  keeper guards on the CAPABILITY and not on the type. `scripts/keeper/programFeatures.ts`'s
+     *  `roundAccountClose` is that guard, and its `false` is what stands between an un-deployed
+     *  instruction and a keeper trying to send it once a second.
+     *
+     *  Same seeds argument as `sweepHouseTake`, for the same reason. */
+    closeRoundAccount(roundNo: BN): MethodsBuilder;
   };
   account: {
     arena: {

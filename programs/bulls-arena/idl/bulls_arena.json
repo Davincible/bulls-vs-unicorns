@@ -1,5 +1,5 @@
 {
-  "address": "D5S8oJ3sArpJ39zBG2N6PgxwWjVogWpemeJ9ryn9zhhM",
+  "address": "EpRY6fkv4RcazjYSJyk8rppeVTVMcWhCcVtTVrKkTLT4",
   "metadata": {
     "name": "bulls_arena",
     "version": "0.1.0",
@@ -297,6 +297,141 @@
       "args": []
     },
     {
+      "name": "close_round_account",
+      "discriminator": [
+        36,
+        31,
+        187,
+        149,
+        214,
+        73,
+        228,
+        48
+      ],
+      "accounts": [
+        {
+          "name": "arena",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  114,
+                  101,
+                  110,
+                  97
+                ]
+              }
+            ]
+          },
+          "relations": [
+            "round"
+          ]
+        },
+        {
+          "name": "round",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  117,
+                  110,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "arena"
+              },
+              {
+                "kind": "arg",
+                "path": "round_no"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "arena"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "round_no",
+          "type": "u64"
+        }
+      ],
+      "docs": [
+        "RECLAIM A FINISHED ROUND'S RENT — the last step of a round's life, and the only one that",
+        "destroys something.",
+        "",
+        "WHAT IT IS FOR, MEASURED. A `Round` is 1,102 bytes and its rent-exempt deposit is 0.008561",
+        "SOL, which is 95.4% of the 0.008971 SOL a whole round costs to run (v6 rounds #3 and #4).",
+        "Every round this arena has ever held is still paying it, forever, for sixteen fighter slots",
+        "on a fight that fielded four. Nothing reclaimed it because nothing could: until now there was",
+        "no instruction that closed a round account. With this, per-round cost falls to ~0.00041 and",
+        "the payer's runway goes from ~215 rounds to ~4,700.",
+        "",
+        "THE THREE REFUSALS ARE IN `check_close_permitted`, which is where the reasoning for each one",
+        "is written and where the tests reach them. In short: terminal phase only, house take swept",
+        "first, and older than `MIN_RETAINED_ROUNDS`. The fourth condition — that the caller is the",
+        "arena's authority — is `has_one = authority` on the context, and the fifth — that the round",
+        "is not still delegated to a rollup — is `Account<'info, Round>` refusing an account the",
+        "Delegation Program owns. See `CloseRoundAccount` for both, including why neither is restated",
+        "as a `require!` here.",
+        "",
+        "THE SWEPT-FIRST RULE STRANDS NOTHING, which is the one thing about it worth checking rather",
+        "than assuming, because a precondition some rounds can never satisfy is a leak dressed as a",
+        "guard. The question is whether a round can exist that can never be swept but could otherwise",
+        "have been closed. There are three kinds of round and none of them is that:",
+        "  * UNDELEGATED AND TERMINAL — `Settled` or `Abandoned`, back under this program. Sweepable",
+        "    by anyone: `sweep_house_take` is permissionless, so the flag can be satisfied without the",
+        "    operator, at any time, by whoever wants the close to proceed. Nothing is stranded.",
+        "  * STILL DELEGATED — owned by the Delegation Program, so it fails `Account<Round>`'s owner",
+        "    check in BOTH instructions. Unsweepable and uncloseable together, so the sweep rule costs",
+        "    it nothing that delegation was not already costing it. The `Phase::Drawing` hole that",
+        "    `abandon_round` documents — a round whose VRF callback never lands, which therefore never",
+        "    undelegates — lives here.",
+        "  * OPENED BUT NEVER DELEGATED, and this one is easy to miss because it breaks the tidy",
+        "    two-way split. `open_round` and `delegate_round` are separate transactions, so a keeper",
+        "    that dies between them leaves a round this program still owns, in `Lobby`, which passes",
+        "    the owner check. It is refused by the PHASE guard rather than by the sweep rule — and it",
+        "    is refused only FOR NOW, not forever: `delegate_round` carries no phase or age",
+        "    constraint, so the authority can pick such a round up at any later time and walk it",
+        "    delegate -> abandon -> sweep -> close like any other. Its rent is deferred, not lost.",
+        "So no round is permanently stranded by anything here, and the sweep rule in particular",
+        "strands nothing at all: in the first case it is satisfiable by anyone, and in the other two",
+        "the round is already refused by something that has nothing to do with the house take.",
+        "",
+        "THIS IS OBSERVED, NOT ARGUED. `verify-round-close.ts` opens 22 rounds and works only three of",
+        "them, deliberately leaving nineteen sitting in `Lobby` — exactly the third case — and prints",
+        "the rent they hold. They are recoverable by the path above, which is why the script calls",
+        "them deferred rather than lost.",
+        "",
+        "ITS ONE REAL DEPENDENCY is that `init_treasury` has been run, since an arena without a",
+        "treasury cannot sweep and therefore cannot close. That is the forgettable step",
+        "`init_treasury`'s own note calls out, and it fails the same way here as there: loudly, on the",
+        "sweep, one transaction from fixed.",
+        "",
+        "WHAT IT DOES TO ANYONE READING HISTORY, confirmed rather than hoped for. `useHistory` fetches",
+        "rounds by address with `fetchNullable` and its caller drops nulls, so a closed round leaves",
+        "the log silently — no error, no gap, no retry storm. Nothing in `er-demo/src/` reads events,",
+        "so there is NO fallback that reconstructs a closed round: the retention window is not a",
+        "convenience, it is the entire reason this is safe. And because the window is enforced here",
+        "rather than in the caller, \"the newest `MIN_RETAINED_ROUNDS` rounds are always fetchable\" is",
+        "something a client may rely on."
+      ]
+    },
+    {
       "name": "delegate_round",
       "docs": [
         "Hand the round account to the ER validator. Base layer.",
@@ -365,38 +500,38 @@
             "program": {
               "kind": "const",
               "value": [
-                179,
-                110,
-                252,
-                104,
-                87,
-                188,
-                63,
-                71,
-                105,
-                42,
-                71,
-                39,
-                43,
-                72,
-                170,
-                155,
-                139,
-                39,
-                104,
-                80,
-                245,
-                165,
-                143,
-                11,
-                79,
-                92,
-                176,
-                30,
+                205,
+                77,
+                248,
                 160,
-                95,
-                197,
-                204
+                184,
+                117,
+                255,
+                185,
+                2,
+                87,
+                16,
+                79,
+                181,
+                109,
+                39,
+                129,
+                162,
+                185,
+                139,
+                245,
+                79,
+                165,
+                194,
+                173,
+                128,
+                7,
+                122,
+                192,
+                140,
+                117,
+                182,
+                211
               ]
             }
           }
@@ -478,7 +613,7 @@
         },
         {
           "name": "owner_program",
-          "address": "D5S8oJ3sArpJ39zBG2N6PgxwWjVogWpemeJ9ryn9zhhM"
+          "address": "EpRY6fkv4RcazjYSJyk8rppeVTVMcWhCcVtTVrKkTLT4"
         },
         {
           "name": "delegation_program",
@@ -1512,6 +1647,19 @@
       ]
     },
     {
+      "name": "RoundAccountClosed",
+      "discriminator": [
+        30,
+        73,
+        29,
+        103,
+        174,
+        16,
+        108,
+        130
+      ]
+    },
+    {
       "name": "RoundOpened",
       "discriminator": [
         99,
@@ -1664,6 +1812,16 @@
       "code": 6019,
       "name": "NotTheAuthority",
       "msg": "only the arena's authority may close a lobby before its deadline"
+    },
+    {
+      "code": 6020,
+      "name": "RoundNotSwept",
+      "msg": "this round's house take has not been swept — sweep it before closing the account"
+    },
+    {
+      "code": 6021,
+      "name": "RoundTooRecent",
+      "msg": "this round is inside the retention window and may not be closed yet"
     }
   ],
   "types": [
@@ -2157,6 +2315,37 @@
           }
         ]
       }
+    },
+    {
+      "name": "RoundAccountClosed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "round_no",
+            "type": "u64"
+          },
+          {
+            "name": "lamports_returned",
+            "type": "u64"
+          }
+        ]
+      },
+      "docs": [
+        "A round's ACCOUNT was closed and its rent reclaimed — the round itself is unchanged history, but",
+        "it is no longer fetchable by address.",
+        "",
+        "THE ONE THING THIS SAYS THAT NOTHING ELSE DOES is that the gap is deliberate. After this fires,",
+        "`Arena.round_counter` counts rounds that no longer have accounts, so anything reconciling the",
+        "counter against what it can fetch sees holes; without this event a hole from a reclaimed round is",
+        "indistinguishable from a round that failed to open, or from an RPC that dropped a response.",
+        "",
+        "`lamports_returned` is the measurement, published rather than inferred. Rent reclaim is the",
+        "entire justification for this instruction existing, and differencing two balance queries around",
+        "the transaction attributes every other lamport that moved in the same block to it. This is the",
+        "number itself, read off the account immediately before Anchor's `close` hands it back — the same",
+        "discipline `Entered` applies to the fee it would otherwise be impossible to check."
+      ]
     },
     {
       "name": "RoundOpened",

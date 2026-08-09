@@ -251,6 +251,51 @@ class Source:
         at = self.find(rf"^pub struct {name} \{{")
         return None if at is None else self.docs_above(at)
 
+    def instruction_names(self):
+        """Every `pub fn` anchor will turn into an instruction — i.e. the ones inside `#[program]`.
+
+        SCOPED TO THE MODULE, because this file also declares ~20 free functions at top level
+        (`lobby_window`, `split_entry`, `advance_fight`, `apply_sweep`, …) that are not instructions
+        and must not be counted. Indentation is the discriminator: module items sit at four spaces,
+        free functions at zero.
+
+        `#[cfg(...)]`-GATED FNS ARE SKIPPED. `bench_fight` is `#[cfg(feature = "bench")]` and is
+        deliberately absent from a default build, so counting it would make the completeness check in
+        `regenerate` fail on every run over an instruction that is correctly missing.
+        """
+        start = self.find(r"^pub mod bulls_arena \{")
+        if start is None:
+            raise SystemExit("no `pub mod bulls_arena {` in lib.rs — the instruction scan needs it")
+        out = []
+        for i in range(start + 1, len(self.lines)):
+            if self.lines[i].startswith("}"):
+                break
+            m = re.match(r"^    pub fn (\w+)\(", self.lines[i])
+            if m and not self.lines[i - 1].strip().startswith("#[cfg("):
+                out.append(m.group(1))
+        return out
+
+    def event_names(self):
+        """Every `#[event] pub struct` — one-liners in this source, same as `event_docs` assumes."""
+        return [m.group(1) for m in
+                (re.match(r"^#\[event\] pub struct (\w+) ", l) for l in self.lines) if m]
+
+    def error_names(self):
+        """Every variant of the `#[error_code]` enum, in declaration order — which IS their code
+        order, since anchor numbers them from `ERROR_CODE_OFFSET` by position. Each is written
+        `#[msg("...")] VariantName,` on one line in this source."""
+        start = self.find(r"^#\[error_code\]")
+        if start is None:
+            raise SystemExit("no `#[error_code]` in lib.rs — the error scan needs it")
+        out = []
+        for i in range(start + 1, len(self.lines)):
+            if self.lines[i].startswith("}"):
+                break
+            m = re.match(r'^\s*#\[msg\(".*"\)\]\s*(\w+),', self.lines[i])
+            if m:
+                out.append(m.group(1))
+        return out
+
 
 HEAD = Source(subprocess.run(
     ["git", "-C", str(ROOT), "show", "HEAD:programs/bulls-arena/src/lib.rs"],
@@ -277,8 +322,11 @@ REGENERATED_FNS = {
     # so the first edit to its doc block would fail `verify` with no way to regenerate past it. That
     # is precisely how `Round.lobby_opened_at` blocked the tool that was the only fix for it.
     "set_fee_bps", "init_treasury", "sweep_house_take",
+    # Reclaiming round rent, added on the run that adds it to the IDL — same rule as above.
+    "close_round_account",
 }
-REGENERATED_EVENTS = {"RoundOpened", "RoundAbandoned", "Entered", "HouseSwept", "FeeBpsChanged"}
+REGENERATED_EVENTS = {"RoundOpened", "RoundAbandoned", "Entered", "HouseSwept", "FeeBpsChanged",
+                      "RoundAccountClosed"}
 REGENERATED_ROUND_FIELDS = {"lobby_opened_at", "fees_collected", "house_swept"}
 
 
@@ -600,6 +648,61 @@ def patch(idl):
             types[name] = idl["types"][-1]
         types[name]["docs"] = event_docs(name)
 
+    # ---- 9. RECLAIMING A FINISHED ROUND'S RENT ---------------------------------------------------
+    #
+    # `close_round_account` destroys a settled-and-swept round account older than
+    # `MIN_RETAINED_ROUNDS` and returns its ~0.008561 SOL deposit to the arena's authority — 95.4% of
+    # what a round costs to run, which nothing had ever reclaimed. One instruction, one event, two
+    # errors. See lib.rs's own doc comments for every guard and the reasoning behind each.
+    #
+    # `relations` follows the rule stated at section 7: it names the account carrying the `has_one`,
+    # hung on the account it points AT. `round` is declared `has_one = arena`, so `arena` carries
+    # `["round"]`; `arena` is declared `has_one = authority`, so `authority` carries `["arena"]`.
+    # Account ORDER matches the Rust struct's declaration order, which is what anchor emits and what
+    # positional clients depend on.
+    if "close_round_account" not in ix:
+        idl["instructions"].append({
+            "name": "close_round_account",
+            "discriminator": disc("global", "close_round_account"),
+            "accounts": [
+                {"name": "arena", "pda": arena_pda, "relations": ["round"]},
+                # `writable` because it is being closed; the lamports leave and the data is zeroed.
+                {"name": "round", "writable": True, "pda": round_pda},
+                # `writable` because it RECEIVES the rent, and the signer because this one is not
+                # permissionless — see `CloseRoundAccount` in lib.rs for why it differs from the sweep.
+                {"name": "authority", "writable": True, "signer": True, "relations": ["arena"]},
+            ],
+            "args": [{"name": "round_no", "type": "u64"}],
+        })
+        ix["close_round_account"] = idl["instructions"][-1]
+    ix["close_round_account"]["docs"] = fn_docs("close_round_account")
+
+    if "RoundAccountClosed" not in types:
+        idl["events"].append({
+            "name": "RoundAccountClosed",
+            "discriminator": disc("event", "RoundAccountClosed"),
+        })
+        idl["types"].append({"name": "RoundAccountClosed", "type": {"kind": "struct", "fields": [
+            {"name": "round_no", "type": "u64"},
+            {"name": "lamports_returned", "type": "u64"},
+        ]}})
+        types["RoundAccountClosed"] = idl["types"][-1]
+    types["RoundAccountClosed"]["docs"] = event_docs("RoundAccountClosed")
+
+    # `have` IS RECOMPUTED, NOT REUSED. Section 6 built it at the top of `patch` and then appended to
+    # `idl["errors"]` without updating it, so the set is stale by the time it reaches here. Today no
+    # duplicate results — the two name lists are disjoint and `regenerate` always restarts from HEAD's
+    # IDL — but the next section to append a name an earlier section also appends would emit the entry
+    # twice, silently, into a list anchor expects to be unique by code. Cheaper to re-derive than to
+    # rely on two distant sections staying disjoint forever.
+    have = {e["name"] for e in idl["errors"]}
+    for code, name, msg in (
+        (6020, "RoundNotSwept", "this round's house take has not been swept — sweep it before closing the account"),
+        (6021, "RoundTooRecent", "this round is inside the retention window and may not be closed yet"),
+    ):
+        if name not in have:
+            idl["errors"].append({"code": code, "name": name, "msg": msg})
+
     # anchor emits each list sorted by name
     idl["instructions"].sort(key=lambda x: x["name"])
     idl["events"].sort(key=lambda x: x["name"])
@@ -712,6 +815,64 @@ def regenerate():
     named = {k for k, _ in pubkeys(idl)} & set(EXTERNAL_PROGRAMS)
     print(f"program ids: every pubkey in the output is {this_program} or one of "
           f"{len(named)} named external programs")
+
+    # THE COMPLETENESS CHECK, AND IT IS THE ONE DIRECTION `verify` STRUCTURALLY CANNOT LOOK. Every
+    # loop in `verify` iterates over the COMMITTED IDL and holds each item against lib.rs — so an
+    # item that exists in the source and has NO IDL entry at all is invisible to it, because there is
+    # no entry to iterate over and nothing to compare.
+    #
+    # That is not hypothetical. `close_round_account` and `RoundAccountClosed` were written, tested
+    # and `cargo test`-green while the committed IDL still described 15 instructions and 9 events.
+    # Both the front end and the keeper build their calls from that file, so the feature would have
+    # shipped completely uncallable, and the mirror-checking test whose entire purpose is to catch
+    # exactly this would have reported success. It is the same shape as the `#[event]` doc-extractor
+    # bug this tool arrived with: every name resolved, the IDL loaded, nothing was wrong enough to
+    # notice.
+    #
+    # A POST-CONDITION ON THE PATCHED OUTPUT, not a precondition on the committed input, for the same
+    # reason the pubkey check above is one: held against the committed IDL it would start failing the
+    # moment a new `pub fn` is written and keep failing until `patch` gained its block — blocking the
+    # only tool that can add that block. Here it fails only when `patch` genuinely has no block for a
+    # declared item, which is precisely the bug it exists for.
+    # ERRORS ARE IN HERE TOO, and they are the quietest of the three. A missing instruction throws at
+    # the call site and a missing event silently drops a log line, but a missing error entry turns a
+    # program's refusal into a bare "custom program error: 0x1786" with no name and no message — on
+    # exactly the paths where somebody is already confused. Anchor numbers these by DECLARATION
+    # POSITION from 6000, so `error_names()` reading them in order is also what makes the codes in
+    # section 9 checkable rather than hand-counted.
+    for kind, declared, emitted in (
+        ("instruction", NOW.instruction_names(), {i["name"] for i in idl["instructions"]}),
+        ("event", NOW.event_names(), {e["name"] for e in idl["events"]}),
+        ("error", NOW.error_names(), {e["name"] for e in idl["errors"]}),
+    ):
+        missing = [n for n in declared if n not in emitted]
+        if missing:
+            print(f"VERIFICATION FAILED — lib.rs declares {kind}s the generated IDL does not carry.\n"
+                  f"`patch()` needs a block for each; section 9 is the most recent example:",
+                  file=sys.stderr)
+            for n in missing:
+                print(f"  - {n}", file=sys.stderr)
+            sys.exit(1)
+    # ...and for errors, PRESENCE IS NOT ENOUGH. Anchor derives the code from declaration position,
+    # so an entry added to `patch` with a hand-counted number that is off by one still passes the loop
+    # above while telling every client the wrong name for a refusal — the IDL would say `AlreadySwept`
+    # where the program means `RoundNotSwept`. The codes are checked against position for that reason,
+    # which also means nobody has to count the enum by eye again.
+    by_name = {e["name"]: e["code"] for e in idl["errors"]}
+    misnumbered = [
+        f"{name}: IDL says {by_name[name]}, declaration position says {6000 + n}"
+        for n, name in enumerate(NOW.error_names())
+        if by_name.get(name) != 6000 + n
+    ]
+    if misnumbered:
+        print("VERIFICATION FAILED — IDL error codes disagree with the order of the `#[error_code]` "
+              "enum in lib.rs:", file=sys.stderr)
+        for m in misnumbered:
+            print(f"  - {m}", file=sys.stderr)
+        sys.exit(1)
+    print(f"completeness: every instruction, event and error declared in lib.rs "
+          f"({len(NOW.instruction_names())} + {len(NOW.event_names())} + {len(NOW.error_names())}) "
+          f"is in the IDL, and every error code matches its declaration position")
     fields, size = round_layout(idl)
     print(f"Round layout: {len(fields)} fields, {size} B on chain")
     if "--verify" in sys.argv:
