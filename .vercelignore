@@ -6,7 +6,17 @@
 # never sees them at all. This is about not shipping a Rust workspace to a Node build box.
 
 programs/
-engine/
+
+# engine/ is 85MB and none of it runs the site — EXCEPT engine/src, which the build genuinely needs.
+# `er-demo/src/sim/mirrorParity.test.ts` imports `../../../engine/src/er-sim.ts` to assert the
+# client's fight simulation still matches the engine's, and `tsc -b` type-checks it, so excluding the
+# whole directory failed the build with "Cannot find module" and nothing else to go on.
+#
+# Keep the negation rather than dropping the test from the typecheck: that parity check is the thing
+# standing between the browser's replay and the engine's, and it costs 668K to keep honest.
+engine/*
+!engine/src
+
 web/
 shared/
 sandbox/
