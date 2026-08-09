@@ -110,9 +110,11 @@
 }
 .result--a { border-top-color: var(--a); }
 .result--b { border-top-color: var(--b); }
-/* Pre-fight the plate sits low rather than dead centre: nothing is decided yet, and the lobby field
-   behind it is still worth looking at. The settled result earns the middle of the frame. */
-.result--wait { top: auto; bottom: 12px; transform: translateX(-50%); }
+/* The pre-fight plate is CENTRED too (Max's direction). It used to sit low on the argument that the
+   lobby field behind it was still worth looking at — but in a lobby that field is a handful of
+   fighters drifting at rest, and "DEPOSITS OPEN" is the single thing a visitor has arrived to act on.
+   Burying the call to action at the foot of the frame to protect a view of almost nothing was the
+   wrong trade. It inherits `.result`'s centring; there is no override left to make. */
 .result-h { font-size: 24px; }
 
 .helpbar {
@@ -255,7 +257,6 @@
   .ovl--bl { display: none; }
   /* The plate must not swallow a 4:3 phone field. */
   .result { padding: 12px 14px; min-width: 0; max-width: calc(100% - 24px); }
-  .result--wait { bottom: 34px; }
   .result-h { font-size: 17px; }
 }
 

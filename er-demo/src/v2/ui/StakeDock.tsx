@@ -41,8 +41,19 @@ import { Seg } from "./primitives.tsx";
 import { useShell } from "./shell.ts";
 import { TokenIcon } from "./TokenIcon.tsx";
 
-/** Collapsed-or-open, remembered across reloads. A dismissible thing that comes back every time you
- *  load the page has not been dismissed. */
+/** OPEN ON EVERY LOAD, and closing lasts only for that visit (Max's direction: "it should be open by
+ *  default, users can close it, but when you enter the site it's open by default").
+ *
+ *  This deliberately reverses the previous behaviour, which persisted the closed state to
+ *  localStorage under `v2_dock_open` and argued that a panel returning after dismissal had not really
+ *  been dismissed. That argument holds for a notice or an ad. It does not hold for the primary
+ *  control of the product: deploying into the round is the thing a visitor came to do, the dock IS
+ *  that control, and a player who collapsed it once during a settled round three days ago should not
+ *  arrive to a lobby with no obvious way in. Closing it still works and still lasts as long as you are
+ *  on the page; it just does not follow you to the next visit.
+ *
+ *  The old key is intentionally not read any more, so anyone carrying a stored `0` from the previous
+ *  build gets the new behaviour rather than staying mysteriously collapsed forever. */
 const OPEN_KEY = "v2_dock_open";
 
 /** Below this the right-hand rail is full-bleed (`shell.css`: `.rail { width: 100vw }`), so there is
@@ -50,16 +61,18 @@ const OPEN_KEY = "v2_dock_open";
  *  Also the width at which the toast column and the dock start sharing a horizontal band. */
 const NARROW_Q = "(max-width: 900px)";
 
+/** Always open on arrival. The one concession to small screens is that the dock renders as a compact
+ *  bar there rather than a full panel (see the narrow branch below) — so "open" costs a strip, not a
+ *  third of the viewport, and the request holds at every width without a special case that would
+ *  leave phone visitors unable to find the deploy control at all. */
 function readOpen(): boolean {
+  // Clear any stored dismissal from the previous build, so a collapsed dock can't outlive it.
   try {
-    const v = localStorage.getItem(OPEN_KEY);
-    // No stored preference: open on a desktop, where it costs a corner, and collapsed on a phone,
-    // where an uninvited panel would eat a third of the viewport before anyone asked for it.
-    if (v === null) return window.innerWidth > 900;
-    return v === "1";
+    localStorage.removeItem(OPEN_KEY);
   } catch {
-    return false; // Storage blocked (private mode, embedded frame) — start out of the way.
+    /* Storage blocked (private mode, embedded frame) — nothing to clear, nothing to do. */
   }
+  return true;
 }
 
 function useMatches(query: string): boolean {
@@ -254,14 +267,9 @@ export function StakeDock() {
   const narrow = useMatches(NARROW_Q);
   useToastClearance();
 
-  const toggle = useCallback((next: boolean) => {
-    setOpen(next);
-    try {
-      localStorage.setItem(OPEN_KEY, next ? "1" : "0");
-    } catch {
-      /* Nothing to do: the choice simply doesn't survive the reload. */
-    }
-  }, []);
+  // Local state only — deliberately NOT persisted, see `OPEN_KEY`'s note. Closing it is a "not right
+  // now", not a standing preference.
+  const toggle = useCallback((next: boolean) => setOpen(next), []);
 
   const phase = live?.phase ?? null;
   // A dead program is not a phase, but it is a reason nothing can be pressed — and it outranks the
