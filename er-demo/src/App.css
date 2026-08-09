@@ -39,3 +39,44 @@
   flex-direction: column;
   gap: 4px;
 }
+
+/* ExtractButton.tsx / VerifyPanel.tsx (Phase 5) — additive only, doesn't touch anything above.
+   Plain color-coded status text, matching this file's own "no styling investment beyond legibility"
+   precedent, but color-coded because ExtractButton/VerifyPanel are explicitly the two screens where
+   a judge needs to read status at a glance without parsing prose. */
+.extract-reason {
+  color: var(--muted, #888);
+}
+.extract-success {
+  color: #1a7f37;
+}
+.extract-error {
+  color: #cf222e;
+}
+
+.verify-verdict {
+  font-weight: 600;
+  font-size: 1.05em;
+}
+.verify-verdict--ok {
+  color: #1a7f37;
+}
+.verify-verdict--info {
+  color: #9a6700;
+}
+.verify-verdict--bad {
+  color: #cf222e;
+}
+
+.app dl.verify-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 8px 0;
+}
+.app dl.verify-facts dt {
+  color: var(--muted, #888);
+}
+.app dl.verify-facts dd {
+  margin: 0;
+}
