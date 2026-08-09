@@ -59,7 +59,13 @@ engine/src/
   reconcile.ts        solvency daemon — freezes withdrawals if the books exceed the vault
   recover-float.ts    float re-anchoring + the one-shot over-claim write-down
   er-sim.ts           ⚠ MagicBlock fork work, NOT production (see §9)
-programs/             Anchor/Rust on-chain program (fork work)
+programs/             Anchor/Rust on-chain programs (fork work)
+  bulls-arena/          the ER round program — deployed to DEVNET only (see §9)
+er-demo/              ⚠ MagicBlock fork work, NOT production (see §9). A standalone React/Vite app
+                      (Pixi + Matter + wallet-adapter + Session Keys) demoing the ER round loop on
+                      devnet. Entirely separate from web/ — it does not touch the mainnet frontend,
+                      does not share its no-build-step constraint, and cannot reach mainnet (it
+                      carries its own port of devnet-guard.ts).
 ```
 
 **Model: off-chain authoritative engine + on-chain settlement, custodial vault.** Players deposit
@@ -201,8 +207,9 @@ Two of its three hooks failed **silently**, which was worse:
 All three are severed, and `engine/src/tests/no-fork-coupling.test.ts` fails if any returns. The
 fork's own `devnet-guard.ts` is untouched — it is correct *for the fork*.
 
-**Current state:** `HEAD` is `magicblock-er-migration`, 8 commits ahead of `main`, and production has
-been deployed from it. `main` lacks the fork severance and the client tests.
+**Current state:** `HEAD` is `magicblock-er-migration`, **39 commits ahead of `main`** (it was 8 when
+this section was written; the fork saw a large amount of work on 2026-08-09), and production has been
+deployed from it. `main` lacks the fork severance and the client tests.
 
 **Recommended:** cherry-pick the production work onto `main`, deploy only from `main`, and keep the
 fork on its own branch. Until then, check `git branch --show-current` before every deploy.
@@ -251,4 +258,6 @@ node --experimental-strip-types --test $(ls engine/src/tests/*.test.ts | grep -v
 | `DEPLOY.md` `PRODUCTION.md` `MAINNET.md` `GO-LIVE.md` `HOSTING.md` | Operational runbooks |
 | `ARENAS.md` | Arena/token configuration |
 | `DEVLOG.md` `DEVLIST.md` `QUEUE.md` | History and backlog |
-| `ER_*.md` `MAGICBLOCK_RESEARCH.md` `HACKATHON_ANGLE.md` | Fork workstream |
+| `ER_*.md` `MAGICBLOCK_RESEARCH*.md` `HACKATHON_ANGLE.md` `PITCH.md` `REACT.md` | Fork workstream |
+| `MEGA_QUEUE.md` | **The fork's live status.** Moves faster than this document — trust it over §9 |
+| `MAGICBLOCK_FEEDBACK.md` | Integration findings to hand MagicBlock, each pinned to repro code |
