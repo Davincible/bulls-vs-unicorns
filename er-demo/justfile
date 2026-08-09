@@ -1,0 +1,57 @@
+# er-demo Project Commands
+# Run `just` to see all available commands
+
+# Default: show help
+default:
+    @just --list
+
+# Install dependencies
+install:
+    bun install
+
+# Start development server
+dev:
+    bun run dev
+
+# Build for production
+build:
+    bun run build
+
+# Preview production build
+preview:
+    bun run preview
+
+# Type checking (no separate `check` script — this IS what `bun run build`'s `tsc -b` does; exposed
+# standalone so it can run without also producing a build)
+check:
+    bun run tsc -b --noEmit
+
+# === Testing ===
+
+# Run unit tests. Placeholder until Phase 2 (sim/erSim.ts + hitEvents.ts parity tests) lands — no
+# E2E suite in this project, manual run-through is the test plan (snug-floating-mitten.md).
+test:
+    bun run test
+
+# === Code Quality ===
+
+# Lint code
+lint:
+    bun run lint
+
+# === Utilities ===
+
+# Clean build artifacts
+clean:
+    rm -rf dist node_modules coverage
+
+# Fresh install (clean + install)
+fresh: clean install
+
+# Update dependencies
+update:
+    bun update
+
+# Show outdated dependencies
+outdated:
+    bun outdated

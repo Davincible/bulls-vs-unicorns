@@ -9,8 +9,14 @@
 #
 # Upgrading the vault to anchor 1.x is a separate piece of work with its own risk. It is not a
 # prerequisite for the ER migration, so it does not get to block it.
+#
+# programs/bulls-arena-session-spike is Phase 0 of snug-floating-mitten.md — a throwaway fork that
+# adds session-keys 3.1.1 to `enter` only, deployed under its own fresh devnet keypair, to answer one
+# question (does a session key authorize an action on an ER-delegated account) before any UI gets
+# built on the assumption that it does. It shares this workspace's dependency graph deliberately —
+# session-keys pins anchor-lang to a wide range for exactly this reason (see its own Cargo.toml).
 [workspace]
-members = ["programs/bulls-arena"]
+members = ["programs/bulls-arena", "programs/bulls-arena-session-spike"]
 resolver = "2"
 
 [profile.release]

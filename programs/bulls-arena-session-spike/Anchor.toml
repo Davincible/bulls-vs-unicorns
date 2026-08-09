@@ -1,0 +1,28 @@
+# Scoped to this program ONLY — anchor's config discovery walks up the directory tree and would
+# otherwise find the repo-root Anchor.toml, which belongs to the dormant programs/vault (anchor
+# 0.30.1, placeholder pubkey "VauLt1111111111111111111111111111111111111"). Anchor CLI 1.0.2 cannot
+# even parse that placeholder as a real pubkey ("String is the wrong size"), so a local config here
+# isn't just cleaner, it's required to run any anchor command against this crate at all.
+#
+# Phase 0 spike (snug-floating-mitten.md) — same setup as programs/bulls-arena/Anchor.toml, pointed
+# at the spike's own fresh keypair instead of the proven program's.
+[toolchain]
+anchor_version = "1.0.2"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.devnet]
+bulls_arena_session_spike = "EJ8dAm3HnBY9UL4mYBUyDzLTvgkDGAp8cT3e2mgaLxQP"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "devnet"
+# The fork-local devnet payer — never the mainnet vault, never the default CLI keypair.
+wallet = "../../.devnet/fork-payer.json"
+
+[scripts]
+test = "echo 'no native tests changed in the spike — see programs/bulls-arena for the real ER-051 parity test'"

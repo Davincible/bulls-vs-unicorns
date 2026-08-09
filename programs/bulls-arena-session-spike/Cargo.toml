@@ -1,0 +1,45 @@
+[package]
+name = "bulls-arena-session-spike"
+version = "0.1.0"
+description = "SPIKE ONLY (Phase 0, snug-floating-mitten.md) — does a MagicBlock session key actually authorize an instruction on an account already delegated to an Ephemeral Rollup? Forked from programs/bulls-arena at the ER-051 state; the proven program is untouched. Deployed to its OWN fresh devnet keypair, never F59NksP2bYZhP4wD7fgR1sP729UHNPitrBiYrrKF1sYW. DEVNET ONLY, throwaway."
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "bulls_arena_session_spike"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+# bench_fight is a CU-measurement probe (ER-030), not gameplay — it costs nothing to keep in the
+# workspace but nothing to ship either, and this program is unusually size-constrained (devnet rent
+# scales with binary bytes against a faucet-limited payer — see MAX_FIGHTERS's doc comment). Off by
+# default; enable explicitly to run `er-cu-bench.mjs` against a fresh build.
+bench = []
+
+[dependencies]
+anchor-lang = "1.0.2"   # init-if-needed was declared but never used; it costs bytes
+ephemeral-rollups-sdk = { version = "0.16.2", features = ["anchor", "vrf"] }
+# anchor 1.x no longer re-exports solana_program::hash — the ecosystem moved to split crates, so the
+# sha256 syscall wrapper is its own dependency now. Verified by reading anchor-lang 1.0.2's
+# re-export list rather than guessing at the path a second time.
+solana-sha256-hasher = "3.1.0"
+# Phase 0 spike (snug-floating-mitten.md) — the one new dependency this fork of the program adds.
+# session-keys' own anchor-lang dep is deliberately a wide range (">=0.28, <2.0", verified by reading
+# the crate's own workspace Cargo.toml on github.com/magicblock-labs/session-keys) specifically so it
+# resolves to whatever the consumer already pinned, rather than pulling a second copy of anchor-lang
+# into the dependency graph — verified live in this spike's Cargo.lock, not assumed.
+# "no-entrypoint" is required, not optional decoration: without it session-keys builds its OWN
+# solana program entrypoint (it doubles as the on-chain gpl_session program's own crate) and its
+# own #[global_allocator], which collides with ours the instant both are linked into one binary —
+# confirmed by compiling without the feature first: "the #[global_allocator] in this crate
+# conflicts with global allocator in: session_keys", plus session_auth_or/Session/SessionToken
+# themselves are re-exported ONLY behind this feature (see session-keys' own Cargo.toml: the
+# session-keys-macros dep, which is what actually provides them, is `optional = true` and pulled
+# in exclusively by "no-entrypoint"). We only ever want to CALL the deployed gpl_session program's
+# accounts/macros from inside our own program, never embed a second copy of it.
+session-keys = { version = "3.1.1", features = ["no-entrypoint"] }
