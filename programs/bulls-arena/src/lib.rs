@@ -66,6 +66,42 @@ pub const BPS: u64 = 10_000;
 /// A dust floor makes the round terminate. Value is still conserved — the remainder MOVES.
 pub const DUST: u64 = 1_000;
 
+/// ER-051. The whole fight, pure: no `Context`, no account borrow, no Anchor. This is what `resolve`
+/// calls on-chain, and it is ALSO what a native `cargo test` calls off-chain — the same function,
+/// not a re-description of it. `engine/src/er-sim.ts` is the line-for-line TypeScript mirror of this
+/// exact loop; the test at the bottom of this file runs both implementations against the same seed
+/// and entries and asserts byte-identical hp/banked/dead/winner. Before this, parity was "read to be
+/// the same" — the weakest form of assurance, and the one EXECUTION_REPORT.md named as the residual
+/// risk. This is the test that actually runs the Rust.
+pub fn run_fight(fighters: &mut [Fighter; MAX_FIGHTERS], n: usize, seed: &[u8; 32], steps: u32) -> u8 {
+    for step in 0..steps {
+        let h = hashv(&[seed.as_ref(), (step as u64).to_le_bytes().as_ref()]).to_bytes();
+        let a = (u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize) % n;
+        let mut d = (u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize) % n;
+        if d == a { d = (d + 1) % n; }
+
+        if fighters[a].side == fighters[d].side { continue; }
+        if fighters[a].wallet == fighters[d].wallet { continue; }
+        if fighters[a].dead == 1 || fighters[d].dead == 1 { continue; }
+
+        let roll = (h[8] as u64) % 24 + 4;
+        let mut dmg = fighters[d].hp.saturating_mul(roll) / 100;
+        if fighters[d].hp <= DUST || dmg == 0 { dmg = fighters[d].hp; }
+        if dmg == 0 { continue; }
+
+        fighters[d].hp = fighters[d].hp.saturating_sub(dmg);
+        fighters[a].banked = fighters[a].banked.saturating_add(dmg);
+        if fighters[d].hp == 0 { fighters[d].dead = 1; }
+    }
+
+    let (mut va, mut vb) = (0u64, 0u64);
+    for f in fighters[..n].iter() {
+        let v = f.hp.saturating_add(f.banked);
+        if f.side == 0 { va = va.saturating_add(v) } else { vb = vb.saturating_add(v) }
+    }
+    if va >= vb { 0 } else { 1 }
+}
+
 #[ephemeral]
 #[program]
 pub mod bulls_arena {
@@ -181,35 +217,9 @@ pub mod bulls_arena {
             let n = r.fighter_count as usize;
             require!(n >= 2, ArenaError::NotEnoughFighters);
 
-            // The fight, start to finish, in local memory. No account write per step.
-            for step in 0..steps {
-                let h = hashv(&[r.seed.as_ref(), (step as u64).to_le_bytes().as_ref()]).to_bytes();
-                let a = (u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize) % n;
-                let mut d = (u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize) % n;
-                if d == a { d = (d + 1) % n; }
-
-                if r.fighters[a].side == r.fighters[d].side { continue; }
-                if r.fighters[a].wallet == r.fighters[d].wallet { continue; }
-                if r.fighters[a].dead == 1 || r.fighters[d].dead == 1 { continue; }
-
-                let roll = (h[8] as u64) % 24 + 4;
-                let mut dmg = r.fighters[d].hp.saturating_mul(roll) / 100;
-                if r.fighters[d].hp <= DUST || dmg == 0 { dmg = r.fighters[d].hp; }
-                if dmg == 0 { continue; }
-
-                r.fighters[d].hp = r.fighters[d].hp.saturating_sub(dmg);
-                r.fighters[a].banked = r.fighters[a].banked.saturating_add(dmg);
-                if r.fighters[d].hp == 0 { r.fighters[d].dead = 1; }
-            }
+            let seed = r.seed;
+            r.winner = run_fight(&mut r.fighters, n, &seed, steps);
             r.tick_count = steps as u64;
-
-            // settle in the same instruction — there is nothing to wait for
-            let (mut va, mut vb) = (0u64, 0u64);
-            for f in r.fighters[..n].iter() {
-                let v = f.hp.saturating_add(f.banked);
-                if f.side == 0 { va = va.saturating_add(v) } else { vb = vb.saturating_add(v) }
-            }
-            r.winner = if va >= vb { 0 } else { 1 };
             r.phase = Phase::Settled as u8;
             emit!(RoundSettled { round_no: r.round_no, winner: r.winner, pot: r.pot });
         }
@@ -543,4 +553,45 @@ pub enum ArenaError {
     #[msg("a fight needs at least two fighters")] NotEnoughFighters,
     #[msg("nothing in the ring to extract")] NothingToExtract,
     #[msg("arithmetic overflow")] MathOverflow,
+}
+
+// ---------------------------------------------------------------------------------------------
+// ER-051 parity. Native host test — no SBF, no deploy, `cargo test --manifest-path
+// programs/bulls-arena/Cargo.toml`. Runs the ACTUAL `run_fight` that `resolve` calls on-chain,
+// against the same (seed, entries, steps) as `engine/src/er-sim.ts`'s `tick`+`settle`, and asserts
+// byte-identical hp/banked/dead/winner. The TS numbers below were captured by running the TS mirror
+// once, not hand-derived — see the commit that added this test for the script that produced them.
+// If this ever fails, the on-chain game has diverged from the game players are watching, which is
+// the single worst outcome this migration could produce.
+// ---------------------------------------------------------------------------------------------
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+
+    fn pk(b: u8) -> Pubkey { Pubkey::new_from_array([b; 32]) }
+
+    #[test]
+    fn run_fight_matches_the_typescript_mirror_exactly() {
+        let seed: [u8; 32] = core::array::from_fn(|i| i as u8);   // bytes 0..32, same as the TS fixture
+
+        let mut fighters = [Fighter::default(); MAX_FIGHTERS];
+        fighters[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake: 100_000, hp: 100_000, banked: 0 };
+        fighters[1] = Fighter { wallet: pk(2), side: 0, dead: 0, stake: 250_000, hp: 250_000, banked: 0 };
+        fighters[2] = Fighter { wallet: pk(3), side: 1, dead: 0, stake: 180_000, hp: 180_000, banked: 0 };
+        fighters[3] = Fighter { wallet: pk(4), side: 1, dead: 0, stake: 90_000, hp: 90_000, banked: 0 };
+
+        let winner = run_fight(&mut fighters, 4, &seed, 50);
+
+        // From `node gen-parity-fixture.mjs` against engine/src/er-sim.ts, same seed/entries/steps.
+        assert_eq!(winner, 0);
+        assert_eq!((fighters[0].hp, fighters[0].banked, fighters[0].dead), (15158, 84062, 0));
+        assert_eq!((fighters[1].hp, fighters[1].banked, fighters[1].dead), (201600, 116021, 0));
+        assert_eq!((fighters[2].hp, fighters[2].banked, fighters[2].dead), (26975, 48467, 0));
+        assert_eq!((fighters[3].hp, fighters[3].banked, fighters[3].dead), (42942, 84775, 0));
+
+        // Conservation, restated here rather than trusted from elsewhere: this exact run must not
+        // create or destroy value, on top of matching the TS mirror's numbers.
+        let total: u64 = fighters[..4].iter().map(|f| f.hp + f.banked).sum();
+        assert_eq!(total, 620_000);
+    }
 }

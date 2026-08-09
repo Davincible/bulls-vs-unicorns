@@ -1,8 +1,14 @@
 # MEGA QUEUE — MagicBlock ER migration (DEVNET ONLY)
 
 Branch `magicblock-er-migration`. Plan: `ER_MIGRATION_PLAN.md`. Research: `MAGICBLOCK_RESEARCH.md`.
+Hackathon pivot: `HACKATHON_ANGLE.md`. VRF/eSPL/PER recommendation: `ER_DESIGN_DECISIONS.md`.
 
-Status: `PENDING` · `IN_PROGRESS` · `DONE` · `BLOCKED`
+Status: `PENDING` · `IN_PROGRESS` · `DONE` · `BLOCKED` · `PARKED` (needs a decision, not more work)
+
+**Rewritten 2026-08-09.** The previous version of this doc had Tier 2–5 marked `PENDING` after they
+had actually shipped — the queue stopped being updated as work landed on the Windows machine, and a
+later session nearly re-did work believing it was still blocked. Status below is re-verified against
+the current code and git history, not carried forward from memory.
 
 ---
 
@@ -21,10 +27,37 @@ Fly target disabled at source. `VAULT_SECRET` in env refused on presence.
 
 ## Tier 1 — Foundation
 
-### ER-010 · Toolchain · **DONE — UNBLOCKED without admin**
+### ER-010 · Toolchain · **DONE — solved twice, on two different machines**
 
-Solved after the sixth approach. The chain that worked, because none of it is obvious:
+**Windows** (original): unblocked without admin via MinGW+LLVM → `xwin splat` for MSVC import libs
+→ `lld-link` standing in for `link.exe` → libraries supplied via `LIB` (not `RUSTFLAGS`, which
+`cargo-build-sbf` overrides). Full account kept below for the record.
 
+**macOS** (this machine, migrated 2026-08-08 per `MIGRATION.md`): a *different* local build broke,
+for a *different* local reason — worth naming because it looks like the same class of problem and
+is not:
+- `cargo build-sbf` needs the full Anza/Solana release (not the Homebrew `solana` formula, which
+  omits it): `sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"`.
+- Host-side proc-macro crates (`anchor-attribute-*` etc.) failed to link with `ld: library not found
+  for -liconv`. Cause: this machine runs Nix, and `/run/current-system/sw/bin/cc` shadows Apple's
+  `cc` on `PATH` — a Nix-wrapped compiler that doesn't know about the Xcode SDK's stub libraries.
+  Fix: put `/usr/bin` ahead of it on `PATH` for the build (`export
+  PATH="$SOLANA_BIN_DIR:/usr/bin:$PATH"`), not a systemwide `xcode-select` change.
+- Host `cargo test` (as opposed to `cargo build-sbf`, which pins its own sbf-target toolchain)
+  needs rustc ≥1.89; the ambient default here is 1.85. Scoped with `cargo +1.89 test`, not a global
+  `rustup default` change.
+
+None of this is a real blocker on a normal Unix machine with Xcode CLT and rustup — it is PATH
+precedence, not a missing SDK. Recorded so the next session doesn't re-diagnose it from scratch.
+
+**Built (2026-08-09):** `target/deploy/bulls_arena.so`, 289,392 bytes. First successful compile on
+this machine; the program had never been compiled here before this session.
+**Native `cargo test` also runs** on this machine (see ER-051) — something the Windows machine could
+never do at all, since nothing there could compile as a normal Rust crate outside the SBF pipeline.
+
+<details><summary>ER-010-OLD — the Windows chain, kept for the record</summary>
+
+Solved after the sixth approach:
 1. MinGW + LLVM via `winget --scope user` (no admin) gave a GNU host linker.
 2. That broke the circularity on `xwin`: it needs a host linker to install, and installing it under
    the GNU toolchain worked where msvc could not.
@@ -36,116 +69,159 @@ Solved after the sixth approach. The chain that worked, because none of it is ob
    `RUSTFLAGS` itself and env RUSTFLAGS overrides anything in `.cargo/config.toml`. `lld-link` reads
    `LIB` exactly as MSVC's linker does.
 
-**Built:** `target/deploy/bulls_arena.so`, 331,536 bytes.
-**Deployed to devnet:** `BWhnLnryRJpLbRkpybSQvpr68HfnNDsZha7kgouJJ8Dc`
-sig `4G1vJwvoNfYHcdcCWbSpVkhx9LmGTJHHioutPNK2bJEE232cCVWYLiMZuTaqyznaqo9PhyKjetymNXhKUq8PJzK7`
-**Verified:** executable, owner BPFLoaderUpgradeab1e, on genesis `EtWTRAB…` (devnet); and
-`AccountNotFound` on mainnet.
+Built there: `target/deploy/bulls_arena.so`, 331,536 bytes. Deployed to devnet
+`BWhnLnryRJpLbRkpybSQvpr68HfnNDsZha7kgouJJ8Dc`, sig
+`4G1vJwvoNfYHcdcCWbSpVkhx9LmGTJHHioutPNK2bJEE232cCVWYLiMZuTaqyznaqo9PhyKjetymNXhKUq8PJzK7`.
+</details>
 
-### ER-010-OLD · what had been tried (kept for the record)
-**What works:** Solana CLI 4.1.2 installed (extracted from the official installer; its final symlink
-step needs admin, so the binaries are used from
-`~/.local/share/solana/install/releases/4.1.2/solana-release/bin`). Configured to devnet.
-`cargo-build-sbf 4.1.0` / platform-tools v1.54 present. Rust 1.97.1.
-
-**What is blocked:** compiling *any* Rust program. Not the SBF target — the **host** build scripts
-(`proc-macro2`, `serde`, `borsh`, `syn`) which must link a native Windows binary.
-
-**Tried, in order:**
-1. `cargo install anchor-cli 1.0.2` → failed: Git Bash's GNU coreutils `link` shadows MSVC
-   `link.exe`, giving `link: extra operand`. A PATH problem, not a code problem.
-2. Ran from PowerShell so GNU `link` is absent → no linker at all: **MSVC is not installed** and
-   there is no `link.exe` on the machine.
-3. `winget install BrechtSanders.WinLibs.POSIX.UCRT.LLVM --scope user` → succeeded without admin;
-   gcc 14.2.0 + full LLVM now available.
-4. `rustup default stable-x86_64-pc-windows-gnu` → the GNU host would link fine, but
-   `cargo-build-sbf` pins its own toolchain `1.89.0-sbpf-solana-v1.54`, which is **msvc-hosted**, and
-   that overrides the rustup default. Host build scripts still resolve the msvc sysroot.
-5. Shimmed `link.exe` → `lld-link.exe` (MSVC-compatible, from the LLVM package), placed first on
-   PATH. **This worked** — the linker now runs and the error advanced to:
-   `lld-link: could not open 'kernel32.lib'`.
-6. Hunted the Windows SDK: no `kernel32.lib` anywhere on the machine; `C:\Program Files (x86)\
-   Windows Kits` does not exist. MinGW ships GNU-format `libkernel32.a`, which `lld-link` cannot
-   consume in MSVC mode.
-
-**Exactly what is needed to unblock — any ONE of:**
-- **Visual Studio Build Tools** with the Windows 10/11 SDK (needs admin), or
-- the standalone **Windows SDK** (needs admin), or
-- an **sbf toolchain with a GNU host**, which MagicBlock/Anza do not currently ship, or
-- `cargo install xwin` to fetch the MSVC CRT/SDK headers without admin — itself blocked, because
-  installing it requires the very host linker that is missing (circular).
-
-**Consequence, stated plainly:** nothing can be compiled or deployed to devnet from this machine.
-Every item below that requires a built `.so` is therefore blocked *on this environment*, not on the
-code. Items are still implemented in full so they are reviewable and buildable elsewhere; they are
-marked `DONE (unbuilt)` where the source is complete but has never been compiled. I am not marking
-anything verified that has not run.
-
-### ER-011 · Anchor workspace scaffold · **DONE (unbuilt)**
+### ER-011 · Anchor workspace scaffold · **DONE**
 `Cargo.toml` workspace scoped to `programs/bulls-arena` only.
-**Deliberately not `programs/*`:** the repo already contains `programs/vault` (Anchor 0.30.1,
+**Deliberately not `programs/*`:** the repo also contains `programs/vault` (Anchor 0.30.1,
 dormant — placeholder `declare_id!`, referenced by no engine code). Including it forces one
 dependency graph across both, and anchor 0.30.1's solana-program 1.17 pins `zeroize <1.4` while
 `ephemeral-rollups-sdk 0.16.2` needs curve25519-dalek 4.x with `zeroize ^1`. Unsatisfiable, and
 nothing to do with either program's correctness. Upgrading the vault is separate work.
-**Accept:** `cargo metadata` resolves without conflict. ✅ (resolution verified; compilation blocked by ER-010)
+**Accept:** `cargo metadata` resolves without conflict; `cargo build-sbf` produces a `.so`. ✅
 
-### ER-012 · Devnet keypair + funding · **DONE**
-Fork payer `9BAjpGZfJm8sfnqNr1vj1K9X3fY8fjk4LE2KRtSTRCaj`, gitignored. The public faucet was
-rate-limited at 2/1/0.5 SOL, so it was funded from the pre-existing **devnet** vault
-`4iDuXiq95uRT74xvGkz4icqnu6ma9qKZmzDuquRZGAFy` (verified NOT the mainnet vault before use).
-sigs `4w93mrgq…` and `5bM63wqn…`. Balance 3.18 SOL.
-**Accept:** a fork-local keypair under `.devnet/`, never the production vault; funded by devnet
-faucet; guard asserts devnet before use.
-
----
-
-## Tier 2 — Program
-
-### ER-020 · Account layout (`Arena`, `Round`, `Fighter`) · **PENDING**
-One `Round` account holding the fighter array — 40 × ~60 B ≈ 2.4 KB, far under the 10 MiB ceiling,
-and it keeps the round atomically committable.
-**Accept:** sizes computed and asserted; `Round` fits in one account at max fighters.
-
-### ER-021 · `init_arena` / `open_round` (base layer) · **PENDING**
-`open_round` publishes `sha256(seed)` before entries open, preserving the existing commit-reveal
-scheme on-chain rather than replacing it.
-**Accept:** round opens on devnet; commit hash readable before any entry.
-
-### ER-022 · `delegate_round` · **PENDING**
-**Accept:** after delegation the account owner is `DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh`.
-
-### ER-023 · `enter` (ER) · **PENDING**
-**Accept:** a fighter appears in the delegated account, written via the ER.
-
-### ER-024 · `tick` (ER, hot path) · **PENDING**
-Must call `round.exit(&crate::ID)?` before committing — Anchor serialises at instruction end, so a
-commit built first writes pre-mutation bytes. Silent and wrong.
-**Accept:** a test asserts committed state reflects the mutation, not the prior value.
-
-### ER-025 · `settle` + `close_round` (commit_and_undelegate) · **PENDING**
-**Accept:** seed revealed on-chain; base-layer account shows final state; owner reverted.
+### ER-012 · Devnet keypair + funding · **DONE**, refunding **BLOCKED on faucet rate limit**
+Fork payer `9BAjpGZfJm8sfnqNr1vj1K9X3fY8fjk4LE2KRtSTRCaj`, gitignored, holds 1.125 SOL as of
+2026-08-09. Public faucet (`solana airdrop`, all amounts from 2 down to 0.1 SOL) refused with a
+rate-limit error this session — the same class of block named repeatedly in this project's history,
+not a new problem. Two previously-deployed fork programs
+(`3dHbeVh7KuhhjXMCkAw34wsZefwwQUdwKY6DJb12LWXb`, `FNYozykPcscfyQRmpcmKnXJe39ERospgRNCyZ9DJpoCS`)
+were checked and are already closed — no reclaimable rent there. Try `https://faucet.solana.com` or
+retry the CLI faucet later; the guarded deploy script (`scripts/deploy-devnet.mjs`) is otherwise
+ready to go the moment the payer has ~2 SOL (a fresh-size buffer account for the upgrade, most of
+which is reclaimed after it lands).
 
 ---
 
-## Tier 3 — ER loop
+## Tier 2 — Program · **DONE**
 
-### ER-030 · Measure tick cadence on devnet · **PENDING**
-A 40s fight at ~10 ms slots is ~4,000 ER transactions. Whether to send one tick per slot or batch N
-steps per transaction is a throughput question to be **measured, not assumed**.
-**Accept:** observed tx/s and latency recorded before the game loop depends on either shape.
+All of ER-020–025 shipped together in `programs/bulls-arena/src/lib.rs`, deployed to devnet, and
+exercised for real — not just written. See commits `a11c6cd`, `8bd8276`, `b591d94`.
 
-### ER-031 · Batching + commit strategy · **PENDING**
-**Accept:** a full 40s round completes within its wall-clock budget on devnet.
+### ER-020 · Account layout (`Arena`, `Round`, `Fighter`) · **DONE**
+`MAX_FIGHTERS` is **16**, not the originally planned 40: 40 fighters (~2.45 KB) overflowed the 4 KB
+BPF stack frame when Anchor's `Account<'info, Round>` deserialised it — a limit distinct from the
+10 MiB account-size ceiling, and the one that actually bit. 16 fits in ~937 B and matches what the
+live arena fields in practice (10–17/round). Going back above ~24 needs `zero_copy` +
+`AccountLoader` to avoid the stack copy entirely.
+**Accept:** sizes computed and asserted; `Round` fits in one account at `MAX_FIGHTERS`. ✅
+
+### ER-021 · `init_arena` / `open_round` (base layer) · **DONE**
+`open_round` publishes `sha256(seed)` before entries open. Superseded in spirit by ER-060 (VRF): the
+seed is no longer chosen by the operator at all, but the commit-reveal envelope on-chain is
+unchanged, so this instruction's shape didn't need to change.
+**Accept:** round opens on devnet; commit hash readable before any entry. ✅
+
+### ER-022 · `delegate_round` · **DONE — confirmed on devnet**
+Commit `8bd8276`: after delegation the round account's owner is verified as
+`DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh` for real, not asserted from reading the SDK docs.
+**Accept:** owner check passed on devnet. ✅
+
+### ER-023 · `enter` (ER) · **DONE — confirmed on devnet**
+Commit `b591d94`, part of the full-lifecycle run.
+**Accept:** a fighter appears in the delegated account, written via the ER. ✅
+
+### ER-024 · `tick` (ER, hot path) · **SUPERSEDED — see ER-030/031**
+Originally a `tick(steps)` instruction called ~125 times per round, mirroring the off-chain engine's
+real-time animation loop. Replaced entirely: the fight is a pure function of `(seed, entries)`, so
+splitting it across 125 round-trips didn't make it more correct, only slower and more expensive. See
+`resolve()` under ER-030/031.
+
+### ER-025 · `settle` + `close_round` (commit_and_undelegate) · **DONE — confirmed on devnet**
+Commit `b591d94`, "FULL ER LIFECYCLE WORKING ON DEVNET": open → delegate → enter → resolve → settle
+→ close_round, base-layer account shows final state, owner reverted.
+**Accept:** all of the above, on devnet, with signatures. ✅
 
 ---
 
-## Tier 4 — Client
+## Tier 2.5 — extract() and the hackathon pivot · **DONE**
+
+Not in the original plan. `HACKATHON_ANGLE.md` (commit `be66394`) found that a single-transaction
+`resolve()` proves the ER is *optional* for the fight — a judge's first question is "why does this
+need a rollup?" and the honest answer had become "it doesn't."
+
+**Fix:** `extract(ctx)` — a player pulls out mid-fight, banking current `hp` and leaving the ring, so
+the fight's outcome now depends on *when* a human presses a button, not only on the seed. This is
+what actually makes the ER load-bearing: state mutates from many wallets in real time, and at
+400ms base-layer slots "extract now" is a promise the chain can't keep, while at ~10ms ER slots it
+is real.
+
+5 tests including the one that matters: extracting early must be able to be **worse** than holding
+on (otherwise it's decoration, not a real decision). Mirrored byte-for-byte in `engine/src/er-sim.ts`
+and pinned by the parity test below.
+
+**Design note, resolved:** `HACKATHON_ANGLE.md` proposed re-introducing stepped on-chain ticking so
+"extract decisions land between exchanges." That turned out not to be necessary: `resolve()` still
+computes the whole fight in one instruction, but only once *called* — and any `extract()` that lands
+on-chain in the real-time window between the VRF seed arriving (`Phase::Fight`) and whoever finally
+calls `resolve()` is honoured, because extracted fighters are marked `dead` and skipped as both
+attacker and defender for the entire fight computation. The mid-fight decision window is real; it
+just isn't implemented as discrete steps. What's still unexercised is the *off-chain* side of that
+timing — nothing currently drives "wait ~40s before calling resolve()" in practice, because ER-040
+(engine as ER client) hasn't been built. The on-chain mechanic is proven; the real-time orchestration
+around it is not yet wired to anything.
+
+---
+
+## Tier 3 — ER loop · **DONE (and it changed the architecture)**
+
+### ER-030 · Measure tick cadence on devnet · **DONE**
+Commit `9ac82e8`. Measured, not assumed, on devnet program `3dHbeVh7KuhhjXMCkAw34wsZefwwQUdwKY6DJb12LWXb`
+(since closed) via a read-only `bench_fight` compute probe:
+
+| steps | CU |
+|---|---|
+| 500 | 99,475 |
+| 1,000 | 195,182 |
+| 4,000 | 752,645 |
+| 8,000 | over the 1.4M ceiling |
+
+Marginal ~187.4 CU/step, fixed overhead ~3k. One transaction fits ~7,293 steps — comfortably enough
+for a full fight among `MAX_FIGHTERS` (16) entrants.
+
+### ER-031 · Batching + commit strategy · **DONE — resolved by architecture change, not batching**
+The measurement in ER-030 made batching unnecessary: since one transaction can run the *entire*
+fight, `tick(steps)` × ~125 calls was replaced with a single `resolve(steps)` that runs the fight and
+settles in one instruction (see ER-024). Per-hit data was also dropped from on-chain storage — every
+blow is recomputable from the seed by anyone, so storing them was "publishing our own homework at a
+cost per byte." Only inputs (seed, entries) and outcome (winner, final holdings) are recorded.
+**Consequence, stated plainly (from the commit):** with one tx per match, the ER is no longer
+load-bearing for the fight itself — only for `enter` (16 mutations/round) and now `extract` (Tier
+2.5). That's a real architectural finding, not a disappointment.
+
+---
+
+## Tier 3.5 — VRF · **DONE**
+
+### ER-060 · VRF seed — the operator no longer chooses the randomness · **DONE, deployed to devnet**
+Commit `58dc133`. Replaced operator-supplied `reveal()` with `close_lobby_and_draw()` +
+`callback_seed()`, using MagicBlock's VRF oracle. Closes a real weakness the old commit-reveal left
+open: publishing `sha256(seed)` before entries stopped the operator seeing the book and *then*
+choosing a seed, but nothing stopped grinding thousands of candidate seeds offline against the
+*expected* lobby and committing to the most favourable one — not theoretical with the house fielding
+most of the fighters. Now there is no seed to grind; the oracle produces it after the lobby closes,
+before anyone (operator included) can act on it.
+`#[vrf_callback]` constrains the caller to a PDA scoped to this program specifically
+(`scoped_vrf_identity(&crate::ID)`), not the deprecated global identity — declaring that field by
+hand would have left the callback spoofable.
+**Open, deliberately not done:** per-exchange VRF (redrawing randomness for every hit, not once per
+round) — see Tier 6 below. Round-level VRF is what's shipped.
+
+---
+
+## Tier 4 — Client · **PENDING — not started**
 
 ### ER-040 · Engine as ER client · **PENDING**
 `@magicblock-labs/ephemeral-rollups-sdk@0.16.2`, router `https://devnet-router.magicblock.app`.
-Routing follows account ownership, not configuration.
+Routing follows account ownership, not configuration. Confirmed not started: no reference to the
+router or the SDK anywhere in `engine/src/server.ts` as of this doc.
 **Accept:** the engine drives a round through the ER instead of mutating JS objects.
+**Note:** given ER-031's architecture change, what the engine actually needs to drive is `enter` +
+real-time `extract` handling + a single `resolve` call timed to end the round — not a tick loop.
+Scope this against the current program, not the original tick-based plan.
 
 ### ER-041 · Settlement reads the committed account · **PENDING**
 **Accept:** the ledger credits from committed on-chain state; `GetCommitmentSignature` replaces
@@ -153,15 +229,52 @@ Routing follows account ownership, not configuration.
 
 ---
 
-## Tier 5 — End-to-end
+## Tier 5 — End-to-end · **DONE**
 
-### ER-050 · Delegation round-trip on devnet · **PENDING**
-open → delegate → tick → settle → commit → undelegate, with signatures recorded.
+### ER-050 · Delegation round-trip on devnet · **DONE**
+Commit `705e981` (found a stack overflow the tests could not — the ER-020 `MAX_FIGHTERS` story),
+completed in `8bd8276`/`b591d94`: open → delegate → enter → resolve → settle → close_round, with
+signatures, on devnet.
 
-### ER-051 · Parity: Rust program vs TS sim · **PENDING**
-Same seed and entries must produce byte-identical settlement. This is the check that stops the
-on-chain game silently disagreeing with the one players have been watching.
-**Accept:** identical winner and per-fighter payouts across both implementations.
+### ER-051 · Parity: Rust program vs TS sim · **DONE (2026-08-09) — closed properly, not asserted**
+Previously the single biggest named residual risk (`EXECUTION_REPORT.md`: "Parity is one-sided...
+asserted to be identical by reading, which is the weakest form of assurance"). That is no longer
+true: the fight loop was extracted into a pure `run_fight(fighters, n, seed, steps)` — no `Context`,
+no account borrow — called by `resolve()` on-chain AND by a native `cargo +1.89 test` on this
+machine. The test constructs the same seed and entries as a fixture generated by actually *running*
+`engine/src/er-sim.ts` (not hand-derived), and asserts byte-identical `hp`/`banked`/`dead`/`winner`.
+Both pass. This is the first time the compiled Rust and the TS mirror have been run against each
+other rather than read side-by-side.
+**Accept:** identical winner and per-fighter payouts across both implementations, verified by
+execution. ✅
+
+---
+
+## Tier 6 — Parked (real decisions, not more engineering)
+
+These are named explicitly in `HACKATHON_ANGLE.md` / `ER_DESIGN_DECISIONS.md` as things to be
+deliberate about rather than drift into. Not attempted without a decision first.
+
+### Per-exchange VRF · **PARKED**
+`HACKATHON_ANGLE.md`'s stated reason for VRF: a player who can read the revealed round seed can, in
+principle, compute the entire deterministic hit sequence in advance and pick the mathematically
+optimal extraction moment — round-level VRF (ER-060) doesn't stop this on its own. The proposed fix
+(redraw randomness *per exchange*, not per round) directly conflicts with ER-030/031's finding that a
+single cheap `resolve()` transaction is what makes the fight affordable at all: an oracle round-trip
+per hit reintroduces the exact latency and cost problem the batch design just solved. Needs a real
+design decision (e.g. a hybrid — VRF the *step ordering* rather than every roll) before implementation,
+not a quick patch.
+
+### Ephemeral SPL (eATA) for balances · **PARKED**
+Would make "raids TAKE the enemy's coin" an actual token transfer instead of a struct field. Explicitly
+the one to be slow about: it changes *custody* — today the risk is this program's own devnet vault;
+with eATAs it becomes MagicBlock's shared per-mint Global Vault. `ER_DESIGN_DECISIONS.md`: "worth
+deciding deliberately rather than drifting into." Devnet-only either way; not a mainnet question yet
+because this fork cannot reach mainnet by construction (ER-000).
+
+### Private ER (TEE) · **REJECTED, not parked**
+`ER_DESIGN_DECISIONS.md`: a TEE-shielded rollup contradicts the product's entire trust proposition
+("every round is recomputable in your browser from that seed"). Not reconsidered.
 
 ---
 
@@ -169,5 +282,6 @@ on-chain game silently disagreeing with the one players have been watching.
 
 | ID | Blocked on | Needs |
 |---|---|---|
-| ER-010 | No Windows SDK / MSVC on the machine; no admin | VS Build Tools **or** Windows SDK **or** a GNU-hosted sbf toolchain |
-| ER-012, ER-02x, ER-03x, ER-04x, ER-05x | Downstream of ER-010 — nothing can be built or deployed | resolution of ER-010 |
+| ER-012 (top-up) | devnet faucet rate limit | wait and retry, or `https://faucet.solana.com` |
+| ER-040/041 | Not started | engine integration work, scoped against the current `enter`+`extract`+`resolve` shape, not the original tick-based plan |
+| Per-exchange VRF, eATA | Design decisions, not blockers | explicit sign-off before implementation |

@@ -1,5 +1,11 @@
 # EXECUTION REPORT — MagicBlock ER migration (DEVNET ONLY)
 
+**⚠ Historical snapshot, from a machine that could not compile the program at all (see below).**
+Everything this report describes as blocked, unbuilt, or unverified has since shipped and been
+verified by execution — compiled, deployed to devnet, and round-tripped for real. For current status
+read `MEGA_QUEUE.md`, which is kept up to date; this document is left as-is as the record of that
+specific (since-resolved) run rather than rewritten.
+
 Branch `magicblock-er-migration`, forked from `main` at the live mainnet build.
 **341 tests green.** Nothing deployed. Nothing on mainnet touched.
 

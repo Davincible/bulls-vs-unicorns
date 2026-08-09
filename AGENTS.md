@@ -207,8 +207,11 @@ been deployed from it. `main` lacks the fork severance and the client tests.
 **Recommended:** cherry-pick the production work onto `main`, deploy only from `main`, and keep the
 fork on its own branch. Until then, check `git branch --show-current` before every deploy.
 
-`er-sim.test.ts` has 2 failing tests — the fork's own mirror, from their commit *"a bug the mirror
-caught"*. Production imports none of it. To run the production suite only:
+`er-sim.test.ts` is green (18/18) — the fork's own mirror, including the parity properties from the
+commit *"a bug the mirror caught"*. As of 2026-08-09 the on-chain program also compiles and has its
+own native `cargo test` proving the compiled Rust and the TS mirror produce byte-identical output for
+the same seed/entries — see `MEGA_QUEUE.md` for current fork status, which moves faster than this
+document. Production imports none of the fork's code either way. To run the production suite only:
 ```bash
 node --experimental-strip-types --test $(ls engine/src/tests/*.test.ts | grep -v "er-")
 ```
