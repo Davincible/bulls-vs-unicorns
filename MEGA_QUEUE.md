@@ -12,6 +12,52 @@ the current code and git history, not carried forward from memory.
 
 ---
 
+## Tier -1 — Independent security review (2026-08-09) · **4 blocking findings, all fixed**
+
+Full adversarial review of `lib.rs`, `er-sim.ts`, `devnet-guard.ts`, `deploy-devnet.mjs` — run
+BEFORE any client integration work, which is exactly what caught these before a canary script would
+have hit them at runtime instead.
+
+1. **VRF callback could never reach `round`.** `close_lobby_and_draw` requested randomness with
+   `accounts_metas: None`, so the oracle's callback into `callback_seed` never carried the `round`
+   account — every round would sit in `Phase::Drawing` forever with no way out. This was live on
+   devnet from ER-060's original deploy through this fix; the VRF round-trip had never actually been
+   exercised end-to-end. **Fixed:** pass `round` explicitly as a writable, non-signer callback account.
+2. **`delegate_round` had no authority check.** Any signer could delegate any open round to a
+   validator of their own choosing via `remaining_accounts` — and once delegated, only that validator
+   can write the round for the rest of its life. **Fixed:** `has_one = authority` on `arena`,
+   mirroring `open_round`.
+3. **`resolve`'s `steps` was a free caller-supplied argument.** By the time it's callable the seed is
+   already public, and the fight is a pure function of `(seed, entries, steps)` — so anyone could
+   simulate all ~20,000 stopping points off-chain, pick whichever favoured them, and race to submit
+   it. This was the sharper finding: authority-gating alone would only have moved the same grinding
+   attack to whoever holds authority, which is exactly the actor "provably fair" is supposed to not
+   require trusting. **Fixed:** `steps` is no longer an argument. It's derived from real elapsed
+   on-chain time since `Phase::Fight` began (new `Round.fight_started_at`, stamped in
+   `callback_seed`), capped at `MAX_STEPS` (7,000, under ER-030's measured ~7,293-step ceiling) with
+   a `MIN_FIGHT_SECONDS` floor (5s) so `extract()` always gets a real window before anyone can force
+   early settlement. `resolve` stays permissionless — there's nothing left to choose.
+4. **`devnet-guard.ts` only trimmed string ENDS.** An embedded tab/CR/LF (`api.mai\tnnet-beta...`)
+   defeated the `MAINNET` regex literal match while still passing `SAFE`, yet the real URL parser
+   (`fetch`/`Connection`) strips those characters anywhere in the string before resolving the
+   hostname — so the guard could be bypassed by a string that resolves to real mainnet once anything
+   actually connects to it. **Fixed:** strip the same character classes the URL parser would, before
+   matching either list.
+
+Also fixed while in the area (MEDIUM/LOW, non-blocking but worth having done): stale commit-reveal
+comments describing a `settle` function that no longer exists; dead `SeedMismatch` error variant;
+`gen-parity-fixture.mjs` — referenced by the ER-051 test's own comment but never actually committed —
+now checked in at `programs/bulls-arena/gen-parity-fixture.mjs`; orphaned `Tick` context struct
+(dead code from the pre-ER-030/031 design); `bench_fight` gated behind a `bench` Cargo feature so the
+CU-measurement probe doesn't ship in the deployed binary by default; stale `BadStepCount` error text.
+
+**Redeployed** to the existing devnet program (same ID, upgrade): slot 482276211, sig
+`NDV9uRtu8cC5mMCoF26FAjiwuFYFprnraQ5afkhTgWcV4od2JGZ9gYmcMqRRRD7rjiw57NGdCjC7LntevGjLznS`. The IDL
+(`programs/bulls-arena/idl/`) was regenerated to match — `resolve` and `close_round` now take no
+arguments, `delegate_round`'s signer account is named `authority` not `payer`.
+
+---
+
 ## Tier 0 — Safety
 
 ### ER-000 · Mainnet kill switch · **DONE**

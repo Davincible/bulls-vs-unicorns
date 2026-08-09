@@ -15,6 +15,11 @@ no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build"]
+# bench_fight is a CU-measurement probe (ER-030), not gameplay — it costs nothing to keep in the
+# workspace but nothing to ship either, and this program is unusually size-constrained (devnet rent
+# scales with binary bytes against a faucet-limited payer — see MAX_FIGHTERS's doc comment). Off by
+# default; enable explicitly to run `er-cu-bench.mjs` against a fresh build.
+bench = []
 
 [dependencies]
 anchor-lang = "1.0.2"   # init-if-needed was declared but never used; it costs bytes

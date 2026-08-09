@@ -37,6 +37,25 @@ test("an empty URL is refused rather than defaulted", () => {
   assert.throws(() => assertDevnetUrl(""), MainnetBlocked);
 });
 
+// SEC finding (independent review, 2026-08-09). An embedded tab breaks the literal "mainnet" match
+// in the regex, but vanishes once the WHATWG URL parser (what fetch/Connection actually use)
+// normalizes the string — so the guard must strip it too, or a doctored-looking-safe string can
+// resolve to real mainnet the moment anything actually connects to it.
+test("embedded tab/CR/LF cannot smuggle a mainnet host past the guard", () => {
+  const poc = "https://api.mai\tnnet-beta.solana.com/?x=devnet";
+  assert.throws(() => assertDevnetUrl(poc), MainnetBlocked,
+    "a tab-split \"mainnet\" literal was not caught — the guard is bypassable");
+  for (const bad of [
+    "https://api.mainnet\r-beta.solana.com",
+    "https://api.mainnet\n-beta.solana.com",
+    "ht\ttps://api.mainnet-beta.solana.com",
+  ]) assert.throws(() => assertDevnetUrl(bad), MainnetBlocked, `allowed ${JSON.stringify(bad)}`);
+  // Normalizing the same way the real URL parser does cuts both ways: a devnet host with the same
+  // noise embedded normalizes to the real devnet endpoint, which is genuinely safe — the fix matches
+  // what a real connection would actually resolve to, it doesn't add a new bypass of its own.
+  assert.ok(isDevnetUrl("https://api.dev\tnet.solana.com"), "over-corrected into refusing real devnet");
+});
+
 test("secrets are redacted in the refusal message", () => {
   try { assertDevnetUrl("https://mainnet.helius-rpc.com/?api-key=SUPERSECRET"); assert.fail("should throw"); }
   catch (e) { assert.ok(!String((e as Error).message).includes("SUPERSECRET"), "leaked the key in the error"); }

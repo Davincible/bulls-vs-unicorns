@@ -35,8 +35,19 @@ const MAINNET = [
   /\bmainnet-beta\b/i,
 ];
 
+// SEC finding (2026-08-09, independent review): assertDevnetUrl only trimmed the string's ENDS
+// before matching, but the WHATWG URL parser that `fetch`/`Connection` actually use strips ASCII
+// tab and newline from ANYWHERE in the input, not just the ends, as its very first normalization
+// step. `https://api.mai\tnnet-beta.solana.com/?x=devnet` matched neither MAINNET (the embedded tab
+// breaks the literal "mainnet") nor got refused by SAFE (the tab-free "devnet" in the query string
+// still matched) — yet resolves to real mainnet the moment anything actually connects to it, because
+// the tab vanishes during parsing. Strip the same characters the URL parser would before matching
+// either list, so a regex-shaped bypass can't survive contact with the parser that matters.
+// eslint-disable-next-line no-control-regex
+const stripUrlNoise = (s: string) => s.replace(/[\x00-\x1f\x7f]/g, "");
+
 export function assertDevnetUrl(url: string, what = "endpoint"): void {
-  const u = String(url || "").trim();
+  const u = stripUrlNoise(String(url || "").trim());
   if (!u) throw new MainnetBlocked(`${what}: empty URL — refusing to guess a cluster.`);
   for (const re of MAINNET) {
     if (re.test(u)) {
