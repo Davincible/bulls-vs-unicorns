@@ -1,0 +1,22 @@
+# Upload filter for the Vercel build. Root Directory is the repo root (so that `vercel.json` beside
+# this file is the one Vercel reads), which means the whole monorepo is in scope — and almost none of
+# it builds the site.
+#
+# Not a security control: the funded keypairs in `.devnet/` are gitignored, so a git-based deploy
+# never sees them at all. This is about not shipping a Rust workspace to a Node build box.
+
+programs/
+engine/
+web/
+shared/
+sandbox/
+scripts/
+target/
+pitch/
+
+er-demo/scripts/
+er-demo/design/
+er-demo/dist/
+
+node_modules/
+.DS_Store

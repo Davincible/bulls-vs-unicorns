@@ -78,6 +78,19 @@
 
 /* --- bottom chrome: nav ------------------------------------------------------------------- */
 
+/* THE BOTTOM BAR HAS ITS OWN HEIGHT, and only because of the thumb.
+   `--chrome-h` is 30px: the right height for an instrument frame, and the height both bars keep on a
+   desktop. But on a phone the bottom bar is not decoration — it holds the screen navigation, the only
+   way to move between the five screens with a finger, and 30px is not a tap target. So the BOTTOM bar
+   alone grows to 48px under the narrow breakpoint: enough for a full-height nav button (48) and for
+   the bordered wallet button to clear 44 with 2px of air top and bottom.
+   Declared here rather than by overriding `--chrome-h`, because the top bar is a ticker and a status
+   word and has no reason to grow, and because everything else on the page measures its top offset
+   from `--chrome-h` and must not move. Every BOTTOM-anchored offset in this file uses `--chrome-h-b`;
+   the three that live in base.css are overridden in the narrow block at the foot of this file. */
+:root { --chrome-h-b: var(--chrome-h); }
+.chrome--bottom { height: var(--chrome-h-b); }
+
 .nav { display: flex; align-items: center; gap: 0; min-width: 0; }
 .nav > button {
   font: 400 10px/1 var(--mono);
@@ -123,7 +136,7 @@
 .rail {
   position: fixed;
   top: var(--chrome-h);
-  bottom: var(--chrome-h);
+  bottom: var(--chrome-h-b);
   right: 0;
   width: min(420px, 100vw);
   z-index: 90;
@@ -298,17 +311,18 @@
 
 /* --- the deploy/extract dock ----------------------------------------------------------------- */
 
-/* Bottom-right, clear of the bottom chrome. `--toasts-h` is published by StakeDock.tsx (the measured
-   height of the toast column) and used ONLY under the narrow breakpoint below, where the toast
-   column and the dock would otherwise share a band; on a wide page they are on opposite edges and
-   the dock stays put. Its own z-index is below the toasts (110) and below the rail (90): a toast is
-   transient and must never be buried, and an open rail wins by moving the dock rather than by
-   covering it. */
+/* Bottom-right, clear of the bottom chrome. Its own z-index is below the toasts (110) and below the
+   rail (90): a toast is transient and must never be buried, and an open rail wins by moving the dock
+   rather than by covering it.
+   The measurement used to run the other way — StakeDock.tsx published the toast column's height and
+   the dock lifted itself over it. Below the narrow breakpoint the dock is now the bottom edge, so it
+   publishes `--dock-h` and everything else stacks on top; see the note in StakeDock.tsx. */
 .dock,
-.dock-handle {
+.dock-handle,
+.dock-bar {
   position: fixed;
   right: var(--gut);
-  bottom: calc(var(--chrome-h) + 14px + var(--dock-lift, 0px));
+  bottom: calc(var(--chrome-h-b) + 14px);
   z-index: 88;
   background: var(--paper-2);
   border: 1px solid var(--ink);
@@ -330,6 +344,10 @@
   padding-bottom: 7px;
   margin-bottom: 12px;
 }
+/* The collapse control. `min-width`/`min-height` rather than padding: a glyph this small has almost
+   no ink of its own, and the target has to be the box around it, not the box the box draws. 24px is
+   the floor base.css sets for every control on the page (WCAG 2.2 SC 2.5.8); the narrow block below
+   takes it to 44. */
 .dock-x {
   margin-left: auto;
   background: none;
@@ -338,6 +356,8 @@
   font: 400 15px/1 var(--mono);
   color: var(--ink-3);
   padding: 0 4px;
+  min-width: 24px;
+  min-height: 24px;
 }
 .dock-x:hover { color: var(--ink); }
 

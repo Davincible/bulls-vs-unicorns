@@ -17,7 +17,7 @@
 // They are read once, at module load, so the whole process runs on one set of numbers and the log's
 // startup banner describes the run for its entire life.
 
-import { DEFAULT_LOBBY_SECONDS, MIN_LOBBY_SECONDS } from "../../src/chain/constants.ts";
+import { DEFAULT_LOBBY_SECONDS, MAX_LOBBY_SECONDS, MIN_LOBBY_SECONDS } from "../../src/chain/constants.ts";
 
 export { DEFAULT_LOBBY_SECONDS };
 
@@ -68,6 +68,103 @@ export const RESULT_HOLD_SECONDS = envNumber("KEEPER_RESULT_HOLD_SECONDS", 12);
  *  way before the next round's `open_round`/`delegate_round` pair starts competing for the same
  *  operator signature. Three seconds, justified as commit room rather than as a display pause. */
 export const ABANDON_HOLD_SECONDS = envNumber("KEEPER_ABANDON_HOLD_SECONDS", 3);
+
+// ---- holding one lobby open instead of cycling rounds at nobody ---------------------------------
+
+/** Read a boolean from the environment. Only the words are accepted, and anything else is refused
+ *  rather than treated as false — `KEEPER_HOLD_OPEN=yes` silently meaning "no" is how an operator
+ *  spends an afternoon wondering why a policy they switched on is not running. */
+function envFlag(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  if (raw === "1" || raw === "true") return true;
+  if (raw === "0" || raw === "false") return false;
+  throw new Error(`${name}="${raw}" is not a boolean. Use 1/0 or true/false, or unset it.`);
+}
+
+/** IS THE HOLD-OPEN POLICY ON? DEFAULT OFF, AND THE DEFAULT IS THE POINT.
+ *
+ *  The policy depends on an authority-signed early close that exists in lib.rs and IS NOT DEPLOYED.
+ *  A keeper that held a lobby open against the deployed program would watch a real player stand in a
+ *  room for the whole backstop with no instruction available to start their fight — the worst version
+ *  of this feature's failure, because it hurts precisely the person it exists to serve.
+ *
+ *  IT IS THE OPERATOR'S SWITCH RATHER THAN A CAPABILITY PROBE, and that is deliberate. The only local
+ *  evidence available is the IDL, which is generated from SOURCE and can be regenerated before a
+ *  deploy — so a probe would turn "somebody edited Rust" into "the chain will accept this". Whether a
+ *  program is deployed is not a question this process can answer; the person who ran `anchor deploy`
+ *  and watched an early close land is. `programFeatures.ts` still gets a veto (see it), because the
+ *  IDL CAN prove the negative. */
+export const HOLD_OPEN_ENABLED_DEFAULT = envFlag("KEEPER_HOLD_OPEN", false);
+
+/** HOW LONG A HELD-OPEN LOBBY'S BACKSTOP RUNS BEFORE THE KEEPER GIVES UP AND OPENS ANOTHER.
+ *
+ * THE PROBLEM THIS NUMBER IS THE ANSWER TO, MEASURED RATHER THAN ASSERTED. No instruction closes a
+ * `Round` account — `close_round` commits and undelegates, it never reclaims — so every round ever
+ * opened permanently locks its rent-exempt deposit. Measured on devnet, per round: `open_round` costs
+ * the payer 0.008503160 SOL of round-PDA rent that is never coming back (verified rather than
+ * inferred: every round PDA from #4 to #18 still holds exactly 0.008498 SOL), and `delegate_round`
+ * costs a further 0.003220520 SOL of delegation buffer/record/metadata rent, which IS refunded when
+ * undelegation closes those accounts. Reconciled across 28 real rounds, net of a one-time 0.06 SOL
+ * house-wallet funding, the all-in figure is **0.00981 SOL per round**.
+ *
+ * At the old ~1m50s cadence that is **~0.32 SOL/hour to cycle an arena nobody is playing in**,
+ * permanently locked. That is the entire justification for holding a lobby open, and the ladder that
+ * decides this constant is:
+ *
+ *     cycling every ~110s     ~0.32     SOL/hour idle
+ *     1-hour holds            ~0.0098   SOL/hour idle     — 97% of the saving, and this is the value
+ *     1-day holds             ~0.0004   SOL/hour idle
+ *     7-day holds             ~0.00006  SOL/hour idle
+ *
+ * WHY NOT `MAX_LOBBY_SECONDS`, WHICH IS NOW A WEEK. Because the last 3% is not worth what it is
+ * bought with. `MAX_LOBBY_SECONDS`'s own doc comment in lib.rs says plainly that nothing has ever
+ * verified a round can STAY DELEGATED that long — the longest delegation this repo has exercised is a
+ * couple of minutes, and MAGICBLOCK_FEEDBACK.md records ER validators losing state in ways this
+ * project has already been bitten by. The ceiling permits a week; it is not evidence that a week
+ * works, and it says so.
+ *
+ * THE TWO FAILURES ARE NOT THE SAME SIZE, which is what settles it. A hold that is too SHORT fails as
+ * one 0.0098 SOL rent payment, once an hour, visible in the log. A hold that is too LONG fails as a
+ * silently dead arena: the delegation is lost, no round is playable, nothing errors, and nobody finds
+ * out until somebody tries to play. Take the cheap failure.
+ *
+ * WHAT WOULD JUSTIFY RAISING IT: watching a delegation survive longer than this, once, OBSERVED —
+ * not reasoned about. Then this is a one-line change. It is clamped below rather than trusted, so a
+ * value past the chain's own ceiling is refused here instead of being silently clamped on-chain into
+ * something the keeper's own countdown arithmetic no longer matches. */
+export const HOLD_OPEN_LOBBY_SECONDS = envNumber("KEEPER_HOLD_OPEN_LOBBY_SECONDS", 3_600);
+
+if (HOLD_OPEN_LOBBY_SECONDS < MIN_LOBBY_SECONDS || HOLD_OPEN_LOBBY_SECONDS > MAX_LOBBY_SECONDS) {
+  throw new Error(
+    `KEEPER_HOLD_OPEN_LOBBY_SECONDS=${HOLD_OPEN_LOBBY_SECONDS} is outside the range the chain will ` +
+    `stamp ([${MIN_LOBBY_SECONDS}, ${MAX_LOBBY_SECONDS}]). open_round would clamp it silently and the ` +
+    `keeper would then be reasoning about a deadline the round does not have.`,
+  );
+}
+
+/** HOW LONG THE KEEPER KEEPS ENTRIES OPEN AFTER THE FIRST REAL PLAYER ARRIVES, before it signs the
+ *  early close and the fight begins.
+ *
+ *  IT IS `MIN_LOBBY_SECONDS`, DELIBERATELY, and that is the whole argument — this is an
+ *  already-settled number reused rather than a fresh one invented. 20 seconds is the floor the
+ *  PROGRAM itself clamps up to, on the grounds that it is the shortest window in which a human can
+ *  see a round and get into it, and it is the length the off-chain engine's online lobby actually ran
+ *  at (`engine/src/round.ts`). Both of those are arguments about exactly this quantity: how long an
+ *  entry window has to be to be real.
+ *
+ *  CLOSING THE INSTANT THE FIRST PERSON LANDS WAS THE OBVIOUS DESIGN AND IT IS WRONG. It locks out
+ *  the second player arriving a beat later — turning a two-player round into a one-player-plus-bots
+ *  round for the sake of a second — and it gives the first player no time to size a stake, since they
+ *  are already committed by the time they have arrived. Twenty seconds gives both a genuine chance
+ *  while still making the fight feel like a consequence of somebody showing up rather than of a clock
+ *  running out.
+ *
+ *  IT MUST EXCEED `HOUSE_FILL_LEAD_SECONDS`, or the house never gets to size itself against the real
+ *  arrivals and the displacement policy is dead code on every held-open round. That invariant is
+ *  already enforced below, by the assertion that the fill lead is shorter than `MIN_LOBBY_SECONDS` —
+ *  the same comparison, which is one more reason for this to be that constant and not a copy of it. */
+export const REAL_PLAYER_GRACE_SECONDS = MIN_LOBBY_SECONDS;
 
 // ---- the Drawing wedge ---------------------------------------------------------------------------
 
@@ -310,22 +407,31 @@ export interface KeeperCliOptions {
   rounds: number | null;
   /** Do every read, selection and status write; send no transactions. */
   dryRun: boolean;
+  /** Hold ONE lobby open until a real player arrives, instead of cycling rounds on a timer. Requires
+   *  a DEPLOYED program with the authority early close — see `HOLD_OPEN_ENABLED_DEFAULT`. */
+  holdOpen: boolean;
 }
 
 export const CLI_USAGE =
-  "usage: bun run scripts/keeper/keeper.ts [--rounds N] [--dry-run]\n" +
+  "usage: bun run scripts/keeper/keeper.ts [--rounds N] [--dry-run] [--hold-open]\n" +
   "  --rounds N   stop cleanly after N rounds have settled and undelegated\n" +
-  "  --dry-run    boot, read the chain, decide the next action and write the status file — send nothing";
+  "  --dry-run    boot, read the chain, decide the next action and write the status file — send nothing\n" +
+  "  --hold-open  hold ONE lobby open until a real player joins, then start the fight (needs the\n" +
+  "               authority early close DEPLOYED; also settable with KEEPER_HOLD_OPEN=1)";
 
 /** Parses argv, refusing anything it does not recognise.
  *
  *  Refusing rather than ignoring: an unattended process started with a misspelt `--dry-run` would
  *  otherwise spend real SOL while its operator believed it was rehearsing. */
 export function parseCliOptions(argv: string[]): KeeperCliOptions {
-  const options: KeeperCliOptions = { rounds: null, dryRun: false };
+  const options: KeeperCliOptions = { rounds: null, dryRun: false, holdOpen: HOLD_OPEN_ENABLED_DEFAULT };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--dry-run") { options.dryRun = true; continue; }
+    // One-way on the command line: the flag turns the policy ON, and the env var is how it is turned
+    // on for a long-running deployment. There is deliberately no `--no-hold-open`, because off is the
+    // default and the way to get it is to not ask for it.
+    if (arg === "--hold-open") { options.holdOpen = true; continue; }
     if (arg === "--rounds" || arg.startsWith("--rounds=")) {
       const raw = arg.startsWith("--rounds=") ? arg.slice("--rounds=".length) : argv[++i];
       const parsed = Number(raw);

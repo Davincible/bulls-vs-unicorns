@@ -168,11 +168,41 @@ export type ByteLayout =
    *  draws are independent, and 17 of the hash's 32 bytes are still unused. */
   | "wide";
 
+/** How much value a hit moves. The deployed rule reads the DEFENDER only, which is the single line
+ *  that makes the fight an equaliser: what an attacker collects has nothing to do with how much the
+ *  attacker staked.
+ *
+ *  The alternatives are O(1) — no weight table, no cumulative walk, no `% W` — which is why they are
+ *  here at all. Weighted selection costs O(n) per step against a documented 1.4M-CU ceiling; changing
+ *  one multiplicand costs nothing. If one of these reproduces what weighting buys, it is strictly the
+ *  better mechanism.
+ *
+ *    defender : dmg = ring_d * roll / 100                      (deployed)
+ *    min      : dmg = min(ring_a, ring_d) * roll / 100         two integer compares
+ *    geo      : dmg = isqrt(ring_a * ring_d) * roll / 100      the old physics sim's shape, in u64
+ */
+export type DamageRule =
+  | "defender" | "min" | "geo"
+  /** THE O(1) DIAL. `basis = (P*ring_d + (BPS-P)*min(ring_a, ring_d)) / BPS`, one u16 knob P in
+   *  BASIS POINTS.
+   *
+   *  Basis points rather than percent because the response is steep: P = 1% already opens a 32-point
+   *  ROI spread, so a percent knob has exactly one usable setting and then falls off a cliff. In bps
+   *  the usable band is P = 10..60, which is a dial rather than a switch.
+   *
+   *  P = 0 is `min` — measured size-neutral. P = BPS is `defender` — the deployed equaliser. In
+   *  between, the tilt toward small stakes grows monotonically. One multiply, one multiply, one add,
+   *  one divide by a constant; no weight table, no cumulative walk, no `% W`, no change to which hash
+   *  bytes drive the draws, and no change to `MAX_STEPS`. This is the mechanism the compute budget
+   *  can actually afford. */
+  | { blend: bigint };
+
 export interface FightConfig {
   attacker: WeightSpec;
   defender: WeightSpec;
   dust: DustRule;
   layout: ByteLayout;
+  damage?: DamageRule;
 }
 
 export const BASELINE: FightConfig = {
@@ -257,7 +287,15 @@ export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightCo
     if (A.dead === 1 || D.dead === 1) continue;
 
     const roll = BigInt(h[cfg.layout === "legacy" ? 8 : 16] % 24) + 4n;
-    let dmg = (D.hp * roll) / 100n;
+    let basis: bigint;
+    if (cfg.damage === "min") basis = A.hp < D.hp ? A.hp : D.hp;
+    else if (cfg.damage === "geo") basis = isqrt(A.hp * D.hp);
+    else if (cfg.damage && typeof cfg.damage === "object") {
+      const P = cfg.damage.blend, lo = A.hp < D.hp ? A.hp : D.hp;
+      basis = (P * D.hp + (BPS - P) * lo) / BPS;
+    } else basis = D.hp;
+    let dmg = (basis * roll) / 100n;
+    if (dmg > D.hp) dmg = D.hp;   // never take more than is there; a no-op for the deployed rule
     const floorD = dustFloor(cfg.dust, D);
     if (D.hp <= floorD || dmg === 0n) dmg = D.hp;
     if (dmg === 0n) continue;

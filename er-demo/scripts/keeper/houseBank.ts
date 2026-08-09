@@ -46,7 +46,8 @@ import {
 } from "./config.ts";
 import { c, describeError, info, ok, warn } from "./log.ts";
 import {
-  allocateHouseSides, houseFighterCount, HOUSE_FLOOR, HOUSE_MAX, houseStake, type SideCounts,
+  allocateHouseSides, houseFighterCount, HOLD_OPEN_HOUSE_FIGHTERS, HOUSE_FLOOR, HOUSE_MAX, houseStake,
+  type SideCounts,
 } from "./houseSizing.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -96,6 +97,20 @@ export interface HouseEntry {
   wallet: HouseWallet;
   side: 0 | 1;
   stake: bigint;
+}
+
+/** THE LOBBY AS THE KEEPER'S POLICY SEES IT, which is not quite as the round account describes it.
+ *
+ *  Both fields come from `planLobby` (lobbyPolicy.ts) and are passed in rather than re-derived here,
+ *  so there is exactly one place that decides when a lobby ends and one place that decides whether it
+ *  is being held. Deriving them a second time in this file is how the house would end up sizing
+ *  itself against a close time the keeper is not going to honour. */
+export interface HouseLobbyView {
+  /** The instant the lobby will actually be drawn — the keeper's own close when it has committed to
+   *  one, otherwise the chain's deadline. The fill stage is scheduled backwards from this. */
+  drawAt: number;
+  /** Is this lobby being held open waiting for a real player? */
+  heldOpen: boolean;
 }
 
 export interface HousePlan {
@@ -320,21 +335,30 @@ export function plannedHouseEntries(
   round: RawRoundAccount,
   roundNo: bigint,
   nowSec: number,
+  lobby: HouseLobbyView,
 ): HousePlan {
   const split = bank.classify(round);
-  const lobbyClosesAt = Number(round.lobbyClosesAt.toString());
 
   // TOO LATE TO ENTER. `enter` refuses at or past `lobby_closes_at` against the ER's clock, so an
   // entry planned inside the skew margin is a transaction that will be rejected with `LobbyClosed`
-  // for a fee. The fill stage makes this reachable rather than theoretical: it starts twelve seconds
-  // out and can have four confirmed round-trips to make, which at devnet's slower moments is most of
-  // that window.
-  if (lobbyClosesAt - nowSec <= CLOCK_SKEW_MARGIN_SECONDS) return { entries: [], split };
+  // for a fee. Measured against `drawAt` rather than the deadline, because an entry sent into the
+  // second before the KEEPER closes the lobby is just as wasted as one sent after the chain does.
+  // The fill stage makes this reachable rather than theoretical: it starts twelve seconds out and can
+  // have four confirmed round-trips to make, which at devnet's slower moments is most of that window.
+  if (lobby.drawAt - nowSec <= CLOCK_SKEW_MARGIN_SECONDS) return { entries: [], split };
 
-  const fillDue = nowSec >= lobbyClosesAt - HOUSE_FILL_LEAD_SECONDS;
+  const fillDue = nowSec >= lobby.drawAt - HOUSE_FILL_LEAD_SECONDS;
 
   let target: number;
-  if (fillDue) {
+  if (lobby.heldOpen) {
+    // HELD OPEN, WAITING FOR A PERSON. One fighter — not a sizing preference, an invariant: at one
+    // the chain refuses to draw the round at all, so no house-versus-house fight is available to
+    // anyone, and `abandon_round` stays legal at the backstop so the round can still end. The full
+    // argument is on `HOLD_OPEN_HOUSE_FIGHTERS` and in `lobbyPolicy.ts`'s header. Checked FIRST
+    // because it overrides both stages below: while nobody real is here there is no lobby to seed
+    // for and no arrivals to throttle against.
+    target = HOLD_OPEN_HOUSE_FIGHTERS;
+  } else if (fillDue) {
     target = houseFighterCount(split.real);
   } else if (split.realCount < MIN_FIGHTERS_TO_FIGHT) {
     // SEED STAGE. `HOUSE_FLOOR` comes from the sizing policy, which owns how many fighters the house
@@ -385,9 +409,11 @@ export function plannedHouseEntries(
  *  must NOT do is take down a keeper that is otherwise running a round correctly.
  *
  *  IT RE-CHECKS THE CLOCK BETWEEN SENDS. Each `enter` is a confirmed round trip, so four of them from
- *  a twelve-second fill window can put the last one at or past `lobby_closes_at`, where the ER rejects
- *  it with `LobbyClosed`. Planning the batch is not enough — the deadline can pass in the middle of
- *  sending it.
+ *  a twelve-second fill window can put the last one at or past the moment the lobby closes, where the
+ *  ER rejects it with `LobbyClosed`. Planning the batch is not enough — the close can arrive in the
+ *  middle of sending it. Checked against `drawAt`, the instant the lobby will ACTUALLY be drawn: on a
+ *  held-open round that is the keeper's own early close, seconds away, rather than a backstop an hour
+ *  out that nothing is waiting for.
  *
  *  Returns what happened, because the caller has to distinguish "the round is short one bot this pass"
  *  from "these entries can never succeed" — an empty house wallet would otherwise be re-planned and
@@ -395,13 +421,13 @@ export function plannedHouseEntries(
 export async function enterHouseFighters(
   client: ChainClient,
   program: BullsArenaProgram,
-  round: { arenaPda: PublicKey; roundPda: PublicKey; lobbyClosesAt: number },
+  round: { arenaPda: PublicKey; roundPda: PublicKey; drawAt: number },
   entries: HouseEntry[],
 ): Promise<HouseEntryResult> {
   let landed = 0;
   let failed = 0;
   for (const entry of entries) {
-    if (round.lobbyClosesAt - client.nowSec() <= CLOCK_SKEW_MARGIN_SECONDS) {
+    if (round.drawAt - client.nowSec() <= CLOCK_SKEW_MARGIN_SECONDS) {
       warn(`out of lobby time after ${landed} of ${entries.length} house entries — the rest are dropped rather than sent into a closed lobby`);
       break;
     }

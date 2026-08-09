@@ -288,7 +288,15 @@ async function waitUntil(untilSec, what) {
       // (`["identity"]`), so Anchor's resolver produces it. Same for delegate_round's three
       // delegation PDAs above. Deriving them by hand in the script would be one more copy of a
       // layout the IDL already states.
-      payer: payer.publicKey, round, oracleQueue: EPHEMERAL_QUEUE,
+      payer: payer.publicKey, arena, round, oracleQueue: EPHEMERAL_QUEUE,
+      // The PERMISSIONLESS close — the deadline has passed, which is the path this round-trip is
+      // exercising. Naming the arena authority here would bypass the deadline instead, which is how
+      // a keeper holding a single lobby open starts a fight the moment a real player joins.
+      //
+      // `null` rather than omitted: `arena` above could equally have been left to the IDL resolver
+      // (its seeds are `["arena"]`, like `program_identity`'s), but an OPTIONAL account has no seeds
+      // to resolve from, so absence has to be stated.
+      authority: null,
       vrfProgram: VRF_PROGRAM_ID, slotHashes: SLOT_HASHES_SYSVAR,
       systemProgram: SystemProgram.programId,
     })

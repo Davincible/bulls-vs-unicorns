@@ -293,7 +293,12 @@ async function waitForLobbyDeadline(round) {
   sigs.closeLobby = await send(roundValidator, [await erProg.methods
     .closeLobbyAndDraw(Array.from(randomBytes(32)))
     .accounts({
-      payer: forkPayer.publicKey, round: roundPda, oracleQueue: EPHEMERAL_QUEUE, programIdentity,
+      payer: forkPayer.publicKey, arena: arenaPda, round: roundPda,
+      oracleQueue: EPHEMERAL_QUEUE, programIdentity,
+      // `authority: null` is the PERMISSIONLESS close, which is what this script is verifying: the
+      // deadline has passed, so no privileged signer is needed. Passing the arena authority here
+      // would bypass the deadline instead — a different path, and not the one under test.
+      authority: null,
       vrfProgram: VRF_PROGRAM, slotHashes: SLOT_HASHES, systemProgram: SystemProgram.programId,
     }).instruction()], [forkPayer], "close_lobby_and_draw");
 

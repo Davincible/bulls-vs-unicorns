@@ -32,7 +32,7 @@
 // beside the button that incurs them — a compact surface is a reason to be brief, never a reason to
 // drop the price.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FEE_BPS,
   SIDE_TOKEN,
@@ -68,21 +68,38 @@ const OPEN_KEY = "v2_dock_open";
 
 /** Below this the right-hand rail is full-bleed (`shell.css`: `.rail { width: 100vw }`), so there is
  *  no "beside it" for the dock to move to. Same threshold as every other layout break on this page.
- *  Also the width at which the toast column and the dock start sharing a horizontal band. */
+ *  Also the width below which a 320px floating panel stops being a corner and becomes a blindfold. */
 const NARROW_Q = "(max-width: 900px)";
 
-/** Always open on arrival. The one concession to small screens is that the dock renders as a compact
- *  bar there rather than a full panel (see the narrow branch below) — so "open" costs a strip, not a
- *  third of the viewport, and the request holds at every width without a special case that would
- *  leave phone visitors unable to find the deploy control at all. */
-function readOpen(): boolean {
+/** Open on arrival — ON A SCREEN WITH ROOM FOR IT.
+ *
+ *  THE BUG THIS FIXES. The comment that used to sit here claimed "the one concession to small screens
+ *  is that the dock renders as a compact bar there rather than a full panel (see the narrow branch
+ *  below)". There was no such branch. On a 390px phone the dock rendered its full 320px panel —
+ *  82% of the width, ~250px tall, `position: fixed` — over the bottom-right of every one of the five
+ *  screens, following the reader down five thousand pixels of page. An audit at 390x844 found it
+ *  covering the last two rows of THE FIELD's ANSEM roster and the whole of its UWU roster, the
+ *  leaderboard's entire value column, the dashboard's arena figures, and half of 00-3 — the very
+ *  section this dock is a shortcut TO. The panel was not merely cramped on a phone; it was hiding the
+ *  data the page exists to show.
+ *
+ *  So the branch the comment promised now exists (see `narrow` below), and this decides the state it
+ *  starts in. Max's direction — "it should be open by default, users can close it, but when you enter
+ *  the site it's open by default" — is about a visitor arriving to an obvious way in, and on a phone
+ *  the compact bar IS that: it is present, it names the move, it carries the deadline, and it opens
+ *  in one tap. What it does not do is spend a third of a phone viewport before being asked.
+ *
+ *  Read once, at mount, and deliberately not re-run on resize: once a reader has opened or closed
+ *  this thing, that is their answer, and having a rotation quietly overrule it would be worse than
+ *  either default. */
+function readOpen(narrow: boolean): boolean {
   // Clear any stored dismissal from the previous build, so a collapsed dock can't outlive it.
   try {
     localStorage.removeItem(OPEN_KEY);
   } catch {
     /* Storage blocked (private mode, embedded frame) — nothing to clear, nothing to do. */
   }
-  return true;
+  return !narrow;
 }
 
 function useMatches(query: string): boolean {
@@ -97,33 +114,52 @@ function useMatches(query: string): boolean {
   return match;
 }
 
-/** HOW THE DOCK STAYS OFF THE TOAST STACK.
+/** HOW EVERYTHING ELSE ON THE BOTTOM EDGE STAYS OFF THE DOCK.
  *
- *  The toasts are bottom-LEFT and grow upward, capped at five (`data/useToasts.ts`), and their
- *  column is `min(520px, 60vw)` wide — so on a wide page they and the dock never meet, and on a
- *  narrow one they always would. The brief for this dock is that it adjusts to them and not the
- *  other way round, so this measures the toast column's real rendered height and publishes it as
- *  `--toasts-h`; `shell.css` lifts the dock by it, but only under the narrow breakpoint.
+ *  THIS USED TO POINT THE OTHER WAY. The previous version measured the TOAST column and published
+ *  `--toasts-h` so that `shell.css` could lift the dock above it under the narrow breakpoint. That
+ *  was the right relationship while the dock was a floating corner panel and the toasts were the
+ *  fixture — but on a narrow screen the dock is now the bottom edge itself: a full-bleed bar sitting
+ *  directly on the chrome, the same way a phone's action bar does. A floor cannot dodge the things
+ *  standing on it. So the measurement inverts: the dock publishes its own height, and the toast
+ *  column and the page's bottom padding stack on top of it (`shell.css`, narrow block only — on a
+ *  wide page the dock is a corner again and nothing has to move).
  *
- *  Measured rather than counted: a toast wraps to two or three lines when it carries an RPC error,
- *  and `items.length * 34px` would put the dock straight through the middle of one. Read-only, and
- *  the one DOM query in this file — `.toasts` is a `base.css` primitive shared by the whole page,
- *  not another workstream's internal markup. If it ever goes missing the custom property simply
- *  stays unset and the fallback in the stylesheet is 0. */
-function useToastClearance(): void {
-  useEffect(() => {
-    const el = document.querySelector(".toasts");
+ *  Measured rather than counted, for the same reason as before: the bar is one line in Lobby and the
+ *  expanded panel is anywhere from 120px to a capped 60vh, and no constant could track that.
+ *
+ *  A CALLBACK REF rather than an effect on a `useRef`, because this component renders one of three
+ *  different elements (bar, panel, nothing at all) and React hands a callback ref `null` on the way
+ *  out — which is exactly the moment `--dock-h` has to go back to zero, or the toasts spend the rest
+ *  of the session floating above a dock that has unmounted. */
+function useDockHeight(): (el: HTMLElement | null) => void {
+  const observer = useRef<ResizeObserver | null>(null);
+
+  useEffect(
+    () => () => {
+      observer.current?.disconnect();
+      document.documentElement.style.removeProperty("--dock-h");
+    },
+    [],
+  );
+
+  return useCallback((el: HTMLElement | null) => {
+    observer.current?.disconnect();
+    observer.current = null;
     const root = document.documentElement;
-    if (!el) return;
-    const ro = new ResizeObserver(() => {
-      const h = Math.ceil(el.getBoundingClientRect().height);
-      root.style.setProperty("--toasts-h", h > 0 ? `${h + 10}px` : "0px");
-    });
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      root.style.removeProperty("--toasts-h");
+    if (!el) {
+      root.style.setProperty("--dock-h", "0px");
+      return;
+    }
+    const publish = () => {
+      // Round up: a fractional pixel leaves a hairline of toast peeking out from behind the bar,
+      // which reads as a rendering fault rather than as 0.4px.
+      root.style.setProperty("--dock-h", `${Math.ceil(el.getBoundingClientRect().height)}px`);
     };
+    publish();
+    const ro = new ResizeObserver(publish);
+    ro.observe(el);
+    observer.current = ro;
   }, []);
 }
 
@@ -289,9 +325,12 @@ function ExtractBody() {
 
 export function StakeDock() {
   const { rail } = useShell();
-  const [open, setOpen] = useState(readOpen);
   const narrow = useMatches(NARROW_Q);
-  useToastClearance();
+  // `useState`'s initialiser runs once, and `useMatches` seeds itself synchronously from
+  // `matchMedia` — so this is the real width on the first paint, not a wide-screen default that
+  // flashes a 320px panel across a phone before an effect corrects it.
+  const [open, setOpen] = useState(() => readOpen(narrow));
+  const measure = useDockHeight();
 
   // Local state only — deliberately NOT persisted, see `OPEN_KEY`'s note. Closing it is a "not right
   // now", not a standing preference.
@@ -315,8 +354,36 @@ export function StakeDock() {
   if (rail !== null && narrow) return null;
 
   if (!open) {
+    // THE PHONE'S COLLAPSED STATE IS NOT THE DESKTOP'S. On a wide page "collapsed" means a word-wide
+    // handle tucked into a corner, because the page around it is already showing the round. On a
+    // phone the dock is the only fixed surface below the fold, so collapsing it to a `+` would take
+    // the deadline off screen along with the panel. This bar keeps the sentence and gives up only
+    // the controls: the phase, what happens next and when, plus a button naming the move it opens.
+    //
+    // NOT ONE BIG BUTTON. A `<p>` cannot live inside a `<button>` (phrasing content only), and
+    // `RoundPhaseNote` is a paragraph — so rather than open-coding a third rendering of copy this
+    // codebase deliberately keeps in one place, the bar is a labelled group holding the note and a
+    // real button. The button is the target, at the full 44px, on the thumb side.
+    if (narrow) {
+      return (
+        <section ref={measure} className="dock-bar" aria-label="Quick deploy and extract">
+          <RoundPhaseNote detail="timing" />
+          <button
+            type="button"
+            className="btn btn--sm dock-bar-x"
+            aria-expanded={false}
+            aria-controls="stake-dock"
+            onClick={() => toggle(true)}
+          >
+            {control === "none" ? "Round" : title}
+          </button>
+        </section>
+      );
+    }
+
     return (
       <button
+        ref={measure}
         type="button"
         className={`dock-handle${rail !== null ? " dock--railed" : ""}`}
         aria-expanded={false}
@@ -335,8 +402,12 @@ export function StakeDock() {
 
   return (
     <section
+      ref={measure}
       id="stake-dock"
-      className={`dock${rail !== null ? " dock--railed" : ""}`}
+      // Narrow: a full-bleed sheet standing on the bottom chrome, capped at 60vh and scrolling
+      // inside itself, so opening it can never bury more than it reveals. Wide: the corner panel,
+      // unchanged.
+      className={`dock${narrow ? " dock--sheet" : ""}${rail !== null ? " dock--railed" : ""}`}
       aria-label="Quick deploy and extract"
       onKeyDown={(e) => {
         // Escape collapses the dock and goes no further: `useKeyboardNav` also listens for Escape on

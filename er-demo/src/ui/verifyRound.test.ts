@@ -236,6 +236,77 @@ describe("verifyRound — the house's take", () => {
   });
 });
 
+// THE ACCOUNT CROSS-EXAMINED AGAINST ITSELF. `Round.pot` and the per-fighter `stake` fields are two
+// independent recordings of one quantity — lib.rs's `credit_entry` adds the same `net` to both, in
+// adjacent statements, and nothing else in the program writes either — so they must agree, and this
+// is the only check on this panel whose two operands are both on-chain facts. Every other fixture in
+// this file carries a `pot` that already agrees (mockRound defaults to the sum), which is why the
+// three below have to set it wrong on purpose to say anything.
+describe("verifyRound — the recorded pot against the stakes it is the sum of", () => {
+  // The parity fixture, again: 100_000 + 250_000 + 180_000 + 90_000 = 620_000.
+  const cleanFighters: FighterState[] = [
+    { wallet: pubkey("w1"), side: 0, dead: false, stake: 100_000n, hp: 15_158n, banked: 84_062n },
+    { wallet: pubkey("w2"), side: 0, dead: false, stake: 250_000n, hp: 201_600n, banked: 116_021n },
+    { wallet: pubkey("w3"), side: 1, dead: false, stake: 180_000n, hp: 26_975n, banked: 48_467n },
+    { wallet: pubkey("w4"), side: 1, dead: false, stake: 90_000n, hp: 42_942n, banked: 84_775n },
+  ];
+
+  test("a round whose recorded pot equals its summed stakes reports the two agreeing", () => {
+    const result = verifyRound(mockRound(cleanFighters, { winner: 0, tickCount: 50n, pot: 620_000n }));
+
+    expect(result.potRecordedOnChain).toBe(620_000n);
+    expect(result.potOnChain).toBe(620_000n);
+    expect(result.potMatchesStakesOnChain).toBe(true);
+    expect(result.verdict).toBe("verified");
+  });
+
+  // WHAT THE NEW CHECK IS FOR, and the pairing is the whole test: the two rounds differ in one
+  // lamport of `Round.pot` and in nothing else. The first is the real devnet #8 extraction, which
+  // this file already proves comes back "extraction-likely". The second is the same round with a pot
+  // that contradicts its own stakes — and it must not be laundered through the innocent verdict,
+  // because extraction moves value between `hp`, `banked` and `penalties_collected` and cannot write
+  // `pot` or a `stake` at all.
+  test("a recorded pot that contradicts the stakes disqualifies 'extraction-likely'", () => {
+    const extracted: FighterState[] = [
+      { wallet: pubkey("early"), side: 0, dead: true, stake: 998_000n, hp: 0n, banked: 998_000n },
+      { wallet: pubkey("stayed"), side: 1, dead: false, stake: 748_500n, hp: 748_500n, banked: 0n },
+    ];
+    const seed = Array.from(
+      Buffer.from("38a5fb603a9eb735567d64543f7fa2288b96a147efef11c33e378bd1e5a2188c", "hex"),
+    );
+    const base = { winner: 0 as const, tickCount: 1400n, seed };
+
+    const honest = verifyRound(mockRound(extracted, { ...base, pot: 1_746_500n }));
+    const contradictory = verifyRound(mockRound(extracted, { ...base, pot: 1_746_501n }));
+
+    expect(honest.potMatchesStakesOnChain).toBe(true);
+    expect(honest.verdict).toBe("extraction-likely");
+
+    expect(contradictory.potMatchesStakesOnChain).toBe(false);
+    expect(contradictory.verdict).toBe("mismatch");
+    // The new flag is the SOLE cause. Conservation still holds and a fighter still carries the
+    // extraction fingerprint, so under the previous guard this round would have come back
+    // "extraction-likely" — an account that disagrees with itself, reported as an honest early exit.
+    expect(contradictory.conservationHoldsOnChain).toBe(true);
+    expect(contradictory.fighters.some((f) => f.extractionSignature)).toBe(true);
+  });
+
+  // THE ASYMMETRY, PINNED, because it is a decision and not an oversight and the next reader will
+  // reasonably wonder. `verified` is a claim about the REPLAY, and the replay is driven by the
+  // `stake` fields — `Round.pot` is never an input to it. An exact replay is exactly as exact on a
+  // round whose `pot` field is wrong, and demoting it to "mismatch" would print prose about
+  // disagreeing with an independent replay above a table in which every row agrees. The flag is
+  // reported instead, and VerifyPanel.tsx shows it on every round, so nothing is hidden.
+  test("an exact replay stays 'verified' when only the recorded pot is wrong, and still reports it", () => {
+    const result = verifyRound(mockRound(cleanFighters, { winner: 0, tickCount: 50n, pot: 620_001n }));
+
+    expect(result.potMatchesStakesOnChain).toBe(false);
+    expect(result.potRecordedOnChain).toBe(620_001n);
+    expect(result.verdict).toBe("verified");
+    expect(result.fighters.every((f) => f.matches)).toBe(true);
+  });
+});
+
 describe("verifyRound — mismatch (not explainable by extraction)", () => {
   test("on-chain value that doesn't conserve is reported as a real mismatch, never as extraction", () => {
     const fighters: FighterState[] = [

@@ -27,10 +27,11 @@
 //                        the fingerprint `extract()` leaves and `tick()`-only death does not
 //                        reliably distinguish from, which is the honest limit of what's checkable
 //                        from final state alone.
-//   mismatch          — diverges in a way extraction cannot explain: either the on-chain fighters
-//                        themselves don't conserve value (see below), or the numbers disagree with no
-//                        fighter carrying the extraction fingerprint at all (wrong seed, wrong
-//                        entries, wrong step count, or a genuine algorithm bug).
+//   mismatch          — diverges in a way extraction cannot explain: the on-chain fighters themselves
+//                        don't conserve value (see below), or the round's own `pot` field disagrees
+//                        with the stakes it is supposed to be the sum of (see below), or the numbers
+//                        disagree with no fighter carrying the extraction fingerprint at all (wrong
+//                        seed, wrong entries, wrong step count, or a genuine algorithm bug).
 //
 // THE CONSERVATION CHECK HAS A THIRD TERM, and getting this wrong would have been worse than leaving
 // the module alone. `extract()` charges a decaying penalty that goes to the house
@@ -80,6 +81,40 @@
 //
 // A round with no extractions and no fee has both terms at zero and this reduces to the original
 // check, which is why the oldest fixtures in verifyRound.test.ts still read the same.
+//
+// AND ONE MORE FACT, THE ONLY ONE HERE CHECKED AGAINST ITSELF. Every quantity above is read off the
+// round account once and taken at its word — there is nothing else on the account to weigh it
+// against. `pot` is the exception: the account stores it TWICE, once as `Round.pot` and once,
+// implicitly, as the sum of the per-fighter `stake` fields. Two independent recordings of one
+// quantity can be compared, and until now this module summed the stakes and never once looked at
+// `Round.pot` — declining a check that costs nothing and can actually come out false.
+//
+//     potRecordedOnChain === potOnChain           the account agrees with itself about the pot
+//
+// IT GATES THE VERDICT, in the same guard as conservation, because it fails for the same kind of
+// reason conservation does: a human pressing Extract cannot produce it. lib.rs writes `pot` in
+// exactly one place — `credit_entry`, which adds the same `net` to `r.pot` and to that fighter's
+// `stake` in adjacent statements, on a first entry and on a top-up alike — and `open_round` zeroes
+// `pot` and `fighter_count` together, so an empty round satisfies it too. Nothing else in the
+// program touches either field: `extract` moves value between `hp`, `banked` and
+// `penalties_collected`; `advance_fight`/`resolve` move `hp` and `banked`; `set_fee_bps` changes
+// what future entries are charged, which reaches `pot` and `stake` only back through
+// `credit_entry`, still by the same `net`. So there is no legitimate path — top-up, mid-lobby
+// re-price, abandonment, sweep — on which these two diverge, and a round where they do is not a
+// round any extraction story explains. Letting such a round be labelled "extraction-likely" would
+// be laundering an internally contradictory account through the one verdict this panel offers as
+// an innocent explanation.
+//
+// IT DOES NOT DISQUALIFY `verified`, and that asymmetry is a decision, not an oversight. `verified`
+// is a claim about the REPLAY — that re-running the algorithm reproduced the chain's numbers
+// exactly — and the replay is driven by the `stake` fields, never by `pot`. An exact replay is
+// exactly as true on a round whose `pot` field is wrong, so demoting it to "mismatch" would print
+// prose saying the on-chain state "disagrees with an independent replay" directly above a table in
+// which every row agrees: a false accusation of precisely the kind the top of this comment exists
+// to prevent. `conservationHoldsOnChain` is scoped the same way for the same reason. What the flag
+// gets instead is unconditional reporting — VerifyPanel.tsx states the cross-check on every round,
+// passing or failing — so a disagreement is never hidden behind a passing verdict. It is simply not
+// called a replay failure, because it is not one.
 
 import type { RoundState } from "../chain/useRound.ts";
 import { settle, type ERFighter } from "../sim/erSim.ts";
@@ -110,8 +145,22 @@ export interface VerifyResult {
   fighters: FighterComparison[];
   /** The NET pot — `sum(f.stake)`, which is what the fighters were credited with, the fee already
    *  taken. Summed from the fighter array rather than read from `round.pot` so it is derived from the
-   *  same rows every other number here is derived from. */
+   *  same rows every other number here is derived from — and that choice is now free of consequence
+   *  rather than merely defensible, because `potMatchesStakesOnChain` below compares the two, so on
+   *  any round this module reports as anything other than a mismatch they are the same number. */
   potOnChain: bigint;
+  /** `Round.pot`: the round account's OWN record of the same quantity, kept by the program as a
+   *  running total rather than recomputed from the fighters. Reported beside `potOnChain` so a panel
+   *  can show that the account was cross-examined, not just read. */
+  potRecordedOnChain: bigint;
+  /** `potRecordedOnChain === potOnChain` — the account's two independent recordings of the pot agree.
+   *
+   *  The one check here whose both operands are on-chain facts about the same quantity, which is why
+   *  it can be false at all. Not breakable by a human pressing Extract: `pot` and `stake` are written
+   *  only by lib.rs's `credit_entry`, by the same amount, in adjacent statements. It therefore gates
+   *  the verdict exactly as `conservationHoldsOnChain` does — and, exactly as with that flag, only
+   *  the `extraction-likely` branch. The module header argues both halves of that. */
+  potMatchesStakesOnChain: boolean;
   /** sum(on-chain hp + banked) across fighters — what the TABLE still holds. On a round where
    *  somebody extracted this is legitimately LESS than `potOnChain`, by exactly
    *  `penaltiesCollectedOnChain`. */
@@ -165,6 +214,8 @@ export function verifyRound(round: RoundState): VerifyResult {
   const winnerRecomputed = settle(recomputed); // runFullFight stops after tick()s; settle() is ours to call.
 
   const potOnChain = round.fighters.reduce((sum, f) => sum + f.stake, 0n);
+  const potRecordedOnChain = round.pot;
+  const potMatchesStakesOnChain = potRecordedOnChain === potOnChain;
   const totalValueOnChain = round.fighters.reduce((sum, f) => sum + f.hp + f.banked, 0n);
   const penaltiesCollectedOnChain = round.penaltiesCollected;
   const feesCollectedOnChain = round.feesCollected;
@@ -206,7 +257,13 @@ export function verifyRound(round: RoundState): VerifyResult {
   let verdict: VerifyVerdict;
   if (winnerMatches && allFightersMatch) {
     verdict = "verified";
-  } else if (conservationHoldsOnChain && anyExtractionSignature) {
+  } else if (conservationHoldsOnChain && potMatchesStakesOnChain && anyExtractionSignature) {
+    // `potMatchesStakesOnChain` sits beside conservation rather than in its own branch because it
+    // disqualifies the extraction story for the same reason: extraction moves value between `hp`,
+    // `banked` and `penalties_collected` and never writes `pot` or any `stake`, so an account that
+    // disagrees with itself about its own pot is not something a player's mid-fight decision can
+    // have caused. It is deliberately absent from the `verified` branch above — see the module
+    // header for why an exact replay stays exact regardless of what `Round.pot` says.
     verdict = "extraction-likely";
   } else {
     verdict = "mismatch";
@@ -221,6 +278,8 @@ export function verifyRound(round: RoundState): VerifyResult {
     winnerMatches,
     fighters,
     potOnChain,
+    potRecordedOnChain,
+    potMatchesStakesOnChain,
     totalValueOnChain,
     penaltiesCollectedOnChain,
     feesCollectedOnChain,

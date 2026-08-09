@@ -1232,6 +1232,16 @@
   color: var(--gold);
 }
 
+/* The pot cross-check when the account's two records of one quantity disagree. Same red as
+   `.verify-table td.differs`, for the same reason: it is a fact that must not be scanned past.
+
+   Its own class rather than the shared `.status-error`, which would lose — both are one class deep
+   and `.stat__sub` is declared later in this file, so equal specificity resolves to the faint grey.
+   Scoping it under `.verify-facts` is what buys the second class and settles it. */
+.verify-facts .stat__sub--differs {
+  color: var(--danger);
+}
+
 .verify-table {
   margin-top: 18px;
   overflow-x: auto;

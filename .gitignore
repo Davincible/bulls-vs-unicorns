@@ -33,3 +33,5 @@ er-demo/public/keeper-status.json
 .opencode/
 .localindex/
 .claude/settings.local.json
+.vercel
+.env*

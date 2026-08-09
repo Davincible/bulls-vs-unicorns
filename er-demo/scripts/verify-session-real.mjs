@@ -513,7 +513,11 @@ const signatures = {};
       const builder = authority.methods
         .closeLobbyAndDraw(Array.from(clientSeed))
         .accounts({
-          payer: forkPayer.publicKey, round: roundPda, oracleQueue: DEFAULT_EPHEMERAL_QUEUE,
+          payer: forkPayer.publicKey, arena: arenaPda, round: roundPda,
+          oracleQueue: DEFAULT_EPHEMERAL_QUEUE,
+          // The PERMISSIONLESS close — the deadline has passed, so no privileged signer is needed.
+          // Naming the arena authority here would bypass the deadline, which is a different path.
+          authority: null,
           programIdentity: programIdentityPda, vrfProgram: VRF_PROGRAM_ID, slotHashes: SLOT_HASHES_SYSVAR,
           systemProgram: SystemProgram.programId,
         });

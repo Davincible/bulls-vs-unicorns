@@ -119,6 +119,14 @@ export function useFixtureArena({ active, push, recordDeploy }: FixtureArenaPara
         extractionSignature: false,
       })),
       potOnChain: live.pot,
+      // The account's OTHER recording of the pot, which on a real round is written by a different
+      // line of `enter` than the fighters' stakes are. Here it is the same number by construction —
+      // the fixture hands `pot` to the roster rather than accumulating it — so the comparison below
+      // is `true` for a reason that proves nothing. Said plainly because that is the point: this
+      // fixture exercises the PANEL, and `potMatchesStakesOnChain` is one of the two flags that only
+      // means something against genuinely independent chain state.
+      potRecordedOnChain: live.pot,
+      potMatchesStakesOnChain: true,
       totalValueOnChain: a + b,
       // Zero, and truthfully so: the fixture's rosters are a pure replay of `MOCK_HIT_EVENTS`, in
       // which nobody ever calls `extract()`, so no penalty has been charged and the pre-penalty

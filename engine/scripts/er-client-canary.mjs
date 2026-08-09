@@ -384,8 +384,13 @@ async function sendTx(methodsBuilder, signer, label, { blockhashAccounts, endpoi
         .closeLobbyAndDraw(Array.from(clientSeed))
         .accounts({
           payer: forkPayer.publicKey,
+          arena: arenaPda,
           round: roundPda,
           oracleQueue: DEFAULT_EPHEMERAL_QUEUE,
+          // The PERMISSIONLESS close — the deadline has passed, so no privileged signer is needed.
+          // The arena authority may be named here instead to bypass the deadline entirely; that is
+          // the path a keeper holding one lobby open uses, and not what this canary exercises.
+          authority: null,
           programIdentity: programIdentityPda,
           vrfProgram: VRF_PROGRAM_ID,
           slotHashes: SLOT_HASHES_SYSVAR,

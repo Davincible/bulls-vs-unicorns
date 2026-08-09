@@ -40,8 +40,19 @@ import { PHASE_NAME } from "../../chain/constants.ts";
  *  `stalledSince: null` — that would be the reader inventing a healthy status for a keeper it knows
  *  nothing about, which is this module's own failure mode arriving through the back door. v1 is
  *  rejected outright and the page says "keeper down" instead. Writer and reader ship together, so
- *  the stretch where that costs anything is one deploy long, and the cost of it is silence. */
-export const KEEPER_STATUS_SCHEMA = 2;
+ *  the stretch where that costs anything is one deploy long, and the cost of it is silence.
+ *
+ *  3 — ADDED `entriesCloseAt` and `round.heldOpen`, for the same reason and with the same
+ *  consequence. The keeper no longer cycles rounds on a timer: it opens ONE lobby with a long
+ *  backstop deadline, fields the house into it so the room is never empty, and then holds it — at no
+ *  marginal cost — until a real player arrives, at which point it closes entries itself. A v2 file
+ *  cannot express either half of that. It has no way to say "this deadline is a backstop, not a
+ *  schedule" (so a reader would draw `lobbyClosesAt` as a countdown and put "closes in 59:47" in
+ *  front of a player, which is precisely the confidently-wrong number this module exists to delete),
+ *  and no way to say when the keeper actually intends to stop taking entries. Defaulting the missing
+ *  fields would produce exactly that wrong countdown, so v2 is rejected outright and the page says
+ *  "keeper down" for the one deploy it takes for the writer to catch up. */
+export const KEEPER_STATUS_SCHEMA = 3;
 
 /** Where the keeper writes it and the browser fetches it. `public/` is served verbatim at the root
  *  by Vite dev, preview and a production build alike. */
@@ -70,6 +81,23 @@ export interface KeeperRoundStatus {
   fighterCount: number;
   houseFighterCount: number;
   realFighterCount: number;
+  /** IS THIS LOBBY'S DEADLINE A BACKSTOP RATHER THAN A SCHEDULE?
+   *
+   *  True while the keeper is holding the lobby open waiting for a real player: the round is in
+   *  `Lobby`, `lobbyClosesAt` is still in the future, and `realFighterCount` is 0. The house is in
+   *  there — the room is not empty — but nothing is going to happen until a person arrives.
+   *
+   *  IT EXISTS TO STOP A COUNTDOWN, WHICH IS THE ONLY REASON A BOOLEAN GOES IN THIS FILE. A held-open
+   *  lobby carries a deadline an hour away, and nothing happens at it except the keeper abandoning
+   *  the round and opening another one. Rendering "closes in 59:47" off `lobbyClosesAt` would be a
+   *  countdown to a non-event, dressed as the moment the fight starts — the same invented number
+   *  `Round.lobby_closes_at` was added to the program to delete, one design change later.
+   *  `keeperCountdown` therefore answers `waiting-for-players` here and refuses to draw a number at
+   *  all, and the page has a specific sentence to say instead of a wrong one.
+   *
+   *  It is FALSE the instant a real fighter is standing in the lobby, because from that instant the
+   *  keeper has a real schedule and publishes it as `entriesCloseAt`. */
+  heldOpen: boolean;
   winner: number;
   /** u64 as a decimal string. JSON numbers are IEEE doubles and cannot hold a u64 without silently
    *  rounding it — a pot is money, and money that rounds in transport is not money. */
@@ -132,6 +160,28 @@ export interface KeeperStatus {
     erValidator: { identity: string; fqdn: string } | null;
   };
   round: KeeperRoundStatus | null;
+  /** Unix SECONDS. WHEN THE KEEPER INTENDS TO STOP TAKING ENTRIES — its own schedule, deliberately
+   *  NOT the chain's `round.lobbyClosesAt`.
+   *
+   *  NON-NULL ONLY once a real player has entered the current lobby and the grace window is running.
+   *  Null at every other moment, including throughout a held-open lobby: before anybody arrives the
+   *  keeper has no intention to publish, because it is not waiting for a clock, it is waiting for a
+   *  person.
+   *
+   *  WHY THE KEEPER'S NUMBER AND NOT THE CHAIN'S. The two answer different questions now. The chain's
+   *  `lobbyClosesAt` is the BACKSTOP: the last instant the lobby could possibly still be open, an
+   *  hour out, enforced by the program so a round always reaches a terminal state even if this
+   *  process dies. This field is the SCHEDULE: the instant the keeper will send the close itself,
+   *  seconds away, because somebody turned up. Publishing the backstop as a countdown while a real
+   *  player is standing in the lobby would be off by fifty-nine minutes in the direction that reads
+   *  as "nothing is happening here".
+   *
+   *  It is as honest as `nextLobbyOpensAt` and for the same reason: it is a promise the keeper is
+   *  about to keep, latched per round so it counts DOWN, and if the keeper is slow the time simply
+   *  passes rather than sliding later (`keeperCountdown` then draws nothing). What it is NOT is a
+   *  guarantee the chain enforces — a keeper that dies mid-grace leaves the lobby open to its
+   *  backstop, and the stale heartbeat is what tells a reader that. */
+  entriesCloseAt: number | null;
   /** Unix SECONDS. NON-NULL ONLY when the keeper is holding between rounds and the next lobby's open
    *  time is genuinely known. Null at every other moment — during a Fight there is no honest answer,
    *  because a fight ends when it ends. */
@@ -156,6 +206,10 @@ function isNumber(v: unknown): v is number {
 
 function isString(v: unknown): v is string {
   return typeof v === "string";
+}
+
+function isBoolean(v: unknown): v is boolean {
+  return typeof v === "boolean";
 }
 
 /** A u64 as the keeper writes it: decimal digits, nothing else, in range. Checked rather than merely
@@ -188,10 +242,15 @@ function parseError(raw: unknown): KeeperError | null {
 function parseRound(raw: unknown): KeeperRoundStatus | null {
   if (!isRecord(raw)) return null;
   const { no, pda, phase, phaseCode, lobbyOpenedAt, lobbyClosesAt, fightStartedAt } = raw;
-  const { fighterCount, houseFighterCount, realFighterCount, winner, pot } = raw;
+  const { fighterCount, houseFighterCount, realFighterCount, heldOpen, winner, pot } = raw;
   if (!isNumber(no) || !isNumber(phaseCode)) return null;
   if (!isNumber(lobbyOpenedAt) || !isNumber(lobbyClosesAt) || !isNumber(fightStartedAt)) return null;
   if (!isNumber(fighterCount) || !isNumber(houseFighterCount) || !isNumber(realFighterCount)) return null;
+  // REQUIRED, and `false` is not a safe default for an absent key. A writer that has never heard of
+  // held-open lobbies is a writer whose `lobbyClosesAt` might be an hour of backstop; reading its
+  // silence as "not held open" is what would put the 59:47 countdown on screen. The schema check
+  // above already turns those files away — this catches the hand-written and the half-written one.
+  if (!isBoolean(heldOpen)) return null;
   if (!isNumber(winner)) return null;
   if (!isString(pda) || !isU64String(pot)) return null;
   if (!Number.isInteger(phaseCode) || phaseCode < 0 || phaseCode >= PHASE_NAME.length) return null;
@@ -211,6 +270,7 @@ function parseRound(raw: unknown): KeeperRoundStatus | null {
     fighterCount,
     houseFighterCount,
     realFighterCount,
+    heldOpen,
     winner,
     pot,
   };
@@ -289,6 +349,12 @@ export function parseKeeperStatus(raw: unknown): KeeperStatus | null {
   const nextLobbyOpensAt = isNumber(rawNext) ? rawNext : null;
   if (nextLobbyOpensAt === null && rawNext !== null) return null;
 
+  // Same rule, same reason: null is the normal value (most of a lobby's life nobody has arrived yet),
+  // so an explicit null is accepted and an absent key is not.
+  const rawEntries = raw.entriesCloseAt;
+  const entriesCloseAt = isNumber(rawEntries) ? rawEntries : null;
+  if (entriesCloseAt === null && rawEntries !== null) return null;
+
   return {
     schema: KEEPER_STATUS_SCHEMA,
     keeper: {
@@ -305,6 +371,7 @@ export function parseKeeperStatus(raw: unknown): KeeperStatus | null {
     },
     chain: { cluster: "devnet", programId, arenaPda, erValidator },
     round,
+    entriesCloseAt,
     nextLobbyOpensAt,
     house: { wallets: [...wallets], disclosure },
   };
@@ -368,6 +435,12 @@ export function isKeeperStalled(status: KeeperStatus, nowSec: number): boolean {
 export type KeeperCountdown =
   | { kind: "entries-close"; seconds: number }
   | { kind: "next-lobby"; seconds: number }
+  /** THE LOBBY IS OPEN AND WAITING FOR A PERSON, AND THERE IS NOTHING TO COUNT. Carries no `seconds`,
+   *  because none exists: the keeper will close entries when somebody arrives, and nobody knows when
+   *  that is. It is a separate kind rather than `none` because the two are different sentences — the
+   *  page has something specific and true to say here ("waiting for players", with the house already
+   *  in the room), whereas `none` is the state in which it should say nothing at all. */
+  | { kind: "waiting-for-players" }
   | { kind: "none" };
 
 /**
@@ -393,6 +466,23 @@ export type KeeperCountdown =
  *     extracts, and the keeper does not know it either, so there is no next-lobby time to publish
  *     and none to show.
  *
+ * THE LOBBY BRANCH HAS THREE ANSWERS NOW, AND THEIR ORDER IS THE WHOLE RULE. A lobby carries two
+ * deadlines that mean different things, and reading the wrong one is how the 59:47 countdown gets on
+ * screen:
+ *
+ *   1. `round.heldOpen` — the keeper is waiting for a person, not for a clock. `waiting-for-players`,
+ *      and `lobbyClosesAt` MUST NOT be consulted: it is an hour of backstop, and the only thing that
+ *      happens at it is the keeper abandoning this round and opening another.
+ *   2. `entriesCloseAt` — somebody arrived and the keeper has committed to a time. That commitment
+ *      REPLACES the chain deadline for the rest of this lobby, including once it has passed: falling
+ *      through to `lobbyClosesAt` at that point is exactly the hour-away lie, arriving three lines
+ *      later. So a non-null `entriesCloseAt` is terminal for the Lobby branch — it counts down, and
+ *      then it says nothing.
+ *   3. `lobbyClosesAt` — the ordinary case, and still the honest one: no early close is coming (this
+ *      keeper is running against a program that has none, or the operator is running the old fixed
+ *      cadence), so the chain's own deadline is both the schedule and the backstop, and it is what
+ *      the program will enforce.
+ *
  * Seconds are whole and never negative. They are CEILED rather than floored, matching
  * `entrySecondsLeft` in `contract.ts`: while a countdown is live it must never read 0, because 0 is
  * the thing it says at the end.
@@ -411,6 +501,14 @@ export function keeperCountdown(status: KeeperStatus | null, nowSec: number): Ke
   if (round === null) return none;
 
   if (round.phase === "Lobby") {
+    if (round.heldOpen) return { kind: "waiting-for-players" };
+    const entriesCloseAt = status.entriesCloseAt;
+    if (entriesCloseAt !== null) {
+      // Terminal either way — see the doc comment. Once the keeper has named a time for THIS lobby,
+      // the chain's backstop is not an alternative answer to fall back on.
+      if (entriesCloseAt <= nowSec) return none;
+      return { kind: "entries-close", seconds: secondsUntil(entriesCloseAt, nowSec) };
+    }
     if (round.lobbyClosesAt <= nowSec) return none;
     return { kind: "entries-close", seconds: secondsUntil(round.lobbyClosesAt, nowSec) };
   }

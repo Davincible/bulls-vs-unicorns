@@ -277,22 +277,59 @@ pub const FIGHT_TIMEOUT_SECONDS: i64 = 120;
 /// asks for more than this.
 pub const MIN_LOBBY_SECONDS: u32 = 20;
 
-/// THE CEILING, WHICH EXISTS TO CATCH A UNIT MISTAKE — not to express a view on pacing.
+/// THE CEILING. IT USED TO CATCH A UNIT MISTAKE; IT NOW BOUNDS AN OPEN-ENDED WAIT, and the change of
+/// job is the whole reason the number moved from 3,600 to a week.
 ///
-/// The one realistic way to get a multi-day lobby is passing MILLISECONDS to an instruction that
-/// takes seconds: every prior art in this repo is named `*_MS` (`LOBBY_MS = 9_000`, `w.lobbyMs ||
-/// 20000`), so `20_000` is exactly the number a hand or a port would carry across — and unclamped
-/// that is a five-and-a-half hour lobby that nobody watches expire. An hour is far longer than any
-/// round this project runs (the keeper reopens a lobby the moment the previous round settles, so the
-/// natural cadence is a minute or two) while still being a length an operator could have meant, which
-/// is the right place for a guard that must never reject a real intention.
+/// WHAT IT USED TO BE FOR, and why that argument no longer holds. The one realistic way to get a
+/// multi-day lobby is passing MILLISECONDS to an instruction that takes seconds: every prior art in
+/// this repo is named `*_MS` (`LOBBY_MS = 9_000`, `w.lobbyMs || 20000`), so `20_000` is exactly the
+/// number a hand or a port would carry across, and unclamped that is a five-and-a-half hour lobby. An
+/// hour was chosen to be far longer than any round this project runs while still being a length an
+/// operator could have meant. That reasoning assumed the deadline was THE MECHANISM — the only thing
+/// that ends a lobby — so a wrong duration meant a lobby stuck open for as long as the wrong number
+/// said.
+///
+/// THE DEADLINE IS NO LONGER THE MECHANISM. `close_lobby_and_draw` now takes an authority-signed
+/// early close, so the operator ends a lobby when a real player actually turns up. The deadline
+/// becomes the BACKSTOP FOR "NOBODY EVER CAME": the thing that guarantees a round still reaches a
+/// terminal state if the keeper dies, rather than the thing that decides when the fight starts.
+///
+/// A backstop wants to be long. The reason is rent, and it is the reason this change exists: nothing
+/// ever closes a `Round` account, so every round permanently locks its rent-exempt deposit
+/// (~0.0085 SOL). A keeper that cycles rounds on a timer therefore pays that on every cycle whether
+/// or not anyone plays, and an idle arena bleeds indefinitely. Holding ONE lobby open until a player
+/// arrives is one payment instead of hundreds — and the ceiling is what caps how long "until a player
+/// arrives" may be. At one hour an unattended arena still burns 24 rounds a day (~0.2 SOL); at a week
+/// it burns 52 a year (~0.45 SOL/year). That is the entire saving the feature is for, and an hour
+/// gives back nearly all of it.
+///
+/// SO WHAT STILL CATCHES THE MILLISECONDS MISTAKE? Not this constant — 20_000 is now inside the
+/// range and passes through unclamped, and pretending otherwise would be the dishonest version of
+/// this comment. Two things replace it, and only the second is a real guard:
+///
+///   * THE CONSEQUENCE IS GONE, WHICH MATTERS MORE THAN THE DETECTION. A 5.5-hour lobby opened by
+///     mistake is now closed by the authority the moment two fighters are in it, exactly like a
+///     20-second one. The duration stopped being load-bearing, so getting it wrong stopped being
+///     expensive. The mistake this guard existed to catch no longer has an outcome worth catching.
+///   * THE ABSURD IS STILL BOUNDED. `u32::MAX` seconds is 136 years; a lobby that long is a round
+///     delegated to an ER validator forever, which is the permanently-stuck state this repo has paid
+///     for twice. A week is a length an operator could genuinely mean and a human will notice.
+///
+/// AND ONE THING THIS CONSTANT DOES NOT CLAIM, said plainly rather than left to be discovered: that a
+/// round can actually STAY DELEGATED for a week. The round is delegated for its entire lobby, and the
+/// longest delegation this repo has ever exercised is a couple of minutes. ER validators are already
+/// documented as losing state in ways this project has been bitten by (MAGICBLOCK_FEEDBACK.md), and
+/// nothing here has measured what a multi-day delegation does across a validator restart. The ceiling
+/// permits a week; it is not evidence that a week works. Before an operator relies on a lobby held
+/// open for days, that needs measuring — and if it does not hold, the fix is a keeper that reopens on
+/// a long timer, not a bigger number here.
 ///
 /// CLAMPED, NOT REJECTED, and the clamp is not silent: `lobby_closes_at - lobby_opened_at` is on the
-/// account, so an operator who passed nonsense sees `3600` staring back at them the moment they read
-/// the round. Rejecting would turn a fat-fingered argument into a failed transaction mid-demo, and
-/// the value is a countdown, not a security parameter — nothing downstream is unsafe at any value in
-/// this range.
-pub const MAX_LOBBY_SECONDS: u32 = 3_600;
+/// account, so an operator who passed nonsense sees the stored value staring back at them the moment
+/// they read the round. Rejecting would turn a fat-fingered argument into a failed transaction
+/// mid-demo, and the value is a countdown, not a security parameter — nothing downstream is unsafe at
+/// any value in this range.
+pub const MAX_LOBBY_SECONDS: u32 = 604_800;   // 7 days
 
 /// How long the lobby `open_round` is opening will actually stay open. `u32` on the way in because a
 /// negative duration is not a thing an operator can mean, so it is not a state this program has to
@@ -361,6 +398,68 @@ pub fn lobby_is_open(lobby_closes_at: i64, now: i64) -> bool {
 /// `fight_started_at` itself.
 pub fn lobby_may_close(fighter_count: u16, lobby_closes_at: i64, now: i64) -> bool {
     !lobby_is_open(lobby_closes_at, now) || (fighter_count as usize) >= MAX_FIGHTERS
+}
+
+/// MAY `close_lobby_and_draw` PROCEED? The permissionless rule above, OR the arena's authority asking
+/// for it directly.
+///
+/// WHY AN EARLY CLOSE HAS TO EXIST. The operator wants to stop paying rent on rounds nobody plays,
+/// and nothing ever closes a `Round` account — every one permanently locks its rent-exempt deposit
+/// (see `MAX_LOBBY_SECONDS`). The fix is to open ONE lobby, let the house sit in it, and hold it open
+/// until a real player turns up. That plan needs exactly one thing the program did not have: a way to
+/// start the fight AT THE MOMENT the player arrives. Under `lobby_may_close` alone the keeper could
+/// watch someone enter and still be unable to begin, because the deadline had not passed and the
+/// lobby was not full — the lobby would sit there with a live player in it, waiting out a clock whose
+/// only remaining purpose was to be waited out.
+///
+/// WHY IT IS AUTHORITY-ONLY, which is the question a reader should have. Permissionless early closing
+/// is griefing: a player who does not like the lineup slams the lobby shut and locks everyone else
+/// out, and unlike `tick` or `resolve` — permissionless because the caller cannot influence the
+/// result — WHO IS IN THE ROUND is exactly the thing an early close decides. That is a caller
+/// choosing something, which is the class of power `resolve`'s `steps` argument was removed for.
+///
+/// IT IS NOT A NEW TRUST ASSUMPTION. The authority already decides when a lobby OPENS (`open_round`
+/// is `has_one = authority`), so it already controls the other end of the same window; being able to
+/// close it is the same power pointed the other way. And it cannot reach the OUTCOME: the VRF seed is
+/// requested by this very instruction and delivered afterwards by `callback_seed`, so at the instant
+/// the authority chooses to close, the seed does not exist — not for them, not for anyone. Closing
+/// early moves WHEN the fight starts and nothing else, which is the same conclusion `lobby_may_close`
+/// already reached for its full-lobby early exit.
+///
+/// WHAT IT DELIBERATELY DOES NOT DO is let the authority close a lobby that is not a fight. The
+/// caller still has to satisfy `enough_to_fight` separately — this predicate answers only "has the
+/// waiting requirement been met", never "is there a round here". Folding the two together is what
+/// would let an operator draw on a single fighter.
+///
+/// THE PERMISSIONLESS PATH IS UNTOUCHED, and that is structural rather than a promise: this is a
+/// disjunction over `lobby_may_close`, so with `by_authority == false` it IS `lobby_may_close`. That
+/// also keeps `lobby_may_close` and `lobby_is_dead` exact complements — the partition
+/// `an_under_subscribed_lobby_is_dead_exactly_when_it_can_no_longer_fight` asserts is a property of
+/// those two, and adding the authority term here rather than inside `lobby_may_close` is what stops
+/// this change from quietly making a round both drawable and abandonable.
+pub fn draw_is_permitted(fighter_count: u16, lobby_closes_at: i64, now: i64, by_authority: bool) -> bool {
+    by_authority || lobby_may_close(fighter_count, lobby_closes_at, now)
+}
+
+/// Was an early close asked for by the arena's own authority, and did they sign with the right key?
+///
+/// Three outcomes, not two, and the third is the one worth having: no `authority` account supplied
+/// means an ordinary permissionless call (`false`, the deadline rule applies); the arena's authority
+/// means yes; ANY OTHER signer is an error rather than a silent `false`. Falling through would answer
+/// a misconfigured keeper with `LobbyStillOpen` — a message about the clock, when the actual problem
+/// is the key — and this program already treats "tell them the true reason" as worth a branch (see
+/// `enter` checking `RoundFull` before the deadline).
+///
+/// Takes the pubkey rather than the `Signer`, so the rule is reachable from a native test. That is
+/// not incidental: the whole security of the early close is this comparison, and inside a `Context`
+/// nothing could execute it without a validator — which is precisely how the discarded entry fee
+/// survived review for the life of this program.
+pub fn authority_close_requested(supplied: Option<Pubkey>, arena_authority: Pubkey) -> Result<bool> {
+    match supplied {
+        None => Ok(false),
+        Some(key) if key == arena_authority => Ok(true),
+        Some(_) => Err(ArenaError::NotTheAuthority.into()),
+    }
 }
 
 /// THE DEAD LOBBY: past its deadline holding fewer than two fighters, so it can never become a fight.
@@ -1203,9 +1302,19 @@ pub mod bulls_arena {
     pub fn close_lobby_and_draw(ctx: Context<DrawSeed>, client_seed: [u8; 32]) -> Result<()> {
         {
             let now = Clock::get()?.unix_timestamp;
+            // Resolved BEFORE the round is borrowed mutably, and it is the whole of the new
+            // permission: see `authority_close_requested` for why a wrong key errors here rather than
+            // falling through to the deadline rule.
+            let by_authority = authority_close_requested(
+                ctx.accounts.authority.as_ref().map(|s| s.key()),
+                ctx.accounts.arena.authority,
+            )?;
             let r = &mut ctx.accounts.round;
             require!(r.phase == Phase::Lobby as u8, ArenaError::NotInLobby);
-            require!(lobby_may_close(r.fighter_count, r.lobby_closes_at, now), ArenaError::LobbyStillOpen);
+            require!(
+                draw_is_permitted(r.fighter_count, r.lobby_closes_at, now, by_authority),
+                ArenaError::LobbyStillOpen
+            );
             require!(enough_to_fight(r.fighter_count), ArenaError::NotEnoughFighters);
             r.phase = Phase::Drawing as u8;
         }
@@ -1898,16 +2007,48 @@ pub struct Enter<'info> {
 }
 
 /// `#[vrf]` supplies the accounts the randomness request CPI needs.
+///
+/// `arena` IS READ HERE, IN THE ROLLUP, AND THAT IS ALREADY PROVEN RATHER THAN ASSUMED. This
+/// instruction runs in the ER (the round is delegated from lobby open) and `Arena` is a base-layer
+/// account that is never delegated — but `enter` has read `arena.fee_bps` from exactly this position
+/// since the migration, so a rollup transaction taking an undelegated account read-only is a path
+/// this program already exercises every round. It is needed for one field: `arena.authority`, which
+/// is the only place the early-close permission is written down.
+///
+/// `authority` IS OPTIONAL, AND ITS ABSENCE IS THE ORDINARY CASE. Supplying it is a statement of
+/// intent — "I am deliberately cutting this lobby short" — which is why it is a separate account
+/// rather than an inference from who paid. `payer` is already a `Signer` and comparing IT against
+/// `arena.authority` would have worked with no new accounts at all; it was rejected because an
+/// instruction that behaves differently depending on who happened to fund it is a privilege you can
+/// acquire by accident, and because the transaction would no longer say on its face which of the two
+/// close rules was used. Read back from an explorer, `close_lobby_and_draw` carrying an `authority`
+/// means the operator chose the moment; without one it means the clock did.
+///
+/// `has_one = arena` on the round rather than trusting the singleton: `ARENA_SEED` has no
+/// discriminator so there is exactly one arena per program and the seeds already pin it, which makes
+/// this constraint redundant TODAY. It is here because "there is only one arena" is a fact about the
+/// current seeds, not an invariant anything enforces, and the failure it would allow — closing a
+/// round against some other arena's authority — is the one thing this context exists to prevent.
+///
+/// `round` IS NOT BOXED, AND THAT WAS MEASURED RATHER THAN ASSUMED. `SweepHouseTake` had to be, so
+/// the tempting move is to box every context holding a `Round`. Adding a second `Account<'info, T>`
+/// here was checked against `cargo build-sbf` and produces no `Stack offset ... exceeded` — so a box
+/// would be weight carried for a failure that does not exist. If a future field on `Round` changes
+/// that, the build says so; the guard is reading that output, not boxing pre-emptively. See
+/// `SweepHouseTake` for what the failure looks like and why it must never be shipped unnoticed.
 #[vrf]
 #[derive(Accounts)]
 pub struct DrawSeed<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
-    #[account(mut)]
+    #[account(seeds = [ARENA_SEED], bump = arena.bump)]
+    pub arena: Account<'info, Arena>,
+    #[account(mut, has_one = arena)]
     pub round: Account<'info, Round>,
     /// CHECK: validated against the known queues by the VRF program
     #[account(mut)]
     pub oracle_queue: UncheckedAccount<'info>,
+    pub authority: Option<Signer<'info>>,
 }
 
 /// `#[vrf_callback]` injects `vrf_program_identity` as a Signer constrained to
@@ -1995,6 +2136,7 @@ pub enum ArenaError {
     #[msg("this lobby can still become a fight — it may not be abandoned")] LobbyNotAbandonable,
     #[msg("this round has not finished — its house take cannot be swept yet")] RoundNotTerminal,
     #[msg("this round's house take has already been swept")] AlreadySwept,
+    #[msg("only the arena's authority may close a lobby before its deadline")] NotTheAuthority,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2519,12 +2661,23 @@ mod lobby_tests {
         assert_eq!(clamp_lobby_seconds(0), MIN_LOBBY_SECONDS as i64);
         assert_eq!(clamp_lobby_seconds(1), MIN_LOBBY_SECONDS as i64);
         assert_eq!(clamp_lobby_seconds(MIN_LOBBY_SECONDS - 1), MIN_LOBBY_SECONDS as i64);
-        // Milliseconds passed where seconds were meant — the realistic way to get a multi-day lobby,
-        // given every prior art in this repo is named `*_MS`. 20_000 ms is 5.5 hours unclamped.
-        assert_eq!(clamp_lobby_seconds(20_000), MAX_LOBBY_SECONDS as i64);
+        // THE CEILING NO LONGER CATCHES THE MILLISECONDS MISTAKE, AND THAT IS ASSERTED RATHER THAN
+        // LEFT TO BE NOTICED. `20_000` — milliseconds passed where seconds were meant, the realistic
+        // way to get a multi-day lobby given every prior art in this repo is named `*_MS` — used to
+        // clamp to an hour. At a week's ceiling it passes straight through as 5.5 hours.
+        //
+        // That is a deliberate loss, not an oversight, and this line is here so that anyone lowering
+        // the ceiling back has to read `MAX_LOBBY_SECONDS`'s reasoning first: the deadline stopped
+        // being the mechanism that ends a lobby (the authority's early close is), so a wrong duration
+        // stopped having a consequence. What replaced the guard is that the mistake no longer costs
+        // anything — not a different guard.
+        assert_eq!(clamp_lobby_seconds(20_000), 20_000, "no longer clamped — see MAX_LOBBY_SECONDS");
+        // The absurd is still bounded, which is the job the ceiling kept. u32::MAX seconds is 136
+        // years — a round delegated to an ER validator forever, i.e. the permanently-stuck state.
         assert_eq!(clamp_lobby_seconds(u32::MAX), MAX_LOBBY_SECONDS as i64);
+        assert!(MAX_LOBBY_SECONDS <= 604_800, "a backstop longer than a week is not a backstop");
         // ...and in between, the operator's number is used exactly as given.
-        for requested in [MIN_LOBBY_SECONDS, 45, 60, 120, 600, MAX_LOBBY_SECONDS] {
+        for requested in [MIN_LOBBY_SECONDS, 45, 60, 120, 600, 20_000, 86_400, MAX_LOBBY_SECONDS] {
             assert_eq!(clamp_lobby_seconds(requested), requested as i64);
         }
 
@@ -2637,6 +2790,112 @@ mod lobby_tests {
         // no fight in either, and the program custodies nothing, so there is nothing else to do.
         assert!(lobby_is_dead(0, closes_at, closes_at + 86_400));
         assert!(lobby_is_dead(1, closes_at, closes_at + 86_400));
+    }
+
+    /// THE EARLY CLOSE, AND THE FACT THAT ONLY THE ARENA'S OWN AUTHORITY GETS IT.
+    ///
+    /// MUTATION-TESTED BY CONSTRUCTION, and the mutation is the obvious one: make
+    /// `authority_close_requested`'s last arm `Ok(true)` instead of `Err(NotTheAuthority)` — i.e.
+    /// "somebody signed, that will do" — and the stranger case below fails. Delete the `by_authority`
+    /// term from `draw_is_permitted` and the first block fails. Neither mutation is caught by anything
+    /// else in this file, which is the point of both.
+    #[test]
+    fn only_the_arenas_own_authority_can_close_a_lobby_early() {
+        let closes_at = OPENED + 604_800;          // a lobby held open, in the shape this feature is for
+        let authority = Pubkey::new_from_array([9; 32]);
+        let stranger = Pubkey::new_from_array([8; 32]);
+
+        // Before the deadline, with a real fight in the room, the permissionless rule refuses and the
+        // authority does not. This is precisely the situation the feature exists for: a player has
+        // arrived and the clock is a week away.
+        assert!(!draw_is_permitted(2, closes_at, OPENED, false), "the clock says no");
+        assert!(draw_is_permitted(2, closes_at, OPENED, true), "the authority says now");
+
+        // WHO COUNTS. No account supplied is an ordinary permissionless call, not a refusal — the
+        // deadline rule then applies on its own.
+        assert_eq!(authority_close_requested(None, authority).unwrap(), false);
+        assert_eq!(authority_close_requested(Some(authority), authority).unwrap(), true);
+        // ...and anybody else is an ERROR rather than a quiet `false`. A silent fall-through would
+        // answer a misconfigured keeper with `LobbyStillOpen`, which is a message about the clock when
+        // the problem is the key.
+        assert!(
+            authority_close_requested(Some(stranger), authority).is_err(),
+            "a signer who is not the arena's authority must be refused, not ignored",
+        );
+
+        // THE FIGHT REQUIREMENT STILL BINDS ON BOTH PATHS. `draw_is_permitted` answers only "has the
+        // waiting requirement been met" — `close_lobby_and_draw` checks `enough_to_fight` separately,
+        // and folding the two together is what would let an operator draw on a single fighter.
+        for count in 0u16..2 {
+            assert!(draw_is_permitted(count, closes_at, OPENED, true), "timing is satisfied...");
+            assert!(!enough_to_fight(count), "...but {} fighters is not a fight", count);
+        }
+        assert!(enough_to_fight(2));
+    }
+
+    /// THE PERMISSIONLESS PATH IS BYTE-FOR-BYTE WHAT IT WAS. `draw_is_permitted` is a disjunction over
+    /// `lobby_may_close`, so with `by_authority == false` it IS `lobby_may_close` — asserted here over
+    /// the whole grid rather than argued, because "I only added a term" is exactly the claim that
+    /// turns out to be false when the term was added in the wrong place.
+    ///
+    /// The wrong place would have been inside `lobby_may_close` itself: `lobby_is_dead` is phrased as
+    /// its complement, so an authority term there would have made a round both drawable AND
+    /// abandonable — the partition
+    /// `an_under_subscribed_lobby_is_dead_exactly_when_it_can_no_longer_fight` asserts. That test
+    /// still passes because the term went into the wrapper, and this one says why that mattered.
+    #[test]
+    fn the_authority_path_leaves_the_permissionless_rule_untouched() {
+        let closes_at = OPENED + 60;
+        for count in 0u16..=MAX_FIGHTERS as u16 {
+            for now in [OPENED, closes_at - 1, closes_at, closes_at + 86_400] {
+                assert_eq!(
+                    draw_is_permitted(count, closes_at, now, false),
+                    lobby_may_close(count, closes_at, now),
+                    "{} fighters at {}: the permissionless answer must be unchanged", count, now,
+                );
+                // And the authority path never REFUSES something the clock already allowed — it can
+                // only ever add. A wrapper that returned `by_authority` alone would break this.
+                assert!(draw_is_permitted(count, closes_at, now, true));
+            }
+        }
+
+        // The two exits still partition the state at the deadline, with the authority in play. An
+        // authority close needs two fighters; a dead lobby has fewer than two. They cannot overlap.
+        for count in 0u16..=MAX_FIGHTERS as u16 {
+            let drawable = draw_is_permitted(count, closes_at, closes_at, true) && enough_to_fight(count);
+            let abandonable = lobby_is_dead(count, closes_at, closes_at);
+            assert_ne!(
+                drawable, abandonable,
+                "{} fighters: an early close and an abandon must never both be legal", count,
+            );
+        }
+    }
+
+    /// A LOBBY HELD OPEN FOR DAYS IS A THING THE PROGRAM NOW PERMITS, which is the point of the
+    /// ceiling change — one round's rent instead of one per keeper cycle. Asserted against the
+    /// duration an operator would actually pass, not just against the constant.
+    #[test]
+    fn a_lobby_can_be_held_open_until_somebody_turns_up() {
+        for days in [1u32, 2, 7] {
+            let requested = days * 86_400;
+            let (opened_at, closes_at) = lobby_window(OPENED, requested);
+            assert_eq!(closes_at - opened_at, requested as i64, "{} days must survive the clamp", days);
+            // Still taking entries the whole way, right up to the last second.
+            assert!(lobby_is_open(closes_at, closes_at - 1));
+            // Nobody may draw it on the clock during that time...
+            assert!(!lobby_may_close(2, closes_at, opened_at));
+            // ...but the authority may, the instant there is a fight to start.
+            assert!(draw_is_permitted(2, closes_at, opened_at, true));
+        }
+
+        // AND IT STILL TERMINATES. The backstop is what stops a held-open lobby becoming the
+        // permanently-stuck round this repo has paid for twice: once the week is up, the ordinary
+        // permissionless rules take over with no operator involved — a fight if two turned up, an
+        // abandon if they did not.
+        let (_, closes_at) = lobby_window(OPENED, u32::MAX);
+        assert_eq!(closes_at - OPENED, MAX_LOBBY_SECONDS as i64);
+        assert!(lobby_may_close(2, closes_at, closes_at), "the backstop must fire without an authority");
+        assert!(lobby_is_dead(1, closes_at, closes_at), "and a lobby nobody joined must still die");
     }
 
     /// WHAT `open_round` ACTUALLY WRITES, which no other test in this module reaches.

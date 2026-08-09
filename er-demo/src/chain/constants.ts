@@ -85,9 +85,20 @@ export function stepsPerSecond(fighterCount: number): number {
  *  intervals, which is where the script gives up, not how long the thing takes. See
  *  `MIN_LOBBY_SECONDS` in lib.rs for the full account. */
 export const MIN_LOBBY_SECONDS = 20;
-/** The ceiling. It exists to catch milliseconds passed where seconds were meant, not to express a
- *  view on pacing — see `MAX_LOBBY_SECONDS` in lib.rs. */
-export const MAX_LOBBY_SECONDS = 3_600;
+/** The ceiling — a week, and it stopped being a unit-error guard when it stopped being an hour.
+ *
+ *  It used to catch milliseconds passed where seconds were meant (`20_000` unclamped is 5.5 hours).
+ *  It no longer does: 20,000 is inside this range and passes through untouched. The deadline is now
+ *  the BACKSTOP for "nobody ever came" rather than the thing that ends a lobby — `closeLobbyAndDraw`
+ *  takes an authority-signed early close, so the operator starts the fight when a real player
+ *  arrives, and a lobby is meant to be held open until one does. A wrong duration therefore no longer
+ *  has a consequence worth guarding against, which is a better outcome than detecting it.
+ *
+ *  A UI drawing a countdown off `lobbyClosesAt` should not assume it is a number anyone is waiting
+ *  for. Against a held-open lobby it can be days away and completely irrelevant to when the fight
+ *  actually starts. See `MAX_LOBBY_SECONDS` in lib.rs for the rent argument behind the change and for
+ *  what is still NOT proven about holding a round delegated that long. */
+export const MAX_LOBBY_SECONDS = 604_800;
 
 /** WHAT WE ACTUALLY OPEN LOBBIES AT — a product choice, not a chain rule, which is why it lives here
  *  and not in lib.rs (the program only clamps; it has no opinion about pacing).

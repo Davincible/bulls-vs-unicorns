@@ -43,6 +43,10 @@ const BASE_ROUND: KeeperRoundStatus = {
   fighterCount: 4,
   houseFighterCount: 4,
   realFighterCount: 0,
+  // The base fixture is the pre-hold-open shape on purpose: a lobby with a real deadline the keeper
+  // is going to let run out. The held-open cases set it explicitly, so every test that draws a
+  // `lobbyClosesAt` countdown is visibly a test about a lobby that has one.
+  heldOpen: false,
   winner: 0,
   pot: "4000000",
 };
@@ -66,6 +70,7 @@ const BASE: KeeperStatus = {
     erValidator: { identity: "Va1idat0rAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", fqdn: "devnet.magicblock.app" },
   },
   round: BASE_ROUND,
+  entriesCloseAt: null,
   nextLobbyOpensAt: null,
   house: { wallets: [HOUSE_WALLET], disclosure: "House-operated fighters, disclosed per README." },
 };
@@ -85,6 +90,12 @@ function round(over: Partial<KeeperRoundStatus> = {}): KeeperRoundStatus {
 
 function withKeeper(over: Partial<KeeperStatus["keeper"]>): KeeperStatus {
   return { ...BASE, keeper: { ...BASE.keeper, ...over } };
+}
+
+/** `withKeeper`, but against a status that is not the base one — for asking the liveness questions of
+ *  a held-open lobby, where both the round and the keeper half have been moved off the fixture. */
+function withHeldRound(from: KeeperStatus, over: Partial<KeeperStatus["keeper"]>): KeeperStatus {
+  return { ...from, keeper: { ...from.keeper, ...over } };
 }
 
 /** The base object as it actually arrives: through JSON, off the network, typed `unknown`. */
@@ -135,6 +146,53 @@ describe("isKeeperStalled", () => {
 describe("keeperCountdown", () => {
   it("counts entries down while the lobby is still taking them", () => {
     expect(keeperCountdown(status(), NOW)).toEqual({ kind: "entries-close", seconds: 30 });
+  });
+
+  it("says waiting-for-players for a held-open lobby, and never counts its hour-away backstop", () => {
+    // THE REGRESSION THIS WHOLE SCHEMA BUMP EXISTS FOR. The keeper opens one lobby with an hour of
+    // backstop and holds it until somebody arrives; the house is already in the room. Reading
+    // `lobbyClosesAt` here would put "closes in 59:59" in front of a player — a countdown to a
+    // non-event (the keeper abandoning this round and opening another), which reads as a dead arena.
+    const held = status({
+      round: round({ heldOpen: true, lobbyClosesAt: NOW + 3_600, realFighterCount: 0 }),
+    });
+    expect(keeperCountdown(held, NOW)).toEqual({ kind: "waiting-for-players" });
+
+    // And it is genuinely `heldOpen` deciding it: the same file with the flag cleared falls through
+    // to the chain deadline, which is the honest answer for a lobby that really does close then.
+    const notHeld = status({ round: round({ heldOpen: false, lobbyClosesAt: NOW + 3_600 }) });
+    expect(keeperCountdown(notHeld, NOW)).toEqual({ kind: "entries-close", seconds: 3_600 });
+  });
+
+  it("counts to the keeper's own close once a real player has arrived and the grace is running", () => {
+    // The moment that ends the hold. `entriesCloseAt` is seconds away and `lobbyClosesAt` is still an
+    // hour away; the number a player is owed is the one the keeper is about to act on.
+    const arrived = status({
+      round: round({ heldOpen: false, lobbyClosesAt: NOW + 3_600, realFighterCount: 1, fighterCount: 5 }),
+      entriesCloseAt: NOW + 18,
+    });
+    expect(keeperCountdown(arrived, NOW)).toEqual({ kind: "entries-close", seconds: 18 });
+  });
+
+  it("says nothing once the keeper's close is due, rather than falling back to the backstop", () => {
+    // THE CASE MOST LIKELY TO BE GOT WRONG BY A LATER EDIT. The grace has run out and the keeper is
+    // sending the close. If this branch fell through to `lobbyClosesAt` the page would jump from
+    // "0:01" to "59:42" at the exact instant the fight was about to start — the hour-away lie
+    // arriving three lines later than the one `heldOpen` deletes.
+    const due = status({
+      round: round({ heldOpen: false, lobbyClosesAt: NOW + 3_600, realFighterCount: 1 }),
+      entriesCloseAt: NOW,
+    });
+    expect(keeperCountdown(due, NOW)).toEqual({ kind: "none" });
+    expect(keeperCountdown({ ...due, entriesCloseAt: NOW - 4 }, NOW)).toEqual({ kind: "none" });
+  });
+
+  it("says nothing for a held-open lobby the moment the keeper writing it goes quiet", () => {
+    // Down outranks waiting-for-players exactly as it outranks every countdown. "Waiting for players"
+    // is a claim that a process is watching for them; a stale file is the claim that it is not.
+    const held = status({ round: round({ heldOpen: true, lobbyClosesAt: NOW + 3_600 }) });
+    expect(keeperCountdown(withHeldRound(held, { heartbeatAt: NOW - 240 }), NOW)).toEqual({ kind: "none" });
+    expect(keeperCountdown(withHeldRound(held, { stalledSince: NOW - 90 }), NOW)).toEqual({ kind: "none" });
   });
 
   it("says nothing when the heartbeat is stale, however live the round still looks", () => {
@@ -266,6 +324,18 @@ describe("parseKeeperStatus", () => {
     }
   });
 
+  it("rejects the v2 file a deployed keeper really wrote, which is what the bump to 3 was for", () => {
+    // The literal 2, for the same reason the v1 case below uses the literal 1: v2 files exist on disk
+    // and in browser caches and go on being v2 files forever. A v2 file is a v3 file minus
+    // `entriesCloseAt` and `round.heldOpen` — the exact shape that, if the missing fields were
+    // defaulted, would have the page draw an hour-long countdown on a lobby that is being held open.
+    const raw = rawStatus();
+    raw.schema = 2;
+    delete raw.entriesCloseAt;
+    delete (raw.round as Record<string, unknown>).heldOpen;
+    expect(parseKeeperStatus(raw)).toBeNull();
+  });
+
   it("rejects the v1 file a deployed keeper really wrote, which is what the bump to 2 was for", () => {
     // The literal 1, not `KEEPER_STATUS_SCHEMA - 1`: v1 files exist — on disk in `public/`, in any
     // browser cache holding one — and they go on being v1 files forever, whereas `SCHEMA - 1` stops
@@ -292,6 +362,13 @@ describe("parseKeeperStatus", () => {
       (raw) => delete raw.house,
       (raw) => delete raw.round,          // absent is NOT the same as an explicit null
       (raw) => delete raw.nextLobbyOpensAt,
+      (raw) => delete raw.entriesCloseAt,
+      (raw) => (raw.entriesCloseAt = "when someone shows up"),
+      // Absent is a writer that never heard of held-open lobbies, whose `lobbyClosesAt` may be an
+      // hour of backstop; a string is a writer that answered a different question.
+      (raw) => delete (raw.round as Record<string, unknown>).heldOpen,
+      (raw) => ((raw.round as Record<string, unknown>).heldOpen = "no"),
+      (raw) => ((raw.round as Record<string, unknown>).heldOpen = 0),
       (raw) => ((raw.keeper as Record<string, unknown>).heartbeatAt = "now"),
       (raw) => delete (raw.keeper as Record<string, unknown>).staleAfterSeconds,
       // Absent is a writer that never heard the question, not a keeper saying it is fine; `false` is
@@ -324,6 +401,19 @@ describe("parseKeeperStatus", () => {
     const raw = rawStatus();
     (raw.keeper as Record<string, unknown>).stalledSince = NOW - 90;
     expect(parseKeeperStatus(raw)?.keeper.stalledSince).toBe(NOW - 90);
+  });
+
+  it("carries the two hold-open fields through, as explicit nulls/false and as real values", () => {
+    // Both are read by `keeperCountdown` and both have a value that means "draw nothing" — so a value
+    // that changed in transit would change what the page says, silently and in the wrong direction.
+    expect(parseKeeperStatus(rawStatus())?.entriesCloseAt).toBeNull();
+    expect(parseKeeperStatus(rawStatus())?.round?.heldOpen).toBe(false);
+
+    const raw = rawStatus();
+    raw.entriesCloseAt = NOW + 18;
+    (raw.round as Record<string, unknown>).heldOpen = true;
+    expect(parseKeeperStatus(raw)?.entriesCloseAt).toBe(NOW + 18);
+    expect(parseKeeperStatus(raw)?.round?.heldOpen).toBe(true);
   });
 
   it("rejects a round whose phase name and phase code disagree", () => {

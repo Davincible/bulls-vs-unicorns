@@ -46,9 +46,10 @@ const VERDICT_COPY: Record<VerifyResult["verdict"], { label: string; detail: str
   "extraction-likely": {
     label: "Not an exact replay — consistent with a mid-fight Extract",
     detail:
-      "This round's on-chain state doesn't line up with a pure replay, but the on-chain numbers " +
-      "still fully conserve value (nothing was created or destroyed) and at least one fighter's " +
-      "final state is the exact shape only a mid-fight extract() leaves behind. The chain doesn't " +
+      "This round's on-chain state doesn't line up with a pure replay, but the on-chain numbers are " +
+      "internally consistent — value still fully conserves (nothing was created or destroyed) and " +
+      "the round's own recorded pot still matches the stakes that make it up — and at least one " +
+      "fighter's final state is the exact shape only a mid-fight extract() leaves behind. The chain doesn't " +
       "record WHEN an extract happened, only its effect — so a replay driven only by the final " +
       "seed and entries structurally cannot reproduce a human's real-time decision. That is an " +
       "honest limit of this client-side check, not a fairness problem.",
@@ -57,10 +58,11 @@ const VERDICT_COPY: Record<VerifyResult["verdict"], { label: string; detail: str
     label: "MISMATCH — not explained by extraction",
     detail:
       "This round's on-chain state disagrees with an independent replay in a way a mid-fight " +
-      "extract cannot account for: either the on-chain fighters' own value doesn't conserve, or " +
-      "no fighter shows the shape an extraction leaves behind. That points at a real problem — " +
-      "wrong seed, wrong entries, wrong step count, or an algorithm bug — worth investigating, not " +
-      "an accusation on its own.",
+      "extract cannot account for: the on-chain fighters' own value doesn't conserve, or the " +
+      "round's recorded pot disagrees with the stakes it should be the sum of, or no fighter shows " +
+      "the shape an extraction leaves behind. That points at a real problem — wrong seed, wrong " +
+      "entries, wrong step count, or an algorithm bug — worth investigating, not an accusation on " +
+      "its own.",
   },
 };
 
@@ -277,6 +279,23 @@ export function VerifyPanel({ round }: VerifyPanelProps) {
           <div className="stat__sub">
             {result.totalValueOnChain.toString()} held + {result.penaltiesCollectedOnChain.toString()}{" "}
             penalties = pot {result.potOnChain.toString()}
+          </div>
+          {/* The pot in the line above is SUMMED from the fighters' stakes. The round account also
+              keeps its own running `pot`, and comparing the two is the one check on this panel whose
+              both sides are on-chain facts about the same quantity — so it is the one that can be
+              false without anybody having replayed anything. Shown on every round, passing or
+              failing, for the same reason the penalty term is shown when it is zero: a check nobody
+              can see is indistinguishable from a check nobody ran.
+
+              It is shown here rather than in a cell of its own because it is a statement ABOUT the
+              number the line above ends on. It is deliberately NOT folded into the "holds"/"BROKEN"
+              word: that word is the conservation identity's verdict, and these are two independent
+              checks that can fail independently. Tinted red when it fails, which is this panel's
+              established language for the thing that must not be scanned past. */}
+          <div className={`stat__sub ${result.potMatchesStakesOnChain ? "" : "stat__sub--differs"}`}>
+            {result.potMatchesStakesOnChain
+              ? `cross-checked: the round's own pot field records ${result.potRecordedOnChain.toString()}, the same total — the two are written together on every entry`
+              : `CROSS-CHECK FAILED: the round's own pot field records ${result.potRecordedOnChain.toString()}, but the stakes sum to ${result.potOnChain.toString()} — the two are written together on every entry, so no player action explains this`}
           </div>
           {/* The fee, on its own line and only when there is one.
               NOT folded into the line above, deliberately. That line is the identity being CHECKED,

@@ -197,17 +197,49 @@ export function enter(
 }
 
 // ---- close_lobby_and_draw — request randomness from the VRF oracle ------------------------------
+//
+// TWO WAYS TO CLOSE A LOBBY, and `authority` is what picks between them.
+//
+// WITHOUT it this is the permissionless call it has always been: legal once the deadline has passed,
+// or once the lobby is full, and refused with `LobbyStillOpen` otherwise.
+//
+// WITH it — and it must be the arena's own authority, or the program answers `NotTheAuthority` rather
+// than falling through — the deadline is bypassed and the fight starts now. That is what lets a
+// keeper hold ONE lobby open indefinitely and begin the moment a real player joins, instead of
+// cycling rounds on a timer. The saving is rent: nothing ever closes a `Round` account, so every
+// cycle permanently locks ~0.0085 SOL whether or not anybody played.
+//
+// It cannot influence the OUTCOME, which is the question to ask of any privileged call in this
+// program. The VRF seed is requested by this instruction and delivered afterwards by `callback_seed`,
+// so at the instant the authority chooses to close, the seed does not exist for anyone. And it is not
+// a new trust assumption: the authority already decides when a lobby OPENS. It is authority-only
+// rather than permissionless because an early close DOES decide who is in the round — a player who
+// disliked the lineup could otherwise slam the lobby shut and lock the rest out.
+//
+// `fighterCount >= 2` still binds either way. The authority can choose the moment; it cannot conjure
+// a fight out of one entrant.
 export function closeLobbyAndDraw(
   program: BullsArenaProgram,
-  params: { payer: PublicKey; round: PublicKey; clientSeed: Uint8Array; programId?: PublicKey },
+  params: {
+    payer: PublicKey; round: PublicKey; clientSeed: Uint8Array;
+    arena?: PublicKey; programId?: PublicKey; authority?: PublicKey;
+  },
 ) {
   const programId = params.programId ?? PROGRAM_ID;
   return program.methods
     .closeLobbyAndDraw(Array.from(params.clientSeed))
     .accounts({
       payer: params.payer,
+      // Defaulted, like `roundPdaForRoundNo` and `treasuryPda` above: `ARENA_SEED` carries no
+      // discriminator, so there is exactly one arena per program and it is derivable rather than
+      // something a caller should have to know. The program only reads `arena.authority` from it.
+      arena: params.arena ?? arenaPda(programId),
       round: params.round,
       oracleQueue: DEFAULT_EPHEMERAL_QUEUE,
+      // `null`, not `undefined` — anchor encodes an omitted optional account as the program id, and
+      // it distinguishes "absent" from "present" by that sentinel. Passing `undefined` for a declared
+      // optional is the shape that silently becomes a positional mismatch.
+      authority: params.authority ?? null,
       programIdentity: programIdentityPda(programId),
       vrfProgram: VRF_PROGRAM_ID,
       slotHashes: SLOT_HASHES_SYSVAR,

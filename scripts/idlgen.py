@@ -469,6 +469,7 @@ def patch(idl):
         (6016, "LobbyNotAbandonable", "this lobby can still become a fight — it may not be abandoned"),
         (6017, "RoundNotTerminal", "this round has not finished — its house take cannot be swept yet"),
         (6018, "AlreadySwept", "this round's house take has already been swept"),
+        (6019, "NotTheAuthority", "only the arena's authority may close a lobby before its deadline"),
     ):
         if name not in have:
             idl["errors"].append({"code": code, "name": name, "msg": msg})
@@ -521,6 +522,24 @@ def patch(idl):
             ix[name] = idl["instructions"][-1]
         # Docs refreshed on EVERY run, not only the one that inserts — see REGENERATED_FNS.
         ix[name]["docs"] = fn_docs(name)
+
+    # ---- 8. THE AUTHORITY'S EARLY CLOSE ----------------------------------------------------------
+    #
+    # `close_lobby_and_draw` gained two accounts so a keeper can hold ONE lobby open and start the
+    # fight the moment a real player joins, instead of cycling rounds on a timer and locking a round's
+    # rent every cycle. `arena` supplies `arena.authority`; `authority` is the optional signer that
+    # says the operator chose this moment rather than the clock. See `draw_is_permitted` in lib.rs.
+    #
+    # Inserted at their declared positions rather than appended: anchor emits accounts in declaration
+    # order and clients that pass a positional array — `er-roundtrip.mjs` and the canary build account
+    # lists by hand — depend on that order matching the program's.
+    draw = ix["close_lobby_and_draw"]["accounts"]
+    if not any(a["name"] == "arena" for a in draw):
+        at = next(n for n, a in enumerate(draw) if a["name"] == "round")
+        draw.insert(at, {"name": "arena", "pda": arena_pda, "relations": ["round"]})
+    if not any(a["name"] == "authority" for a in draw):
+        at = next(n for n, a in enumerate(draw) if a["name"] == "oracle_queue") + 1
+        draw.insert(at, {"name": "authority", "signer": True, "optional": True})
 
     # Treasury: a new account type, so both the discriminator list and the type list.
     if not any(a["name"] == "Treasury" for a in idl["accounts"]):

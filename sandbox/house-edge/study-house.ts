@@ -17,7 +17,7 @@
 //
 // Both are measured below rather than argued.
 
-import { runFight, payout, DUST_ABSOLUTE, mix, FEE_BPS, BPS } from "./fight-variant.ts";
+import { runFight, payout, DUST_ABSOLUTE, W_UNIFORM, FEE_BPS, BPS } from "./fight-variant.ts";
 import type { FightConfig, DustRule } from "./fight-variant.ts";
 import { BANDS, finish, fightersOf, roiWithSE, usd, pct, toUsd } from "./lobby.ts";
 import type { Entry } from "./lobby.ts";
@@ -28,8 +28,11 @@ const STUDY_SEED = "house-edge-v1";
 const ABS: DustRule = { kind: "absolute", units: DUST_ABSOLUTE };
 const MAX_FIGHTERS = 16;
 
-const dial = (m: bigint): FightConfig =>
-  ({ attacker: mix(m, "ring"), defender: { kind: "uniform", basis: "ring" }, dust: ABS, layout: "wide" });
+/** The recommended mechanism from experiment 5: uniform selection exactly as deployed, and the only
+ *  change is what the damage roll is a percentage OF. `P` is in basis points; P = 0 is size-neutral,
+ *  P = 10,000 is the deployed rule. O(1) per step. */
+const dial = (P: bigint): FightConfig =>
+  ({ attacker: W_UNIFORM, defender: W_UNIFORM, dust: ABS, layout: "wide", damage: { blend: P } });
 
 /** Player populations. `wide` is study.ts's five-band mix; `small` is what a lobby looks like once
  *  players have worked out that small is better and copied the house. */
@@ -111,13 +114,15 @@ console.log(`study seed "${STUDY_SEED}"  |  ${ROUNDS} rounds per cell  |  16 fig
 console.log(`house plays $5 fighters. "wide" players = study.ts's five bands (mean ~$42). "small" players = $3-20 (mean ~$11.5).`);
 console.log(`fee = ${FEE_BPS} bps = ${Number(FEE_BPS * 100n / BPS)}% of volume, collected regardless — shown separately, never mixed into the edge.\n`);
 
-const MS = [30n, 100n, 200n, 300n, 600n, 1000n];
+const MS = [10n, 20n, 40n, 60n, 100n, 200n];   // blend P in BPS
 const HNS = [2, 4, 6, 8, 10, 12, 14];
+const DECOMP_M = 40n;
 
 for (const pop of ["wide", "small"] as Pop[]) {
   console.log(`--- player population: ${pop} ---\n`);
-  console.log(`houseN  house share  ` + MS.map(m => `M=${m}`.padStart(17)).join(""));
+  console.log(`houseN  house share  ` + MS.map(m => `P=${m}bps`.padStart(17)).join(""));
   console.log(`                     ` + MS.map(() => "take/volume".padStart(17)).join(""));
+  const keep: Record<number, ReturnType<typeof agg>> = {};
   for (const hn of HNS) {
     const lobbies = lobbiesFor(hn, 5, pop, ROUNDS);
     const cells: string[] = []; let share = 0;
@@ -125,6 +130,7 @@ for (const pop of ["wide", "small"] as Pop[]) {
       const rs = scenario(m, lobbies);
       const a = agg(rs), se = seOnVolume(rs, 11 + hn);
       share = a.share;
+      if (m === DECOMP_M) keep[hn] = a;
       cells.push(`${pct(a.onVolume, 3)}+-${(se * 100).toFixed(3)}`.padStart(17));
     }
     console.log(`${String(hn).padStart(6)}  ${pct(share, 1).padStart(11)}  ` + cells.join(""));
@@ -132,10 +138,10 @@ for (const pop of ["wide", "small"] as Pop[]) {
   console.log("");
   // The decomposition the brief asks about: is take/volume really share x edge-on-own-stake, and is
   // edge-on-own-stake independent of share? Printed at one M so the two columns can be compared.
-  console.log(`  decomposition at M=100:`);
+  console.log(`  decomposition at P=${DECOMP_M} bps:`);
   console.log(`  houseN   share   edge on own stake   share x edge   measured take/volume   player ROI`);
   for (const hn of HNS) {
-    const a = agg(scenario(100n, lobbiesFor(hn, 5, pop, ROUNDS)));
+    const a = keep[hn];
     console.log(`  ${String(hn).padStart(6)}  ${pct(a.share, 1).padStart(6)}  ${pct(a.edgeOwn, 2).padStart(17)}  ${pct(a.share * a.edgeOwn, 3).padStart(13)}  ${pct(a.onVolume, 3).padStart(21)}  ${pct(a.playerRoi, 3).padStart(11)}`);
   }
   console.log("");

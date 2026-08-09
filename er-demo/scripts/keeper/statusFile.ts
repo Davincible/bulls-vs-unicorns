@@ -60,6 +60,7 @@ export function roundStatusFrom(
   roundPda: PublicKey,
   houseFighters: number,
   realFighters: number,
+  heldOpen: boolean,
 ): KeeperRoundStatus {
   const phaseName = PHASE_NAME[round.phase];
   if (phaseName === undefined) {
@@ -76,6 +77,10 @@ export function roundStatusFrom(
     fighterCount: round.fighterCount,
     houseFighterCount: houseFighters,
     realFighterCount: realFighters,
+    // Decided by `lobbyIsHeldOpen` in lobbyPolicy.ts and passed in, not recomputed here: it is the
+    // same predicate the keeper's own branch runs on, and a second copy of it in the publisher is how
+    // the file would come to disagree with what the keeper is actually doing.
+    heldOpen,
     // The account's own `winner`, unmodified — 0 until `resolve` writes it, exactly as the chain
     // stores it. Reporting anything else before settlement would be this keeper inventing a result.
     winner: round.winner,

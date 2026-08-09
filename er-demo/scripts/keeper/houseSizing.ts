@@ -40,6 +40,32 @@ export interface SideCounts {
  *  while this may not. */
 export const HOUSE_FLOOR = 2;
 
+/** WHAT THE HOUSE FIELDS INTO A LOBBY THAT IS BEING HELD OPEN FOR REAL PLAYERS — one fighter, and
+ *  the number is chosen for what it makes IMPOSSIBLE rather than for how it looks.
+ *
+ *  THE MIRROR IMAGE OF `HOUSE_FLOOR`, ARGUED FROM THE SAME CHAIN RULE. Two is the count at which a
+ *  round becomes capable of fighting (`enough_to_fight`). One is therefore the largest count at which
+ *  it is INCAPABLE of it — and while the keeper is holding a lobby open waiting for a person, being
+ *  incapable of fighting is precisely the property wanted:
+ *
+ *    * `close_lobby_and_draw` is refused, for everyone. Not "the keeper declines to call it" — the
+ *      program rejects it, so a permissionless caller racing the deadline cannot run a
+ *      house-versus-house round either. The operator's requirement stops being a policy and becomes
+ *      an invariant, which is a much stronger thing to be able to promise.
+ *    * `abandon_round` is AVAILABLE at the deadline, because `lobby_is_dead` is exactly "past the
+ *      deadline and not `enough_to_fight`". A held-open lobby that nobody joined therefore ends
+ *      cleanly and the keeper opens another. At `HOUSE_TARGET` it could not be abandoned at all, and
+ *      the round would either fight itself or sit in `Lobby` forever with its rent stranded.
+ *
+ *  AND THE ROOM IS STILL NOT EMPTY, which is the requirement pulling the other way. There is a
+ *  fighter and a live pot on screen. The rest of the house arrives the moment a real player enters —
+ *  the room populates AROUND them, which reads better than a static crowd that was already there.
+ *
+ *  Zero would satisfy the chain rules just as well and is rejected on the product: an empty room is
+ *  the thing the house exists to prevent, and a visitor who arrives to nothing does not wait to find
+ *  out that the arena is alive. */
+export const HOLD_OPEN_HOUSE_FIGHTERS = 1;
+
 /** THE LINEUP THE HOUSE FIELDS INTO AN EMPTY ROOM. Two fighters is a duel and reads as a test
  *  transaction; four reads as an arena with something going on in it, which is what a visitor
  *  arriving mid-lobby has to see in the two seconds before they decide whether this is a live game.
