@@ -1,10 +1,31 @@
-// PUBLISHING `public/keeper-status.json` — the keeper's only channel to the browser.
+// PUBLISHING THE KEEPER'S STATUS — ONE SERIALIZER, TWO CHANNELS.
 //
 // The shape, and every rule about what may appear in it, live in `src/v2/data/keeperStatus.ts`, which
 // this module imports and the front end imports too. One module, both ends: a writer and a reader
 // each holding their own copy of a shape is a schema that drifts silently, and it always drifts the
 // same way — the page keeps rendering a field the keeper stopped writing, because `undefined` formats
 // as an empty string and nothing throws.
+//
+// THE SAME ARGUMENT NOW APPLIES ONE LAYER DOWN, because the status leaves this process by two routes:
+//
+//   * `public/keeper-status.json`, written atomically once a second. Vite dev, `vite preview` and a
+//     production build all serve `public/` verbatim, so locally this needs no server at all.
+//   * `GET /keeper-status.json` on the keeper's own HTTP port (`statusServer.ts`), which is the only
+//     route that works in production: the front end is a static build on another host and a keeper
+//     cannot write into a bundle that was finished before it started.
+//
+// BOTH EMIT THE SAME BYTES, from `serializeKeeperStatus`, rendered ONCE per publish and handed to
+// both. Two serializers over one in-memory object would be the drift this whole contract module
+// exists to prevent, re-entering by the back door — and it would be the hard kind to see, because
+// both channels would keep working and only DISAGREE, which no exception and no schema check catches.
+//
+// Rendering once per publish rather than once per request is also what keeps the HTTP server from
+// having any opinion about keeper state. `render()` below RECONCILES before it serializes — it decides
+// `nextLobbyOpensAt` against the round, and advances the per-round latch that makes that countdown
+// monotonic. If a request rendered its own body it would run that reconciliation too, so an HTTP GET
+// would mutate the latch, and a page polling twice a second would be participating in the keeper's
+// state machine. The body a request gets is therefore the last one published: at most one publish
+// interval old, which is the same staleness the file has, reported by the same heartbeat.
 //
 // THE WRITE IS ATOMIC, AND THAT IS NOT BELT-AND-BRACES. A browser polls this file while this process
 // rewrites it roughly once a second. `writeFileSync` truncates and then fills, so a fetch landing
@@ -50,6 +71,20 @@ const here = dirname(fileURLToPath(import.meta.url));
  *  configuration. It is gitignored: the file is generated, and its ABSENCE is meaningful — a 404 is
  *  correctly read by the front end as "no keeper has ever run here". */
 export const STATUS_FILE_PATH = join(here, "..", "..", "public", "keeper-status.json");
+
+/**
+ * THE ONE SERIALIZER. Every byte that leaves this process describing the keeper's status comes from
+ * here — the file, and the HTTP body, identically. See this file's header for why that is a rule and
+ * not a tidiness preference.
+ *
+ * Pretty-printed with a trailing newline, which is a deliberate choice rather than a leftover:
+ * `curl`ing this endpoint during an incident is the fastest way anyone will ever read it, and two
+ * kilobytes of minified JSON on one line is a diagnostic nobody can use. The cost is about 700 bytes
+ * a second against a poll nobody is paying for by the byte.
+ */
+export function serializeKeeperStatus(status: KeeperStatus): string {
+  return `${JSON.stringify(status, null, 2)}\n`;
+}
 
 /** Build the round half of the status from the account as the chain reports it.
  *
@@ -180,10 +215,26 @@ export interface StatusPublisherOptions {
    *  own fields are chain-stamped, and a heartbeat on a different clock would make "how stale is
    *  this" and "how long until the lobby closes" answerable only in different units. */
   nowSec: () => number;
+  /** Where to write the file. Defaults to `STATUS_FILE_PATH`, which is what the keeper uses.
+   *
+   *  It exists so a test can publish somewhere harmless. The status file is a SINGLE-WRITER resource
+   *  and there is usually a real keeper running against `public/` — a test that took the default path
+   *  would overwrite a live keeper's status with a fixture, and a page watching at that moment would
+   *  read a different process's `startedAt` and `roundsCompleted`. One optional field is a cheap price
+   *  for a test suite that cannot interfere with a running arena. */
+  filePath?: string;
 }
 
 export interface StatusPublisher {
   path: string;
+  /** THE CURRENT PAYLOAD, exactly as the file holds it — the second of the two channels in this
+   *  file's header. Never null: the publisher renders once at construction, so a request that arrives
+   *  before the first `publish()` still gets a well-formed status (with a heartbeat that is honestly
+   *  the boot instant) rather than an empty body a reader would have to have a case for. */
+  body(): string;
+  /** How long ago the published heartbeat was written, in seconds, from memory. For the health
+   *  endpoint — no chain call, no filesystem, no allocation worth mentioning. */
+  heartbeatAgeSeconds(): number;
   setErValidator(validator: { identity: string; fqdn: string } | null): void;
   setRound(round: KeeperRoundStatus | null): void;
   /** Proposes a next-lobby time. What actually reaches the file is decided by
@@ -194,6 +245,16 @@ export interface StatusPublisher {
   setEntriesCloseAt(at: number | null): void;
   setLastError(err: KeeperError | null): void;
   setStalledSince(at: number | null): void;
+  /** Report the payer below (or back above) the keeper's funding floor.
+   *
+   *  LATCHED HERE RATHER THAN AT THE CALL SITE. The caller re-derives its balance every pass and has
+   *  no memory, so it would hand over a fresh `since` each time and the published timestamp would
+   *  advance for as long as the condition lasted — "out of funds since a moment that keeps moving",
+   *  which is a duration that never grows. That is the same failure `nextLobbyOpensAt`'s latch exists
+   *  to prevent, one field along, so it gets the same treatment: the first `since` for a stretch is
+   *  the one that stretch keeps, and passing null clears it. The AMOUNTS still update on every call,
+   *  because those are observations rather than promises. */
+  setLowBalance(low: { lamports: bigint; floorLamports: bigint; nowSec: number } | null): void;
   /** True when this round number had not been recorded before — so the caller can raise the alarm
    *  once rather than on every pass. */
   addWedgedRound(roundNo: number): boolean;
@@ -205,7 +266,8 @@ export interface StatusPublisher {
 }
 
 export function createStatusPublisher(options: StatusPublisherOptions): StatusPublisher {
-  cleanStaleTempFiles();
+  const filePath = options.filePath ?? STATUS_FILE_PATH;
+  cleanStaleTempFiles(filePath);
 
   const startedAt = options.nowSec();
   const status: KeeperStatus = {
@@ -219,6 +281,7 @@ export function createStatusPublisher(options: StatusPublisherOptions): StatusPu
       lastError: null,
       stalledSince: null,
       wedgedRounds: [],
+      lowBalance: null,
     },
     chain: {
       // ER-000: this fork is structurally prevented from reaching mainnet, and the status file says so
@@ -240,59 +303,95 @@ export function createStatusPublisher(options: StatusPublisherOptions): StatusPu
   let proposedEntriesCloseAt: number | null = null;
   let writeFailures = 0;
 
-  function write(): void {
-    // Both countdowns are reconciled against the round at WRITE time, not at set time, because the
-    // three are assigned by different parts of a pass and only their final pairing is what a reader
-    // sees.
+  /** Reconcile, then serialize. The RESULT is what both channels emit — see this file's header.
+   *
+   *  Both countdowns are reconciled against the round at RENDER time, not at set time, because the
+   *  three are assigned by different parts of a pass and only their final pairing is what a reader
+   *  sees. That reconciliation advances the per-round latch, which is exactly why this runs once per
+   *  publish on the keeper's own schedule and never from a request handler. */
+  function render(): string {
     const decided = honestNextLobbyOpensAt(status.round, proposedNextLobbyOpensAt, latch);
     latch = decided.latch;
     status.nextLobbyOpensAt = decided.at;
     status.entriesCloseAt = honestEntriesCloseAt(status.round, proposedEntriesCloseAt);
+    return serializeKeeperStatus(status);
+  }
 
+  function writeFile(bytes: string): void {
     // Same directory as the target — see this file's header on why a cross-device rename would not be
     // atomic. The pid keeps two keeper processes (a stray one and its replacement) from writing the
     // same temp path, which would reintroduce the torn read by the back door.
-    const tmpPath = `${STATUS_FILE_PATH}.tmp-${process.pid}`;
-    writeFileSync(tmpPath, `${JSON.stringify(status, null, 2)}\n`);
-    renameSync(tmpPath, STATUS_FILE_PATH);
+    const tmpPath = `${filePath}.tmp-${process.pid}`;
+    writeFileSync(tmpPath, bytes);
+    renameSync(tmpPath, filePath);
   }
 
-  /** Every write goes through here. A status file that cannot be written must never take the keeper
+  /** The last rendered payload. Seeded here rather than left empty so `body()` has an answer from the
+   *  moment the publisher exists — the HTTP server starts before the first loop pass, and a request
+   *  landing in that window must get a real status, not a special case. */
+  let published = render();
+
+  /** Every publish goes through here. A status file that cannot be written must never take the keeper
    *  down: the rounds are what matter, and a keeper that stopped running them because a disk was full
    *  would be trading the product for its own telemetry. It goes stale, the UI says "keeper down",
    *  and the log says why — ONCE, and then once per hundred failures. A permanent failure otherwise
    *  emits an error line on every publish and every heartbeat, roughly 1.5 lines a second forever,
-   *  which buries the diagnosis it is trying to deliver. */
-  function writeSafely(context: string): void {
+   *  which buries the diagnosis it is trying to deliver.
+   *
+   *  THE RENDER IS OUTSIDE THE `try`, AND THAT IS THE POINT OF SPLITTING THEM. The two channels fail
+   *  independently: a full disk, a read-only container filesystem, a `public/` that does not exist in
+   *  the image — none of those are reasons for the HTTP body to stop advancing, and in production the
+   *  file is the channel nobody is reading. So the payload is rendered first and unconditionally, and
+   *  only the write is guarded. (`render` itself cannot throw: `status` holds numbers, strings, nulls
+   *  and arrays of those — no BigInt, no cycles, nothing `JSON.stringify` refuses.) */
+  function publishSafely(context: string): void {
+    published = render();
     try {
-      write();
+      writeFile(published);
       writeFailures = 0;
     } catch (e) {
       writeFailures += 1;
       if (writeFailures === 1 || writeFailures % 100 === 0) {
         logError(
           `could not write the status file (${context}, failure #${writeFailures}) — the keeper keeps ` +
-          `running, but the UI will read it as down: ${e instanceof Error ? e.message : String(e)}`,
+          `running and the HTTP status endpoint is unaffected, but anything reading the file will see ` +
+          `it as down: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
     }
   }
 
   return {
-    path: STATUS_FILE_PATH,
+    path: filePath,
+    body: () => published,
+    heartbeatAgeSeconds: () => options.nowSec() - status.keeper.heartbeatAt,
     setErValidator(validator) { status.chain.erValidator = validator; },
     setRound(round) { status.round = round; },
     setNextLobbyOpensAt(at) { proposedNextLobbyOpensAt = at; },
     setEntriesCloseAt(at) { proposedEntriesCloseAt = at; },
     setLastError(err) { status.keeper.lastError = err; },
     setStalledSince(at) { status.keeper.stalledSince = at; },
+    setLowBalance(low) {
+      if (low === null) {
+        status.keeper.lowBalance = null;
+        return;
+      }
+      // The latch — see the interface's doc comment. `since` survives from the first call of a
+      // stretch; the amounts are refreshed every call, because a balance is an observation and a
+      // reader watching it fall is watching something true.
+      status.keeper.lowBalance = {
+        since: status.keeper.lowBalance?.since ?? low.nowSec,
+        lamports: low.lamports.toString(),
+        floorLamports: low.floorLamports.toString(),
+      };
+    },
     addWedgedRound(roundNo) {
       if (status.keeper.wedgedRounds.includes(roundNo)) return false;
       status.keeper.wedgedRounds.push(roundNo);
       return true;
     },
     setRoundsCompleted(count) { status.keeper.roundsCompleted = count; },
-    publish() { writeSafely("publish"); },
+    publish() { publishSafely("publish"); },
     startHeartbeat() {
       if (heartbeat) return;
       // ITS OWN TIMER, INDEPENDENT OF THE MAIN LOOP, and that independence is the entire point. The
@@ -308,7 +407,7 @@ export function createStatusPublisher(options: StatusPublisherOptions): StatusPu
       // this timer cannot tell the difference.
       heartbeat = setInterval(() => {
         status.keeper.heartbeatAt = options.nowSec();
-        writeSafely("heartbeat");
+        publishSafely("heartbeat");
       }, HEARTBEAT_INTERVAL_SECONDS * 1_000);
     },
     stopHeartbeat() {
@@ -324,9 +423,9 @@ export function createStatusPublisher(options: StatusPublisherOptions): StatusPu
  *  at a URL nobody expects, and `vite build` would copy every one of them into `dist/`. Cleaned at
  *  boot rather than at exit, because the case that creates them is precisely the exit that does not
  *  get to run any code. */
-function cleanStaleTempFiles(): void {
-  const dir = dirname(STATUS_FILE_PATH);
-  const prefix = `${STATUS_FILE_PATH.slice(dir.length + 1)}.tmp-`;
+function cleanStaleTempFiles(statusFilePath: string): void {
+  const dir = dirname(statusFilePath);
+  const prefix = `${statusFilePath.slice(dir.length + 1)}.tmp-`;
   try {
     for (const name of readdirSync(dir)) {
       if (name.startsWith(prefix)) {

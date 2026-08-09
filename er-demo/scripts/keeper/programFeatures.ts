@@ -52,6 +52,29 @@ export interface ProgramFeatures {
    *  swept round from an unswept one, and would re-send `sweep_house_take` on every pass of every
    *  hold for the rest of the process's life. */
   houseTakeSweep: boolean;
+  /** Can a finished round's ACCOUNT be closed, handing its rent deposit back?
+   *
+   *  This is the capability the auto-close policy is gated on, and it is the one where the `false`
+   *  direction is worth the most so far. `close_round_account` is v7; every earlier deployment has
+   *  no such instruction, so `program.methods.closeRoundAccount` is `undefined` and calling it
+   *  throws — once per pass, at 1Hz, forever, on a policy that is ON BY DEFAULT. A capability that
+   *  defaults to on has to be able to prove it is unavailable, or the default is a promise the
+   *  keeper cannot keep.
+   *
+   *  IT ALSO REQUIRES THE SWEEP, and that is a chain rule rather than a tidiness preference:
+   *  `check_close_permitted` refuses with `RoundNotSwept` unless `Round.house_swept` is set, because
+   *  `fees_collected` and `penalties_collected` live only on the round account and closing an
+   *  unswept round would forfeit that take permanently and silently. A keeper that could close but
+   *  not sweep would therefore close nothing — every attempt refused — so the honest answer to "can
+   *  this keeper reclaim rent" is no. Stating the dependency here keeps that reasoning in one place
+   *  instead of as a surprise in the loop.
+   *
+   *  `authority` is checked as an ACCOUNT, not just the instruction's presence, for the reason this
+   *  file exists: Anchor builds account lists by walking the IDL and silently drops names it does
+   *  not find, so an IDL carrying the instruction without the account would build a close that
+   *  cannot satisfy `has_one = authority` and fail with a constraint error rather than a missing
+   *  account. A missing METHOD throws loudly on its own; a missing ACCOUNT is the quiet one. */
+  roundAccountClose: boolean;
 }
 
 /** The IDL's own shape, narrowed to the two questions asked of it. Written out here rather than
@@ -83,14 +106,22 @@ export function programFeaturesOf(idl: Idl): ProgramFeatures {
   // Names are the RAW, snake_case IDL names. Anchor camel-cases at `new Program(...)` time, but this
   // is the file on disk, before that ever happens — `closeLobbyAndDraw` would silently match nothing.
   const shape = idl as unknown as IdlShape;
+  const houseTakeSweep =
+    hasInstruction(shape, "sweep_house_take") &&
+    hasInstruction(shape, "init_treasury") &&
+    accountHasField(shape, "Round", "house_swept");
   return {
     authorityEarlyClose:
       instructionTakesAccount(shape, "close_lobby_and_draw", "authority") &&
       instructionTakesAccount(shape, "close_lobby_and_draw", "arena"),
-    houseTakeSweep:
-      hasInstruction(shape, "sweep_house_take") &&
-      hasInstruction(shape, "init_treasury") &&
-      accountHasField(shape, "Round", "house_swept"),
+    houseTakeSweep,
+    roundAccountClose:
+      hasInstruction(shape, "close_round_account") &&
+      instructionTakesAccount(shape, "close_round_account", "authority") &&
+      // The chain refuses to close an unswept round, so a keeper that cannot sweep cannot close —
+      // see the field's doc comment. Expressed as a dependency rather than left for the loop to
+      // discover as a stream of `RoundNotSwept` failures.
+      houseTakeSweep,
   };
 }
 

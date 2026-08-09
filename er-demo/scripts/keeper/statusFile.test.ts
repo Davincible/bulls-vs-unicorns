@@ -22,6 +22,9 @@
 // without a chain, a filesystem or a clock.
 
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { BN } from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
 import { PHASE_NAME, Phase } from "../../src/chain/constants.ts";
@@ -29,7 +32,8 @@ import {
   KEEPER_STATUS_SCHEMA, parseKeeperStatus, type KeeperRoundStatus,
 } from "../../src/v2/data/keeperStatus.ts";
 import {
-  honestEntriesCloseAt, honestNextLobbyOpensAt, roundStatusFrom, type CountdownLatch,
+  createStatusPublisher, honestEntriesCloseAt, honestNextLobbyOpensAt, roundStatusFrom,
+  type CountdownLatch,
 } from "./statusFile.ts";
 import { RESULT_HOLD_SECONDS } from "./config.ts";
 
@@ -107,6 +111,7 @@ describe("what the keeper writes is what the browser can read", () => {
       keeper: {
         startedAt: NOW - 60, heartbeatAt: NOW, heartbeatIntervalSeconds: 2, staleAfterSeconds: 15,
         stalledSince: null, roundsCompleted: 0, lastError: null, wedgedRounds: [],
+        lowBalance: null,
       },
       chain: { cluster: "devnet", programId: "P", arenaPda: "A", erValidator: null },
       round: written,
@@ -220,5 +225,100 @@ describe("the countdown counts down", () => {
     const latched = honestNextLobbyOpensAt(roundIn(Phase.Settled), NOW + 12, null);
     const late = honestNextLobbyOpensAt(roundIn(Phase.Settled), NOW + 45, latched.latch);
     expect(late.at).toBe(NOW + 12);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("one serializer, two channels", () => {
+  // THE INVARIANT THIS WHOLE MODULE WAS RESHAPED AROUND. The status leaves the process by two routes —
+  // the file, and the HTTP body the front end reads in production — and they must be the same bytes.
+  // Two serializers over one object is the schema drift the contract module exists to prevent,
+  // re-entering one layer down, and it is the hard kind to see: both channels keep working and only
+  // DISAGREE, which no exception and no schema check catches.
+  //
+  // Published to a TEMP DIRECTORY, never to `public/`. The status file is a single-writer resource and
+  // there is usually a real keeper running against that path; a test taking the default would
+  // overwrite a live keeper's status with a fixture, and a page watching at that moment would read a
+  // different process's numbers.
+
+  function publishToTempDir(): { body: string; onDisk: string; path: string } {
+    const dir = mkdtempSync(join(tmpdir(), "keeper-status-"));
+    const path = join(dir, "keeper-status.json");
+    const publisher = createStatusPublisher({
+      programId: "Pr0gram11111111111111111111111111111111111",
+      arenaPda: "Aren4Pda1111111111111111111111111111111111",
+      houseWallets: ["H0use11111111111111111111111111111111111111"],
+      disclosure: "test",
+      nowSec: () => NOW,
+      filePath: path,
+    });
+    publisher.setRound(roundIn(Phase.Settled));
+    publisher.setNextLobbyOpensAt(NOW + RESULT_HOLD_SECONDS);
+    publisher.publish();
+    return { body: publisher.body(), onDisk: readFileSync(path, "utf8"), path };
+  }
+
+  it("hands the HTTP body and the file byte-identical payloads", () => {
+    const { body, onDisk } = publishToTempDir();
+    expect(body).toBe(onDisk);
+  });
+
+  it("publishes a payload the front end's own parser accepts", () => {
+    // The serializer's real contract is not "valid JSON", it is "a status `parseKeeperStatus` returns
+    // an object for". A payload that parses as JSON and then as `null` is the exact failure this file
+    // is about: the page says "keeper is down" while the keeper runs perfectly.
+    const { body } = publishToTempDir();
+    const parsed = parseKeeperStatus(JSON.parse(body));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.nextLobbyOpensAt).toBe(NOW + RESULT_HOLD_SECONDS);
+  });
+
+  it("keeps the HTTP body advancing when the file write fails", () => {
+    // THE PROPERTY `publishSafely` WAS RESTRUCTURED FOR, and the only one of the three that is about
+    // the two channels failing INDEPENDENTLY. The render happens outside the try/catch, so a full
+    // disk, a read-only container filesystem or a `public/` that does not exist in the image cannot
+    // freeze the payload a browser is reading — and in production the file is the channel nobody
+    // reads. Pointed at a path inside a file (so every write fails with ENOTDIR), the publisher must
+    // keep running and its body must still move.
+    const dir = mkdtempSync(join(tmpdir(), "keeper-status-"));
+    const notADirectory = join(dir, "keeper-status.json");
+    writeFileSync(notADirectory, "not a directory");
+    const publisher = createStatusPublisher({
+      programId: "Pr0gram11111111111111111111111111111111111",
+      arenaPda: "Aren4Pda1111111111111111111111111111111111",
+      houseWallets: [],
+      disclosure: "test",
+      nowSec: () => NOW,
+      filePath: join(notADirectory, "keeper-status.json"),
+    });
+
+    publisher.setRoundsCompleted(1);
+    expect(() => publisher.publish()).not.toThrow();
+    const first = publisher.body();
+    publisher.setRoundsCompleted(2);
+    publisher.publish();
+
+    expect(first).not.toBe(publisher.body());
+    expect(parseKeeperStatus(JSON.parse(publisher.body()))!.keeper.roundsCompleted).toBe(2);
+  });
+
+  it("has a body to serve before anything has been published", () => {
+    // The HTTP server starts before the first loop pass, so a request — a platform health check, most
+    // likely — can arrive while the keeper is still choosing a validator. It must get a real status
+    // with an honest boot-instant heartbeat, not an empty body some reader has to have a case for.
+    const dir = mkdtempSync(join(tmpdir(), "keeper-status-"));
+    const publisher = createStatusPublisher({
+      programId: "Pr0gram11111111111111111111111111111111111",
+      arenaPda: "Aren4Pda1111111111111111111111111111111111",
+      houseWallets: [],
+      disclosure: "test",
+      nowSec: () => NOW,
+      filePath: join(dir, "keeper-status.json"),
+    });
+    const parsed = parseKeeperStatus(JSON.parse(publisher.body()));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.keeper.heartbeatAt).toBe(NOW);
+    expect(publisher.heartbeatAgeSeconds()).toBe(0);
   });
 });

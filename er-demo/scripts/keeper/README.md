@@ -34,6 +34,7 @@ bun run scripts/keeper/keeper.ts                # runs until you stop it
 bun run scripts/keeper/keeper.ts --rounds 3     # stops cleanly after 3 settled rounds
 bun run scripts/keeper/keeper.ts --dry-run      # one full pass, sends nothing
 bun run scripts/keeper/keeper.ts --hold-open    # hold ONE lobby open for players (see below)
+bun run scripts/keeper/keeper.ts --no-close-rounds   # stop reclaiming finished rounds' rent
 ```
 
 `--dry-run` does everything except send: loads the operator and house keys, picks an ER validator,
@@ -52,9 +53,17 @@ so it is loud rather than dangerous, but it is not a supported way to run this.
 It needs the arena authority's key at `.devnet/fork-payer.json` — `open_round` and `delegate_round`
 are both `has_one = authority`, and the keeper refuses to start if that key is not the arena's
 authority. It creates and funds its own house wallets at `.devnet/keeper-house-wallets.json` on first
-boot; both paths are gitignored.
+boot; both paths are gitignored. Both can instead come from the environment (`KEEPER_OPERATOR_KEY`,
+`KEEPER_HOUSE_WALLETS`), which is how a deployment gets them — env beats file, and the boot log says
+which won without ever printing the keys. See **Deploying it**.
 
-Devnet only, enforced by `assertDevnetUrl` on every endpoint including the ER validator's fqdn.
+It also serves its status over HTTP on `KEEPER_HTTP_PORT` (default 8080) while it runs — locally that
+is redundant with the file, and in production it is the only channel that works. A port it cannot bind
+is logged loudly and does **not** stop the keeper: rounds matter more than telemetry.
+
+Devnet only, enforced by `assertDevnetUrl` on every endpoint including the ER validator's fqdn — and
+including whatever `KEEPER_BASE_RPC` / `KEEPER_ROUTER_URL` supply, asserted at boot before any
+connection is constructed.
 
 Every number it runs on is in `config.ts` with the argument for it, and the ones worth changing are
 env-overridable (`KEEPER_RESULT_HOLD_SECONDS`, `KEEPER_DRAW_TIMEOUT_SECONDS`,
@@ -105,10 +114,15 @@ not a gap to be tidied up.
 
 ## What it costs
 
-**Rent dominates, and it is never reclaimed.** Measured on devnet, a round PDA is 1,093 bytes and
-holds **8,498,160 lamports (0.0084982 SOL)** of rent exemption, paid by the operator at `open_round`.
-There is no instruction that closes a round account, so that lamport balance stays there forever —
-`close_round` undelegates the account, it does not reclaim it.
+**Rent dominates.** Measured on devnet, a round PDA is 1,093 bytes and holds **8,498,160 lamports
+(0.0084982 SOL)** of rent exemption, paid by the operator at `open_round`. Note that `close_round`
+*undelegates* an account, it does not reclaim one — the two are different instructions and the names
+are close enough to mislead.
+
+**It used to stay there forever. From v7 it does not:** `close_round_account` hands the deposit back,
+and the keeper calls it automatically. Everything in this section is the cost *before* that — read it
+as the standing cost of a round that is still inside the retention window, then read "Reclaiming the
+rent" below for what a round costs once it leaves.
 
 Everything else is signatures at 5,000 lamports each. Per round the operator signs `open_round`,
 `delegate_round`, `close_lobby_and_draw`, `resolve`, `close_round` — five — plus one `tick` per second
@@ -155,14 +169,112 @@ House wallets are topped up from the operator to 0.01 SOL whenever they drop bel
 signature per round that is thousands of rounds per top-up; nothing else leaves them, because this
 program custodies no balances at all (`enter` *records* a stake, it does not move one).
 
+### Reclaiming the rent — the 22x
+
+Everything above was written when nothing ever gave the rent back. **v7's `close_round_account`
+does**, and the keeper calls it automatically:
+
+```
+per round, all-in                  0.008971 SOL
+  of which Round-PDA rent          0.008561 SOL   95.4%, reclaimable from v7
+marginal cost once reclaimed      ~0.00041  SOL   ~22x cheaper
+```
+
+On a payer holding ~6.6 SOL that is the difference between roughly **740 rounds and 16,200**. It is
+the single largest cost in running the arena, and it was invisible precisely because nothing failed.
+
+**On by default**, which is the opposite of `--hold-open` and worth saying why. Hold-open needed the
+operator's say-so because its precondition — a *deployed* early close — is not a question any local
+file can answer, and getting it wrong stranded a real player in a lobby. This has no such gap: every
+condition is enforced *on chain* by `check_close_permitted` (terminal phase, `house_swept`, past the
+retention window, authority-signed), so a keeper that asks for something it should not get is refused
+rather than obeyed. The worst case is a wasted signature. Leaving money on the floor is not the safe
+default; it is the expensive one.
+
+Turn it off with `--no-close-rounds` or `KEEPER_CLOSE_ROUNDS=0` — for a demo or an audit that needs
+the round log to outlive the retention window. It costs 0.0086 SOL per round to do that.
+
+**The retention window is what makes it safe for the UI.** `useHistory` fetches rounds by address
+with `fetchNullable` and its caller drops nulls, so a closed round leaves the log *silently* — no
+error, no gap marker — and nothing in `src/` reads events, so there is no path that reconstructs it.
+The chain guaranteeing the newest `MIN_RETAINED_ROUNDS` (20) rounds still exist is the entire safety
+argument, which is why that floor lives in the program and not in this config. Its corollary: anything
+derived from the round log is a *newest-N* statistic and must not be labelled "all time".
+
+`KEEPER_ROUND_RETENTION` can raise the window but **not lower it** — a value below the chain's floor
+is refused at boot rather than clamped, because every close inside it would come back `RoundTooRecent`
+and a silently-clamped keeper would be running a window its operator did not choose.
+
+**How it drains a backlog.** One round per pass, oldest first, on idle passes only — never during
+`Drawing` or `Fight`, because reclaiming rent must not compete with the round somebody is playing.
+The cursor starts at round #1 on **every boot**, which is what makes it pick up rounds that were
+stranded long before this process started rather than only the ones it opened itself. It only moves
+forward, so the scan cannot loop, and the cost is one account read per second no matter how long the
+history is. A round it cannot close — wedged in `Drawing`, still delegated, or failing repeatedly —
+is logged and stepped past, because one unclosable round must never hold every older round's rent
+hostage behind it. An *unswept* round is the one case it fixes instead of skipping: it sweeps, then
+closes on a later pass, which also quietly drains the `Treasury.rounds_swept` gap listed under "Known
+holes".
+
+**Against a pre-v7 program it does nothing at all**, and says so in the boot banner
+(`rent  unavailable — this IDL has no close_round_account`). That veto is `programFeatures.ts`, and it
+is the reason a default-on policy is safe: a capability that defaults to on has to be able to prove it
+is unavailable.
+
+### The funding floor
+
+The keeper stops **opening** rounds when the payer falls below `KEEPER_MIN_BALANCE_SOL` (default
+0.05), and keeps driving whatever round is already in flight all the way to a terminal state.
+
+That asymmetry is the whole design. Running out *between* `delegate_round` and `resolve` is the
+expensive failure: the rent is already paid, the round is delegated, and stopping there would strand
+that deposit for nothing while leaving a real player's fight unfinished. So the guard refuses to
+**start** work it may not be able to finish — the one point where refusing costs nothing — and never
+interrupts work already started.
+
+It publishes `keeper.lowBalance` (schema 4), which is a **fourth liveness state**: the keeper is up,
+heartbeating, and succeeding on every pass, because refusing to open *is* the correct outcome of a
+pass. `isKeeperStale` and `isKeeperStalled` both correctly answer false. Without the field the page
+would go on counting down to a next lobby that nothing is going to open — so `keeperCountdown` returns
+`none` for the next-lobby case while it is set, and still counts an in-flight lobby down, because that
+round genuinely is being finished.
+
+It logs once per stretch rather than per pass, re-reads the balance every 15 seconds while blocked
+(one RPC per fifteen passes, not one per pass), and resumes on its own within 15 seconds of a top-up
+landing.
+
 ## Reading the status file
 
-Written to `er-demo/public/keeper-status.json`, served at `/keeper-status.json` by Vite dev, `vite
-preview` and a production build alike. The shape and every rule about it live in
-`src/v2/data/keeperStatus.ts`, which both this keeper and the browser import — one module, both ends.
+**One serializer, two channels.** The status leaves this process by two routes and they emit *the same
+bytes*, rendered once per publish:
 
-It is written **atomically** (temp file in the same directory, then `rename`), so a browser polling it
-never reads half a document.
+| channel | where | when it is the one that matters |
+|---|---|---|
+| file | `er-demo/public/keeper-status.json` | local dev — Vite dev, `vite preview` and a production build all serve `public/` verbatim at `/keeper-status.json`, so nothing needs configuring |
+| HTTP | `GET /keeper-status.json` on `KEEPER_HTTP_PORT` (default 8080) | **production, always** — the front end is a static build on another host, and a keeper cannot write into a bundle that was finished before it started |
+
+Two serializers over one in-memory object would be the schema drift this whole contract module exists
+to prevent, arriving one layer down — and it is the hard kind to see, because both channels keep
+working and only *disagree*. `serializeKeeperStatus` is the single place it happens; a test asserts the
+HTTP body and the file are byte-identical.
+
+The body a request gets is the last one **published**, not one rendered on demand, and that is
+deliberate rather than lazy: rendering reconciles `nextLobbyOpensAt` against the round and advances the
+per-round latch that makes that countdown monotonic. If a request rendered its own body, an HTTP `GET`
+would mutate keeper state and a page polling twice a second would be participating in the state
+machine. It is at most one publish interval old, which is exactly as old as the file, reported by the
+same heartbeat.
+
+Both are `Cache-Control: no-store`, and the page asks for it too. A cached liveness report is a lie
+about liveness, and reporting liveness is the only reason this thing exists — a 304 or a CDN hit keeps
+a dead keeper looking alive for as long as the cache lives. Both ends say it because either end alone
+is one misconfiguration away from a stale countdown.
+
+The shape and every rule about it live in `src/v2/data/keeperStatus.ts`, which both this keeper and the
+browser import — one module, both ends.
+
+The file is written **atomically** (temp file in the same directory, then `rename`), so a browser
+polling it never reads half a document.
 
 **Schema 3.** `parseKeeperStatus` requires an exact match, so an older page against this keeper reads
 as "keeper down" rather than as a status it half-understands. That degradation is the point: a v2 file
@@ -216,7 +328,326 @@ not verifiable. Registering the house wallets on the Arena account on-chain is t
 is planned separately.
 
 The file is gitignored. Its **absence** is meaningful: a 404 is correctly read as "no keeper is
-running here".
+running here" — and so is a connection refused on the HTTP channel. `useKeeperStatus` collapses every
+way of failing into the same answer, because showing a countdown for any of them would be inventing
+the number.
+
+### The health endpoint
+
+`GET /health` → `200 {"ok":true,"schema":3,"heartbeatAgeSeconds":N}`.
+
+**It makes no chain calls, and that is the whole design.** If it depended on RPC, a devnet blip — a
+429, a slow block — would fail the platform's check and get a *perfectly healthy keeper killed
+mid-round*, stranding a delegated round whose rent nothing reclaims. The blip is transient; the restart
+is not. So it answers from memory only, and it returns 200 for as long as the process is answering:
+answering an HTTP request at all already proves the thing a liveness probe is for.
+
+`heartbeatAgeSeconds` is **reported, not enforced**. A stopped heartbeat beside a responsive server
+would be a real bug worth seeing — but it is not made a failure, because the condition has never been
+observed and the cost of a false positive is a restart landing in the middle of a round. "Is the keeper
+*working*" is `keeper.heartbeatAt` and `keeper.stalledSince` in the status, which the front end already
+reads.
+
+(`engine/`'s Dockerfile points its check at `/live` and explicitly **not** at `/health`, for the
+mirror-image reason: engine's `/health` returns 503 on a solvency freeze, which a restart cannot fix.
+Here `/health` is the one that is safe to probe. The divergence is deliberate in both directions.)
+
+## Deploying it
+
+`Dockerfile`, `.dockerignore` and `fly.toml` live in `er-demo/`, which is also the build context —
+unlike `engine/`, which builds from the repo root because it also ships `web/`. The keeper imports
+nothing outside `er-demo/`.
+
+### The whole path
+
+```sh
+cd er-demo
+
+# 1. create the app (no volume — see fly.toml rule 2; there is nothing to persist)
+#    --ha=false is NOT optional. See "One instance" below: without it Fly starts TWO machines.
+fly launch --no-deploy --copy-config --ha=false --name bulls-arena-keeper-devnet
+
+# 2. the two secrets. NEVER in the image, never in fly.toml, never in git.
+fly secrets set KEEPER_OPERATOR_KEY="$(cat ../.devnet/fork-payer.json)"
+fly secrets set KEEPER_HOUSE_WALLETS="$(cat ../.devnet/keeper-house-wallets.json)"
+
+# 3. who may read the status from a browser. NOT optional — without it a deployed page is
+#    blocked by CORS and reports the keeper as down. Never "*".
+fly secrets set KEEPER_CORS_ORIGIN="https://bulls-vs-unicorns.vercel.app"
+
+# 4. deploy — --ha=false EVERY time, not just the first
+fly deploy --ha=false
+
+# 5. prove it is alive, and prove there is exactly ONE machine
+fly status                      # expect a single machine, started
+fly machine list                # if there are two, `fly machine destroy <id>` the extra NOW
+fly logs
+curl -s https://bulls-arena-keeper-devnet.fly.dev/health
+curl -s https://bulls-arena-keeper-devnet.fly.dev/keeper-status.json | jq .
+
+# 6. point the front end at it — in the VERCEL project, then redeploy the front end
+#    VITE_KEEPER_STATUS_URL=https://bulls-arena-keeper-devnet.fly.dev/keeper-status.json
+```
+
+Step 6 is a **build-time** value: Vite inlines it into the bundle, so it must be set in Vercel's
+environment *before* the build, and changing it needs a front-end redeploy. That is the correct shape
+for a value that is part of the artifact. `KEEPER_STATUS_URL` in `src/v2/data/keeperStatus.ts` reads it
+and falls back to the relative `/keeper-status.json`, so **local development is unaffected and no UI
+file changes**.
+
+### Preview deployments, and the wildcard that would "fix" them
+
+Vercel gives every preview deployment its own hostname —
+`https://bulls-vs-unicorns-6t45yhqn7-davincibles-projects.vercel.app` — so the one exact origin above
+covers production and nothing else.
+
+**Do not reach for `*`.** `KEEPER_CORS_ORIGIN` refuses a value containing one outright, discards the
+whole value with it and falls back to local-dev origins, and that refusal is deliberate: an origin
+allowlist that quietly matches everything is precisely the thing the list exists to avoid. The two
+honest options are (a) add the specific preview origin to the comma-separated list for as long as you
+need that preview to read live keeper status, or (b) accept that previews read nothing and render
+"keeper is down", which is the safe failure. A preview that cannot read the status is a cosmetic gap
+that dies with the preview; a wildcard is a permanent one.
+
+The practical consequence, so nobody debugs it twice: **a preview build looks like a dead arena while
+the keeper is perfectly fine.** Judge keeper liveness from production or from `curl`, never from a
+preview URL.
+
+### Rehearsing the image without Docker
+
+Worth knowing, because it caught a boot failure that no test and no type-check could: copy out
+*exactly* what the `Dockerfile` copies, and run the keeper from there with the secrets in the
+environment. It costs nothing and it is the only check that exercises the deployed file tree.
+
+```sh
+SIM=/tmp/keeper-image-sim && rm -rf "$SIM" && mkdir -p "$SIM/public"
+cp package.json bun.lock "$SIM/"; cp -R src scripts "$SIM/"; cp -R public/idl "$SIM/public/idl"
+ln -s "$PWD/node_modules" "$SIM/node_modules"          # the image reinstalls these; a symlink is fine here
+cd "$SIM" && \
+  KEEPER_OPERATOR_KEY="$(cat ../../.devnet/fork-payer.json)" \
+  KEEPER_HOUSE_WALLETS="$(cat ../../.devnet/keeper-house-wallets.json)" \
+  KEEPER_HTTP_PORT=18084 bun run scripts/keeper/keeper.ts --dry-run
+```
+
+`.devnet/` is unreachable from that tree, so the run proves the **env-only secret path** as well as
+the file list. What it found the first time: the ER-validator preflight read
+`target/deploy/bulls_arena.so`, a gitignored Rust artifact at the repo root that cannot exist in the
+image — the keeper died at boot with `ENOENT` before opening a round. `referenceBytecode` in
+`scripts/erValidator.ts` now falls back to reading the deployed bytecode from the base layer, which is
+the more authoritative reference anyway and is available everywhere.
+
+### Every environment variable
+
+Secrets — `fly secrets`, read at boot, **never** baked into the image. Env beats file; which source
+won is logged at boot, the key material never is.
+
+| variable | fallback | what it is |
+|---|---|---|
+| `KEEPER_OPERATOR_KEY` | `.devnet/fork-payer.json` | the **arena authority** secret key, a JSON array of 64 numbers. `open_round` and `delegate_round` are both `has_one = authority`; the keeper refuses to start if this key is not the arena's authority |
+| `KEEPER_HOUSE_WALLETS` | `.devnet/keeper-house-wallets.json` | the house-fighter keys, the **verbatim contents** of that file (`{"note": …, "secretKeys": [[…]]}`). Keys that arrive this way are never written back to disk |
+
+Configuration — safe in `fly.toml`'s `[env]`, except where noted.
+
+| variable | default | what it is |
+|---|---|---|
+| `KEEPER_HTTP_PORT` | `8080` | port for `/keeper-status.json` and `/health`, bound `0.0.0.0`. Must match `internal_port` in `fly.toml` |
+| `KEEPER_CORS_ORIGIN` | *(unset → local dev origins only)* | comma-separated **exact** browser origins. `*` is refused outright and the whole value with it. Unset logs a loud warning and blocks any deployed page |
+| `KEEPER_BASE_RPC` | `https://api.devnet.solana.com` | base-layer Solana RPC. A paid endpoint carrying an API key is a **secret**, not an `[env]` line |
+| `KEEPER_ROUTER_URL` | `https://devnet-router.magicblock.app` | the MagicBlock Magic Router |
+| `KEEPER_HOLD_OPEN` | `0` (`1` in `fly.toml`) | the hold-open lobby policy — see "Two lobby policies" and the arithmetic below |
+| `KEEPER_CLOSE_ROUNDS` | `1` (**on**) | reclaim finished rounds' rent (~0.0086 SOL each, 95% of a round's cost). `0` or `--no-close-rounds` disables it — see "Reclaiming the rent" |
+| `KEEPER_ROUND_RETENTION` | `20` (the chain's `MIN_RETAINED_ROUNDS`) | how many newest rounds are never closed. Can be **raised**, never lowered — a lower value is refused at boot |
+| `KEEPER_MIN_BALANCE_SOL` | `0.05` | below this the keeper opens no new rounds, while finishing any round in flight — see "The funding floor" |
+| `VITE_KEEPER_STATUS_URL` | `/keeper-status.json` | **front end only**, set in Vercel, not here. The full absolute URL of the endpoint above |
+| `VITE_BASE_RPC` | `https://api.devnet.solana.com` | **front end only**, set in Vercel, not here. The browser's base-layer RPC — deliberately a *different* key from `KEEPER_BASE_RPC`, see below |
+
+Both *keeper* URL variables run through `assertDevnetUrl` at boot, before any connection is
+constructed (`VITE_BASE_RPC` gets the same guard on the browser side, in `src/chain/constants.ts`). **A
+mainnet URL in a Fly secret kills the process loudly rather than connecting** — env indirection is not
+allowed to become the hole in the mainnet guard. The guard fails *closed*, so a bare API-key URL with
+no cluster in the hostname is refused too: use the provider's devnet hostname
+(`devnet.helius-rpc.com`), so the URL states its own cluster.
+
+Every knob in `config.ts` is still available (`KEEPER_RESULT_HOLD_SECONDS`, `KEEPER_DRAW_TIMEOUT_SECONDS`,
+`KEEPER_HOUSE_FILL_LEAD_SECONDS`, …), each with the argument for its value beside it.
+
+### `VITE_BASE_RPC` and `KEEPER_BASE_RPC` hold different keys, on purpose
+
+Two variables for the same endpoint looks like duplication that wants tidying up. It is not:
+**the browser's key is public and the keeper's is not.** Vite inlines every `import.meta.env.VITE_*`
+reference into the JavaScript bundle at build time, so whatever sits in `VITE_BASE_RPC` ships to
+every visitor and is trivially readable — confirmed by grepping the built `dist/`, not assumed. That
+is not a leak to be fixed; it is what a static front end *means*, and any RPC key a browser uses is
+public by construction. `KEEPER_BASE_RPC` never takes that path: it arrives from `fly secrets` at
+runtime and is in neither the image nor the repo.
+
+So give them **different keys**. The browser gets one you are willing to have scraped —
+rate-limited, restricted by domain or referrer if the provider supports it, and cheap to rotate. The
+keeper keeps a private one. Share a single key between them and the copy sitting in the bundle *is*
+the key the keeper depends on: the day it gets abused and you rotate it, you take the arena down
+with it.
+
+The `VITE_` prefix is the entire mechanism. A variable **without** it is never inlined, which is what
+keeps `KEEPER_*` names out of the browser even while both sets live in the same `.env` file during
+local development.
+
+Where they are set today: `VITE_BASE_RPC` is a Helius **devnet** endpoint on all three Vercel
+environments; `KEEPER_BASE_RPC` is a line in a gitignored local `.env`, and becomes a `fly secret`
+in production — which is the same rule the secrets table above states, arrived at from the other
+direction.
+
+### A healthy deployment, in one look
+
+```
+$ curl -s https://bulls-arena-keeper-devnet.fly.dev/health
+{"ok":true,"schema":3,"heartbeatAgeSeconds":1}
+```
+
+`heartbeatAgeSeconds` under `staleAfterSeconds` (15) is what **you** read; the platform's check
+deliberately ignores it and passes on the 200 alone (see the health endpoint above — a check that
+could fail on a devnet blip would restart a healthy keeper mid-round). A number climbing past 15 while
+the endpoint still answers means the loop's timer has stopped: the process is up and not keeping time.
+That is the one condition here a restart genuinely fixes, and it is the one you have to act on
+yourself, because nothing else will.
+
+```
+$ curl -s https://bulls-arena-keeper-devnet.fly.dev/keeper-status.json | jq '{schema, cluster: .chain.cluster, age: (now - .keeper.heartbeatAt | floor), stalled: .keeper.stalledSince, round: .round.no, phase: .round.phase, real: .round.realFighterCount, held: .round.heldOpen}'
+{ "schema": 3, "cluster": "devnet", "age": 1, "stalled": null, "round": 5, "phase": "Lobby", "real": 0, "held": true }
+```
+
+That is a healthy idle keeper under `--hold-open`: one lobby, held, waiting for a person. The four
+things to read, in order — everything else is detail:
+
+1. `age` (`now - keeper.heartbeatAt`) **under 15**. Over it, the keeper is down and nothing else in the
+   file means anything.
+2. `keeper.stalledSince` is `null`. Non-null is the third state: alive, heartbeating, and its loop
+   failing every pass. A restart will not help — read `keeper.lastError`, which says what is failing.
+3. `chain.cluster` is `"devnet"`. It is written unconditionally and asserted by the parser; if it were
+   ever anything else, something is very wrong upstream.
+4. `round` is non-null and its `phase` moves. `roundsCompleted` rising is the "it is actually doing the
+   job" signal; under `--hold-open` it can legitimately sit still for an hour, which is the point.
+
+If the browser says "keeper is down" while `/health` answers, it is almost always one of two things,
+and they are distinguishable in one command:
+
+```sh
+# CORS — the page's origin is not on the list. Look for the allow header.
+curl -sD - -o /dev/null -H "Origin: https://bulls-vs-unicorns.vercel.app" \
+  https://bulls-arena-keeper-devnet.fly.dev/keeper-status.json | grep -i access-control
+```
+
+No `Access-Control-Allow-Origin` in that output → fix `KEEPER_CORS_ORIGIN` (exact origin, no trailing
+slash, no path). Header present → the front end was built without `VITE_KEEPER_STATUS_URL`; it is
+polling its own origin and getting Vercel's 404. Set it in Vercel and rebuild.
+
+### One instance, and what a restart does
+
+**`fly deploy --ha=false`, every time.** This is the one that will actually bite: Fly Launch creates
+and starts **two** machines by default for a process group with services, and does it again on any
+deploy that follows a scale-to-zero. Nothing in `fly.toml` can prevent it — `min_machines_running` is
+a floor, not a ceiling, and Fly has no maximum-machine-count setting. `fly status` after every deploy
+is the check; two machines is two keepers, and the paragraph below is what that costs.
+
+`fly.toml` does what it can: `auto_stop_machines = "off"`, `auto_start_machines = false`, and
+`strategy = "rolling"` — which on a single-machine app updates that machine *in place*, so a deploy
+has a window with zero keepers and never one with two. **Never `fly scale count 2`**, and never
+`canary` or `bluegreen`, both of which boot a second machine alongside the running one on purpose.
+(`min_machines_running = 1` is in the file and is **inert** under `auto_stop_machines = "off"`; it is
+kept as a statement of intent and labelled as inert, not as a mechanism.)
+
+Two keepers both read `arena.round_counter` and both reach for `counter + 1`. The loser gets
+`RoundOutOfOrder` and backs off, which is loud and survivable on its own. What is not survivable is
+what it leaves: the round it was driving is now *behind* the counter, unreachable by a phase machine
+that correctly follows the chain rather than its own memory, sitting delegated past its deadline
+holding ~0.0085 SOL of rent that no instruction reclaims. This is written up under "Known holes" below
+because it has already happened.
+
+**Brief overlap during a restart is mostly benign, and it is worth being precise about the "mostly".**
+Nothing here acts from memory: every pass re-derives from the chain, so a duplicate `close_round`,
+`resolve`, `tick` or `sweep_house_take` costs a signature and the program refuses the second — the same
+property that makes a crash mid-fight indistinguishable from a fresh boot. Two operations are not
+covered by that argument:
+
+- **`open_round`** is a genuine race, and it is the expensive one. Both processes can pay for a round
+  PDA in a racing sequence and only one round survives the counter; that rent is not recoverable.
+- **`enter` for a house fighter** is not idempotent either — a duplicate *tops up* an existing fighter's
+  stake rather than failing. It costs a signature and distorts one round's house stake; it does not
+  strand anything.
+
+So `strategy = "rolling"` plus `kill_timeout = 20` keep a *deploy* from ever producing overlap at all,
+and bound the shutdown to about a second in practice (the keeper answers SIGTERM by finishing the
+current step, and every wait inside a step is interruptible). What they do not do is protect against a
+second machine arriving by another route — `--ha=false` omitted, a manual `fly machine clone`, someone
+running the keeper locally against the same arena. Nothing structural closes that; one machine does,
+and `fly status` is how you know you still have one.
+
+**No volume**, and nobody should add one: the loop re-derives everything from the chain, which is
+exactly why restart works and why there is no reconciliation routine in this codebase to rot. The one
+piece of persisted local state was the house-wallet key file, and in production that arrives as a
+secret. There is genuinely nothing to keep.
+
+### The money, before you need it
+
+**How long until it dies.** The payer pays for everything; the house wallets only pay their own
+signatures. Measured, reconciled across 28 real rounds:
+
+```
+per round, all-in                  0.00981 SOL
+  of which permanently locked      0.00850 SOL   round-PDA rent — no instruction reclaims it
+```
+
+The cadence decides everything else:
+
+| policy | rounds/hour idle | SOL/hour idle | 6.64 SOL lasts | 1.93 SOL lasts |
+|---|---|---|---|---|
+| fixed cadence (`KEEPER_HOLD_OPEN=0`) | ~33 (one per ~110s) | **~0.32** | ~21 hours | ~6 hours |
+| hold open (`KEEPER_HOLD_OPEN=1`) | 1 (one per backstop) | **~0.0098** | ~28 days | ~8 days |
+
+The arithmetic is one division — `hours = balance ÷ SOL-per-hour` — and the table is there so nobody
+has to be told which number to divide by. Hold-open's figure is a **floor**: every round a real player
+actually causes costs the same 0.00981, so a busy arena burns closer to the fixed-cadence rate. That is
+the correct way round — paying rent for rounds people played is the product working.
+
+**Check the balance** without a CLI, from anywhere:
+
+```sh
+curl -s https://api.devnet.solana.com -X POST -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["9BAjpGZfJm8sfnqNr1vj1K9X3fY8fjk4LE2KRtSTRCaj"]}'
+# {"result":{"value":6639802640}}  ->  6.6398 SOL   (lamports ÷ 1e9)
+```
+
+The keeper prints it too, in the boot banner and in each round summary as a measured balance delta
+rather than an estimate — but the boot banner is only true at boot, and this is the question you ask at
+3am.
+
+**Fund it** from the public devnet faucet at <https://faucet.solana.com> (paste the address above), or
+`solana airdrop 2 9BAjpGZfJm8sfnqNr1vj1K9X3fY8fjk4LE2KRtSTRCaj --url devnet` if you have the CLI. The
+faucet is rate-limited and regularly dry; give yourself days of runway rather than hours, which the
+hold-open row above makes cheap. (`scripts/fund-wallet.mjs` sends *from* this payer to a burner — it is
+not a way to top the payer up.)
+
+**What running out looks like, so it is recognised rather than debugged.** The keeper announces it,
+which it did not used to — see "The funding floor" above. Expect:
+
+- one loud block of `OUT OF FUNDS` in the log naming the balance, the floor, the round it declined to
+  open and the address to send SOL to. **Once per stretch, not once per pass**, so it does not bury
+  itself;
+- `roundsCompleted` stops rising, and `keeper.lowBalance` in the status carries the balance and the
+  floor as lamport strings. The page stops promising a next lobby and says the arena is out of funds
+  — a different sentence from "keeper is down", because the keeper is not down;
+- the round already in flight **finishes normally**. Its countdown keeps running, the fight resolves,
+  the round settles and undelegates. Only the *next* one never opens;
+- `keeper.stalledSince` stays **null**, and this is the part worth internalising: refusing to open is
+  the correct outcome of a pass, not a failure, so nothing increments a failure count. A keeper out of
+  money is not a stalled keeper, and looking for `stalledSince` will mislead you;
+- `/health` keeps returning **200** throughout, and Fly does not restart anything. That is correct: the
+  process is fine, it is out of money, and restarting it would not add any.
+
+So the signature is **`lowBalance` non-null + `stalledSince` null + `/health` fine**. It resumes on its
+own within 15 seconds of a top-up landing — no restart, no deploy.
+
+If a keeper looks wedged in some *other* way, check the balance before anything else anyway; it is one
+`curl` and it remains the most common cause of an arena that has stopped doing anything.
 
 ## Known holes, stated rather than hidden
 

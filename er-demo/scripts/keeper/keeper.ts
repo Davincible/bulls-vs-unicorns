@@ -92,7 +92,6 @@
 // that boots into the middle of a held lobby decides exactly what the one that opened it would.
 // `lobbyPolicy.ts` is where that decision lives, as one pure function with its own tests.
 
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Keypair, type PublicKey } from "@solana/web3.js";
@@ -111,10 +110,18 @@ import {
   LOOP_INTERVAL_SECONDS, REAL_PLAYER_GRACE_SECONDS, RESOLVE_RETRY_ATTEMPTS,
   RESOLVE_RETRY_WAIT_SECONDS, RESULT_HOLD_SECONDS, STALE_AFTER_SECONDS,
   STALL_AFTER_CONSECUTIVE_FAILURES, SWEEP_RETRY_SECONDS, UNDELEGATE_WAIT_SECONDS,
-  parseCliOptions, type KeeperCliOptions,
+  CLOSE_ATTEMPTS_PER_ROUND, CLOSE_RETRY_SECONDS, HTTP_PORT, LOW_BALANCE_RECHECK_SECONDS,
+  MIN_BALANCE_LAMPORTS, ROUND_RETENTION, parseCliOptions, type KeeperCliOptions,
 } from "./config.ts";
+import { describeEndpoints } from "./endpoints.ts";
+import { asSecretKeyBytes, parseSecretJson, readSecretText } from "./secrets.ts";
+import {
+  BIND_HOSTNAME, HEALTH_PATH, STATUS_PATH, originPolicyWarnings, resolveAllowedOrigins,
+  startStatusServer,
+} from "./statusServer.ts";
 import { HOLD_OPEN_HOUSE_FIGHTERS } from "./houseSizing.ts";
 import { lobbyIsHeldOpen, planLobby, type LobbyPlan } from "./lobbyPolicy.ts";
+import { decideClose, housekeepingIsWelcome, isPastRetention } from "./roundCloser.ts";
 import { readProgramFeatures, type ProgramFeatures } from "./programFeatures.ts";
 import {
   NO_FRESH_VALIDATOR, createChainClient, selectWritableValidator,
@@ -138,8 +145,28 @@ const here = dirname(fileURLToPath(import.meta.url));
  *  every other admin script in this repo loads it from; it must never reach a browser bundle. */
 const FORK_PAYER_PATH = join(here, "..", "..", "..", ".devnet", "fork-payer.json");
 
-function loadKeypair(path: string): Keypair {
-  return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(path, "utf8")) as number[]));
+/** The same key's bytes as an environment variable, for a deployment that has no `.devnet/` — see
+ *  `secrets.ts` for the precedence rule and for why a key must never be baked into an image.
+ *
+ *      fly secrets set KEEPER_OPERATOR_KEY="$(cat .devnet/fork-payer.json)" */
+const OPERATOR_KEY_ENV = "KEEPER_OPERATOR_KEY";
+
+/** The arena authority, from the environment or from disk, saying which. Refusing to start is the
+ *  right answer when neither exists: this key IS the arena, and there is no useful degraded mode. */
+function loadOperator(): Keypair {
+  const secret = readSecretText(OPERATOR_KEY_ENV, FORK_PAYER_PATH);
+  if (secret === null) {
+    throw new Error(
+      `no operator key. Set ${OPERATOR_KEY_ENV} to the arena authority's secret key (a JSON array of 64 ` +
+      `numbers), or put that key at ${FORK_PAYER_PATH}. open_round and delegate_round are both ` +
+      `has_one = authority, so without it this process cannot open a single round.`,
+    );
+  }
+  const bytes = asSecretKeyBytes(parseSecretJson(secret, "a JSON array of 64 numbers"), secret);
+  // WHERE, never what. The pubkey is printed in the banner below — that is public — and the secret
+  // material does not appear in any log line this process writes.
+  info(`operator key: loaded from ${secret.where} (${secret.source})`);
+  return Keypair.fromSecretKey(bytes);
 }
 
 // ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -237,6 +264,31 @@ interface KeeperContext {
    *  empty log is indistinguishable from a stopped process to the operator reading it. Cosmetic:
    *  nothing branches on it. */
   lastHoldLogSec: number;
+
+  // ---- reclaiming rent — see `closeOneFinishedRound` for why this is the only memory it keeps ----
+
+  /** The oldest round that might still be closeable. Starts at #1 on EVERY boot, which is what makes
+   *  a pre-existing backlog get drained rather than only rounds this process opened. Only ever moves
+   *  forward, so the scan cannot loop; one round is examined per pass, so the cost is one account
+   *  read per second no matter how long the arena's history is. */
+  closeCursor: bigint;
+  /** Consecutive failures against the round the cursor is on, so one round the keeper cannot fix
+   *  cannot hold every older round's rent hostage behind it. */
+  closeAttempts: number;
+  /** Chain second before which no further close is attempted, after one failed. */
+  closeRetryAfterSec: number;
+  /** How many accounts this run has closed — for the shutdown summary, so the saving is a number the
+   *  operator sees rather than one they have to trust. */
+  rentReclaimed: number;
+
+  // ---- running out of money ----------------------------------------------------------------------
+
+  /** Chain second at which the payer FIRST fell below the floor in the current stretch, or null while
+   *  it is funded. Drives the log-once behaviour; the published latch lives in `statusFile.ts`. */
+  lowBalanceSince: number | null;
+  /** When the balance was last actually read for the funding guard, so a blocked keeper re-checks on
+   *  an interval rather than once a second. */
+  lowBalanceCheckedAtSec: number;
 }
 
 /** How often a held-open lobby says so in the log. A minute — often enough that the process is
@@ -946,10 +998,210 @@ async function driveAbandoned(
   return openNextRound(ctx, state.roundCounter + 1n);
 }
 
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// Reclaiming rent — the backlog, one round per pass
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * CLOSE ONE FINISHED ROUND ACCOUNT PER PASS, OLDEST FIRST, AND HAND ITS RENT BACK.
+ *
+ * A `Round` is 1,102 bytes holding 0.008561 SOL of rent-exempt deposit — 95.4% of the 0.008971 a
+ * whole round costs — and before v7 nothing ever reclaimed a lamport of it. This is the instruction
+ * that does, and running it takes the marginal cost of a round to ~0.00041.
+ *
+ * EVERY CONDITION IS ENFORCED ON CHAIN, by `check_close_permitted`: terminal phase, `house_swept`,
+ * `round_no + MIN_RETAINED_ROUNDS <= round_counter`, and `has_one = authority`. The checks below are
+ * NOT a second implementation of that rule — they are how the keeper avoids sending a transaction it
+ * knows will be refused, which costs a signature and a log line each time. If the two ever disagree
+ * the chain wins, and the keeper's failure mode is a wasted signature rather than a wrong outcome.
+ * That asymmetry is the reason it is safe for this policy to default ON.
+ *
+ * THE CURSOR IS THE ONLY MEMORY, AND IT EXISTS TO BOUND THE WORK. This keeper's rule is that every
+ * pass re-derives from the chain, and a literal reading would mean scanning from round #1 every
+ * second — unbounded as history grows, on a 1Hz loop. So one number is kept: the oldest round that
+ * might still be closeable. It starts at #1 on EVERY BOOT, which is what makes the pre-existing
+ * backlog get picked up rather than only rounds this process opened — a keeper starting against an
+ * arena with two hundred stranded rounds walks them from the beginning. It only ever moves forward,
+ * so it cannot loop, and one round is examined per pass, so the cost is one account read per second
+ * regardless of how much history there is.
+ *
+ * WHEN THE CURSOR ADVANCES, which is the whole of the logic and each case is a different fact:
+ *
+ *   * the account is GONE — already closed, by this keeper on a previous run or by anything else.
+ *     Nothing left to do, and this is the common case while draining a backlog.
+ *   * the close SUCCEEDED. Rent recovered.
+ *   * the round is NOT TERMINAL. A round stuck in `Drawing` can never reach a closeable state — the
+ *     program has no exit for it (see `abandon_round`'s doc comment and this README's "Known holes")
+ *     — so waiting for it would hold every older round's rent hostage behind one that is never
+ *     coming. It is already recorded in `wedgedRounds`; the cursor steps past it.
+ *   * it is still DELEGATED. `Account<Round>` fails the owner check while the Delegation Program owns
+ *     it, so no close is possible. For an old round this means an undelegation that never completed,
+ *     which the phase machine only repairs for the CURRENT round — so, again, stepping past is the
+ *     difference between reclaiming the rest of the backlog and reclaiming none of it.
+ *   * it has failed to close `CLOSE_ATTEMPTS_PER_ROUND` times. See that constant: one round the
+ *     keeper cannot fix must not be able to block every older one forever.
+ *
+ * AND WHEN IT DOES NOT: a terminal, undelegated, UNSWEPT round. That one is fixable, and fixing it is
+ * strictly better than skipping it — the sweep is the very precondition the chain is refusing on, the
+ * keeper already has the code, and the instruction is permissionless. So the sweep is sent and the
+ * round is re-examined next pass, at which point it closes normally. This also quietly drains the
+ * "gap between `Treasury.rounds_swept` and `round_counter`" that this README lists as a known cost of
+ * a round missing its own sweep window.
+ */
+async function closeOneFinishedRound(ctx: KeeperContext, state: KeeperChainState): Promise<void> {
+  if (!ctx.options.closeRounds || !ctx.features.roundAccountClose) return;
+
+  // See `housekeepingIsWelcome` — never against a live fight.
+  if (!housekeepingIsWelcome(state.round?.phase ?? null)) return;
+
+  // Throttled after a failure, for the reason `SWEEP_RETRY_SECONDS` exists: the work to do is derived
+  // from the chain rather than remembered, so a close that cannot succeed would be re-sent on every
+  // pass at 1Hz forever.
+  if (state.nowSec < ctx.closeRetryAfterSec) return;
+
+  if (!isPastRetention(ctx.closeCursor, state.roundCounter, ROUND_RETENTION)) return; // caught up
+
+  const roundNo = ctx.closeCursor;
+  const roundPda = roundIx.roundPdaForRoundNo(roundNo, ctx.client.arenaPda);
+
+  // Through the router, exactly as `sweepHouseTake` reaches its round: the router routes per account,
+  // and an undelegated round routes to the base layer on its own. `fetchRound`'s own doc comment
+  // names this caller. `fetchNullable` answers null for an account that no longer exists, which is
+  // precisely the "already closed" case.
+  const round = await ctx.client.fetchRound(roundNo);
+  // The delegation question is only asked when there is something to ask it about, because it is an
+  // extra RPC and a missing account has no owner. `decideClose` never reads `delegated` in the
+  // already-closed branch, so `false` here is not a claim, it is an unused field.
+  const delegated = round === null ? false : await ctx.client.isDelegated(roundPda);
+  const decision = decideClose({
+    // `?? false` is the true value rather than a default — see `houseSwept` in chain/program.ts: a
+    // program with no sweep instruction has swept nothing.
+    round: round === null ? null : { phase: round.phase, houseSwept: round.houseSwept ?? false },
+    delegated,
+  });
+
+  if (decision.kind === "advance") {
+    if (decision.because === "never-terminal") {
+      warn(`round #${roundNo} is ${PHASE_NAME[round!.phase]} and past the retention window — it can never be closed, so its ~0.0086 SOL of rent is unrecoverable. Skipping it.`);
+    } else if (decision.because === "still-delegated") {
+      warn(`round #${roundNo} is terminal but still DELEGATED past the retention window — close_round_account cannot run while the Delegation Program owns it. Skipping it; its rent stays stranded.`);
+    }
+    ctx.closeCursor += 1n;
+    ctx.closeAttempts = 0;
+    return;
+  }
+
+  if (decision.kind === "sweep-first") {
+    // The cursor deliberately does NOT move: this is the one case the keeper can fix, and it comes
+    // back to the same round next pass to finish the job.
+    info(`round #${roundNo} is unswept, so it cannot be closed yet — sweeping it first`);
+    await sweepHouseTake(ctx, state, round!, roundPda);
+    return;
+  }
+
+  try {
+    const outcome = await ctx.client.send(
+      roundIx.closeRoundAccount(ctx.client.program, {
+        arena: ctx.client.arenaPda,
+        round: roundPda,
+        authority: ctx.operator.publicKey,
+        roundNo: BigInt(roundNo.toString()),
+      }),
+      ctx.operator,
+      `close_round_account #${roundNo}`,
+    );
+    if (outcome.sent) {
+      ctx.rentReclaimed += 1;
+      ok(`round #${roundNo} closed — its rent deposit is back with the payer (${ctx.rentReclaimed} reclaimed this run)`);
+    }
+    ctx.closeCursor += 1n;
+    ctx.closeAttempts = 0;
+  } catch (e) {
+    // Caught, never thrown. This is housekeeping: a keeper that stopped running rounds because it
+    // could not reclaim rent would be trading the product for its own accounting, which is the same
+    // judgement `sweepHouseTake` makes one step earlier.
+    ctx.closeAttempts += 1;
+    ctx.closeRetryAfterSec = state.nowSec + CLOSE_RETRY_SECONDS;
+    error(`close_round_account #${roundNo} failed (attempt ${ctx.closeAttempts}/${CLOSE_ATTEMPTS_PER_ROUND}, the rent stays put and the round stays closeable): ${describeError(e)}`);
+    if (ctx.closeAttempts >= CLOSE_ATTEMPTS_PER_ROUND) {
+      warn(`giving up on round #${roundNo} for this run and moving to the next — one round the keeper cannot close must not hold the rest of the backlog hostage. Close it by hand if its rent matters.`);
+      ctx.closeCursor += 1n;
+      ctx.closeAttempts = 0;
+    }
+  }
+}
+
+/** THE FUNDING FLOOR, CHECKED AT THE ONE POINT WHERE REFUSING IS FREE.
+ *
+ *  Returns true when the keeper may open a round. Publishes the condition either way.
+ *
+ *  WHY ONLY HERE, AND NOWHERE ELSE IN THE PHASE MACHINE. Every other point in a round is PAST the
+ *  expensive commitment: `open_round` has already paid ~0.0086 SOL of rent and `delegate_round` has
+ *  handed the account to the ER. A keeper that downed tools mid-round on a low balance would strand
+ *  that deposit for nothing and leave a real player's fight unfinished — it would convert a funding
+ *  problem into a permanent loss and a broken promise, which is strictly worse than spending the last
+ *  of the money on finishing what was started. So an in-flight round is always driven to a terminal
+ *  state. What the keeper refuses is to START work it may not be able to finish.
+ *
+ *  THROTTLED, because while it is refusing it is asked on every pass. A blocked keeper reaches this
+ *  function at 1Hz for as long as the condition lasts, and each check is an RPC. Re-reading the
+ *  balance once every `LOW_BALANCE_RECHECK_SECONDS` bounds that to a request every fifteen seconds
+ *  while still noticing a top-up within fifteen seconds of it landing — which is the responsiveness
+ *  that matters, since the operator who just sent SOL is watching. The cached verdict is what the
+ *  passes in between use.
+ *
+ *  LOGGED ONCE PER STRETCH, not per check. A keeper that is out of money is going to be out of money
+ *  for a while, and a line a second would bury the one line that says what to do about it. */
+async function affordsAnotherRound(ctx: KeeperContext, roundNo: bigint): Promise<number | null> {
+  const nowSec = ctx.client.nowSec();
+  if (ctx.lowBalanceSince !== null && nowSec < ctx.lowBalanceCheckedAtSec + LOW_BALANCE_RECHECK_SECONDS) {
+    return null; // inside the throttle window, and the last answer was "no"
+  }
+
+  // ALSO THE COST BASELINE, handed back rather than read twice. `open_round` needs the pre-spend
+  // balance to report what the round cost, and that is the same number this guard just fetched — two
+  // reads would be two RPCs and, worse, two different instants, so the reported cost would silently
+  // include anything that moved in between.
+  const lamports = await ctx.client.balance(ctx.operator.publicKey);
+  ctx.lowBalanceCheckedAtSec = nowSec;
+
+  if (lamports >= MIN_BALANCE_LAMPORTS) {
+    if (ctx.lowBalanceSince !== null) {
+      ok(`payer is funded again — ${fmtSol(lamports)} is back above the ${fmtSol(MIN_BALANCE_LAMPORTS)} floor; opening rounds again`);
+      ctx.lowBalanceSince = null;
+      ctx.publisher.setLowBalance(null);
+    }
+    return lamports;
+  }
+
+  // The countdown goes with it. A settled round's hold has already proposed "next lobby in 0:08", and
+  // leaving that standing beside a keeper that is not going to open one is the confidently-wrong
+  // number this whole status contract exists to delete. `keeperCountdown` refuses it on the reader's
+  // side too — see its comment on why both layers are needed rather than one.
+  ctx.publisher.setNextLobbyOpensAt(null);
+  ctx.publisher.setLowBalance({
+    lamports: BigInt(lamports),
+    floorLamports: BigInt(MIN_BALANCE_LAMPORTS),
+    nowSec,
+  });
+
+  if (ctx.lowBalanceSince === null) {
+    ctx.lowBalanceSince = nowSec;
+    error(`OUT OF FUNDS — the payer holds ${fmtSol(lamports)}, below the ${fmtSol(MIN_BALANCE_LAMPORTS)} floor.`);
+    error(`  Round #${roundNo} was NOT opened. Any round already running is still being driven to a`);
+    error(`  terminal state, and the status file now says no next lobby is coming. Send SOL to`);
+    error(`  ${ctx.operator.publicKey.toBase58()} and the keeper resumes on its own within ${LOW_BALANCE_RECHECK_SECONDS}s.`);
+    error(`  Change the floor with KEEPER_MIN_BALANCE_SOL.`);
+  }
+  return null;
+}
+
 async function openNextRound(ctx: KeeperContext, roundNo: bigint): Promise<void> {
   // Sampled BEFORE anything is spent, so the per-round cost reported at settlement is measured rather
-  // than estimated. It includes the round PDA's rent, which is the dominant term.
-  const lamportsBefore = await ctx.client.balance(ctx.operator.publicKey);
+  // than estimated. It includes the round PDA's rent, which is the dominant term. It is the same read
+  // the funding guard just did — see `affordsAnotherRound`.
+  const lamportsBefore = await affordsAnotherRound(ctx, roundNo);
+  if (lamportsBefore === null) return;
   const roundPda = roundIx.roundPdaForRoundNo(roundNo, ctx.client.arenaPda);
   info(`opening round #${roundNo}  pda ${roundPda.toBase58()}`);
 
@@ -1103,7 +1355,7 @@ async function main(): Promise<void> {
   // polling, comfortably past a `docker stop` grace period and therefore a SIGKILL that skips the
   // deliberate stale-heartbeat exit entirely.
   const stopper = new AbortController();
-  const operator = loadKeypair(FORK_PAYER_PATH);
+  const operator = loadOperator();
   const client = await createChainClient({ operator, dryRun: options.dryRun, stopSignal: stopper.signal });
 
   // `open_round` and `delegate_round` are both `has_one = authority`. Checking it at boot turns a
@@ -1134,17 +1386,21 @@ async function main(): Promise<void> {
     );
   }
 
-  heading("choosing an ER validator");
-  const validator = await selectWritableValidator();
-  if (!validator) {
-    error(NO_FRESH_VALIDATOR);
-    error("  A keeper cannot work around this: every round it opened would be delegated to a route that");
-    error("  cannot run the deployed code. Failing loudly beats opening rounds nobody can play.");
-    process.exit(1);
-  }
-
+  // THE HOUSE BANK IS LOADED, AND THE STATUS SERVER STARTED, BEFORE THE SLOW PART OF BOOT.
+  //
+  // The ordering is the point. Choosing an ER validator downloads a ~360KB cloned program account per
+  // route and write-probes each one with a 5-second ceiling, and funding the house bank can send a
+  // confirmed base-layer transaction. Both are network-bound and both can take tens of seconds on an
+  // unwell devnet. Starting the server after them meant that during the exact stretch where boot is
+  // slow, the health endpoint did not exist — so a platform probe arriving in that window finds a
+  // dead port, and on a one-machine app with a bounded grace period that is a machine killed for
+  // being slow to start rather than for being broken.
+  //
+  // `loadOrCreateHouseBank` moves up with it because the publisher needs the disclosure list, and it
+  // is purely local — a file read (or an env var) and possibly a keygen. Nothing it does is worth
+  // waiting on. `fundHouseBank` stays below: it spends, and nothing should spend before the process
+  // has said it is alive.
   const bank = loadOrCreateHouseBank(options.dryRun);
-  await fundHouseBank(client, operator, bank, options.dryRun);
 
   const publisher = createStatusPublisher({
     programId: PROGRAM_ID.toBase58(),
@@ -1153,7 +1409,38 @@ async function main(): Promise<void> {
     disclosure: HOUSE_DISCLOSURE,
     nowSec: client.nowSec,
   });
+
+  // THE SECOND CHANNEL, and in production the only one that reaches a browser — see
+  // `statusServer.ts`. The publisher renders a valid payload at construction, so from this line on
+  // there is something honest to serve: a status whose `erValidator` is still null and whose
+  // heartbeat is the boot instant, which is exactly what is true.
+  //
+  // A DRY RUN STARTS IT TOO. It is one pass and out, so the server lives for a second or so — but
+  // that second is exactly what makes `--dry-run` a rehearsal of the deployment rather than of the
+  // laptop: a port that cannot be bound, a `KEEPER_CORS_ORIGIN` that is not an origin, a
+  // `KEEPER_HTTP_PORT` that disagrees with `fly.toml` all surface here, before any SOL is spent.
+  const originPolicy = resolveAllowedOrigins(process.env.KEEPER_CORS_ORIGIN);
+  for (const line of originPolicyWarnings(originPolicy)) warn(line);
+  const statusServer = startStatusServer({
+    port: HTTP_PORT,
+    policy: originPolicy,
+    body: publisher.body,
+    heartbeatAgeSeconds: publisher.heartbeatAgeSeconds,
+  });
+
+  heading("choosing an ER validator");
+  const validator = await selectWritableValidator();
+  if (!validator) {
+    error(NO_FRESH_VALIDATOR);
+    error("  A keeper cannot work around this: every round it opened would be delegated to a route that");
+    error("  cannot run the deployed code. Failing loudly beats opening rounds nobody can play.");
+    process.exit(1);
+  }
+  // Filled in after the fact rather than passed at construction, which is the whole reason
+  // `setErValidator` is a setter: the status has to exist before the thing it describes is known.
   publisher.setErValidator({ identity: validator.identity.toBase58(), fqdn: validator.fqdn });
+
+  await fundHouseBank(client, operator, bank, options.dryRun);
 
   const [operatorBalance, ...houseBalances] = await Promise.all([
     client.balance(operator.publicKey),
@@ -1164,12 +1451,25 @@ async function main(): Promise<void> {
   plain(`  arena pda      ${client.arenaPda.toBase58()}${arena ? "" : `  ${c.y}(not initialised — the keeper will init_arena)${c.x}`}`);
   plain(`  operator       ${operator.publicKey.toBase58()}  ${fmtSol(operatorBalance!)}${arena ? "  (arena authority)" : ""}`);
   plain(`  er validator   ${validator.fqdn}  ${c.d}${validator.identity.toBase58()}${c.x}`);
+  // WHICH ENDPOINTS, AND WHETHER THEY CAME FROM THE ENVIRONMENT. An operator who set a paid RPC to
+  // stop being rate-limited needs one line proving it is the one in use; without it, "I configured
+  // it" and "it is configured" are the same sentence. API keys are masked — see `describeEndpoints`.
+  for (const { label, text } of describeEndpoints()) plain(`  ${label.padEnd(15)}${text}`);
   plain(`  clock          ${client.clockOffsetSeconds() === 0 ? "in step with the chain" : `${Math.abs(client.clockOffsetSeconds())}s ${client.clockOffsetSeconds() > 0 ? "behind" : "ahead of"} the chain — corrected`}`);
   plain(`  house wallets  ${bank.active.length} active of ${bank.disclosedPubkeys.length} disclosed`);
   bank.active.forEach((wallet, i) => {
     plain(`    [${wallet.index}] ${wallet.keypair.publicKey.toBase58()}  ${fmtSol(houseBalances[i]!)}`);
   });
   plain(`  status file    ${publisher.path}`);
+  // BOTH CHANNELS, named, because "the status is published" is not a fact an operator can act on and
+  // "it is at this URL, or it is not being served at all" is. A null server is a bind failure that has
+  // already been logged as an error; repeating it here is what stops it scrolling past unread.
+  plain(`  status http    ${statusServer === null
+    ? `${c.r}NOT SERVING — the port could not be bound (see the error above). A deployed page will read this keeper as down.${c.x}`
+    : `http://${BIND_HOSTNAME}:${statusServer.port}${STATUS_PATH}  ${c.d}(health: ${HEALTH_PATH})${c.x}`}`);
+  plain(`  cors           ${originPolicy.configured
+    ? originPolicy.origins.join(", ")
+    : `${c.y}local development only (${originPolicy.origins.join(", ")}) — set KEEPER_CORS_ORIGIN for a deployment${c.x}`}`);
   // WHICH POLICY IS RUNNING, in the operator's own words, because the two behave so differently that
   // reading the log without knowing which one is in force is guesswork. The hold-open line states the
   // three numbers that decide everything about it; the other states the one that always did.
@@ -1180,6 +1480,15 @@ async function main(): Promise<void> {
   plain(`  house sweep    ${features.houseTakeSweep
     ? "on — each finished round's fees and penalties are swept onto the arena's Treasury"
     : `${c.d}unavailable — this IDL has no sweep_house_take; each round's take stays on the round${c.x}`}`);
+  // THE MOST CONSEQUENTIAL LINE IN THIS BANNER, in money terms. 95.4% of what a round costs is rent
+  // that used to be unrecoverable, so which of these two states the keeper booted in is the
+  // difference between ~740 more rounds on the current payer and ~16,200.
+  plain(`  rent           ${!options.closeRounds
+    ? `${c.y}NOT reclaimed — --no-close-rounds/KEEPER_CLOSE_ROUNDS=0 is set; every round keeps its ~0.0086 SOL deposit forever${c.x}`
+    : features.roundAccountClose
+      ? `${c.g}reclaimed${c.x} — finished rounds are closed once ${ROUND_RETENTION} newer ones exist, returning ~0.0086 SOL each`
+      : `${c.y}unavailable — this IDL has no close_round_account (or no sweep to precede it); each round keeps its ~0.0086 SOL deposit forever${c.x}`}`);
+  plain(`  funding floor  ${fmtSol(MIN_BALANCE_LAMPORTS)} — below this the keeper finishes the round in flight and opens no more`);
   plain(`  stop after     ${options.rounds === null ? "never — runs until stopped" : `${options.rounds} completed round(s)`}`);
   plain("");
 
@@ -1192,6 +1501,14 @@ async function main(): Promise<void> {
     refreshAfterStep: false,
     lastDrawLogSec: 0,
     lastHoldLogSec: 0,
+    // #1, on every boot — see the field's comment. This is the line that makes the backlog get
+    // drained rather than only the rounds this process happens to open.
+    closeCursor: 1n,
+    closeAttempts: 0,
+    closeRetryAfterSec: 0,
+    rentReclaimed: 0,
+    lowBalanceSince: null,
+    lowBalanceCheckedAtSec: 0,
   };
 
   // INSTALLED AFTER BOOT, ON PURPOSE. A failure during boot — an unreadable keypair, an arena whose
@@ -1249,6 +1566,16 @@ async function main(): Promise<void> {
       if (ctx.refreshAfterStep) {
         ctx.refreshAfterStep = false;
         publishRoundSnapshot(ctx, await client.readChainState());
+      } else {
+        // HOUSEKEEPING ONLY ON A PASS THAT DID NOTHING ELSE. `refreshAfterStep` is set by every step
+        // that moved the round on, so its absence is the loop's own signal that this pass was idle —
+        // which is exactly the pass that can afford one account read and possibly one small
+        // transaction. Reclaiming rent must never be the reason a fight ticks late.
+        //
+        // It is also why this sits outside `driveOneStep`: that function is the PHASE machine, and
+        // closing an ancient round is not a phase of the current one. Putting it there would have
+        // meant a branch in every case, or a case that is not a phase.
+        await closeOneFinishedRound(ctx, state);
       }
       publisher.publish();
 
@@ -1303,10 +1630,31 @@ async function main(): Promise<void> {
   publisher.stopHeartbeat();
   publisher.publish();
 
+  // AND THE PROCESS ACTUALLY HAS TO EXIT. `Bun.serve` holds the event loop open exactly as a listening
+  // socket should, so without this the keeper would print "KEEPER STOPPED", stop keeping rounds, and
+  // then sit there serving a status whose heartbeat is going stale — a process the platform believes
+  // is healthy, running nothing. `--rounds N` would never return and a SIGTERM would need a second
+  // signal to land.
+  //
+  // Closing it is also the honest signal. A page polling a keeper that has stopped gets a connection
+  // refused, which `useKeeperStatus` reads exactly as it reads a 404 and a stale heartbeat: there is
+  // no keeper status. Serving one last frozen payload on the way out would say less, later.
+  statusServer?.stop();
+
   heading("KEEPER STOPPED");
   plain(`  rounds completed  ${ctx.roundsCompleted}`);
   plain(`  rounds abandoned  ${ctx.roundsAbandoned}`);
-  plain(`  operator balance  ${fmtSol(await client.balance(operator.publicKey))}`);
+  // Stated as a measured total rather than left to be inferred from the balance, because the balance
+  // moved for several reasons during the run and this is the only one that moved it UP.
+  plain(`  rent reclaimed    ${ctx.rentReclaimed} round account(s)${ctx.rentReclaimed > 0 ? `  ~${(ctx.rentReclaimed * 0.008561).toFixed(4)} SOL returned` : ""}`);
+  // CAUGHT, because this is the last line of a SUCCESSFUL run. `balance` goes through `withReadRetry`
+  // and throws after four attempts, and a rejection here escapes into `main().catch()` — which prints
+  // `KEEPER FAILED TO START` and exits 1, for a keeper that ran for six hours and stopped exactly as
+  // asked. The operator would get a torn banner followed by a startup-failure message describing
+  // nothing that happened. A balance nobody could read is worth "unknown", not an inverted exit code;
+  // `fmtDuration` already takes the same position on an unobserved measurement.
+  const finalBalance = await client.balance(operator.publicKey).catch(() => null);
+  plain(`  operator balance  ${finalBalance === null ? "unknown — the final read failed" : fmtSol(finalBalance)}`);
   plain(`  ${c.d}the status file is left in place; its heartbeat goes stale within ${STALE_AFTER_SECONDS}s, which is how the UI learns the keeper is down${c.x}`);
 }
 

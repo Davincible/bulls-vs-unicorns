@@ -17,7 +17,12 @@
 // They are read once, at module load, so the whole process runs on one set of numbers and the log's
 // startup banner describes the run for its entire life.
 
-import { DEFAULT_LOBBY_SECONDS, MAX_LOBBY_SECONDS, MIN_LOBBY_SECONDS } from "../../src/chain/constants.ts";
+import { LAMPORTS_PER_SOL } from "@solana/web3.js";
+
+import {
+  DEFAULT_LOBBY_SECONDS, MAX_LOBBY_SECONDS, MIN_LOBBY_SECONDS, MIN_RETAINED_ROUNDS,
+} from "../../src/chain/constants.ts";
+import { DEFAULT_HTTP_PORT } from "./statusServer.ts";
 
 export { DEFAULT_LOBBY_SECONDS };
 
@@ -203,6 +208,140 @@ export const HEARTBEAT_INTERVAL_SECONDS = envNumber("KEEPER_HEARTBEAT_INTERVAL_S
  *
  *  Change one and think about the other: the pair is the contract, not either number alone. */
 export const STALE_AFTER_SECONDS = envNumber("KEEPER_STALE_AFTER_SECONDS", 15);
+
+// ---- reclaiming rent ------------------------------------------------------------------------------
+
+/** IS THE KEEPER ALLOWED TO CLOSE FINISHED ROUND ACCOUNTS? DEFAULT ON, and the default is the point —
+ *  the opposite of `KEEPER_HOLD_OPEN`, for a reason worth stating rather than leaving as an
+ *  inconsistency.
+ *
+ *  A `Round` is 1,102 bytes and its rent-exempt deposit is 0.008561 SOL — 95.4% of the 0.008971 a
+ *  whole round costs to run, measured on v6 rounds #3 and #4 — and until v7 nothing ever reclaimed a
+ *  lamport of it. Reclaiming it takes the marginal cost of a round to ~0.00041, about 22x. On the
+ *  current payer that is the difference between roughly 740 rounds and 16,200. Leaving money on the
+ *  floor is not a safe default; it is the expensive one, and it is the one nobody notices because
+ *  nothing fails.
+ *
+ *  WHY IT IS SAFE TO DEFAULT ON WHEN `--hold-open` IS NOT. Hold-open needed the operator because its
+ *  precondition — a DEPLOYED early close — is not a question any local file can answer, and getting
+ *  it wrong stranded a real player in a lobby. This has no such gap: every condition is enforced ON
+ *  CHAIN by `check_close_permitted` (terminal, swept, past the retention window, authority-signed),
+ *  so a keeper that asks for something it should not get is refused rather than obeyed. The only
+ *  local question is "can this instruction be encoded at all", which `programFeatures.ts` answers in
+ *  the direction that is worth something — and its `false` vetoes this outright.
+ *
+ *  `KEEPER_CLOSE_ROUNDS=0` is the escape hatch, for an operator who wants the round log to outlive
+ *  the retention window for a demo or an audit. It costs 0.0086 SOL per round to exercise it. */
+export const CLOSE_ROUNDS_ENABLED = envFlag("KEEPER_CLOSE_ROUNDS", true);
+
+/** HOW MANY OF THE NEWEST ROUNDS THE KEEPER LEAVES ALONE.
+ *
+ *  DEFAULTS TO THE CHAIN'S OWN FLOOR AND IS IMPORTED RATHER THAN RESTATED — `MIN_RETAINED_ROUNDS` in
+ *  `src/chain/constants.ts`, which mirrors lib.rs. This file's header says anything the PROGRAM has
+ *  an opinion about lives there and is imported, and the program has a very firm opinion here: it
+ *  refuses with `RoundTooRecent` below its floor. A `20` written out again in this file would be a
+ *  second copy of a chain rule, and the copy is always the one that drifts.
+ *
+ *  CONFIGURABLE UPWARD ONLY, AND REFUSED BELOW THE FLOOR RATHER THAN CLAMPED. Asking for less than
+ *  the chain permits is not a preference the keeper can honour — every attempt would come back
+ *  `RoundTooRecent` — so a keeper that silently clamped would be running a retention window its
+ *  operator did not choose and would never be told about. Asking for MORE is meaningful and cheap:
+ *  it keeps history fetchable for longer, at 0.0086 SOL of standing float per extra round. Same
+ *  shape and same argument as `HOLD_OPEN_LOBBY_SECONDS`' range check. */
+export const ROUND_RETENTION = envNumber("KEEPER_ROUND_RETENTION", MIN_RETAINED_ROUNDS);
+
+if (!Number.isInteger(ROUND_RETENTION) || ROUND_RETENTION < MIN_RETAINED_ROUNDS) {
+  throw new Error(
+    `KEEPER_ROUND_RETENTION=${ROUND_RETENTION} is below the chain's own floor ` +
+    `(MIN_RETAINED_ROUNDS=${MIN_RETAINED_ROUNDS}) or is not a whole number. close_round_account would ` +
+    `refuse every round inside that window with RoundTooRecent, so the keeper would be retrying a ` +
+    `close the program is never going to allow. Raise it or unset it.`,
+  );
+}
+
+/** How long to wait before re-attempting a close that failed on the same round.
+ *
+ *  Same shape and same reasoning as `SWEEP_RETRY_SECONDS` and `HOUSE_ENTRY_RETRY_SECONDS`: the close
+ *  is derived from chain state rather than remembered, so a close that can never succeed would be
+ *  re-sent on every pass at 1Hz forever. Longer than the sweep's three seconds because there is no
+ *  window to hit — a finished round stays closeable indefinitely, so there is nothing to hurry for,
+ *  and the rent is not going anywhere. */
+export const CLOSE_RETRY_SECONDS = envNumber("KEEPER_CLOSE_RETRY_SECONDS", 30);
+
+/** How many consecutive failures on one round before the keeper moves past it.
+ *
+ *  Without this the close cursor is a single point of failure for the whole backlog: one round that
+ *  fails for a reason the keeper cannot fix holds every OLDER round's rent hostage behind it,
+ *  forever, silently. Three attempts thirty seconds apart is enough to ride out a devnet wobble, and
+ *  moving on is strictly better than stopping — the skipped round is logged and stays closeable by
+ *  hand, whereas a wedged cursor reclaims nothing at all. */
+export const CLOSE_ATTEMPTS_PER_ROUND = 3;
+
+// ---- running out of money -------------------------------------------------------------------------
+
+/** THE BALANCE BELOW WHICH THE KEEPER STOPS OPENING NEW ROUNDS.
+ *
+ *  IT GUARDS THE OPENING ONLY, AND THAT IS THE WHOLE DESIGN. Running out BETWEEN `delegate_round` and
+ *  `resolve` is the expensive failure: the round PDA's rent is already paid, the round is delegated,
+ *  and a keeper that stopped there would strand that deposit for nothing while leaving a real
+ *  player's fight unfinished. So an in-flight round is always driven to a terminal state, whatever
+ *  the balance says — the guard refuses to START work it cannot finish, which is the only point where
+ *  refusing costs nothing.
+ *
+ *  0.05 SOL, chosen against the measured cost rather than picked for roundness. A round costs
+ *  0.008971 all-in, of which 0.008561 is rent that now comes back once the round passes the retention
+ *  window — so the floor has to cover the rent of every round still inside that window, plus the
+ *  signatures. It is deliberately several rounds' worth: a floor of exactly one round's cost would
+ *  stop the keeper at the moment it could no longer act, with nothing left to pay for the closes that
+ *  would recover the rent it is sitting on.
+ *
+ *  It is a FLOOR, not a reserve: the keeper does not refuse to spend below it, it refuses to open. */
+export const MIN_BALANCE_SOL = envNumber("KEEPER_MIN_BALANCE_SOL", 0.05);
+
+/** The same floor in LAMPORTS, which is the unit every balance in this process is actually in.
+ *
+ *  Converted once, here, rather than at the comparison — `balance()` returns lamports and
+ *  `LAMPORTS_PER_SOL` is 1e9, so a SOL figure multiplied at each call site is a float-to-integer
+ *  conversion repeated in several places, each of which is a chance to compare a SOL number against a
+ *  lamport number and get an answer a billion times wrong in the direction that never triggers.
+ *  Rounded rather than truncated so a floor expressed in SOL cannot land a lamport below what was
+ *  asked for. */
+export const MIN_BALANCE_LAMPORTS = Math.round(MIN_BALANCE_SOL * LAMPORTS_PER_SOL);
+
+/** How long a blocked keeper waits before re-reading the balance.
+ *
+ *  The guard is reached on every pass while it is refusing, so without this it is an RPC per second
+ *  for as long as the arena is unfunded — which could be days. Fifteen seconds bounds it to one read
+ *  per fifteen passes while still resuming within fifteen seconds of a top-up landing, and that is the
+ *  responsiveness that matters: the person who just sent the SOL is watching the log. */
+export const LOW_BALANCE_RECHECK_SECONDS = 15;
+
+// ---- the status server ---------------------------------------------------------------------------
+
+/** The port the keeper serves `/keeper-status.json` and `/health` on.
+ *
+ *  IT HAS ITS OWN PARSE RATHER THAN `envNumber`'S, because a port is not just "a positive number":
+ *  8080.5 and 70000 both pass that check and both fail at `Bun.serve`, several seconds into a boot,
+ *  with a message about the runtime rather than about the value the operator typed. The failure that
+ *  matters is a container whose `KEEPER_HTTP_PORT` does not match `fly.toml`'s `internal_port`, and
+ *  that is caught here, at module load, before anything else has happened.
+ *
+ *  0 is refused along with everything else out of range even though it is meaningful to the runtime
+ *  ("bind any free port"): a keeper on a port nobody can predict is a keeper the platform's health
+ *  check cannot reach, so it is never the intent here even when it is the intent elsewhere.
+ *
+ *  The default is `DEFAULT_HTTP_PORT` in statusServer.ts, which is where the choice is argued; it is
+ *  imported rather than restated so the Dockerfile's `EXPOSE`, fly.toml's `internal_port` and this
+ *  fallback cannot drift apart in pairs. */
+export const HTTP_PORT = (() => {
+  const raw = process.env.KEEPER_HTTP_PORT;
+  if (raw === undefined || raw === "") return DEFAULT_HTTP_PORT;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65_535) {
+    throw new Error(`KEEPER_HTTP_PORT="${raw}" is not a port. Use a whole number in [1, 65535], or unset it.`);
+  }
+  return parsed;
+})();
 
 // ---- the main loop ------------------------------------------------------------------------------
 
@@ -426,6 +565,9 @@ export interface KeeperCliOptions {
   /** Hold ONE lobby open until a real player arrives, instead of cycling rounds on a timer. Requires
    *  a DEPLOYED program with the authority early close — see `HOLD_OPEN_ENABLED_DEFAULT`. */
   holdOpen: boolean;
+  /** Reclaim finished rounds' rent by closing their accounts. ON by default — see
+   *  `CLOSE_ROUNDS_ENABLED` for why this default runs the other way from `holdOpen`'s. */
+  closeRounds: boolean;
 }
 
 export const CLI_USAGE =
@@ -433,17 +575,29 @@ export const CLI_USAGE =
   "  --rounds N   stop cleanly after N rounds have settled and undelegated\n" +
   "  --dry-run    boot, read the chain, decide the next action and write the status file — send nothing\n" +
   "  --hold-open  hold ONE lobby open until a real player joins, then start the fight (needs the\n" +
-  "               authority early close DEPLOYED; also settable with KEEPER_HOLD_OPEN=1)";
+  "               authority early close DEPLOYED; also settable with KEEPER_HOLD_OPEN=1)\n" +
+  "  --no-close-rounds  stop reclaiming finished rounds' rent (~0.0086 SOL each, 95% of a round's\n" +
+  "               cost). On by default; also settable with KEEPER_CLOSE_ROUNDS=0";
 
 /** Parses argv, refusing anything it does not recognise.
  *
  *  Refusing rather than ignoring: an unattended process started with a misspelt `--dry-run` would
  *  otherwise spend real SOL while its operator believed it was rehearsing. */
 export function parseCliOptions(argv: string[]): KeeperCliOptions {
-  const options: KeeperCliOptions = { rounds: null, dryRun: false, holdOpen: HOLD_OPEN_ENABLED_DEFAULT };
+  const options: KeeperCliOptions = {
+    rounds: null,
+    dryRun: false,
+    holdOpen: HOLD_OPEN_ENABLED_DEFAULT,
+    closeRounds: CLOSE_ROUNDS_ENABLED,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--dry-run") { options.dryRun = true; continue; }
+    // The NEGATIVE flag, which is the opposite shape to `--hold-open` and for the opposite reason:
+    // this policy is on by default, so the thing an operator needs to be able to say on the command
+    // line is "not this time". There is deliberately no `--close-rounds`, because on is the default
+    // and the way to get it is to not ask for it.
+    if (arg === "--no-close-rounds") { options.closeRounds = false; continue; }
     // One-way on the command line: the flag turns the policy ON, and the env var is how it is turned
     // on for a long-running deployment. There is deliberately no `--no-hold-open`, because off is the
     // default and the way to get it is to not ask for it.

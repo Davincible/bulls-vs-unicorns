@@ -30,7 +30,7 @@
 // `signer: player, sessionToken: null` — the pre-Phase-6 direct-signing path, which
 // `verify-session-real.mjs` step 6 proves is unchanged.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -45,6 +45,7 @@ import {
   MIN_FIGHTERS_TO_FIGHT,
 } from "./config.ts";
 import { c, describeError, info, ok, warn } from "./log.ts";
+import { asSecretKeyBytes, parseSecretJson, readSecretText, type SecretSource } from "./secrets.ts";
 import {
   allocateHouseSides, houseFighterCount, HOLD_OPEN_HOUSE_FIGHTERS, HOUSE_FLOOR, HOUSE_MAX, houseStake,
   type SideCounts,
@@ -58,6 +59,19 @@ const here = dirname(fileURLToPath(import.meta.url));
  *  did not exist when the round ran. `.devnet/` is already gitignored, alongside the fork payer these
  *  are funded from. */
 export const HOUSE_WALLETS_PATH = join(here, "..", "..", "..", ".devnet", "keeper-house-wallets.json");
+
+/** The same file's CONTENTS, as an environment variable, for a deployment that has no `.devnet/` and
+ *  must not have one — see `secrets.ts` for the precedence rule and why env wins.
+ *
+ *  IT TAKES THE WHOLE FILE, not a bare array of keys, and that is chosen so the migration is one
+ *  command with nothing to reformat:
+ *
+ *      fly secrets set KEEPER_HOUSE_WALLETS="$(cat .devnet/keeper-house-wallets.json)"
+ *
+ *  A second accepted shape would be a second contract to keep working, for the sake of saving an
+ *  operator from a `cat`. One shape, one parser — `readWalletFile` below reads both sources through
+ *  the same validation, so a malformed secret fails exactly as a malformed file does. */
+export const HOUSE_WALLETS_ENV = "KEEPER_HOUSE_WALLETS";
 
 /** The prose published in the status file. Deliberately plain: it is read by a player, not an
  *  operator, and its job is to say what these wallets are without requiring the reader to know what a
@@ -145,24 +159,40 @@ const FILE_NOTE =
   "Keeper house-fighter wallets. Generated and topped up by er-demo/scripts/keeper. Devnet only. " +
   "Persisted so the pubkeys disclosed in public/keeper-status.json are stable across restarts.";
 
-function readWalletFile(): number[][] | null {
-  let raw: string;
-  try {
-    raw = readFileSync(HOUSE_WALLETS_PATH, "utf8");
-  } catch {
-    return null; // no file yet — the first boot creates one
-  }
-  const parsed = JSON.parse(raw) as Partial<HouseWalletFile>;
+/** The keys the process booted with, and where they came from. */
+interface StoredWallets {
+  secretKeys: number[][];
+  source: SecretSource;
+  where: string;
+}
+
+function readWalletFile(): StoredWallets | null {
+  const secret = readSecretText(HOUSE_WALLETS_ENV, HOUSE_WALLETS_PATH);
+  if (secret === null) return null; // neither source — the first boot creates one
+  const parsed = parseSecretJson(secret, `the contents of ${HOUSE_WALLETS_PATH}`) as Partial<HouseWalletFile>;
   const keys = parsed?.secretKeys;
-  if (!Array.isArray(keys) || !keys.every((k) => Array.isArray(k) && k.every((b) => typeof b === "number"))) {
+  if (!Array.isArray(keys)) {
     // Refusing loudly rather than regenerating: silently replacing a damaged file would rotate every
-    // disclosed pubkey and strand whatever devnet SOL the old ones held.
+    // disclosed pubkey and strand whatever devnet SOL the old ones held. Same refusal for a malformed
+    // secret, and for the stronger version of the same reason — a deployment that quietly generated a
+    // fresh set of house wallets would publish a disclosure list nobody can check against the rounds
+    // those wallets fought, and would strand the funded ones.
     throw new Error(
-      `${HOUSE_WALLETS_PATH} exists but is not a keeper wallet file (expected {"secretKeys": [[...]]}). ` +
-      `Move it aside if you genuinely want a fresh set of house wallets.`,
+      `${secret.where} is not a keeper wallet file (expected {"secretKeys": [[...]]}). ` +
+      (secret.source === "env"
+        ? `Set it to the verbatim contents of a wallet file: fly secrets set ${HOUSE_WALLETS_ENV}="$(cat ${HOUSE_WALLETS_PATH})".`
+        : `Move it aside if you genuinely want a fresh set of house wallets.`),
     );
   }
-  return keys;
+  // EACH KEY THROUGH THE SAME VALIDATOR THE OPERATOR KEY GETS. The looser check this replaced
+  // accepted an array of any length holding any numbers, so a 32-byte seed or a base58 string in the
+  // secret surfaced much later as tweetnacl's `bad secret key size` — a message that names neither
+  // the source nor the expected shape, which is precisely the failure `secrets.ts` exists to
+  // explain. `asSecretKeyBytes` reports the length and the origin and never the content.
+  keys.forEach((key, i) => {
+    asSecretKeyBytes(key, { ...secret, where: `${secret.where} (key ${i})` });
+  });
+  return { secretKeys: keys as number[][], source: secret.source, where: secret.where };
 }
 
 function writeWalletFile(secretKeys: number[][]): void {
@@ -176,10 +206,23 @@ function writeWalletFile(secretKeys: number[][]): void {
  *
  *  EXTENDS, never regenerates. Existing keys keep their index and their pubkey; only the shortfall is
  *  generated. A file holding MORE than `HOUSE_MAX` keeps all of them — the extras stop entering
- *  rounds but remain disclosed and remain classified as house, because they are. */
+ *  rounds but remain disclosed and remain classified as house, because they are.
+ *
+ *  KEYS THAT ARRIVED FROM THE ENVIRONMENT ARE NEVER WRITTEN BACK. Three reasons, and the first alone
+ *  settles it: a container filesystem is not a place to put secret keys — it is ephemeral, so the
+ *  write buys nothing, and it is a layer diff, so it may not be as ephemeral as it looks. Second, the
+ *  path it would write to is `.devnet/`, which on a deployment does not exist and would have to be
+ *  created; a keeper that creates a directory to store keys it was handed is doing something nobody
+ *  asked for. Third, the secret is the source of truth in that deployment, and a file beside it is a
+ *  second copy that can disagree with it after the next `fly secrets set`. */
 export function loadOrCreateHouseBank(dryRun: boolean): HouseBank {
   const stored = readWalletFile();
-  const secretKeys = stored ? [...stored] : [];
+  const secretKeys = stored ? [...stored.secretKeys] : [];
+  if (stored) {
+    // WHERE, not what. The pubkeys are printed by the boot banner from the bank itself; the secret
+    // material never reaches a log line. See secrets.ts.
+    info(`house wallets: ${secretKeys.length} loaded from ${stored.where} (${stored.source})`);
+  }
   const created = Math.max(0, HOUSE_MAX - secretKeys.length);
   for (let i = 0; i < created; i++) {
     secretKeys.push(Array.from(Keypair.generate().secretKey));
@@ -190,8 +233,53 @@ export function loadOrCreateHouseBank(dryRun: boolean): HouseBank {
       // ones are used for this pass and thrown away, so the dry run still exercises the classifier and
       // the disclosure list — it just does not commit an identity the operator did not ask for.
       warn(`DRY RUN — ${created} house wallet(s) generated in memory and NOT written to ${HOUSE_WALLETS_PATH}`);
+    } else if (stored?.source === "env") {
+      // REFUSED, not warned about, and the money is why. Warning and carrying on was the first
+      // version; it understated the cost by a lot. Generated wallets go into `bank.active`, so
+      // `fundHouseBank` tops each of them up to HOUSE_WALLET_TARGET_SOL at boot and between rounds —
+      // and they do not survive the restart, because a key from the environment is never written
+      // back (see this function's doc comment). So every restart permanently strands
+      // `HOUSE_WALLET_TARGET_SOL x created` SOL in wallets nothing will ever hold the keys to again,
+      // silently, forever.
+      //
+      // The disclosure list is the other half: these pubkeys are published as this arena's bot
+      // disclosure, and an unpersisted key is a different pubkey after every restart. A player
+      // checking whether the wallet they just fought was a bot would be checking against a list that
+      // did not exist when the round ran.
+      //
+      // Refusing matches what this module already does with a damaged wallet file a few lines up —
+      // "refusing loudly rather than regenerating" — and for the same reason. The trigger is real and
+      // foreseeable: the day HOUSE_MAX is raised without re-issuing the secret.
+      throw new Error(
+        `${HOUSE_WALLETS_ENV} holds ${secretKeys.length - created} wallet(s) but ${HOUSE_MAX} are wanted.\n` +
+        `Generating the other ${created} would strand money: they cannot be persisted (a key from the ` +
+        `environment is never written to disk), they WOULD be funded to ${HOUSE_WALLET_TARGET_SOL} SOL each ` +
+        `at boot, and they are gone on the next restart — ${(HOUSE_WALLET_TARGET_SOL * created).toFixed(3)} SOL ` +
+        `lost per restart — while the published bot-disclosure list changes underneath the rounds it ` +
+        `describes.\n` +
+        `Re-issue the secret with all ${HOUSE_MAX} keys: run the keeper once on a machine that can write ` +
+        `${HOUSE_WALLETS_PATH}, then fly secrets set ${HOUSE_WALLETS_ENV}="$(cat ${HOUSE_WALLETS_PATH})".`,
+      );
     } else {
-      writeWalletFile(secretKeys);
+      try {
+        writeWalletFile(secretKeys);
+      } catch (e) {
+        // THE PRODUCTION TRAP THIS CATCHES, and it is worth the six lines. A container started with
+        // no `KEEPER_HOUSE_WALLETS` reaches here, generates six wallets, and tries to persist them to
+        // `.devnet/` — a directory that does not exist in the image, above a root the process cannot
+        // write to as a non-root user. The raw failure is `EACCES, open '/.devnet/…'`, which is a
+        // true statement about a filesystem and tells the operator nothing about the secret they
+        // forgot to set. Named here, at the one moment the diagnosis is obvious.
+        throw new Error(
+          `could not persist the house wallets to ${HOUSE_WALLETS_PATH} ` +
+          `(${e instanceof Error ? e.message : String(e)}).\n` +
+          `If this is a deployment, that path is not where the keys belong: set ${HOUSE_WALLETS_ENV} to ` +
+          `the contents of a wallet file instead, and nothing needs to be written at all. Generate one ` +
+          `locally first (run the keeper once on a machine that can write .devnet/), then ` +
+          `fly secrets set ${HOUSE_WALLETS_ENV}="$(cat ${HOUSE_WALLETS_PATH})" — the pubkeys are ` +
+          `published as this arena's bot disclosure, so they must be the same on every restart.`,
+        );
+      }
       info(stored
         ? `house bank extended by ${created} wallet${created === 1 ? "" : "s"} -> ${HOUSE_WALLETS_PATH}`
         : `house bank created with ${secretKeys.length} wallets -> ${HOUSE_WALLETS_PATH}`);

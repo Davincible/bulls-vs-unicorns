@@ -1,0 +1,230 @@
+# Fly.io config for the Bulls ⚔ Unicorns ROUND KEEPER — the process that opens, drives and settles
+# rounds of the on-chain arena, and publishes the status file the front end reads to tell
+# "next lobby in 0:08" from "keeper is down".
+#
+# Deploy from this directory, which is also the build context (unlike engine/, which builds from the
+# repo root):
+#   cd er-demo && fly deploy
+#
+# THREE RULES THIS FILE ENFORCES. The first one is not a preference — breaking it burns SOL that
+# nothing can recover.
+#
+#  1. EXACTLY ONE MACHINE.
+#     Two keepers both read arena.round_counter and both try to open `counter + 1`. The loser gets
+#     RoundOutOfOrder and backs off — loud, not silent, and that part is survivable. What is not
+#     survivable is what the winner leaves behind: the round the loser was driving is now BEHIND the
+#     counter, unreachable by a phase machine that correctly follows the chain rather than its own
+#     memory. It sits delegated, past its deadline, holding ~0.0085 SOL of round-PDA rent that NO
+#     instruction ever reclaims — close_round undelegates an account, it does not close one. This is
+#     not hypothetical; it happened today, and scripts/keeper/README.md writes it up under "Rounds
+#     can be stranded in Lobby". Two keepers would also field house fighters into each other's
+#     rounds, which quietly retires the "no house-versus-house fights" guarantee.
+#     THE MOST LIKELY WAY TO GET TWO KEEPERS IS NOT SCALING — IT IS THE FIRST DEPLOY.
+#     Fly Launch creates and starts TWO machines by default for a process group that has services
+#     ("redundancy by default"), and does it again on any `fly deploy` that follows a scale-to-zero.
+#     Nothing in this file can prevent that: `min_machines_running` is a floor, not a ceiling, and
+#     Fly has no maximum-machine-count setting at all (staff answer, Jan 2025). The opt-out is a
+#     FLAG ON THE COMMAND, and it has to be on every deploy:
+#
+#         fly deploy --ha=false
+#
+#     That is the single most important line in this file's whole story, because it is the one that
+#     is easy to leave out and it fails by silently doing the expensive thing.
+#
+#     So: auto_stop_machines = "off", auto_start_machines = false, `--ha=false` on every deploy, and
+#     NEVER `fly scale count 2`. There is no configuration of this app in which a second machine is
+#     an improvement.
+#
+#     Deploy-time overlap deserves an honest answer rather than a rule. With `rolling` (the default,
+#     and set explicitly below) a single-machine app is updated IN PLACE — the same machine is
+#     stopped, re-imaged and restarted, so there is a window with zero keepers and never a window
+#     with two. `canary` and `bluegreen` both boot a second machine alongside the running one and
+#     must never be used here; `canary` is explicitly refused by Fly only when a volume is mounted,
+#     and this app has none (rule 2), so nothing but this comment stops someone reaching for it.
+#     Where overlap can still happen — a hand-run second instance, a deploy racing a manual start —
+#     most of it is benign by construction: every action is re-derived from the chain each pass and
+#     the process holds no local state, so a duplicate close_round or resolve costs one signature
+#     and the program refuses the second. The genuinely unsafe window is open_round: both processes
+#     read the same round_counter, both try `counter + 1`, and the loser's rent (if it had already
+#     paid for a round PDA in a racing sequence) is gone. `enter` is not idempotent either — a
+#     duplicate tops a house fighter up rather than failing. Nothing here CLOSES those windows; one
+#     machine does.
+#
+#  2. NO VOLUME, and this is the reason nobody should add one out of habit.
+#     The loop re-derives every decision from the chain on every pass — which is exactly why a crash
+#     mid-fight is indistinguishable from a fresh boot, and why there is no reconciliation routine
+#     in the codebase to rot. The only local state that ever persisted was the house-wallet key
+#     file, and in production that arrives as a fly secret. There is genuinely nothing to keep. A
+#     volume would additionally pin this app to one region forever and turn a region change into a
+#     data migration, in exchange for storing nothing.
+#
+#  3. NO SCALE TO ZERO.
+#     A stopped machine is not a cheaper arena, it is no arena: no round opens, /keeper-status.json
+#     404s, and the page correctly renders "keeper is down, no round is coming". Being the thing
+#     that is always there is the entire job.
+
+app = "bulls-arena-keeper-devnet"
+
+# Deliberately NOT engine's `bulls-arena-er-devnet`. Different service, different failure modes,
+# separate secrets, separate restart blast radius. Two apps in one org do not collide; two services
+# sharing one app do.
+
+# Change with `fly regions list` for options, then set this and redeploy — with no volume (rule 2)
+# a region change really is just a redeploy, which is that rule paying for itself.
+# The latency that matters here is NOT to players: the browser talks to the chain directly and only
+# polls this app for the status file. It is to the endpoints the keeper itself hammers. By count
+# that is dominated by ER traffic through the MagicBlock Magic Router — up to one tick per second of
+# fight, against a handful of base-layer calls per round — and the router is currently observed
+# serving from devnet-eu.magicblock.app. So: Frankfurt.
+# That is reasoning, not measurement. If ER round-trip times are ever actually sampled from two
+# regions, believe the sample over this comment.
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret configuration only. Anything carrying key material or an API key goes in
+# `fly secrets`, which is read from the environment at boot and never appears in a diff:
+#   fly secrets set KEEPER_OPERATOR_KEY="$(cat ../.devnet/fork-payer.json)"
+#   fly secrets set KEEPER_HOUSE_WALLETS="$(cat ../.devnet/keeper-house-wallets.json)"
+[env]
+  KEEPER_HTTP_PORT = "8080"
+
+  # HOLD OPEN, and the arithmetic is the whole argument.
+  #
+  # Every round permanently locks ~0.0098 SOL all-in, of which ~0.0085 is round-PDA rent that no
+  # instruction ever reclaims (verified, not inferred: rounds #4-#18 all still hold exactly
+  # 0.008498 SOL). The fixed cadence cycles a round about every 110 seconds, so an arena nobody is
+  # playing in costs:
+  #
+  #     fixed cadence   ~0.32   SOL/hour
+  #     1-hour holds    ~0.0098 SOL/hour   <- 97% of the saving, and where this sits
+  #
+  # A deployment that will sit idle most of the time must not run the fixed cadence. Hold-open opens
+  # ONE lobby with a one-hour backstop and holds it until a real player arrives, so the fight starts
+  # because a person showed up rather than because a timer fired.
+  #
+  # The safety rail: this policy needs the authority-signed early close in close_lobby_and_draw to
+  # be DEPLOYED. Nothing in this process can determine that — the IDL is generated from source, so a
+  # capability probe would only prove that somebody edited Rust. What the IDL CAN do is prove the
+  # negative, and it does: if close_lobby_and_draw has no authority account, the keeper refuses to
+  # boot rather than sending early closes that come back as LobbyStillOpen with a real player
+  # standing in the lobby. If this deploy crash-loops at startup, that is the check firing, and the
+  # fix is to deploy the program — not to set this to "0" and lose the 97%.
+  KEEPER_HOLD_OPEN = "1"
+
+  # Both URLs are run through assertDevnetUrl at boot, on every endpoint including the ER
+  # validator's fqdn. A mainnet URL arriving here or through `fly secrets` fails the process loudly
+  # instead of connecting: env indirection is not permitted to become the hole in the mainnet guard.
+  #
+  # They are overridable at all because api.devnet.solana.com rate-limits — 429s observed with just
+  # one browser plus one sampler — so a paid Helius/QuickNode/Triton *devnet* endpoint drops in with
+  # no code change. An endpoint whose URL carries an API key is a `fly secret`, not a line here;
+  # this file is committed.
+  KEEPER_BASE_RPC = "https://api.devnet.solana.com"
+  KEEPER_ROUTER_URL = "https://devnet-router.magicblock.app"
+
+  # KEEPER_CORS_ORIGIN is intentionally NOT set here, and this deployment is not finished until it
+  # is. It is a comma-separated list of EXACT browser origins allowed to read /keeper-status.json —
+  # the Vercel origin serving the arena, e.g. "https://<project>.vercel.app". Never "*": the status
+  # file is this keeper's own bot disclosure and its heartbeat, and a wildcard hands both to any
+  # page on the internet to embed as if it were theirs.
+  # Unset means local-dev origins only, and the keeper logs a loud warning at boot that no
+  # production origin is configured — so the failure mode is a page that cannot read the status and
+  # a log line saying exactly why, rather than silence. Set it with:
+  #   fly secrets set KEEPER_CORS_ORIGIN="https://..."   (or add it here; it is not a secret)
+
+[http_service]
+  internal_port = 8080
+  force_https = true              # the status file is polled from an https:// page; mixed content
+                                  # would be blocked by the browser anyway
+  # "off" rather than `false`: both are accepted, but "off"/"stop"/"suspend" is the current spelling
+  # and the boolean is the legacy one. Rule 3 — a stopped machine is no arena.
+  auto_stop_machines = "off"
+  # Rule 1. Fly's own guidance is that autostart and autostop should be enabled or disabled
+  # TOGETHER; disabling both is the recommended pairing, and it is what a process that must simply
+  # always be running wants. The documented footgun is the other asymmetry (autostop on, autostart
+  # off), which stops a machine and never starts it again.
+  auto_start_machines = false
+  # HONEST LABEL: THIS LINE IS INERT, and it is kept as a statement of intent rather than deleted so
+  # nobody adds it back believing it does something. Fly's docs are explicit — `min_machines_running`
+  # "has no effect unless you set auto_stop_machines to 'stop' or 'suspend'". It is an autostop FLOOR
+  # for the proxy, not a keep-alive and not a scaling control. What actually keeps exactly one machine
+  # running is `--ha=false` on every deploy plus never scaling up; see rule 1.
+  min_machines_running = 1
+  processes = ["app"]
+
+  # Present for backpressure, NOT for scaling. With exactly one machine and autostart off (rule 1),
+  # soft_limit can never spill over to a second instance — so the only thing these numbers decide is
+  # when Fly's proxy starts queueing. That is still worth setting, because the HTTP server shares a
+  # process with the round loop: a flood on a PUBLIC endpoint is a flood competing with the thing
+  # that actually opens rounds. Real load is one browser polling every 2s, so 25 is roughly fifty
+  # tabs' worth of headroom and 50 is still nowhere near enough concurrency to starve the loop.
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 25
+    hard_limit = 50
+
+# /health, and note this is the OPPOSITE endpoint from engine/fly.toml, which checks /live and
+# deliberately NOT /health. There, /health returns 503 during a solvency freeze and a platform check
+# pointed at it would restart-loop the engine through a money incident. Here /health is the safe one
+# BY CONSTRUCTION: it does no chain calls and returns 200 with a tiny JSON body for as long as the
+# process is answering, precisely so a devnet RPC blip cannot get a healthy keeper killed. The
+# divergence between the two files is deliberate in both directions.
+#
+# This check therefore means "the process is alive", and nothing more. "The keeper is working" is
+# keeper.heartbeatAt and keeper.stalledSince in the status file, which the front end already reads —
+# and a stalled keeper is one that is catching, backing off and retrying, which a restart does not
+# fix, because what is unwell is devnet.
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  # 90s, and generous on purpose. The server is now started BEFORE the slow half of boot (see
+  # keeper.ts), so this should never be the binding constraint — but what still happens before the
+  # loop's first pass is choosing an ER validator, which downloads a ~360KB cloned program account
+  # per route and write-probes each with a 5s ceiling, and funding the house bank, which can send a
+  # confirmed base-layer transaction. On an unwell devnet that is tens of seconds. Since this check is
+  # pure liveness and cannot fail for any reason a restart would fix, a long grace costs nothing and a
+  # short one risks killing a machine for being slow to start rather than for being broken.
+  grace_period = "90s"
+  method = "GET"
+  path = "/health"
+
+# ROLLING, STATED EXPLICITLY EVEN THOUGH IT IS THE DEFAULT — because it is the only strategy that
+# gives this app both of the things it needs, and because a default is not a decision until it is
+# written down. On a single-machine app `rolling` updates that machine IN PLACE (stop, re-image,
+# start), so there is never a moment with two keepers, AND it waits for the health check before
+# calling the deploy good.
+#
+# The three rejected, each for a different reason:
+#   canary     boots an extra machine alongside the running one to verify it, then destroys it. Two
+#              keepers, by design. Fly refuses it only for volume-mounted machines, and this app has
+#              no volume (rule 2) — so nothing but this comment stops it being chosen.
+#   bluegreen  a parallel machine for every running one. Same objection, larger.
+#   immediate  no overlap, but it replaces everything WITHOUT waiting for health checks. That trades
+#              away the only automatic signal that a bad image reached production, to buy a property
+#              rolling already has here. The wrong side of the trade.
+#
+# Also do NOT add `[deploy] release_command` or `[[http_service.machine_checks]]`: both run in a
+# TEMPORARY machine booted from this image, which for this image means a second process holding the
+# arena authority key.
+[deploy]
+  strategy = "rolling"
+
+# The keeper answers SIGTERM by finishing the current step and stopping; a second one exits
+# immediately. Every wait inside a step is interruptible, so ~1s is the typical shutdown. 20 is
+# headroom for the worst case (a step blocked on a slow confirmation), not an expectation — and it
+# is deliberately short, because the window this bounds is the window in which two keepers could
+# both reach for `round_counter + 1`.
+#
+# An INTEGER of seconds, which is the documented form (default 5, maximum 300). `"20s"` happens to
+# parse too, and it is not used: the reference shows the integer, `fly launch` emits the integer, and
+# a value that is merely accepted is a value nobody has checked the units of. Fly also calls
+# kill_timeout best-effort, so the keeper is built not to need it rather than to rely on it.
+kill_signal = "SIGTERM"
+kill_timeout = 20
+
+[[vm]]
+  size = "shared-cpu-1x"          # one poll loop and a tiny HTTP server; this is not CPU work
+  memory = "512mb"                # not for the workload — for Bun plus the web3.js/Anchor object
+                                  # graph, which is the same dependency tree the browser app carries

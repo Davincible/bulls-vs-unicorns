@@ -30,7 +30,7 @@ import { Connection, type Keypair, PublicKey } from "@solana/web3.js";
 import { ConnectionMagicRouter, DELEGATION_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
 
 import { assertDevnetUrl } from "../../src/devnet-guard.ts";
-import { BASE_RPC, Phase, PROGRAM_ID, ROUTER_URL } from "../../src/chain/constants.ts";
+import { Phase, PROGRAM_ID } from "../../src/chain/constants.ts";
 import {
   createProgram,
   type BullsArenaProgram,
@@ -45,6 +45,7 @@ import { NO_FRESH_VALIDATOR, pickValidator, routerValidators, type ErValidator }
 import {
   CLOCK_OFFSET_WARN_SECONDS, CLOCK_RESYNC_SECONDS, READ_RETRY_DELAYS_MS, VALIDATOR_PROBE_TIMEOUT_MS,
 } from "./config.ts";
+import { BASE_RPC_ENDPOINT, ROUTER_ENDPOINT } from "./endpoints.ts";
 import { c, hostNowSeconds, info, ok, sleep, warn } from "./log.ts";
 
 export type { ErValidator };
@@ -163,6 +164,12 @@ export async function withReadRetry<T>(label: string, read: () => Promise<T>): P
  *  an ER validator" — a silent hang is the worst possible way for a keeper to fail to start. */
 async function acceptsWrites(fqdn: string): Promise<boolean> {
   try {
+    // The fqdn came from the ROUTER, which is to say from off this machine. Nothing can happen
+    // through this probe — the body is a deliberately malformed `sendTransaction` with no params —
+    // but this file's header claims every endpoint passes `assertDevnetUrl`, and a claim that holds
+    // only because the payload is harmless is a claim that stops holding when somebody changes the
+    // payload. One line makes it true by inspection instead.
+    assertDevnetUrl(fqdn, "ER validator");
     const res = await fetch(fqdn, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -189,7 +196,11 @@ async function acceptsWrites(fqdn: string): Promise<boolean> {
  *  and the caller is expected to print `NO_FRESH_VALIDATOR` and exit non-zero rather than open rounds
  *  nobody can play. */
 export async function selectWritableValidator(): Promise<ErValidator | null> {
-  const first = await pickValidator(null);
+  // The keeper's OWN base RPC, not the public default. Without a local `target/deploy/bulls_arena.so`
+  // — which no container has — `pickValidator` reads the deployed bytecode from the base layer, and an
+  // operator who moved to a paid endpoint to escape rate limits should not have boot silently fall
+  // back to the endpoint they were escaping. See `referenceBytecode` in erValidator.ts.
+  const first = await pickValidator(null, BASE_RPC_ENDPOINT.url, ROUTER_ENDPOINT.url);
   if (!first) return null;
   if (await acceptsWrites(first.fqdn)) {
     ok(`ER validator ${first.fqdn} — current bytecode, writes open`);
@@ -197,14 +208,14 @@ export async function selectWritableValidator(): Promise<ErValidator | null> {
   }
   warn(`ER validator ${first.fqdn} serves the current bytecode but GATES WRITES (HTTP 401) — looking for another`);
 
-  for (const candidate of await routerValidators()) {
+  for (const candidate of await routerValidators(ROUTER_ENDPOINT.url)) {
     if (candidate.identity.equals(first.identity)) continue;
     if (!(await acceptsWrites(candidate.fqdn))) {
       warn(`ER validator ${candidate.fqdn} rejected — writes gated or unreachable`);
       continue;
     }
     try {
-      const fresh = await pickValidator(candidate.identity);
+      const fresh = await pickValidator(candidate.identity, BASE_RPC_ENDPOINT.url, ROUTER_ENDPOINT.url);
       if (fresh) {
         ok(`ER validator ${fresh.fqdn} — current bytecode, writes open`);
         return fresh;
@@ -229,14 +240,16 @@ export interface ChainClientOptions {
 }
 
 export async function createChainClient({ operator, dryRun, stopSignal }: ChainClientOptions): Promise<ChainClient> {
-  // constants.ts already asserts both of these at module load; repeated here so this file's own
-  // contract ("every endpoint through assertDevnetUrl") is true by inspection rather than by
-  // knowing what another module did on import.
-  assertDevnetUrl(ROUTER_URL, "Magic Router");
-  assertDevnetUrl(BASE_RPC, "base devnet RPC");
+  // `endpoints.ts` already asserts both of these at module load — and it is the module that made them
+  // env-configurable, so that is where the guard has to be. Repeated here so this file's own contract
+  // ("every endpoint through assertDevnetUrl") is true by inspection rather than by knowing what
+  // another module did on import. Cheap, and it is the assertion standing between a Fly secret and a
+  // mainnet connection.
+  assertDevnetUrl(ROUTER_ENDPOINT.url, "Magic Router");
+  assertDevnetUrl(BASE_RPC_ENDPOINT.url, "base devnet RPC");
 
-  const router = new ConnectionMagicRouter(ROUTER_URL, "confirmed");
-  const base = new Connection(BASE_RPC, "confirmed");
+  const router = new ConnectionMagicRouter(ROUTER_ENDPOINT.url, "confirmed");
+  const base = new Connection(BASE_RPC_ENDPOINT.url, "confirmed");
 
   // ONE PROGRAM PER CONNECTION, not one per signer — including for the house wallets' `enter` calls.
   // The provider's wallet is only consulted by Anchor's account resolver to fill accounts a caller
