@@ -11,9 +11,16 @@ dist-ssr
 .env.*
 !.env.example
 
-# Package manager — no lockfile committed, matching this repo's root .gitignore convention
-# (package-lock.json is already excluded there for the same reason).
-bun.lock
+# Package manager. `bun.lock` IS committed — deliberately breaking the repo-root convention that
+# excludes lockfiles, because this project is the one that gets deployed.
+#
+# Without it, Vercel resolves ~30 direct dependencies and a much larger transitive tree — web3.js,
+# Anchor, the MagicBlock SDK, pixi — fresh on every build. A broken patch release anywhere in that
+# tree then produces a deploy that differs from the build that was tested, with nothing in the diff
+# to show it. A lockfile is how "it worked when I checked" stays true on a machine we don't control.
+#
+# The other lockfiles stay ignored: two package managers' locks in one directory is a race about
+# which one is authoritative.
 bun.lockb
 package-lock.json
 pnpm-lock.yaml

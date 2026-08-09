@@ -1,0 +1,21 @@
+# What never needs to reach the build machine. This is an UPLOAD filter, not a security control —
+# nothing secret lives in this directory in the first place (the funded keypairs are in the repo-root
+# `.devnet/`, which is gitignored and outside this project's root anyway). It exists to keep the
+# upload small and the build fast.
+
+# Operator tooling: opens rounds, funds burners, drives devnet verification runs. None of it is
+# imported by the app, and several of them talk to the chain — they have no business on a build box.
+scripts/
+
+# Screenshot galleries and design scratch. `design/paper-themes/` alone is ~18 full-page PNGs.
+design/
+
+# Test files are deliberately NOT excluded. `bun run build` is `tsc -b && vite build`, and
+# `tsconfig.app.json` includes all of `src` — so the build machine type-checks exactly what a
+# developer does locally. Dropping them here would make Vercel's build strictly weaker than the one
+# verified before pushing: a type error in a test would fail locally and pass in CI, which is the
+# classic shape of "works on my machine". They cost a few KB of upload and never reach `dist`.
+
+dist/
+node_modules/
+.DS_Store
