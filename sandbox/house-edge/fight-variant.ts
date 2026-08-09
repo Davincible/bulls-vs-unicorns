@@ -47,11 +47,31 @@ export interface Fighter {
 
 export type WeightKind =
   | "uniform"     // w = 1                      (the deployed rule)
-  | "linear"      // w = ring
-  | "sqrt"        // w = isqrt(ring)
-  | "pow34"       // w = ring^(3/4), integer    = isqrt(ring * isqrt(ring))
-  | "cap2"        // w = min(ring, 2 * mean_ring_of_the_living)
-  | "cap3";       // w = min(ring, 3 * mean_ring_of_the_living)
+  | "linear"      // w = v
+  | "sqrt"        // w = isqrt(v)
+  | "pow34"       // w = v^(3/4), integer       = isqrt(v * isqrt(v))
+  | "cap2"        // w = min(v, 2 * mean_v)
+  | "cap3"        // w = min(v, 3 * mean_v)
+  /** THE DIAL. `w = M*v + mean_v`, one u64 knob M.
+   *
+   *  M = 0 is exactly uniform; M -> infinity is exactly linear; and the mix in between is
+   *  `M/(M+1)` linear to `1/(M+1)` uniform, because the constant term is by construction the average
+   *  of the variable one. That is what makes M a calibratable dial rather than a menu: the tilt is a
+   *  smooth, monotone function of a single integer, so a target edge can be solved for instead of
+   *  guessed at. Integer throughout; the only division is by the living count. */
+  | "mix";
+
+/** Which quantity the weight reads.
+ *
+ *  `ring` is live hp — it decays as a fighter is beaten down. `stake` is the entry size and NEVER
+ *  MOVES, which is the whole reason it is offered: a static weight vector can have its cumulative
+ *  sums built once per `advance_fight` call instead of once per step, and that is the difference
+ *  between "O(n) per step" and "O(n) per call plus a 16-entry walk". See §compute in the study. */
+export type WeightBasis = "ring" | "stake";
+
+export interface WeightSpec { kind: WeightKind; basis: WeightBasis; m?: bigint; }
+export const W_UNIFORM: WeightSpec = { kind: "uniform", basis: "ring" };
+export const mix = (m: bigint, basis: WeightBasis = "stake"): WeightSpec => ({ kind: "mix", basis, m });
 
 /** Integer square root, Newton. Exact floor(sqrt(x)) for all BigInt x >= 0. */
 export function isqrt(x: bigint): bigint {
@@ -78,28 +98,42 @@ export function pow34(x: bigint): bigint {
  *  fights under weighting, and the study reports fight length so the effect is visible rather than
  *  hidden. Under `uniform` the weight is 1 for everyone, dead included, which reproduces the
  *  deployed wastage exactly. */
-function fillWeights(kind: WeightKind, f: Fighter[], n: number, w: bigint[]): bigint {
+function fillWeights(spec: WeightSpec, f: Fighter[], n: number, w: bigint[]): bigint {
+  const { kind, basis } = spec;
   let W = 0n;
   if (kind === "uniform") {
     for (let i = 0; i < n; i++) { w[i] = 1n; }
     return BigInt(n);
   }
-  if (kind === "cap2" || kind === "cap3") {
-    let total = 0n, alive = 0n;
-    for (let i = 0; i < n; i++) { if (f[i].hp > 0n) { total += f[i].hp; alive++; } }
-    if (alive === 0n) return 0n;
-    const k = kind === "cap2" ? 2n : 3n;
-    const cap = (k * total) / alive;
-    for (let i = 0; i < n; i++) { const v = f[i].hp < cap ? f[i].hp : cap; w[i] = v; W += v; }
+  // `stake` weights count a DEAD fighter's stake, because stake does not die. A step that draws a
+  // dead attacker is wasted on a `continue` — which is exactly what happens under the deployed
+  // uniform rule too, so the wastage is unchanged rather than newly introduced.
+  const val = basis === "ring" ? (g: Fighter) => g.hp : (g: Fighter) => g.stake;
+  if (kind === "cap2" || kind === "cap3" || kind === "mix") {
+    let total = 0n, live = 0n;
+    for (let i = 0; i < n; i++) { const v = val(f[i]); if (v > 0n) { total += v; live++; } }
+    if (live === 0n) return 0n;
+    const mean = total / live;
+    if (kind === "mix") {
+      const M = spec.m ?? 0n;
+      for (let i = 0; i < n; i++) { const v = M * val(f[i]) + mean; w[i] = v; W += v; }
+      return W;
+    }
+    const cap = (kind === "cap2" ? 2n : 3n) * mean;
+    for (let i = 0; i < n; i++) { const v = val(f[i]) < cap ? val(f[i]) : cap; w[i] = v; W += v; }
     return W;
   }
   for (let i = 0; i < n; i++) {
-    const r = f[i].hp;
+    const r = val(f[i]);
     const v = kind === "linear" ? r : kind === "sqrt" ? isqrt(r) : pow34(r);
     w[i] = v; W += v;
   }
   return W;
 }
+
+/** True when the weight vector cannot change during a fight — i.e. it can be built once per
+ *  `advance_fight` call rather than once per step. This is the compute claim, made checkable. */
+export const isStatic = (s: WeightSpec) => s.kind === "uniform" || s.basis === "stake";
 
 /** Walk the cumulative weights until `x` is consumed. O(n), branchless-ish, integer only. */
 function pick(w: bigint[], n: number, x: bigint): number {
@@ -135,14 +169,14 @@ export type ByteLayout =
   | "wide";
 
 export interface FightConfig {
-  attacker: WeightKind;
-  defender: WeightKind;
+  attacker: WeightSpec;
+  defender: WeightSpec;
   dust: DustRule;
   layout: ByteLayout;
 }
 
 export const BASELINE: FightConfig = {
-  attacker: "uniform", defender: "uniform",
+  attacker: W_UNIFORM, defender: W_UNIFORM,
   dust: { kind: "absolute", units: DUST_ABSOLUTE }, layout: "legacy",
 };
 
@@ -167,21 +201,30 @@ export interface FightStats {
  *  Structure is deliberately the deployed one: same hash chain, same `d == a` bump, same three
  *  skips (same side / same wallet / either dead), same `hp * roll / 100`, same dust-finish. The only
  *  things that vary are WHO gets drawn and WHERE the dust floor sits. */
-export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightConfig, hashes?: Buffer[]): FightStats {
+/** `stopWhenOver` is an OUTCOME-IDENTICAL optimisation, not an approximation, and the reason it is
+ *  safe is worth stating because it looks like a shortcut. An exchange requires an attacker and a
+ *  defender who are alive, on opposite sides, and different wallets. Once one side has nobody alive,
+ *  no draw can ever satisfy that again — `dead` is never cleared — so every remaining step is a
+ *  `continue` and the final hp/banked/dead vector is fixed. The chain still runs to the bell on
+ *  chain; this only stops SIMULATING it. `st.steps` and `st.weightPasses` are therefore truncated
+ *  when it is set, which is why the compute table in study-weights.ts runs with it OFF. */
+export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightConfig, hashes?: (Buffer | undefined)[], stopWhenOver = false): FightStats {
   const n = f.length;
   const st: FightStats = { steps: 0, exchanges: 0, endedAt: steps, weightPasses: 0 };
   if (n < 2) return st;
 
   const wa: bigint[] = new Array(n).fill(0n);
   const wd: bigint[] = new Array(n).fill(0n);
-  const needA = cfg.attacker !== "uniform";
-  const needD = cfg.defender !== "uniform";
-  // A uniform side needs no rebuild at all; a weighted one must be rebuilt every step because ring
-  // moves every step. That asymmetry is the whole compute argument.
-  let Wa = needA ? 0n : BigInt(n);
-  let Wd = needD ? 0n : BigInt(n);
-  if (!needA) fillWeights("uniform", f, n, wa);
-  if (!needD) fillWeights("uniform", f, n, wd);
+  const needA = cfg.attacker.kind !== "uniform";
+  const needD = cfg.defender.kind !== "uniform";
+  // A uniform side needs no table at all. A STAKE-based one is built once, here. A RING-based one
+  // must be rebuilt every step, because ring moves every step. That three-way split is the whole
+  // compute argument, and `weightPasses` counts it so the study can report it rather than assert it.
+  const rebuildA = needA && !isStatic(cfg.attacker);
+  const rebuildD = needD && !isStatic(cfg.defender);
+  let Wa = BigInt(n), Wd = BigInt(n);
+  if (!needA) fillWeights(W_UNIFORM, f, n, wa); else if (!rebuildA) { Wa = fillWeights(cfg.attacker, f, n, wa); st.weightPasses++; }
+  if (!needD) fillWeights(W_UNIFORM, f, n, wd); else if (!rebuildD) { Wd = fillWeights(cfg.defender, f, n, wd); st.weightPasses++; }
 
   let over = false;
   for (let step = 0; step < steps; step++) {
@@ -190,7 +233,9 @@ export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightCo
     // once per round and hands the same table to every config. That is not an optimisation for its
     // own sake: it makes every configuration face the SAME sequence of draws on the SAME lobbies,
     // which is what turns a noisy A/B into a paired comparison.
-    const h = hashes ? hashes[step] : tickHash(seed, BigInt(step));
+    let h: Buffer;
+    if (hashes) { h = hashes[step] ?? (hashes[step] = tickHash(seed, BigInt(step))); }
+    else h = tickHash(seed, BigInt(step));
 
     let a: number, d: number;
     if (cfg.layout === "legacy") {
@@ -198,8 +243,8 @@ export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightCo
       d = h.readUInt32LE(4) % n;
     } else {
       const ra = h.readBigUInt64LE(0), rd = h.readBigUInt64LE(8);
-      if (needA) { Wa = fillWeights(cfg.attacker, f, n, wa); st.weightPasses++; }
-      if (needD) { Wd = fillWeights(cfg.defender, f, n, wd); st.weightPasses++; }
+      if (rebuildA) { Wa = fillWeights(cfg.attacker, f, n, wa); st.weightPasses++; }
+      if (rebuildD) { Wd = fillWeights(cfg.defender, f, n, wd); st.weightPasses++; }
       if (Wa === 0n || Wd === 0n) continue;   // nobody left with any weight
       a = needA ? pick(wa, n, ra % Wa) : Number(ra % BigInt(n));
       d = needD ? pick(wd, n, rd % Wd) : Number(rd % BigInt(n));
@@ -225,7 +270,7 @@ export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightCo
       if (!over) {
         let a0 = 0, b0 = 0;
         for (const g of f) if (g.dead === 0) { if (g.side === 0) a0++; else b0++; }
-        if (a0 === 0 || b0 === 0) { st.endedAt = step + 1; over = true; }
+        if (a0 === 0 || b0 === 0) { st.endedAt = step + 1; over = true; if (stopWhenOver) break; }
       }
     }
   }

@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """Regenerate the bulls-arena IDL from src/lib.rs.
 
-Run `--verify` to check only, which is what `the_idl_generator_still_reproduces_the_committed_idl`
-in lib.rs's test module does on every `cargo test`.
+MODES
+  (none)                    regenerate the three IDL artefacts — REFUSES if that would change the
+                            `Round` account layout the served IDL describes; see `round_layout`
+  --verify                  check only, write nothing. What
+                            `the_idl_generator_still_reproduces_the_committed_idl` runs on every
+                            `cargo test`, so it must never need a network
+  --deploying               the acknowledgement that permits a layout change, to be passed only in
+                            the same operation that deploys the matching program
+  --deployed-check <rpc>    ask the chain whether the SERVED IDL and the DEPLOYED program agree.
+                            Opt-in, for after a deploy
 
 `anchor idl build` cannot run on this machine (anchor-attribute-account's idl-build path fails to
 compile under the pinned toolchain), so this reproduces the parts of it this change touches. Nothing
@@ -14,8 +22,6 @@ here is guessed:
   * the camelCase .ts is produced by a transform proven to reproduce the committed .ts byte-for-byte;
   * every pubkey the output names is either this program or a NAMED external one — see
     `EXTERNAL_PROGRAMS` and `foreign_pubkeys`, and the incident that check exists because of.
-
-Run with --verify to do only the checks.
 """
 import hashlib
 import json
@@ -644,10 +650,10 @@ def main():
         # fetching matches what is actually deployed.
         deployed_check(json.loads(PUBLIC_JSON.read_text(encoding="utf-8")), sys.argv[at + 1])
         return
-    _main()
+    regenerate()
 
 
-def _main():
+def regenerate():
     # ALWAYS start from the IDL at HEAD, never from whatever is on disk, so the output is a pure
     # function of (the committed IDL, the current lib.rs) and re-running is idempotent by
     # construction. Verifying against the on-disk file would flag this script's own edits as drift.

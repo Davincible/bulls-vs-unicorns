@@ -95,23 +95,24 @@ const check = (ok: boolean, what: string) => {
 
 // --- conservation holds under every weight kind ------------------------------------------------
 {
-  const kinds = ["uniform", "linear", "sqrt", "pow34", "cap2", "cap3"] as const;
+  const kinds = ["uniform", "linear", "sqrt", "pow34", "cap2", "cap3", "mix"] as const;
+  const bases = ["ring", "stake"] as const;
   let ok = true;
-  for (const dk of kinds) for (const ak of kinds) {
-    const seed = createHash("sha256").update(`cons|${dk}|${ak}`).digest();
+  for (const dk of kinds) for (const ak of kinds) for (const bs of bases) {
+    const seed = createHash("sha256").update(`cons|${dk}|${ak}|${bs}`).digest();
     const fs = [0, 1, 0, 1, 0, 1].map((s, i) => makeFighter(`w${i}`, s as 0 | 1, BigInt((i + 1) * 7_000_000)).f);
     const before = fs.reduce((n, g) => n + g.stake, 0n);
-    runFight(fs, seed, stepBudget(6), { attacker: ak, defender: dk, dust: { kind: "absolute", units: DUST_ABSOLUTE }, layout: "wide" });
+    runFight(fs, seed, stepBudget(6), { attacker: { kind: ak, basis: bs, m: 9n }, defender: { kind: dk, basis: bs, m: 9n }, dust: { kind: "absolute", units: DUST_ABSOLUTE }, layout: "wide" });
     const after = fs.reduce((n, g) => n + g.hp + g.banked, 0n);
-    if (before !== after) { ok = false; console.log(`    conservation broke at defender=${dk} attacker=${ak}`); }
+    if (before !== after) { ok = false; console.log(`    conservation broke at defender=${dk} attacker=${ak} basis=${bs}`); }
   }
-  check(ok, "value is conserved for all 36 (attacker, defender) weight combinations");
+  check(ok, "value is conserved for all 98 (attacker, defender, basis) weight combinations");
 }
 
 // --- determinism -------------------------------------------------------------------------------
 {
   const seed = createHash("sha256").update("determinism").digest();
-  const cfg = { attacker: "uniform", defender: "pow34", dust: { kind: "proportional", bps: 200n }, layout: "wide" } as const;
+  const cfg = { attacker: { kind: "mix", basis: "stake", m: 40n }, defender: { kind: "pow34", basis: "ring" }, dust: { kind: "proportional", bps: 200n }, layout: "wide" } as const;
   const run = () => {
     const fs = [0, 1, 0, 1].map((s, i) => makeFighter(`w${i}`, s as 0 | 1, BigInt((i + 3) * 5_000_000)).f);
     runFight(fs, seed, 1500, cfg);

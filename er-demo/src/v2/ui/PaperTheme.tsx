@@ -141,11 +141,15 @@ export function PaperTheme() {
           because the moment it IS reached somebody has pushed a sheet past what its own type can carry.
           Two different failures, said differently: the type has dropped under AA, or the theme's `ink`
           word is set the wrong way round and the OTHER polarity would read better. */}
-      {active.report.ink < BARS.ink || active.report.inkIfFlipped > active.report.ink ? (
+      {active.report.ink < BARS.ink ? (
         <p className="lede" style={{ marginTop: 10, fontSize: 12, color: "var(--hot)" }}>
-          {active.report.ink < BARS.ink
-            ? `Type on this sheet is ${active.report.ink.toFixed(2)}:1, under AA's 4.5. Pull the tint down.`
-            : `${active.report.polarity === "light" ? "Dark" : "Light"} type would read better here (${active.report.inkIfFlipped.toFixed(2)} against ${active.report.ink.toFixed(2)}) — this theme's ink is set the wrong way round.`}
+          Type on this sheet is {active.report.ink.toFixed(2)}:1, under AA&apos;s 4.5.{" "}
+          {active.report.inkIfFlipped > active.report.ink
+            ? // The hot magenta family. Saying "pull the strength down" here would be a lie: this hue
+              // over white is a light colour at every strength, so the number never reaches AA. The
+              // two things that DO fix it are the two things worth naming.
+              `The other ink would read ${active.report.inkIfFlipped.toFixed(2)}:1, and no strength fixes it — this hue over white stays light. Plum, Berry and Wine are these same three hues over ink, and carry light type at 12:1.`
+            : "Pull the strength down."}
         </p>
       ) : null}
 

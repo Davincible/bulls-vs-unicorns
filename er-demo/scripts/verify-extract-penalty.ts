@@ -124,7 +124,32 @@ interface Snapshot {
   fighters: Fighter[];
 }
 
+/** THE ONE THING THAT GOES WRONG BEFORE THE PROGRAM SHIPS, named rather than left as a stack trace.
+ *
+ *  This script decodes through ANCHOR, which builds its layout from the IDL fetched at runtime — and
+ *  that IDL is a contract with the DEPLOYED program, deliberately kept behind this source tree until
+ *  a deploy puts the two in step (see `scripts/idlgen.py`). Run against a deployment that predates
+ *  `fees_collected` and the field simply is not in the decoded object, so the next line would throw
+ *  `Cannot read properties of undefined (reading 'toString')` — an error that names a JavaScript
+ *  property and not the actual situation, which is that the program under test is not the program in
+ *  this repository.
+ *
+ *  Deliberately NOT tolerated with a `?? 0n` default. Tolerating it would let this script report a
+ *  conservation PASS on a round whose fee it never actually read — a verification that verifies
+ *  nothing, which is worse than not running at all. */
+function requireFeeField(raw: RawRoundAccount): void {
+  if (raw.feesCollected === undefined) {
+    throw new Error(
+      "the decoded Round has no `feesCollected` — the IDL being served describes a program that " +
+      "predates it, which almost certainly means the deployed program predates it too. This script " +
+      "checks both house takes and cannot do so against that program. Deploy the current lib.rs and " +
+      "regenerate the IDL (`python3 scripts/idlgen.py --deploying`) first.",
+    );
+  }
+}
+
 function snapshot(raw: RawRoundAccount): Snapshot {
+  requireFeeField(raw);
   return {
     phase: raw.phase,
     tickCount: BigInt(raw.tickCount.toString()),

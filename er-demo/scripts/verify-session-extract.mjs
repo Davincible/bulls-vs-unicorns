@@ -93,7 +93,17 @@ async function send(conn, ixs, signers, label) {
  *  "the layout is the one this file was written against, or the script stops". It cannot tell you
  *  WHICH field moved, but it fails on the run where the change lands rather than on the day someone
  *  disbelieves an hp figure. 1,102 = 174 bytes of header + 58 x 16 fighters; it was 1,093 before
- *  `fees_collected` (8) and `house_swept` (1). */
+ *  `fees_collected` (8) and `house_swept` (1).
+ *
+ *  A LITERAL RATHER THAN `coder.accounts.size("Round")`, though this file loads the IDL two lines up
+ *  and could ask it. Deriving it would make the tripwire fire when the IDL IS STALE, which is a
+ *  different claim from the one wanted here and usually a false alarm: the decoder below is
+ *  hand-rolled precisely so that reading a delegated round needs no IDL at all, and a stale IDL
+ *  breaks nothing else in this script (it supplies `idl.address` and instruction encodings, neither
+ *  of which moves when `Round` gains a field). The claim this constant makes is about the LAYOUT ON
+ *  CHAIN, so it is stated here independently, exactly as the offsets below are. Its authority is
+ *  `impl Round { pub const SIZE }` in lib.rs — the one place the number is derived rather than
+ *  copied, and itself checked by `the_account_is_exactly_the_size_its_layout_needs`. */
 const ROUND_SIZE = 1102;
 
 /** Reads Round straight off whichever layer is asked — Anchor's own decoder expects the program to
@@ -102,10 +112,25 @@ async function readRound(conn, roundPda) {
   const acc = await conn.getAccountInfo(roundPda);
   if (!acc) throw new Error(`round not found on ${conn.rpcEndpoint}`);
   const d = acc.data;
+  // TWO CAUSES, AND THE LIKELY ONE IS NAMED FIRST — because for as long as the Rust is unshipped the
+  // common trigger is not a decoder that rotted, it is a decoder that is RIGHT and a chain that is
+  // behind. Every offset in this file is source-locked to lib.rs in this working tree, so meeting the
+  // deployed program is the expected way to trip this, and pointing that reader at "re-derive the
+  // offsets" sends them to audit the one thing already correct. That is the same shape of confusion
+  // that took the live page down when the IDL was served ahead of the deploy: an artefact from this
+  // tree meeting a program deliberately older than it.
   if (d.length !== ROUND_SIZE) {
-    throw new Error(`Round is ${d.length} bytes, this decoder was written for ${ROUND_SIZE}. The account layout ` +
-      `changed; every offset below is suspect. Re-derive them from \`impl Round { SIZE }\` in lib.rs ` +
-      `before trusting a single number this script prints.`);
+    throw new Error(
+      d.length < ROUND_SIZE
+        ? `Round is ${d.length} bytes, this decoder expects ${ROUND_SIZE} — the account is SHORTER, so you are ` +
+          `almost certainly running against an older deployment than the lib.rs in this working tree. This ` +
+          `script asserts things about \`fees_collected\`/\`house_swept\` that only the newer program records, ` +
+          `so it genuinely cannot verify that deployment: DEPLOY FIRST, then re-run. (If the program IS current, ` +
+          `then the layout moved — see below.)`
+        : `Round is ${d.length} bytes, this decoder expects ${ROUND_SIZE} — the account layout changed and every ` +
+          `offset below is suspect. Re-derive them from \`impl Round { SIZE }\` in lib.rs before trusting a ` +
+          `single number this script prints.`,
+    );
   }
   let o = 8 + 32 + 8;
   const phase = d[o]; o += 3;
@@ -116,22 +141,22 @@ async function readRound(conn, roundPda) {
   // skip it without reading it and every fighter below is decoded 8 bytes early, which produces
   // plausible-looking nonsense rather than an error.
   const penaltiesCollected = d.readBigUInt64LE(o); o += 8;
-  // ...and it happened again, exactly as predicted above: `lobby_opened_at` and `lobby_closes_at`
-  // landed HERE, between `seed` and `fight_started_at`, and this decoder read every fighter 16 bytes
-  // early until these two lines existed.
+  // ...and it has now happened TWICE more, exactly as predicted above. The second time is documented
+  // below, at the `seed`/`fight_started_at` gap where it landed. The third is HERE, in this very gap:
+  // `fees_collected` (8) and `house_swept` (1) were inserted between `penalties_collected` and
+  // `seed_commit`, moving the fighter array from offset 165 to 174. Without the two lines below, this
+  // decoder would still read fighters at 165 — every wallet, hp and banked figure nonsense that looks
+  // like data.
   //
-  // AND NOW A THIRD TIME, IN THIS EXACT GAP. `fees_collected` (8) and `house_swept` (1) were inserted
-  // between `penalties_collected` and `seed_commit`: nine bytes, which moved the fighter array from
-  // offset 165 to 174. Without these two lines this loop would still read it at 165, and every wallet,
-  // hp and banked figure below would be nonsense that looks like data. The prediction above has now
-  // been right twice, which is enough evidence to stop relying on the next person reading it — hence
-  // `ROUND_SIZE` and the bool check below.
+  // Twice right is enough to stop leaving this to whoever reads the comment next, which is why there
+  // is now a `ROUND_SIZE` length check above and a bool check below. A prediction that keeps coming
+  // true and keeps being a prediction is a note, not a defence.
   //
-  // `fees_collected` is READ, not skipped, because this script's conservation check needs it: the
+  // `fees_collected` is READ, not skipped, because the conservation check in step 6 needs it: the
   // house takes at the door as well as on the way out, and `pot` is the sum of stakes NET of that fee.
   // `house_swept` is read too, though nothing here consumes it, and that is the point — a borsh bool
   // is 0 or 1 and nothing else, so this one byte is a free alignment check on every offset above it.
-  // Skipping it would save a line and throw away the only self-verifying byte in the header.
+  // Skipping it saves a line and throws away the only self-verifying byte in the header.
   const feesCollected = d.readBigUInt64LE(o); o += 8;
   const houseSwept = d[o]; o += 1;
   if (houseSwept !== 0 && houseSwept !== 1) {
@@ -139,7 +164,11 @@ async function readRound(conn, roundPda) {
       `This decoder is misaligned — do not trust the fighters it returns.`);
   }
   o += 32 + 32;                                            // seed_commit, seed
-  const lobbyOpenedAt = d.readBigInt64LE(o); o += 8;        // read: step 4 waits on the pair below
+  // THE SECOND TIME: `lobby_opened_at` and `lobby_closes_at` landed here, between `seed` and
+  // `fight_started_at`, and this decoder read every fighter 16 bytes early until these two lines
+  // existed. Read rather than skipped, because `lobby_closes_at` is not incidental to this script —
+  // step 4 waits on it.
+  const lobbyOpenedAt = d.readBigInt64LE(o); o += 8;
   const lobbyClosesAt = d.readBigInt64LE(o); o += 8 + 8;    // + fight_started_at, still unused here
   const fighters = [];
   for (let i = 0; i < fighterCount; i++) {

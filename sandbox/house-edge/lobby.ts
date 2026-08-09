@@ -17,7 +17,10 @@ export const BANDS = [
 ] as const;
 
 export interface Entry { wallet: string; side: 0 | 1; grossUnits: bigint; band: number; house: boolean; }
-export interface Lobby { seed: Buffer; entries: Entry[]; hashes: Buffer[]; steps: number; }
+/** `hashes` is a LAZY table: `runFight` fills a slot the first time it reads it, so a fight that
+ *  ends at step 900 of a 3,840-step budget never pays for the other 2,940 sha256s — and the next
+ *  configuration scored against the same lobby reuses whatever the previous one computed. */
+export interface Lobby { seed: Buffer; entries: Entry[]; hashes: (Buffer | undefined)[]; steps: number; }
 
 /** USD -> integer micro-units, the on-chain denomination (er-demo/src/v2/contract.ts). */
 export const usd = (v: number) => BigInt(Math.round(v * 1e6));
@@ -49,9 +52,7 @@ export function makeLobby(studySeed: string, round: number, perSide: number): Lo
 export function finish(studySeed: string, round: number, entries: Entry[]): Lobby {
   const seed = createHash("sha256").update(`he|${studySeed}|${round}`).digest();
   const steps = stepBudget(entries.length);
-  const hashes: Buffer[] = new Array(steps);
-  for (let s = 0; s < steps; s++) hashes[s] = tickHash(seed, BigInt(s));
-  return { seed, entries, hashes, steps };
+  return { seed, entries, hashes: new Array(steps), steps };
 }
 
 export function fightersOf(l: Lobby): { fighters: Fighter[]; fees: bigint } {
