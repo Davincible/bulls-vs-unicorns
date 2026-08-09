@@ -34,6 +34,31 @@ export function parseFightersFlag(search: string): number {
   return clampLineup(new URLSearchParams(search).get("fighters"));
 }
 
+/** WHO SIGNS. `"wallet"` means the visitor's own Phantom; `"burner"` means the keypair this browser
+ *  generates and keeps in localStorage (`chain/useSigner.ts`). */
+export type SignerMode = "burner" | "wallet";
+
+/**
+ * `?signer=burner` — sign with the local burner keypair instead of a connected wallet.
+ *
+ * THE DEFAULT IS `wallet` EVERYWHERE, INCLUDING LOCALHOST, and that is deliberate rather than
+ * incidental. Auto-selecting the burner on localhost would mean the path every real visitor takes is
+ * the one path nobody ever runs while building it — the classic dev/prod divergence trap, and an
+ * expensive one here, because the wallet path is where all of this workstream's failure states live
+ * (no extension, wrong network, rejected connection, zero balance). A developer with no Phantom
+ * installed opens `?signer=burner` and gets exactly the app that existed before this change; the
+ * no-extension state offers that link, so nobody has to know it from memory.
+ *
+ * `?fixture=1` needs no signer at all — `FixtureArenaProvider` constructs neither, so this flag is
+ * simply not consulted there.
+ *
+ * Anything other than the two spellings falls back to `wallet`: a typo must not silently hand a
+ * stranger an unfunded burner, which is the failure this whole change exists to delete.
+ */
+export function parseSignerFlag(search: string): SignerMode {
+  return new URLSearchParams(search).get("signer")?.toLowerCase() === "burner" ? "burner" : "wallet";
+}
+
 // Read through a guard rather than off `window` directly so this module is importable outside a
 // browser — `flags.test.ts` runs in Node, and every function above is pure and worth testing there.
 // In a browser this is exactly `window.location.search`; there is no second behaviour.
@@ -43,3 +68,6 @@ const SEARCH = typeof window === "undefined" ? "" : window.location.search;
 export const FIXTURE_FORCED = parseFixtureFlag(SEARCH);
 export const ARRIVED_BY_REFERRAL = parseRefFlag(SEARCH);
 export const FIXTURE_LINEUP = parseFightersFlag(SEARCH);
+/** Which of the two chain providers `ArenaProvider` mounts. Same rule as `FIXTURE_FORCED`, and for
+ *  the same mechanical reason: the two providers call different hooks, so this cannot be state. */
+export const SIGNER_MODE = parseSignerFlag(SEARCH);

@@ -33,6 +33,7 @@
 // drop the price.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   FEE_BPS,
   SIDE_TOKEN,
@@ -45,10 +46,12 @@ import {
   type Side,
 } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
+import { ConnectPanel } from "./ConnectPanel.tsx";
 import { Seg } from "./primitives.tsx";
 import { RoundPhaseNote } from "./RoundPhaseNote.tsx";
 import { useRoundPhase } from "./useRoundPhase.ts";
 import { useShell } from "./shell.ts";
+import { useFullscreenTarget } from "./useFullscreenTarget.ts";
 import { NARROW, useMediaQuery } from "./useMediaQuery.ts";
 import { TokenIcon } from "./TokenIcon.tsx";
 
@@ -341,7 +344,10 @@ function PhaseAnnouncer({ label }: { label: string }) {
 
 // ---------------------------------------------------------------------------------------------
 
-export function StakeDock() {
+/** THE DOCK ITSELF. Exported through the wrapper below rather than directly, because it has four
+ *  return points and all four have to end up in the same place when the arena frame takes the whole
+ *  screen — see `StakeDock`. */
+function StakeDockBody() {
   const { rail } = useShell();
   // Below `NARROW` the rail is full-bleed (`shell.css`: `.rail { width: 100vw }`), so there is no
   // "beside it" for this to move to — and it is the width below which a 320px floating panel stops
@@ -401,8 +407,21 @@ export function StakeDock() {
   // the head names it; without one the head would otherwise read a flat "Closed" over a paragraph
   // explaining a settled round, so the round's own label goes there instead and the note below drops
   // it rather than printing it twice.
-  const { control, label } = useRoundPhase();
+  const { control, label, blocked } = useRoundPhase();
   const title = control === "deploy" ? "Deploy" : control === "extract" ? "Extract" : label;
+
+  // THE FUNNEL, ON THE ONE SURFACE THAT IS ON EVERY SCREEN. `blocked` is non-null only when the round
+  // WAS offering a move and this reader's own gate took it away (`roundPhaseCopy.ts`) — which is
+  // exactly, and only, when a Connect button belongs here. A settled round offers nothing to anyone
+  // and gets the round's own words, with no wallet nagging attached.
+  const { gate } = useArena();
+  const funnel = blocked !== null && gate !== null ? gate : null;
+
+  /** The collapsed handle and bar are one word wide, and that word is the move they open onto.
+   *  "Round" is the honest word for a state with nothing on offer — but a gated one DOES have
+   *  something on offer, and it is the thing standing in the way. `title` is already the gate's own
+   *  short label in that case (`gateLabel`), so this only has to stop "Round" swallowing it. */
+  const handleWord = control === "none" && funnel === null ? "Round" : title;
 
   // The rail is `min(420px, 100vw)` of fixed, opaque paper on the same edge. Wide enough and the
   // dock steps aside (`.dock--railed`); narrow, and the rail is the whole screen, so there is
@@ -436,7 +455,7 @@ export function StakeDock() {
               aria-controls="stake-dock"
               onClick={() => toggle(true)}
             >
-              {control === "none" ? "Round" : title}
+              {handleWord}
             </button>
           </section>
         </>
@@ -459,7 +478,7 @@ export function StakeDock() {
           </span>
           {/* The handle is a word wide. "Deploy"/"Extract" are the move it opens onto; every other
               state is just the round, and the panel says which once it is open. */}
-          {control === "none" ? "Round" : title}
+          {handleWord}
         </button>
       </>
     );
@@ -512,6 +531,19 @@ export function StakeDock() {
           <DeployBody />
         ) : control === "extract" ? (
           <ExtractBody />
+        ) : funnel !== null ? (
+          // BLOCKED, WITH A MOVE ON THE TABLE. Two different facts, and both are wanted: the round
+          // is still counting down (`detail="timing"` — the clock, without repeating "what can you
+          // do", which is the panel's whole job) and the reader is the reason there is no button,
+          // which the panel says and then fixes.
+          <>
+            {/* `showLabel={false}` for the same reason the branch below carries it: with no control
+                on offer `title` IS `label`, so the head is already printing this exact word and a
+                second copy one line under it reads as a rendering fault. The round's own identity is
+                still on the top chrome (`R 12 / LOBBY`); what this line adds is the clock. */}
+            <RoundPhaseNote detail="timing" showLabel={false} announce={false} />
+            <ConnectPanel block={funnel} density="compact" />
+          </>
         ) : (
           // The head above is already showing this state's label — see `title`.
           <RoundPhaseNote showLabel={false} announce={false} />
@@ -519,4 +551,21 @@ export function StakeDock() {
       </section>
     </>
   );
+}
+
+/** THE DOCK FOLLOWS THE FIELD INTO FULLSCREEN, and this thin wrapper is the whole mechanism.
+ *
+ *  A fullscreen element paints nothing outside its own subtree, so with the arena frame holding the
+ *  screen this panel — the extract button — simply vanished. Extracting is a race that has to land
+ *  inside a running fight; a viewing mode that costs a player an Escape and a re-orientation in the
+ *  middle of it is a trap with a nice view. `useFullscreenTarget.ts` sets out the rest of the
+ *  reasoning, including why `position: fixed` survives the move unchanged and no second stylesheet
+ *  is needed.
+ *
+ *  The body is a separate component rather than a portal wrapped around each of its four returns,
+ *  which would be four chances to forget one. */
+export function StakeDock() {
+  const fullscreen = useFullscreenTarget();
+  const dock = <StakeDockBody />;
+  return fullscreen === null ? dock : createPortal(dock, fullscreen);
 }

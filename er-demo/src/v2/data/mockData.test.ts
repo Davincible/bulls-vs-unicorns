@@ -14,7 +14,16 @@
 // built on, and it is the configuration that must never regress.
 
 import { describe, expect, it } from "vitest";
-import { MOCK_FIGHTER_SEEDS, MOCK_HISTORY, MOCK_HIT_EVENTS, MOCK_YOU, mockFightersAt } from "./mockData.ts";
+import {
+  MOCK_FIGHTER_SEEDS,
+  MOCK_HISTORY,
+  MOCK_HIT_EVENTS,
+  MOCK_HOUSE_DISCLOSURE,
+  MOCK_HOUSE_WALLETS,
+  MOCK_TREASURY,
+  MOCK_YOU,
+  mockFightersAt,
+} from "./mockData.ts";
 import { DEFAULT_LINEUP, MAX_LINEUP, MIN_LINEUP } from "./fixtureLineup.ts";
 import { MAX_STEPS, worth } from "../contract.ts";
 
@@ -189,5 +198,75 @@ describe("the fixture's past rounds", () => {
       expect(round.players.some((p) => p.side === 0), `round ${round.roundNo}`).toBe(true);
       expect(round.players.some((p) => p.side === 1), `round ${round.roundNo}`).toBe(true);
     }
+  });
+});
+
+// THE FIXTURE'S HOUSE, and the fixture's books. Both exist so the disclosure and the treasury tile
+// are reviewable with no keeper and no network — and both are held to the same rule as everything
+// else here: invented is fine, unfalsifiable is fine, INCONSISTENT WITH THE REST OF THE PAGE is not.
+describe("the fixture's house disclosure", () => {
+  it("never marks the local player as one of ours", () => {
+    // A roster that called "you" a bot would be teaching the page a state the keeper cannot produce
+    // — it seats house wallets, and the local wallet is by definition not one of them.
+    const you = MOCK_FIGHTER_SEEDS.find((f) => f.isYou);
+    expect(you?.house).toBe(false);
+  });
+
+  it("seats a house, and leaves real players in the room", () => {
+    // Both ends matter. All-house would make the disclosure trivially uniform and hide the mixed
+    // roster the marks exist to distinguish; no house at all would leave the UI unreviewable.
+    const house = MOCK_FIGHTER_SEEDS.filter((f) => f.house);
+    expect(house.length).toBeGreaterThan(0);
+    expect(house.length).toBeLessThan(MOCK_FIGHTER_SEEDS.length);
+  });
+
+  it("puts the house on both sides of the field", () => {
+    // The keeper fills whichever side is short, so a fixture with every bot on one side would be a
+    // lineup shape the real thing does not produce — and the one the side-strength bar renders.
+    const sides = new Set(MOCK_FIGHTER_SEEDS.filter((f) => f.house).map((f) => f.side));
+    expect(sides.size).toBe(2);
+  });
+
+  it("agrees with the wallet list the resolver is given", () => {
+    // `useFixtureArena` counts the disclosure off a `HouseRoster` built from `MOCK_HOUSE_WALLETS`
+    // while the canvas and the rosters read the marks on the lineup. Two derivations of one fact —
+    // they have to be the same fact.
+    const marked = MOCK_FIGHTER_SEEDS.filter((f) => f.house).map((f) => f.wallet);
+    expect([...marked].sort()).toEqual([...MOCK_HOUSE_WALLETS].sort());
+  });
+
+  it("says FIXTURE first, in the sentence the page quotes", () => {
+    // This string is rendered as the keeper's own disclosure. It is the one place on this path where
+    // a plausible sentence could read as though a real process wrote it.
+    expect(MOCK_HOUSE_DISCLOSURE.startsWith("Fixture")).toBe(true);
+  });
+
+  it("keeps the marks stable across a replay", () => {
+    // `mockFightersAt` rebuilds the roster at a cursor on every clock tick; a mark that moved with
+    // the fight would flicker under a reviewer.
+    expect(mockFightersAt(600).map((f) => f.house)).toEqual(
+      MOCK_FIGHTER_SEEDS.map((f) => f.house),
+    );
+  });
+});
+
+describe("the fixture's treasury", () => {
+  it("is exactly the sum of the take the log records, over every round in it", () => {
+    // `sweep_house_take` books one finished round's two totals onto the arena, so a treasury covering
+    // the whole log is that sum and nothing else. Derived rather than written down so it cannot drift
+    // from the rounds a reader can check it against.
+    const fees = MOCK_HISTORY.reduce((s, r) => s + r.feesCollected, 0n);
+    const penalties = MOCK_HISTORY.reduce((s, r) => s + r.penaltiesCollected, 0n);
+    expect(MOCK_TREASURY.feesAccrued).toBe(fees);
+    expect(MOCK_TREASURY.penaltiesAccrued).toBe(penalties);
+    expect(MOCK_TREASURY.roundsSwept).toBe(BigInt(MOCK_HISTORY.length));
+  });
+
+  it("claims nothing, because no round in this fixture charged anything", () => {
+    // The same rule the rounds themselves are held to, one aggregation up: a plausible-looking house
+    // take here would be a fabricated figure in the one tile UI-SPEC ordered fixed for showing a
+    // modelled number where a chain one belongs.
+    expect(MOCK_TREASURY.feesAccrued).toBe(0n);
+    expect(MOCK_TREASURY.penaltiesAccrued).toBe(0n);
   });
 });

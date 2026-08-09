@@ -51,12 +51,56 @@ import { PHASE_NAME } from "../../chain/constants.ts";
  *  front of a player, which is precisely the confidently-wrong number this module exists to delete),
  *  and no way to say when the keeper actually intends to stop taking entries. Defaulting the missing
  *  fields would produce exactly that wrong countdown, so v2 is rejected outright and the page says
- *  "keeper down" for the one deploy it takes for the writer to catch up. */
-export const KEEPER_STATUS_SCHEMA = 3;
+ *  "keeper down" for the one deploy it takes for the writer to catch up.
+ *
+ *  4 — ADDED `keeper.lowBalance`, and this one is a fourth liveness state rather than a new detail.
+ *  The keeper now refuses to OPEN a round when the payer is below its floor, while still driving any
+ *  round already in flight to a terminal state. That is a keeper which is up, heartbeating, not
+ *  stalled — its loop is succeeding on every pass — and from which no further round is ever coming.
+ *  Every existing predicate reads it as perfectly healthy, because by their definitions it is. A v3
+ *  file cannot express the difference: it does not omit the answer, it has no way to give one, so
+ *  defaulting the absent field to `null` would be the reader inventing "the arena is funded" about a
+ *  keeper it knows nothing about — and the page would go on promising a next lobby that will not
+ *  arrive until somebody sends SOL. Rejected outright instead; writer and reader ship together, so
+ *  the cost is one deploy of silence, which is this module's standing trade. */
+export const KEEPER_STATUS_SCHEMA = 4;
 
-/** Where the keeper writes it and the browser fetches it. `public/` is served verbatim at the root
- *  by Vite dev, preview and a production build alike. */
-export const KEEPER_STATUS_URL = "/keeper-status.json";
+/** WHERE THE BROWSER FETCHES THE STATUS FROM. Relative by default; absolute in production.
+ *
+ *  LOCALLY the keeper writes `public/keeper-status.json`, which Vite dev, `vite preview` and a
+ *  production build all serve verbatim at the root — so the relative default needs no configuration
+ *  and no server.
+ *
+ *  IN PRODUCTION THAT IS IMPOSSIBLE, and it is worth being precise about why rather than leaving the
+ *  next person to discover it: the front end is a STATIC build, produced at deploy time and served
+ *  from a CDN, and the keeper is a long-running process on another host entirely. It cannot write into
+ *  a build that was finished before it started. Wired to the relative path, a deployed page would poll
+ *  `/keeper-status.json` on its own origin, get a 404 forever, and say "keeper is down" while the
+ *  keeper ran perfectly — the exact false negative this module exists to make impossible in the other
+ *  direction. So the keeper serves the same bytes over HTTP (`scripts/keeper/statusServer.ts`) and
+ *  this points at that endpoint.
+ *
+ *  SET `VITE_KEEPER_STATUS_URL` to the FULL absolute URL, e.g.
+ *  `https://bulls-arena-keeper-devnet.fly.dev/keeper-status.json`. Vite inlines it at BUILD time, so
+ *  it must be set in the hosting project's environment before the build, and changing it needs a
+ *  redeploy — which is the correct shape for a value that is part of the artifact.
+ *
+ *  NOT VALIDATED HERE, DELIBERATELY. A malformed value makes `fetch` fail, which `useKeeperStatus`
+ *  already treats exactly like a 404 — "there is no keeper status", the safe answer. Throwing at
+ *  module load would instead white-screen the whole app over a mistyped env var, and a page that
+ *  renders while saying "keeper down" is strictly better than a page that does not render.
+ *
+ *  THE GUARD ON `import.meta.env` IS LOAD-BEARING, not defensive habit. This module has TWO runtimes:
+ *  the browser, where Vite replaces `import.meta.env` at build time with a real object, and Bun, where
+ *  the keeper imports this same file to BUILD the status it publishes. `import.meta.env` is a Vite
+ *  construct — it is not part of the ES module spec, and outside a Vite build `import.meta` has no
+ *  `env` at all. Reading `import.meta.env.VITE_…` unguarded therefore throws a TypeError under plain
+ *  Node the moment the keeper imports its own contract module, at import time, before any handler
+ *  exists to catch it. The optional chain is what makes the same expression correct in all three
+ *  environments (Vite replaces it; Bun aliases `import.meta.env` to `process.env`; Node leaves it
+ *  undefined), and the full `import.meta.env.VITE_…` path is written out rather than destructured
+ *  because that literal text is what Vite's build-time substitution matches. */
+export const KEEPER_STATUS_URL: string = import.meta.env?.VITE_KEEPER_STATUS_URL || "/keeper-status.json";
 
 /** The five phases of `Phase` in `chain/constants.ts`, by name — DERIVED from that list rather than
  *  spelled out again, because a sixth phase added there must not be able to arrive here as a string
@@ -111,6 +155,35 @@ export interface KeeperError {
   message: string;
 }
 
+/** THE ARENA HAS RUN OUT OF MONEY — non-null only while the keeper is refusing to open new rounds
+ *  because the payer is below its configured floor.
+ *
+ *  IT IS A SEPARATE STATE FROM DOWN AND FROM STALLED, and that is the entire reason it is published.
+ *  A keeper in this condition is alive (the heartbeat is fresh), progressing (its loop succeeds on
+ *  every pass, because refusing to open IS the correct outcome of a pass), and finishing whatever
+ *  round was already running. `isKeeperStale` and `isKeeperStalled` both correctly answer false. So
+ *  without this field the page would keep counting down to a next lobby that nothing is going to
+ *  open — the confidently-wrong number this module exists to delete, arriving through the one door
+ *  every other check leaves open.
+ *
+ *  LATCHED at `since`, like `stalledSince` and for the same reason: it marks where the condition
+ *  STARTED and does not advance while it continues, so "out of funds for 20 minutes" is a
+ *  subtraction the reader can do. Cleared the moment the balance comes back above the floor.
+ *
+ *  Both amounts are LAMPORTS as decimal strings, not SOL as floats. A lamport count is a u64 and a
+ *  JSON number cannot hold one without silently rounding it; this is the same rule `pot` follows, and
+ *  it is money for the same reason. */
+export interface KeeperLowBalance {
+  /** Unix SECONDS — the moment the keeper FIRST went below its floor in the current stretch. */
+  since: number;
+  /** What the payer actually holds, in lamports. */
+  lamports: string;
+  /** The floor it fell below, in lamports — published so a reader never invents a threshold, exactly
+   *  as `staleAfterSeconds` is. The keeper is the only party that knows what it costs itself to run
+   *  a round. */
+  floorLamports: string;
+}
+
 export interface KeeperStatus {
   schema: number;
   keeper: {
@@ -152,6 +225,10 @@ export interface KeeperStatus {
      *  doc comment describes, where a VRF callback never lands and no signer has an instruction
      *  left to send. Published rather than logged so the count is visible without shell access. */
     wedgedRounds: number[];
+    /** Non-null while the payer is below the keeper's floor and no new round will be opened. See
+     *  `KeeperLowBalance` — it is a fourth state, not a detail, and `keeperCountdown` refuses to
+     *  promise a next lobby while it is set. */
+    lowBalance: KeeperLowBalance | null;
   };
   chain: {
     cluster: "devnet";
@@ -233,6 +310,18 @@ function parseError(raw: unknown): KeeperError | null {
   if (!isRecord(raw)) return null;
   if (!isNumber(raw.at) || !isString(raw.context) || !isString(raw.message)) return null;
   return { at: raw.at, context: raw.context, message: raw.message };
+}
+
+function parseLowBalance(raw: unknown): KeeperLowBalance | null {
+  if (!isRecord(raw)) return null;
+  const { since, lamports, floorLamports } = raw;
+  if (!isNumber(since)) return null;
+  // Through `isU64String` rather than `isString`, for the reason that guard was written: every
+  // consumer's next move is `BigInt(...)`, and `BigInt("")` is a silent 0 — which here would render
+  // as "the arena has 0 SOL" for a keeper that is merely below its floor, or as a floor of zero that
+  // nothing could ever fall below.
+  if (!isU64String(lamports) || !isU64String(floorLamports)) return null;
+  return { since, lamports, floorLamports };
 }
 
 // Destructured before checking, throughout: a guard against a property PATH (`raw.no`) narrows only
@@ -318,6 +407,14 @@ export function parseKeeperStatus(raw: unknown): KeeperStatus | null {
   const stalledSince = isNumber(rawStalled) ? rawStalled : null;
   if (stalledSince === null && rawStalled !== null) return null;
 
+  // PRESENT OR MALFORMED, same rule as `stalledSince` above and same reason: null is the normal,
+  // overwhelmingly common value — a funded arena — so an explicit null is accepted and an absent key
+  // is not. The schema check has already turned away every v3 file; what this catches is the
+  // hand-written and the half-written one, where reading silence as "funded" would put a countdown
+  // for a next lobby in front of a player when the arena cannot pay to open one.
+  const lowBalance = k.lowBalance === null ? null : parseLowBalance(k.lowBalance);
+  if (lowBalance === null && k.lowBalance !== null) return null;
+
   const c = raw.chain;
   if (!isRecord(c)) return null;
   // ER-000: this fork is structurally prevented from reaching mainnet, and the status file says so
@@ -365,6 +462,7 @@ export function parseKeeperStatus(raw: unknown): KeeperStatus | null {
       stalledSince,
       roundsCompleted,
       lastError,
+      lowBalance,
       // Copied, not aliased: the arrays in the returned value must not be views onto the object the
       // caller parsed, or a caller who mutates one is editing something another holds.
       wedgedRounds: [...wedgedRounds],
@@ -430,6 +528,35 @@ export function isKeeperStale(status: KeeperStatus, nowSec: number): boolean {
  */
 export function isKeeperStalled(status: KeeperStatus, nowSec: number): boolean {
   return status.keeper.stalledSince !== null && !isKeeperStale(status, nowSec);
+}
+
+/**
+ * IS THE ARENA OUT OF MONEY — the fourth state, and the one every other predicate calls healthy.
+ *
+ * `isKeeperStale` asks whether the process is there. `isKeeperStalled` asks whether its being there is
+ * doing any good. This asks a third thing: whether it is ALLOWED to do the one thing that matters.
+ * A keeper below its funding floor is up, heartbeating, and succeeding on every pass — refusing to
+ * open is the correct outcome of a pass, not a failure, so nothing increments a failure count and
+ * `stalledSince` correctly stays null. It will also finish whatever round is already running, so the
+ * round in the file keeps moving and looks entirely normal. Every existing signal says "fine". No
+ * further round is coming until somebody sends SOL.
+ *
+ * DOWN AND STALLED BOTH OUTRANK IT, and it returns false for either, exactly as `isKeeperStalled`
+ * defers to `isKeeperStale`. A funding report inside a stale file describes a process that has since
+ * stopped saying anything, and "the keeper is down" is both the stronger sentence and the only one
+ * still known to be true. Keeping the states mutually exclusive is what lets a view branch four ways
+ *
+ *     down  /  stalled  /  out of funds  /  healthy
+ *
+ * by asking independent questions in whatever order it writes them, instead of remembering a
+ * precedence it has to get right.
+ *
+ * @param nowSec unix SECONDS. `Date.now() / 1000`, not `Date.now()`.
+ */
+export function isKeeperOutOfFunds(status: KeeperStatus, nowSec: number): boolean {
+  return status.keeper.lowBalance !== null
+    && !isKeeperStale(status, nowSec)
+    && !isKeeperStalled(status, nowSec);
 }
 
 export type KeeperCountdown =
@@ -514,6 +641,20 @@ export function keeperCountdown(status: KeeperStatus | null, nowSec: number): Ke
   }
 
   if (round.phase === "Settled" || round.phase === "Abandoned") {
+    // OUT OF FUNDS KILLS THE NEXT-LOBBY COUNTDOWN AND NOTHING ELSE, which is why this is here rather
+    // than beside the stale and stalled checks at the top. The keeper still drives an in-flight round
+    // all the way to a terminal state when it is below its floor — it refuses to START work it cannot
+    // finish, not to finish work already started — so a Lobby's `entriesCloseAt` and the chain's own
+    // deadline remain promises it is about to keep, and blanking them would be its own kind of lie.
+    // What is genuinely not coming is the NEXT round.
+    //
+    // THE KEEPER ALSO DECLINES TO PUBLISH `nextLobbyOpensAt` in this state, so this check is the
+    // second of two. That is deliberate rather than duplicated machinery, and the two guard different
+    // things: the writer's job is that the FILE never asserts a next lobby beside a keeper that will
+    // not open one (property ONE of `honestNextLobbyOpensAt`), and the reader's job is that a
+    // countdown already latched before the balance fell cannot keep counting down afterwards. One
+    // layer cannot do both, because they are separated by up to a publish interval.
+    if (status.keeper.lowBalance !== null) return none;
     const opensAt = status.nextLobbyOpensAt;
     if (opensAt === null || opensAt <= nowSec) return none;
     return { kind: "next-lobby", seconds: secondsUntil(opensAt, nowSec) };
@@ -524,6 +665,19 @@ export function keeperCountdown(status: KeeperStatus | null, nowSec: number): Ke
 
 function secondsUntil(deadlineSec: number, nowSec: number): number {
   return Math.max(0, Math.ceil(deadlineSec - nowSec));
+}
+
+/** THE SLICE OF A STATUS FILE THE ROSTER ACTUALLY DEPENDS ON — one field, not the whole heartbeat.
+ *
+ *  `KeeperStatus` is assignable to it, so `isHouseWallet(status, wallet)` still reads exactly as it
+ *  did. What the narrower type buys is a caller that can hold a roster WITHOUT holding a status: the
+ *  status file is rewritten every two seconds and the house's wallet list changes approximately
+ *  never, so anything that re-renders on a fresh `KeeperStatus` re-renders twice a second for a fact
+ *  that did not move. `data/keeperFeed.ts` republishes one of these only when its contents change,
+ *  and the fixture builds one out of thin air — neither of which can produce a `KeeperStatus`, and
+ *  neither of which should have to. */
+export interface HouseRoster {
+  house: { wallets: readonly string[]; disclosure: string };
 }
 
 /**
@@ -542,8 +696,13 @@ function secondsUntil(deadlineSec: number, nowSec: number): number {
  *
  * Base58 is case-sensitive, so the comparison is too — a case-insensitive match here would be a
  * different (and wrong) claim about which key is which.
+ *
+ * NULL MARKS NOBODY, and that is the whole rule for a page with no keeper: "not known to be house" is
+ * the honest default, and a browser that cannot read a disclosure list has no basis to accuse anyone
+ * of being a bot. Callers pass null for every version of that — no status file, a stale one, a schema
+ * this build cannot parse.
  */
-export function isHouseWallet(status: KeeperStatus | null, pubkey: string): boolean {
-  if (status === null) return false;
-  return status.house.wallets.includes(pubkey);
+export function isHouseWallet(roster: HouseRoster | null, pubkey: string): boolean {
+  if (roster === null) return false;
+  return roster.house.wallets.includes(pubkey);
 }

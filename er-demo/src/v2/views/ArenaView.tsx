@@ -9,7 +9,7 @@
 // strength bar, its phase tag, the your-position HUD and the settled banner all belong to THIS file
 // — the canvas draws the fight, this file draws the instrument around it.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ARENAS,
   EXTRACT_PENALTY_START_BPS,
@@ -42,8 +42,12 @@ import {
 import { useArena } from "../data/useArena.ts";
 import { abandonText, simBankrollUsd, type AmountRule } from "../data/autoDeploy.ts";
 import { ArenaCanvas } from "../arena/ArenaCanvas.tsx";
-import { Bar, Dash, Empty, KV, KVs, Mark, Money, Section, Seg, Tag } from "../ui/primitives.tsx";
+import { CombatLog } from "../ui/CombatLog.tsx";
+import { Bar, Dash, Empty, HouseTag, KV, KVs, Mark, Money, Section, Seg, Tag } from "../ui/primitives.tsx";
 import { RoundPhaseNote } from "../ui/RoundPhaseNote.tsx";
+import { useDrawWatch } from "../ui/useDrawWatch.ts";
+import { useFullscreen } from "../ui/useFullscreen.ts";
+import { NARROW, useMediaQuery } from "../ui/useMediaQuery.ts";
 import { useRoundPhase } from "../ui/useRoundPhase.ts";
 import { useSecondTick } from "../ui/useSecondTick.ts";
 import { TokenIcon } from "../ui/TokenIcon.tsx";
@@ -93,6 +97,36 @@ function healthPct(f: FighterView): number {
 
 function pnlOf(f: FighterView): bigint {
   return worth(f) - f.stake;
+}
+
+/** HOW MANY OF THESE ARE OURS. One helper rather than four `.filter(...).length` calls, because the
+ *  hero line, the two rosters and the standings all state it and a disclosure that says a different
+ *  number in two places is worse than one that says nothing. See `FighterView.house`. */
+function houseCount(fighters: FighterView[]): number {
+  return fighters.reduce((n, f) => (f.house ? n + 1 : n), 0);
+}
+
+/** THE HOUSE'S SHARE OF A SET OF FIGHTERS — `5 HOUSE`, or `HOUSE —` when the page has no basis for a
+ *  number at all.
+ *
+ *  THE DASH IS THE WHOLE REASON THIS IS A COMPONENT. `house: false` on every fighter means one of two
+ *  completely different things — nobody in this round is ours, or nothing is publishing a list to
+ *  check against — and `HouseDisclosure` makes the second unrenderable as a figure by nulling both
+ *  counts together. A caption reading "0 house" while the page is in that state claims the first, and
+ *  is precisely the misrepresentation the disclosure exists to end. So the verdict is read from the
+ *  context and the COUNT is taken locally: the hero and the standings want the whole round, each
+ *  roster wants its own side, and both come from the same `f.house` marks the rows are drawn from —
+ *  which is what stops a roster showing five marks under a caption reading four. */
+function HouseShare({ fighters }: { fighters: FighterView[] }) {
+  const { houseDisclosure } = useArena();
+  if (houseDisclosure.houseFighterCount === null) {
+    return (
+      <span className="u" title="Nothing is publishing a house list right now, so this page cannot say which fighters are ours. An unmarked fighter here is one we have not been able to check, not one we have cleared.">
+        house <Dash />
+      </span>
+    );
+  }
+  return <span className="u">{houseCount(fighters)} house</span>;
 }
 
 /** Time left on the bell — the outer bound on a fight, after which anyone may settle it. */
@@ -180,8 +214,14 @@ function TheRound() {
                 node — `<h2>The round</h2>`, one line above, from `Section`. `.display` is a class and
                 carries its own `margin: 0`, so the box is unchanged. */}
             <div className="display display--mono">{live ? usd(live.pot, 2) : "—"}</div>
+            {/* THE SPLIT GOES ON THE HERO LINE, not into a tooltip. This sentence is where a
+                visitor forms their idea of how busy the arena is, and "8 fighters" under a $353 pot
+                reads as eight people — which is the misrepresentation `HouseDisclosure` exists to
+                end. It is always present, as a number or as a dash: an omitted disclosure and a
+                disclosure of nothing look identical, and only one of them is honest. */}
             <p className="u" style={{ marginTop: 14 }}>
-              Pot on the table · {fighters.length} fighters · {alive} still alive
+              Pot on the table · {fighters.length} fighters · <HouseShare fighters={fighters} /> ·{" "}
+              {alive} still alive
             </p>
           </div>
           <div className="hero-r">
@@ -324,9 +364,21 @@ function ErWrites() {
 
 function TheArena() {
   const { live, hitEvents, arenaId, setArenaId, board, setBoard, mode, sideRecord } = useArena();
-  const { setRail, inspectedWallet } = useShell();
+  const { setRail, inspectedWallet, commentary, setCommentary } = useShell();
   // The pre-fight plate below says the same thing the dock and 00-3 say, from the same object.
   const phaseCopy = useRoundPhase();
+
+  // THE FRAME IS WHAT GOES FULLSCREEN, not the canvas. The overlays, the phase tag, the position HUD
+  // and the result plate are all children of this element and all belong on the field; fullscreening
+  // the `<canvas>` alone would take the fight to the whole screen and leave every reading of it
+  // behind on a page nobody can see. The canvas follows for free — `ArenaCanvas` sizes itself from a
+  // `ResizeObserver` on its parent, so no React state is involved in the resize at all.
+  const frameRef = useRef<HTMLDivElement>(null);
+  const fullscreen = useFullscreen(frameRef);
+
+  // How long the draw has been running, measured by this tab. `Phase::Drawing` has no on-chain exit;
+  // see `useDrawWatch.ts` for why the measurement is local and what it is allowed to claim.
+  const draw = useDrawWatch(live?.phase === "Drawing", live?.roundNo ?? null);
 
   const fighters = useMemo(() => live?.fighters ?? [], [live]);
   const [aTot, bTot] = sideTotals(fighters);
@@ -378,6 +430,44 @@ function TheArena() {
               { id: "blank", label: "Blank", title: "Bare paper: no grid, no frame, overlays as plain text" },
             ]}
           />
+          {/* THE PAGE'S VOICE, WITH AN OFF SWITCH. The commentary is content that appears and
+              disappears on its own every few seconds, which is exactly what WCAG 2.2.2 asks for a
+              way to stop — and no stylesheet rule can stop it, because nothing about it is a
+              transition. It starts switched off under `prefers-reduced-motion` and follows that
+              preference until somebody presses this, after which their answer is the answer (see
+              App.tsx). A `Seg` rather than a checkbox for the same reason the board style is one:
+              two named states, neither of which is the absence of the other. */}
+          <span className="u">Voice</span>
+          <Seg<"on" | "off">
+            ariaLabel="Fight commentary"
+            value={commentary ? "on" : "off"}
+            onChange={(v) => setCommentary(v === "on")}
+            options={[
+              { id: "on", label: "On", title: "Tell me when I raid someone, when someone raids me, and when my fighter is out" },
+              { id: "off", label: "Off", title: "Say nothing about the fight — the exchanges are still logged in 00-4.1" },
+            ]}
+          />
+          {/* NOT RENDERED WHERE IT CANNOT WORK. `document.fullscreenEnabled` is false in an iframe
+              without `allow="fullscreen"` and on iOS Safari, which has never supported element
+              fullscreen — and this page's standing rule is that a button which reliably fails is
+              worse than no button (see the in-page airdrop's note in SideRail.tsx). */}
+          {fullscreen.supported ? (
+            <button
+              type="button"
+              className="btn btn--sm"
+              title="Take the field to the whole screen — Escape brings it back"
+              onClick={fullscreen.toggle}
+            >
+              {fullscreen.active ? "Exit fullscreen" : "Fullscreen"}
+            </button>
+          ) : null}
+          {/* A refusal has to be visible, or the button reads as broken. Kept until the next
+              attempt rather than flashed — see `useFullscreen.ts`. */}
+          {fullscreen.error !== null ? (
+            <span className="u" style={{ color: "var(--hot)" }}>
+              Fullscreen refused — {fullscreen.error}
+            </span>
+          ) : null}
         </>
       }
     >
@@ -386,7 +476,7 @@ function TheArena() {
       {/* The board style is carried by the FRAME, and the overlays inside it are styled off that one
           class (`.frame--blank .ovl`). Threading a modifier onto each overlay would be three places
           for the two halves of one look to fall out of step. */}
-      <div className={`frame frame--${board}`}>
+      <div ref={frameRef} className={`frame frame--${board}`}>
         <div className="frame-fill">
           <ArenaCanvas
             fighters={fighters}
@@ -496,6 +586,53 @@ function TheArena() {
                 player asks "what now?", and "Deploy below" answered only half of it. */}
             <p className="u" style={{ marginTop: 12, lineHeight: 1.6 }}>
               {phaseCopy.action}
+            </p>
+            {/* A DRAW THAT HAS STOPPED BEING NORMAL. `Phase::Drawing` has no on-chain exit — only the
+                VRF callback moves a round out of it, and `abandon_round` accepts `Lobby` and nothing
+                else — so a callback that never lands wedges the round permanently while every
+                surface keeps saying "usually seconds". Past the threshold this stops saying that and
+                says what is actually true, including that the page's own figure is a measure of how
+                long IT has been watching (`useDrawWatch.ts`). It is a `role="alert"` because it is
+                the one thing on this plate that arrives as news rather than as description. */}
+            {draw?.stalled ? (
+              <p
+                className="u"
+                role="alert"
+                style={{ marginTop: 12, lineHeight: 1.6, color: "var(--hot)" }}
+              >
+                The seed has not landed in {clock(draw.watchedSec)} of watching this tab. A draw
+                normally takes seconds, and there is no way out of this phase on chain — nothing can
+                abandon a round once its lobby has closed. If it stays here, this round is stuck and
+                the next one has to be opened by an operator.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* AN ABANDONED ROUND USED TO RENDER AS AN EMPTY WHITE FIELD. It is a real terminal state —
+            `abandon_round` ends a lobby that reached its deadline holding fewer than two fighters —
+            and it is the only one that produces no fight at all, so the field genuinely has nothing
+            on it and a reader has no way to tell that from a canvas that failed.
+            NO SIDE COLOUR, because nothing was decided: it takes `result--wait`, the same neutral
+            plate the lobby uses, rather than `result--a`/`result--b`. `role="status"` for the same
+            reason the settled plate has one and the lobby plate does not — this arrives once, on its
+            own, as the answer to what everyone in the round was waiting for, and it does not
+            rewrite itself afterwards. */}
+        {phase === "Abandoned" ? (
+          <div className="result result--wait" role="status">
+            <div className="u" style={{ marginBottom: 8 }}>
+              Round {live?.roundNo.toString() ?? "—"} · expired
+            </div>
+            <div className="h result-h">{phaseCopy.label}</div>
+            <div className="line" style={{ justifyContent: "center", marginTop: 12, gap: 18 }}>
+              <span className="num">{fighters.length}</span>
+              <span className="u">{fighters.length === 1 ? "fighter" : "fighters"} entered</span>
+              <span className="u">of the 2 a fight needs</span>
+            </div>
+            <p className="u" style={{ marginTop: 12, lineHeight: 1.6 }}>
+              The lobby reached its deadline without enough fighters, so it was ended rather than
+              left open. There is no seed, no fight and no winner in this one — nothing here to
+              replay or verify. {phaseCopy.action}
             </p>
           </div>
         ) : null}
@@ -656,7 +793,7 @@ function controlsFor(rule: AmountRule, armed: boolean): { stake: number; pct: nu
 }
 
 function Deploy() {
-  const { live, status, actions, autoDeploy, mode, setMode, toasts } = useArena();
+  const { live, status, actions, autoDeploy, mode, setMode, toasts, gate } = useArena();
   // Read once, at mount, from whatever rule is standing — never on every render, which would make
   // these controls unusable while armed.
   const [initial] = useState(() => controlsFor(autoDeploy.rule, autoDeploy.armed));
@@ -690,7 +827,11 @@ function Deploy() {
    *  disagree about which second it is, which a 1s and a 250ms one could. */
   const nowMs = useSecondTick(phase === "Lobby");
 
-  const open = entriesOpen(live, nowMs) && !status.programError;
+  // `gate` (data/playGate.ts) is why THIS reader cannot deploy — no wallet, no devnet SOL — as
+  // opposed to why the round cannot be deployed into. Both close these controls, and the `!open`
+  // branch's `RoundPhaseNote` already carries the reason for either, because `roundPhaseCopy.ts`
+  // reads the same verdict.
+  const open = entriesOpen(live, nowMs) && !status.programError && gate === null;
 
   const deploy = useCallback(
     async (side: Side, amountUsd: number) => {
@@ -1116,6 +1257,9 @@ function Roster({ side }: { side: Side }) {
         <span className="u">
           {alive}/{rows.length} alive
         </span>
+        {/* Per side, not only in the hero's total: the sides are seated independently and "5 house"
+            across the round says nothing about whether they are all on one of them. */}
+        <HouseShare fighters={rows} />
       </div>
 
       <div className="row row--head roster">
@@ -1147,7 +1291,15 @@ function Roster({ side }: { side: Side }) {
           >
             <span className="idx">{(i + 1).toString().padStart(2, "0")}</span>
             <Mark side={f.side} dead={f.dead} />
-            <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
+            {/* THE NAME CELL IS A ROW, NOT A WORD, so the disclosure can sit beside the name without
+                taking a grid track from the money columns — `.roster`'s template is fixed and adding
+                an eighth track would cost the health bar. The name keeps `.trunc` and the tag does
+                not, so a long name gives way to the mark rather than the other way round: which of
+                these is the house is the fact a reader must not lose. */}
+            <span className="line" style={{ gap: 7, minWidth: 0 }}>
+              <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
+              {f.house ? <HouseTag /> : null}
+            </span>
             {/* THE COLUMNS MAX REPORTED. `.roster`'s money tracks are 70px fixed (66px on a phone),
                 and a chain figure printed in full is ~133px of right-aligned text — which does not
                 widen the track, it spills backwards over the name and the column before it. Compact
@@ -1171,8 +1323,38 @@ function Roster({ side }: { side: Side }) {
   );
 }
 
+/** THE DISCLOSURE, IN FULL, OVER THE TABLE THAT NAMES EVERY FIGHTER.
+ *
+ *  A six-fighter lobby reads as six people, and until `HouseDisclosure` existed nothing on the page
+ *  said otherwise — `README.md`'s go-live list still carries "Bot disclosure in UI" open. The per-row
+ *  `HouseTag` says WHICH; this says what that means, because a reader meeting the word "House" in a
+ *  roster for the first time is owed more than a label.
+ *
+ *  THE KEEPER'S OWN SENTENCE IS QUOTED RATHER THAN PARAPHRASED. `note` is written by the party making
+ *  the claim; restating it here in this page's words would put a disclosure in the mouth of the
+ *  surface that benefits from it, and would drift from the keeper's the first time either changed.
+ *  The one clause this file adds is the count, which the keeper cannot know about the round on
+ *  screen.
+ *
+ *  ALL THREE STATES ARE DIFFERENT SENTENCES. Counted and non-zero, counted and zero, and not counted
+ *  at all — the third being the one that must never render as the second (see `HouseShare`). */
+function houseNote(d: {
+  houseFighterCount: number | null;
+  note: string | null;
+}, total: number): string | undefined {
+  const count = d.houseFighterCount;
+  if (count === null) {
+    return "Nothing is publishing a house list right now, so this page cannot tell you which of these fighters are ours. An unmarked fighter below is one we could not check, not one we have cleared.";
+  }
+  if (count === 0) {
+    return `All ${total} of these fighters are other players — none of them is ours.`;
+  }
+  const head = `${count} of these ${total} fighters ${count === 1 ? "is" : "are"} ours, marked HOUSE below.`;
+  return d.note === null ? head : `${head} ${d.note}`;
+}
+
 function TheField() {
-  const { live } = useArena();
+  const { live, houseDisclosure } = useArena();
   const fighters = live?.fighters ?? [];
 
   return (
@@ -1183,13 +1365,50 @@ function TheField() {
       lede={
         fighters.length === 0
           ? "Nobody has entered yet. The lobby stays open until an operator closes it and draws the seed."
-          : undefined
+          : houseNote(houseDisclosure, fighters.length)
       }
     >
       <div className="two">
         <Roster side={0} />
         <Roster side={1} />
       </div>
+    </Section>
+  );
+}
+
+// =============================================================================================
+// 00-4.1 EXCHANGES
+// =============================================================================================
+
+/** THE FIGHT, AS A RECORD RATHER THAN AS A PICTURE.
+ *
+ *  Everything above this point tells a player WHAT they are worth and nothing tells them WHY: you
+ *  watch your number fall on the field and in the standings, and there has been no surface anywhere
+ *  that names who took it. The canvas draws each exchange for a few frames and the commentary is
+ *  gone in five seconds; neither is somewhere a reader can go and look.
+ *
+ *  A SECTION OF ITS OWN, numbered under 00-4, because it is about the same thing 00-4 is — who is in
+ *  this round — from the other side: 00-4 is the cast, this is what they have been doing to each
+ *  other. The same component, filtered to one wallet, is in the fighter inspector, which is where
+ *  the question is usually asked. */
+function Exchanges() {
+  const { live } = useArena();
+  const fighting = live?.phase === "Fight";
+  // HOW MANY ROWS ARE WORTH THE SCROLL, which is a different answer on a phone. On a wide page this
+  // section is one column of a page a reader is scanning and 24 rows is a glance; on a 390px screen
+  // the page IS this column, and 24 rows is ~1,500px of table standing between the rosters above and
+  // the standings below. Ten is the recent past — the question this surface answers — and the
+  // fighter inspector is where a reader goes for more.
+  const narrow = useMediaQuery(NARROW);
+
+  return (
+    <Section
+      index="00-4.1"
+      title="Exchanges"
+      tools={<RoundTag />}
+      lede="Every hit the replay has reached, newest first — who took what off whom, at which step. Pairs are drawn from hash(seed, step), so this is the same sequence anyone can recompute from the revealed seed in 00-7, not a feed this page is inventing alongside the fight."
+    >
+      <CombatLog limit={narrow ? 10 : fighting ? 24 : 12} />
     </Section>
   );
 }
@@ -1219,7 +1438,8 @@ function RoundStandings() {
       title="Standings"
       tools={
         <span className="u">
-          {caption} · {alive} alive / {rows.length - alive} out
+          {caption} · {alive} alive / {rows.length - alive} out ·{" "}
+          <HouseShare fighters={rows} />
         </span>
       }
     >
@@ -1270,7 +1490,11 @@ function RoundStandings() {
                 button, so the reader arrives at it by Tab without passing anything that could have
                 said it for them. */}
             <Mark side={f.side} dead={f.dead} label={SIDE_TOKEN[f.side].name} />
-            <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
+            {/* Same shape as the roster's name cell, for the same reason — see the note there. */}
+            <span className="line" style={{ gap: 7, minWidth: 0 }}>
+              <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
+              {f.house ? <HouseTag /> : null}
+            </span>
             {/* Five money columns across 76-88px tracks — the worst case on the page, and the other
                 half of Max's report. All five compact; all five carry the exact figure on a title. */}
             <Money units={f.stake} compact className="r col-opt" />
@@ -1534,6 +1758,7 @@ export function ArenaView() {
       <Deploy />
       <Extract />
       <TheField />
+      <Exchanges />
       <RoundStandings />
       <PreviousRounds />
       <ProvablyFair />

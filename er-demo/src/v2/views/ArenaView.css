@@ -80,6 +80,27 @@
 }
 .frame > .frame-fill { position: absolute; inset: 0; }
 
+/* FULLSCREEN — `UI-SPEC.md` Part 3's "as large as the viewport allows", cashed.
+   `aspect-ratio: auto` is the load-bearing line. The UA stylesheet gives a fullscreen element
+   `width: 100%; height: 100%`, and an element with a definite width AND height ignores its own
+   aspect ratio — but only if it HAS both, and `.frame` sets neither, so without this the 16/9 ratio
+   would resolve a height from the screen's width and leave the field overflowing a screen it was
+   supposed to fit. Stated rather than relied upon.
+   The background is the second: `::backdrop` defaults to black in every engine, and a white field
+   drawn on a black screen with 1px of ink around it is the one look this design must never produce.
+   `--paper` rather than `--paper-2`, because in fullscreen the frame IS the sheet — there is nothing
+   left for it to float above (see the note on `--paper-2` in base.css).
+   The border stays. It is the instrument's edge, it costs 1px of a whole screen, and dropping it in
+   one state only would mean the field looks like a different object depending on how big it is. */
+.frame:fullscreen {
+  aspect-ratio: auto;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: var(--paper);
+}
+.frame:fullscreen::backdrop { background: var(--paper); }
+
 /* BLANK — the minimal board. No lattice (the canvas's half of `BoardStyle`), no frame, and overlays
    reduced to bare text: what is left is paper, the fighters, and the score behind them.
    `.frame--survey` is the rule block above and deliberately has no modifier of its own — the

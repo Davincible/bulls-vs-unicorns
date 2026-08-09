@@ -62,6 +62,26 @@ export function IntroOverlay({ onClose }: { onClose(): void }) {
         </p>
 
         <ul className="ovl-list">
+          {/* FIRST, BECAUSE IT IS THE ONLY ITEM IN THIS LIST A READER HAS TO ACT ON. Everything else
+              here explains the game; this one explains why the buttons might not work yet, and a
+              visitor who reads it now does not spend their first lobby wondering. Kept to one line
+              per requirement — the panel behind the Connect button says the rest, and turning the
+              takeover into a setup manual would push the three things it exists to say off screen. */}
+          <li>
+            <b>What you need</b>
+            {/* IT USED TO SAY "set to Solana devnet", WHICH IS A SETUP STEP THIS APP DOES NOT NEED
+                and the rest of the page says so. `walletFault.ts` establishes it at length: the
+                wallet's selected cluster changes only what PHANTOM displays and simulates, because
+                this page takes the signature and submits the bytes to devnet itself. Listing it as a
+                requirement in the first thing a visitor reads sends them into Phantom's settings
+                before they have seen the arena, to fix something that is not stopping them. */}
+            <span>
+              A Phantom wallet holding a little devnet SOL for transaction fees. Devnet SOL is free —
+              the wallet panel has the link, and Connect wallet is in the bar at the bottom of every
+              screen. Nothing here touches mainnet or real funds, whatever network your wallet is set
+              to show you.
+            </span>
+          </li>
           <li>
             <b>Mayhem</b>
             <span>

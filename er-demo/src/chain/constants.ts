@@ -7,8 +7,41 @@
 import { PublicKey } from "@solana/web3.js";
 import { assertDevnetUrl } from "../devnet-guard.ts";
 
+/** A build-time override, read defensively because THIS MODULE HAS TWO RUNTIMES.
+ *
+ *  Vite inlines `import.meta.env.VITE_*` into the browser bundle at build time; Bun populates
+ *  `import.meta.env` from the process environment for the keeper and the scripts under `scripts/`.
+ *  Neither runtime may assume the other's shape, and a bare `import.meta.env.X` throws where `env`
+ *  is undefined — which would take down every importer of this file, i.e. all of chain/.
+ *
+ *  Empty is treated as unset: an unset variable and one set to "" are the same intent, and a Vercel
+ *  field someone cleared should fall back rather than fail. */
+function envOverride(name: string): string | undefined {
+  const env = (import.meta as { env?: Record<string, string | undefined> }).env;
+  const value = env?.[name];
+  return value !== undefined && value.trim() !== "" ? value.trim() : undefined;
+}
+
+/** The MagicBlock Magic Router. NOT overridable, deliberately: it routes per account and is what
+ *  places a delegated round's transactions on the right ER validator. A general Solana RPC cannot
+ *  serve it, so an override here would not be a tuning knob, it would be a way to break every
+ *  rollup transaction the app sends. */
 export const ROUTER_URL = "https://devnet-router.magicblock.app";
-export const BASE_RPC = "https://api.devnet.solana.com";
+
+/** The base-layer Solana RPC.
+ *
+ *  OVERRIDABLE VIA `VITE_BASE_RPC`, because the public `api.devnet.solana.com` rate-limits (HTTP
+ *  429) under load we can actually reach — one browser plus one status poller was enough. A paid
+ *  endpoint drops in without a code change. The keeper has its own equivalent (`KEEPER_BASE_RPC`,
+ *  see `scripts/keeper/endpoints.ts`) so the two halves can point at different endpoints, which is
+ *  the point: the browser's key is public by construction and the keeper's is not.
+ *
+ *  THE GUARD STILL RUNS ON WHATEVER COMES BACK. That is the whole reason the override is safe to
+ *  add — this file's header promises that no endpoint leaves here unasserted, and an env-supplied
+ *  value must not become the hole in it. A mainnet URL in a Vercel setting fails the import
+ *  outright rather than quietly connecting to the wrong cluster. */
+export const BASE_RPC = envOverride("VITE_BASE_RPC") ?? "https://api.devnet.solana.com";
+
 assertDevnetUrl(ROUTER_URL, "Magic Router");
 assertDevnetUrl(BASE_RPC, "base devnet RPC");
 

@@ -1,0 +1,89 @@
+/* ConnectPanel — layout only. Every rule here exists because a primitive in base.css genuinely does
+   not cover it; nothing here introduces a colour, a radius, a shadow or a fill (base.css's header is
+   the law, and a connect panel is the last surface that should be asking for an exception — it is a
+   sentence, a paragraph and a button).
+
+   The one thing the primitives have no answer for is the RELATIONSHIP between the three: a claim, its
+   explanation and the control that ends it, stacked with the rhythm of a `.fact` block but without
+   being one. `.lede` and `.btn--wide` do the rest. */
+
+.cx {
+  /* Sits inside a `.blk` in the rail and directly in the dock's body, so it owns no outer margin —
+     the container it lands in already spaced it. */
+  display: block;
+}
+
+/* WHAT IS TRUE, and the only line in the panel set in ink rather than in `--ink-2`. It is the
+   headline of the state; the paragraph under it is the explanation. Sentence case, sans, because it
+   is a sentence — `.u`'s tracked-out uppercase is the house voice for a LABEL, and a wall of it is
+   the thing the copy rules in SPEC.md were written against. */
+.cx-now {
+  font: 400 13.5px/1.45 var(--sans);
+  color: var(--ink);
+  margin: 0 0 8px;
+  max-width: 64ch;
+}
+
+.cx-detail {
+  margin: 0 0 14px;
+}
+
+.cx-cta {
+  /* `.btn--wide` already takes the width; this only fixes it as a block so an `<a>` wearing `.btn`
+     sits on its own line exactly as the `<button>` does. Without it the anchor is inline and the
+     network note below rides up beside it. */
+  display: block;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+/* THE SECONDARY EXPLANATION — subordinate to the control above it, and visibly so.
+   Separated by a hairline rather than by size alone: it answers a different question from everything
+   above it ("why does Phantom disagree with this page?"), and a rule is how the rest of this design
+   system says "different thing" without a card or a fill. Rendered only at full density. */
+.cx .cx-aside {
+  margin: 16px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+  font-size: 11.5px;
+  line-height: 1.65;
+}
+
+/* The always-on network statement. Deliberately the quietest thing in the panel: it is a standing
+   fact about the page, not a finding about the reader, and it must never read as a warning.
+
+   TWO CLASSES DEEP ON PURPOSE. It wears `.u` for its size and muted ink, and `.u` also sets
+   `text-transform: uppercase` — one class against one class, so the winner is decided by whichever
+   stylesheet Vite happens to emit last, and it emitted `base.css` last. The sentence rendered as a
+   wall of tracked-out capitals. `.cx .cx-net` outranks `.u` outright, which is the fix rather than
+   an `!important` or a re-ordering that the next import would undo. */
+.cx .cx-net {
+  margin: 12px 0 0;
+  line-height: 1.6;
+  /* `.u` is 10px tracked uppercase; a full sentence in it is hard work. Case is restored and the
+     tracking relaxed, keeping only the size and the muted ink that mark it as metadata. */
+  text-transform: none;
+  letter-spacing: 0.01em;
+  font-size: 11px;
+}
+
+/* --- the dock's corner --------------------------------------------------------------------- */
+
+/* 320px wide with the page behind it. The copy does not get shorter — a state that needs four
+   sentences needs them in both places — so the panel scrolls rather than being truncated. A capped,
+   scrolling paragraph is honest; an elided one silently deletes the instruction that would have
+   unblocked someone. */
+.cx--compact .cx-now {
+  font-size: 12.5px;
+  margin-bottom: 6px;
+}
+.cx--compact .cx-detail {
+  font-size: 11.5px;
+  max-height: 34vh;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+.cx.cx--compact .cx-net {
+  font-size: 10px;
+  margin-top: 10px;
+}

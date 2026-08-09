@@ -21,6 +21,7 @@ import {
   type RoundPlayer,
   type RoundSummary,
   type Side,
+  type TreasuryState,
 } from "../contract.ts";
 import { buildLineup, lcg, fakeWallet } from "./fixtureLineup.ts";
 import { FIXTURE_LINEUP } from "./flags.ts";
@@ -52,6 +53,39 @@ const FULL = runFullFight(MOCK_SEED, ENTRIES, MAX_STEPS);
 /** The whole fight, precomputed — exactly what the real provider hands the canvas. */
 export const MOCK_HIT_EVENTS: HitEvent[] = FULL.events;
 
+/** WHICH OF THE FIXTURE'S FIGHTERS ARE THE HOUSE'S — invented, deterministic, and shaped like the
+ *  thing it stands in for.
+ *
+ *  The disclosure UI has to be reviewable with no keeper running, which is the same argument that
+ *  produced this whole fixture: "the bot markers are unstyleable unless somebody is running the
+ *  keeper" is not a way to build a front end. So the fixture seats its own house, and the rule is
+ *  index-based rather than random because two screenshots of `?fighters=9` must differ only by the
+ *  design being reviewed.
+ *
+ *  TWO IN THREE, ROUGHLY, and never you. That is the picture the real keeper produces and the reason
+ *  disclosure is owed at all: it holds a lobby open with the house in it so the room is never empty,
+ *  and a real player or two arrives. Index 0 is the local player and is never house — a fixture that
+ *  marked "you" as a bot would be teaching the roster a state that cannot occur. Sides alternate by
+ *  index, so the marks land on both rosters at every lineup size. */
+export function isFixtureHouseFighter(index: number): boolean {
+  return index > 0 && index % 3 !== 0;
+}
+
+/** The same list in the shape the chain path's resolver reads (`keeperStatus.ts`'s `HouseRoster`),
+ *  so both paths mark and count through one function rather than the fixture carrying a private
+ *  version of the rule. */
+export const MOCK_HOUSE_WALLETS: string[] = ENTRIES.filter((_, i) => isFixtureHouseFighter(i)).map(
+  (e) => e.wallet,
+);
+
+/** The fixture's stand-in for `KeeperStatus.house.disclosure` — the keeper's own sentence, which the
+ *  page quotes rather than paraphrases. It says FIXTURE first because that is the load-bearing word:
+ *  everything else on this path is invented and this sentence must not be the one that reads like it
+ *  came off a running process. */
+export const MOCK_HOUSE_DISCLOSURE =
+  "Fixture — this lineup's house fighters are invented, like the rest of the round. On a live " +
+  "arena this sentence is the keeper's own, published beside the wallet list it is a claim about.";
+
 export const MOCK_FIGHTER_SEEDS = ENTRIES.map((e, id) => ({
   id,
   wallet: e.wallet,
@@ -60,6 +94,10 @@ export const MOCK_FIGHTER_SEEDS = ENTRIES.map((e, id) => ({
   side: e.side,
   stake: e.stake,
   isYou: e.wallet === MOCK_YOU,
+  // Resolved from the list above, not hardcoded false as it was: `FighterView.house` is a disclosure
+  // obligation, and a fixture that renders every fighter as a person is the same misrepresentation
+  // the live page was making, in the one place design review would have caught it.
+  house: isFixtureHouseFighter(id),
 }));
 
 /** Replays the event stream up to `step` and returns the rosters as they stand at that moment —
@@ -191,6 +229,28 @@ const histRnd = lcg(4242);
 export const MOCK_HISTORY: RoundSummary[] = Array.from({ length: 16 }, (_, i) =>
   mockRound(16 - i, histRnd),
 );
+
+/** THE FIXTURE'S TREASURY — derived from the log above, not invented beside it.
+ *
+ *  `sweep_house_take` books one finished round's `feesCollected` and `penaltiesCollected` onto the
+ *  arena, so a treasury covering the whole of this fixture's history is exactly the sum of those two
+ *  columns over `MOCK_HISTORY`. Both are zero on every fixture round, for the reasons `mockRound`
+ *  sets out at length: nobody extracted, and no `enter()` ever charged a fee because the generator
+ *  hands the stakes to the roster directly. So the honest figure here is zero over sixteen rounds,
+ *  and it is derived rather than written down so it cannot drift from the rounds a reader can check
+ *  it against.
+ *
+ *  WHY NOT `null`, WHICH WOULD ALSO BE DEFENSIBLE. `null` means "not read yet, or never initialised",
+ *  and the fixture has no chain to have read one from — so a reviewer would see the tile's empty
+ *  state forever and never its populated one. Zero-over-sixteen exercises the populated path with a
+ *  figure that is internally consistent with every other number on the page, which is what this
+ *  fixture is for. What it must not do is invent a plausible-looking take: that is a fabricated house
+ *  cut sitting in the one column a reader is meant to be able to check against a round account. */
+export const MOCK_TREASURY: TreasuryState = {
+  feesAccrued: MOCK_HISTORY.reduce((sum, r) => sum + r.feesCollected, 0n),
+  penaltiesAccrued: MOCK_HISTORY.reduce((sum, r) => sum + r.penaltiesCollected, 0n),
+  roundsSwept: BigInt(MOCK_HISTORY.length),
+};
 
 // `deriveStandings`/`deriveBigWins`/`deriveHall` used to live here. They now live in `roundLog.ts`
 // and are shared: the fixture's rounds and devnet's rounds are the same `RoundSummary[]` shape, so

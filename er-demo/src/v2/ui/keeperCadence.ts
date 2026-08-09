@@ -98,14 +98,23 @@ export function roundCadence(result: KeeperStatusResult, nowMs: number): Cadence
 // One poll, shared
 // ---------------------------------------------------------------------------------------------
 
-/** THE STATUS FILE IS FETCHED ONCE FOR THE WHOLE PAGE, and this is why it has to be.
+/** THE STATUS FILE IS ANSWERED ONCE FOR THE WHOLE PAGE, and this is why it still has to be.
  *
  *  `useRoundPhase()` is called from `RoundPhaseNote` — which is on screen up to five times at once —
- *  and from `StakeDock` and `ArenaView` besides. `useKeeperStatus()` opens an interval and a fetch
- *  loop per call, so calling it there directly would put seven independent two-second polls of the
- *  same file on the wire, seven staleness clocks that can disagree by up to a second, and seven
- *  chances for two surfaces to render different answers to the same question at the same instant.
- *  One provider, one poll, one answer.
+ *  and from `StakeDock` and `ArenaView` besides.
+ *
+ *  THE ORIGINAL ARGUMENT WAS ABOUT THE WIRE AND IS NO LONGER TRUE. `useKeeperStatus()` used to open
+ *  an interval and a fetch loop per call, so seven callers meant seven independent two-second polls
+ *  of the same file, seven staleness clocks free to disagree by a second, and seven chances for two
+ *  surfaces to answer the same question differently at the same instant. The poll has since moved
+ *  into a refcounted module singleton behind a `useSyncExternalStore` wrapper, so one poll and one
+ *  answer are now structural — they hold however many components call the hook and wherever they sit.
+ *
+ *  WHAT THIS CONTEXT STILL EARNS is the re-render, which is a different cost from the fetch. A
+ *  subscriber re-renders every time the store publishes, and four of the five screens have no
+ *  countdown on them at all; keeping the subscription at one provider scopes those re-renders to the
+ *  surfaces that actually show a keeper's clock instead of waking the page twice a second. One
+ *  provider, one subscription, one answer.
  *
  *  The default is the truthful one for a tree with no provider above it: nothing has told us
  *  anything about a keeper, which reads as `no-keeper` and shows no invented countdown. */

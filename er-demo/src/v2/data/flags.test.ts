@@ -7,7 +7,7 @@
 // actually types.
 
 import { describe, expect, it } from "vitest";
-import { parseFightersFlag, parseFixtureFlag, parseRefFlag } from "./flags.ts";
+import { parseFightersFlag, parseFixtureFlag, parseRefFlag, parseSignerFlag } from "./flags.ts";
 import { DEFAULT_LINEUP, MAX_LINEUP, MIN_LINEUP } from "./fixtureLineup.ts";
 
 describe("parseFixtureFlag", () => {
@@ -38,6 +38,36 @@ describe("parseRefFlag", () => {
     expect(parseRefFlag("")).toBe(false);
     expect(parseRefFlag("?ref=")).toBe(false);
     expect(parseRefFlag("?ref=abc")).toBe(true);
+  });
+});
+
+describe("parseSignerFlag", () => {
+  it("defaults to the wallet, everywhere, including a bare localhost URL", () => {
+    // THE DEV/PROD DIVERGENCE GUARD. If this ever starts returning "burner" for an unmarked URL, the
+    // path every real visitor takes becomes the one path nobody exercises while building it — and
+    // all of this workstream's failure states (no extension, rejected connect, zero balance) live
+    // exclusively on that path.
+    expect(parseSignerFlag("")).toBe("wallet");
+    expect(parseSignerFlag("?fixture=1")).toBe("wallet");
+    expect(parseSignerFlag("?round=12&ref=abc")).toBe("wallet");
+  });
+
+  it("hands a developer the burner when they ask for it by name", () => {
+    expect(parseSignerFlag("?signer=burner")).toBe("burner");
+    expect(parseSignerFlag("?signer=BURNER")).toBe("burner");
+    expect(parseSignerFlag("?round=3&signer=burner")).toBe("burner");
+  });
+
+  it("accepts the explicit wallet spelling, so the flag can be turned back off in a bookmark", () => {
+    expect(parseSignerFlag("?signer=wallet")).toBe("wallet");
+  });
+
+  it("falls back to the wallet on anything it does not recognise", () => {
+    // A typo must never hand a stranger an unfunded burner — that silent downgrade is the exact
+    // failure this whole change exists to delete, and it would look like the page simply not working.
+    for (const s of ["?signer=", "?signer", "?signer=burnr", "?signer=phantom", "?signer=1"]) {
+      expect(parseSignerFlag(s), s).toBe("wallet");
+    }
   });
 });
 

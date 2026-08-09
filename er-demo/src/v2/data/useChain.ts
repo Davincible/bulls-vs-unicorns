@@ -66,16 +66,35 @@ export function useChain(wallet: Wallet, enabled: boolean): ChainHandles {
   const [program, setProgram] = useState<BullsArenaProgram | null>(null);
   const [programError, setProgramError] = useState<string | null>(null);
 
-  // `createProgram` is async (it fetches the IDL) and `wallet` from `useSigner()` is referentially
-  // stable across re-renders, so this runs once for the page's whole lifetime rather than per render.
+  // KEYED ON THE ADDRESS, NOT THE OBJECT — and the comment this replaces was true only while the
+  // burner was the only signer.
+  //
+  // It used to read "`wallet` from `useSigner()` is referentially stable across re-renders, so this
+  // runs once for the page's whole lifetime". In wallet mode it is not: the identity is rebuilt as
+  // the connection advances (`unsupported` → `disconnected` → `connected`) and again whenever a
+  // fault changes. Every rebuild produced a new `Program`, and `program` identity is a dependency of
+  // the arena poll, `useLiveRound` AND `useHistory` — which sweeps up to `MAX_ROUNDS` accounts in
+  // batches of eight. Rebuilding on object identity turned one history sweep per load into three or
+  // more, against the public devnet RPC this repo already documents 429s from.
+  //
+  // Keying on the base58 address collapses that to exactly one rebuild per ACTUAL signer change,
+  // which is the only thing the `Program` cares about. It is safe to hold the wallet in a ref
+  // because nothing on this app's paths asks `AnchorProvider` to sign: `chain/sendTx.ts` bypasses
+  // its send path entirely (that file's "SDK SURPRISE #1") and every instruction builder in
+  // `chain/round.ts` passes its accounts explicitly rather than letting Anchor resolve them off the
+  // provider. The wallet is here to satisfy the constructor, not to be used by it.
+  const walletRef = useRef(wallet);
+  walletRef.current = wallet;
+  const walletKey = wallet.publicKey.toBase58();
+
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    createProgram(router, wallet)
+    createProgram(router, walletRef.current)
       .then((p) => { if (!cancelled) { setProgram(p); setProgramError(null); } })
       .catch((e: unknown) => { if (!cancelled) setProgramError(e instanceof Error ? e.message : String(e)); });
     return () => { cancelled = true; };
-  }, [router, wallet, enabled]);
+  }, [router, walletKey, enabled]);
 
   const pinned = useMemo(() => parseRoundNoFromUrl(window.location.search), []);
 

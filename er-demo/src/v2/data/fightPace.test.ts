@@ -43,7 +43,7 @@ describe("shouldDriveFight", () => {
   // direction is expensive: too closed and every roster on the page sits frozen at entry stakes for
   // the whole fight; too open and an unfunded burner spins a doomed transaction every 400ms against
   // the same RPC the round poll needs.
-  const OPEN = { fallback: false, sessionActive: false, solBalance: 1.5 };
+  const OPEN = { fallback: false, sessionActive: false, solBalance: 1.5, mode: "burner" as const };
 
   it("drives the fight when the burner can pay for it", () => {
     expect(shouldDriveFight(OPEN)).toBe(true);
@@ -65,6 +65,48 @@ describe("shouldDriveFight", () => {
     // The first balance poll can land after the first Fight poll; refusing here would mean a fight
     // that stays frozen for as long as the wallet read takes.
     expect(shouldDriveFight({ ...OPEN, solBalance: null })).toBe(true);
+  });
+
+  describe("wallet mode — the session is the only thing that may drive a fight", () => {
+    const WALLET = { ...OPEN, mode: "wallet" as const };
+
+    it("never ticks through a connected wallet directly, however much SOL it holds", () => {
+      // The ticker polls at 400ms. Signing those with Phantom means an approval popup roughly two
+      // and a half times a second for the length of a fight — not a degraded page, an unusable one.
+      expect(shouldDriveFight({ ...WALLET, solBalance: 1.5 })).toBe(false);
+      expect(shouldDriveFight({ ...WALLET, solBalance: 100 })).toBe(false);
+      expect(shouldDriveFight({ ...WALLET, solBalance: null })).toBe(false);
+    });
+
+    it("ticks once a session key is signing and paying", () => {
+      expect(shouldDriveFight({ ...WALLET, sessionActive: true })).toBe(true);
+      // The session key funds itself at creation, so the player's own balance stops being the
+      // question — same reasoning the burner path already applies.
+      expect(shouldDriveFight({ ...WALLET, sessionActive: true, solBalance: 0 })).toBe(true);
+    });
+
+    it("still refuses on the fixture, session or not", () => {
+      expect(shouldDriveFight({ ...WALLET, sessionActive: true, fallback: true })).toBe(false);
+    });
+
+    it("PROOF: the ticker's placeholder keypair is unreachable in wallet mode", () => {
+      // `chain/useFightTicker.ts` requires a `Keypair` and signs with it only when `session` is
+      // null. Wallet mode has no keypair to give, so `identity.ts` passes a generated one that holds
+      // nothing. This is the guarantee that the branch touching it cannot run: for every input where
+      // this function returns true in wallet mode, a session is active — so the ticker takes the
+      // session branch, every time. Delete the clause and an empty signer is silently armed.
+      for (const solBalance of [null, 0, 0.001, 1.5, 1_000]) {
+        for (const fallback of [true, false]) {
+          const enabledWithoutSession = shouldDriveFight({
+            mode: "wallet",
+            sessionActive: false,
+            solBalance,
+            fallback,
+          });
+          expect(enabledWithoutSession, `sol=${solBalance} fallback=${fallback}`).toBe(false);
+        }
+      }
+    });
   });
 });
 

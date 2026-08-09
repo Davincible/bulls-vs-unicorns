@@ -20,6 +20,7 @@ import { StickyStatus } from "./ui/StickyStatus.tsx";
 import { ToastRail } from "./ui/ToastRail.tsx";
 import { ShellContext, type Rail, type ShellApi } from "./ui/shell.ts";
 import { useKeyboardNav } from "./ui/useKeyboardNav.ts";
+import { REDUCED_MOTION, useMediaQuery } from "./ui/useMediaQuery.ts";
 import "./ui/shell.css";
 
 import { ArenaView } from "./views/ArenaView.tsx";
@@ -113,6 +114,32 @@ function Shell() {
     }
   }, []);
 
+  // REOPENING IS NOT THE INVERSE OF DISMISSING, and that is why this does not touch `INTRO_KEY`.
+  // The flag records "this browser has been shown the takeover unasked", which stays true forever
+  // once it happens; asking to re-read the rules is a different act and must not re-arm the
+  // first-visit behaviour. `BottomChrome` is the only caller — see the note there on why the route
+  // back belongs in the bar that is on every screen and never scrolls away.
+  const openIntro = useCallback(() => setIntro(true), []);
+
+  /** WHETHER THE PAGE NARRATES THE FIGHT — see `ShellApi.commentary`.
+   *
+   *  DEFAULTED FROM `prefers-reduced-motion`, NOT GATED BY IT. `base.css` already kills every
+   *  transition and animation under that preference, which covers everything that moves; a stack of
+   *  commentary lines appearing and disappearing every few seconds is content that CHANGES ON ITS
+   *  OWN, which no stylesheet rule can turn off and which is the same thing the preference is asking
+   *  about. So the honest default there is off. It stays a control rather than a lock because the
+   *  preference is about motion and not about interest: a reader who wants the fight narrated can
+   *  still have it, and a reader who does not can switch it off whatever their system says.
+   *
+   *  `null` means nobody has touched the control, so the preference is followed LIVE — turning
+   *  reduce-motion on in system settings mid-session silences the page on the next frame rather than
+   *  on the next reload. Once the reader has pressed the toggle their answer is the answer, in both
+   *  directions; a preference that kept overruling an explicit choice would be a control that does
+   *  not work. */
+  const reducedMotion = useMediaQuery(REDUCED_MOTION);
+  const [commentaryChoice, setCommentary] = useState<boolean | null>(null);
+  const commentary = commentaryChoice ?? !reducedMotion;
+
   // Changing screens with a fighter open would leave the rail describing something the new screen
   // isn't showing.
   useEffect(() => {
@@ -142,8 +169,11 @@ function Shell() {
       rail,
       setRail,
       inspectedWallet: rail?.kind === "fighter" ? rail.wallet : null,
+      openIntro,
+      commentary,
+      setCommentary,
     }),
-    [view, rail],
+    [view, rail, openIntro, commentary],
   );
 
   return (

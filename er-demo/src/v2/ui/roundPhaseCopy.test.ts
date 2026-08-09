@@ -20,7 +20,8 @@
 
 import { describe, expect, it } from "vitest";
 import { FIGHT_TIMEOUT_SECONDS, type FighterView, type LiveRound, type PhaseName } from "../contract.ts";
-import { roundPhaseCopy, type RoundPhaseCopy, type RoundPhaseInput } from "./roundPhaseCopy.ts";
+import type { PlayBlock } from "../data/playGate.ts";
+import { asSentence, roundPhaseCopy, type RoundPhaseCopy, type RoundPhaseInput } from "./roundPhaseCopy.ts";
 
 const NOW = 1_700_000_000_000;
 
@@ -28,6 +29,7 @@ function fighter(over: Partial<FighterView> = {}): FighterView {
   return {
     id: 0,
     wallet: "w0",
+    house: false,
     short: "w0",
     name: "W0",
     side: 0,
@@ -363,5 +365,146 @@ describe("the chain being unreachable outranks the phase", () => {
     });
     expect(c.control).toBe("none");
     expect(c.now).toMatch(/can't reach/i);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// THE PLAYER'S OWN GATE — `data/playGate.ts`, layered over the round's state.
+//
+// The contract these hold is the one that is easy to get subtly wrong: the gate takes the CONTROL
+// away, because offering a button this reader cannot use is the bug SPEC.md names — but it must not
+// take the ROUND away with it. A lobby closing in fourteen seconds is closing in fourteen seconds
+// whether or not a wallet is connected, and that number is exactly what tells someone whether it is
+// worth connecting right now. So `now` and `timing` survive verbatim and only `action` changes.
+//
+// The other half is that it stays QUIET when it is not the thing in the way. A settled round offers
+// nothing to anybody; a wallet nag there is noise, and `blocked` staying null is what stops the dock
+// putting a Connect button under a round nobody could have entered.
+
+const NO_WALLET: PlayBlock = {
+  code: "not-connected",
+  short: "no wallet is connected",
+  detail: "Connect your Phantom wallet to deploy into a round.",
+  cta: { kind: "connect", label: "Connect Phantom" },
+};
+
+/** A block with no control to press — `no-program` and `connecting` are both of this shape. */
+const WAITING: PlayBlock = {
+  code: "connecting",
+  short: "waiting for you to approve the connection in Phantom",
+  detail: "Approve it in the extension popup.",
+  cta: null,
+};
+
+const OPEN_LOBBY: Partial<RoundPhaseInput> = {
+  live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 60_000 }),
+};
+
+describe("a player who cannot act", () => {
+  it("reports `blocked: null` in every ungated state, so no surface mistakes a quiet round for a funnel", () => {
+    for (const state of EVERY_STATE) {
+      expect(copy(state.input).blocked, state.name).toBeNull();
+    }
+  });
+
+  it("withdraws the deploy control and names what would restore it", () => {
+    const c = copy({ ...OPEN_LOBBY, gate: NO_WALLET });
+    expect(c.control).toBe("none");
+    expect(c.blocked).toBe("deploy");
+    expect(c.action).toMatch(/no wallet is connected/i);
+    // The route out, not just the diagnosis — the second half of SPEC.md's rule.
+    expect(c.action).toMatch(/connect wallet/i);
+  });
+
+  it("keeps the round's own facts, because they are still true and still decide whether to bother", () => {
+    const gated = copy({ ...OPEN_LOBBY, gate: NO_WALLET });
+    const ungated = copy(OPEN_LOBBY);
+    expect(gated.now).toBe(ungated.now);
+    expect(gated.timing).toEqual(ungated.timing);
+    // The countdown specifically: this is the one a blocked reader is racing.
+    expect(gated.timing.kind).toBe("countdown");
+  });
+
+  it("withdraws the extract control mid-fight and says so", () => {
+    const c = copy({ live: round({ phase: "Fight", elapsedSec: 10 }), gate: NO_WALLET });
+    expect(c.control).toBe("none");
+    expect(c.blocked).toBe("extract");
+  });
+
+  it("takes over the label with a handle-sized word, not the button's sentence", () => {
+    const c = copy({ ...OPEN_LOBBY, gate: NO_WALLET });
+    expect(c.label).toBe("Connect");
+    // `cta.label` is button copy and overflows the dock's one-line handle — the two must not be the
+    // same string by accident.
+    expect(c.label).not.toBe(NO_WALLET.cta?.label);
+  });
+
+  it("keeps the round's label when the block has nothing to press", () => {
+    const c = copy({ ...OPEN_LOBBY, gate: WAITING });
+    expect(c.control).toBe("none");
+    expect(c.label).toBe(copy(OPEN_LOBBY).label);
+    expect(c.action).toMatch(/waiting for you to approve/i);
+  });
+
+  it("says nothing at all when the round was offering nothing anyway", () => {
+    const settled: Partial<RoundPhaseInput> = { live: round({ phase: "Settled" }) };
+    const gated = copy({ ...settled, gate: NO_WALLET });
+    expect(gated).toEqual(copy(settled));
+    expect(gated.blocked).toBeNull();
+  });
+
+  it("still answers all three questions in a gated state", () => {
+    const c = copy({ ...OPEN_LOBBY, gate: NO_WALLET });
+    expect(c.now.length).toBeGreaterThan(0);
+    expect(c.action.length).toBeGreaterThan(0);
+    expect(c.timing.kind === "waiting" ? c.timing.text : c.timing.before).toBeTruthy();
+  });
+
+  /**
+   * A GATE MUST NOT EVICT A CONTROL MID-SEND.
+   *
+   * The gate can close while a transaction this player started is still submitting — Phantom
+   * disconnects, or the balance poll lands at zero once the fee is spent. Taking the control away at
+   * that instant unmounts the body that is reporting the send, so the reader loses every trace of
+   * their transaction at exactly the moment they are watching for it. The buttons inside are already
+   * disabled by `entering`/`extracting`, so holding the body is a receipt, never a second offer.
+   */
+  it("keeps the control while the player's own transaction is still in flight", () => {
+    const sending = copy({ ...OPEN_LOBBY, gate: NO_WALLET, inFlight: true });
+    expect(sending.control).toBe("deploy");
+    expect(sending.blocked).toBeNull();
+    // And it is genuinely the ungated round's words — nothing half-swapped.
+    expect(sending).toEqual(copy(OPEN_LOBBY));
+  });
+
+  it("hands the funnel back the moment the send resolves", () => {
+    const settled = copy({ ...OPEN_LOBBY, gate: NO_WALLET, inFlight: false });
+    expect(settled.control).toBe("none");
+    expect(settled.blocked).toBe("deploy");
+  });
+
+  it("treats an absent inFlight exactly as false, so no existing caller changes behaviour", () => {
+    expect(copy({ ...OPEN_LOBBY, gate: NO_WALLET })).toEqual(
+      copy({ ...OPEN_LOBBY, gate: NO_WALLET, inFlight: false }),
+    );
+  });
+});
+
+describe("asSentence", () => {
+  it("promotes a lower-case clause to a sentence", () => {
+    expect(asSentence("no wallet is connected")).toBe("No wallet is connected.");
+  });
+
+  it("leaves an existing terminal stop alone, so a verbatim chain error is not edited", () => {
+    // `walletFault.ts`'s `unknown` branch reproduces the program's own message; appending a second
+    // full stop to it would be rewriting someone else's sentence.
+    expect(asSentence("custom program error: NothingToExtract.")).toBe(
+      "Custom program error: NothingToExtract.",
+    );
+    expect(asSentence("is this thing on?")).toBe("Is this thing on?");
+  });
+
+  it("survives an empty clause rather than producing a lone full stop", () => {
+    expect(asSentence("")).toBe("");
   });
 });

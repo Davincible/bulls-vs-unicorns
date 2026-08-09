@@ -5,22 +5,46 @@
 //
 // THE FOUR RULES, which is most of why this file looks the way it does:
 //   1. Every figure names its unit. No bare numbers anywhere.
-//   2. Nothing is derived from live balances. All-time facts come from the round log via
-//      `standings`/`history`, which is survivorship-free; the only live reads are the CURRENT
-//      round's own pot and your own ring position, which is what "right now" means.
+//   2. Nothing is derived from live balances. Aggregates come from the round log via
+//      `standings`/`history`, which is survivorship-free, and each states the window it was counted
+//      over; the only live reads are the CURRENT round's own pot and your own ring position, which
+//      is what "right now" means.
 //   3. A figure with no backing data shows `—`, never `0`. `0` is a claim; `—` is the truth.
 //   4. Token names come from `SIDE_TOKEN`, never hardcoded — "Bulls"/"Unicorns" is ANSEM's old
 //      label and was wrong on every screen the moment a second arena existed.
 //
-// AND ONE MORE, which the ER program forces: it custodies nothing. There are no token accounts, no
-// deposits, no house treasury and no referral split on chain. Those figures come from the local
-// simulated ledger and every one of them carries a `SIM` marker. A money-shaped number with nothing
-// behind it, unlabelled, is the single thing this page must never ship.
+// AND ONE MORE, which the ER program forces: it custodies NO PLAYER TOKENS. There are no token
+// accounts, no deposits and no referral split on chain. Those figures come from the local simulated
+// ledger and every one of them carries a `SIM` marker. A money-shaped number with nothing behind it,
+// unlabelled, is the single thing this page must never ship.
+//
+// THE HOUSE'S OWN BOOKS ARE THE EXCEPTION, AND USED NOT TO BE. The program keeps a `Treasury` PDA and
+// writes `fees_collected`/`penalties_collected` onto every round, so what the house has taken is
+// chain truth — while this screen was rendering a `sim` treasury out of localStorage right beside it.
+// That is the tile `UI-SPEC.md` Part 1 ordered fixed ("should read the treasury ACCOUNT, not the
+// counter"), and 02-3 now reads the account. The simulated treasury is gone from this screen: two
+// house takes side by side, one real and one modelled, is worse than either alone.
+//
+// TWO WORDS THIS SCREEN IS CAREFUL WITH, both because they were quietly false before:
+//
+//   "STAKED" / "DEPLOYED" / "VOLUME" — `pot` is NET of the entry fee. It is the money that reached
+//   the ring, not the money players parted with, so any figure carrying one of those labels and
+//   sourced from `pot` understates what was charged. `grossDeposits(round)` is the honest version of
+//   that sentence and this screen uses it wherever the label makes a claim about what a player PUT
+//   IN; `pot` survives only where the claim is "what is in the ring". The two are printed together
+//   in 02-3 so the difference is a visible figure rather than a footnote.
+//
+//   "ALL-TIME" — `useHistory` reads the newest 250 rounds and tolerates a failed read, so no figure
+//   derived from `history.rounds` may claim more than that window. `SideRecord` was built refusing
+//   the phrase for exactly this reason. Every aggregate on this screen now states the coverage it was
+//   counted over ("across N logged rounds"), which is true whatever the window did. Nothing is wrong
+//   today — this arena has far fewer than 250 rounds — which is precisely how the bug ships.
 
 import { useMemo } from "react";
 import type { ReactNode } from "react";
 import { useArena } from "../data/useArena.ts";
 import { Dash, Empty, Mark, Section, Tag } from "../ui/primitives.tsx";
+import { coverageFigure, coverageNote, coveragePhrase } from "./coverage.ts";
 import {
   EXTRACT_PENALTY_START_BPS,
   FEE_BPS,
@@ -28,6 +52,8 @@ import {
   SIDE_TOKEN,
   bpsPct,
   clock,
+  grossDeposits,
+  houseTook,
   usd,
   usdCompact,
   usdCompactSigned,
@@ -38,15 +64,30 @@ import {
 import "./screens.css";
 
 export function DashboardView() {
-  const { live, standings, history, you, sim, status, source } = useArena();
+  const {
+    live,
+    standings,
+    history,
+    logCoverage,
+    houseDisclosure,
+    treasury,
+    you,
+    sim,
+    status,
+    source,
+  } = useArena();
 
   // Round-derived figures are only "chain" when the round log actually came off the chain. When the
   // page has fallen back to the fixture, every one of them is marked SIM alongside the treasury —
   // the marker means "this is not on chain", and a fixture round is not on chain.
   const chain = source === "chain" ? "live" : "sim";
 
-  // Everything all-time, in one pass over the round log. Deliberately NOT from live balances: a
-  // balance sheet is a survey of survivors, and it reads ~0 for anyone whose stake is in the ring.
+  // Everything the log knows, in one pass over it. Deliberately NOT from live balances: a balance
+  // sheet is a survey of survivors, and it reads ~0 for anyone whose stake is in the ring.
+  //
+  // NOT "ALL-TIME", and nothing derived from it may say so — see the note at the top of this file.
+  // The window is `history.rounds`, and its size is the coverage every figure below is captioned
+  // with.
   const log = useMemo(() => {
     let stakedA = 0n;
     let stakedB = 0n;
@@ -56,8 +97,24 @@ export function DashboardView() {
     let winsB = 0;
     let settled = 0;
     let potAll = 0n;
+    // The three house figures the ROUNDS THEMSELVES record, which is a different reading from the
+    // treasury account below: a round writes its take the moment it happens, the treasury only
+    // learns of it when someone sweeps. Where the two disagree, the gap is the unswept rounds.
+    let grossAll = 0n;
+    let feesAll = 0n;
+    let penaltiesAll = 0n;
+    // Accumulated through `houseTook()` rather than added up from the two lines above it, so "what
+    // the house made" keeps the one definition that function exists to be — see its note in
+    // contract.ts on why it is a function and not a third stored field.
+    let houseAll = 0n;
+    let roundsWithExits = 0;
     for (const r of history.rounds) {
       potAll += r.pot;
+      grossAll += grossDeposits(r);
+      feesAll += r.feesCollected;
+      penaltiesAll += r.penaltiesCollected;
+      houseAll += houseTook(r);
+      if (r.penaltiesCollected > 0n) roundsWithExits += 1;
       for (const p of r.players) {
         if (p.side === 0) {
           stakedA += p.stake;
@@ -76,7 +133,21 @@ export function DashboardView() {
         else if (r.winner === 1) winsB += 1;
       }
     }
-    return { stakedA, stakedB, takenA, takenB, winsA, winsB, settled, potAll };
+    return {
+      stakedA,
+      stakedB,
+      takenA,
+      takenB,
+      winsA,
+      winsB,
+      settled,
+      potAll,
+      grossAll,
+      feesAll,
+      penaltiesAll,
+      houseAll,
+      roundsWithExits,
+    };
   }, [history.rounds]);
 
   // The newest settled round that isn't the one on screen.
@@ -112,18 +183,30 @@ export function DashboardView() {
 
   const [tokA, tokB] = SIDE_TOKEN;
   const fighters = live?.fighters.length ?? 0;
-  const deployTotal = log.stakedA + log.stakedB;
-  const pctA = deployTotal > 0n ? (Number(log.stakedA) / Number(deployTotal)) * 100 : 50;
+  // HOUSE FIGHTERS IN THE LIVE ROUND, straight off `houseDisclosure` rather than counted here. Null
+  // is the answer that matters and only the data layer can give it: `house: false` on every fighter
+  // means EITHER nobody in this round is ours OR nothing is publishing a list to check against, and
+  // a view counting the flags itself would render both as a confident `0`.
+  const houseFighters = houseDisclosure.houseFighterCount;
+  const ringTotal = log.stakedA + log.stakedB;
+  const pctA = ringTotal > 0n ? (Number(log.stakedA) / Number(ringTotal)) * 100 : 50;
 
-  // Treasury is the simulated ledger's, in dollars. Zero here means "no simulated deploy has been
-  // made in this browser", which is an absence of data, not a house that has taken nothing.
-  const treasury = sim.ledger.treasury.ansem + sim.ledger.treasury.uwu;
-
-  // Chain-derived, unlike everything else in this band: `penalties_collected` is written by the
-  // program itself on every extract, so summing it over the round log is a real house take rather
-  // than a model of one.
-  const penaltyTake = history.rounds.reduce((sum, r) => sum + r.penaltiesCollected, 0n);
-  const roundsWithExits = history.rounds.filter((r) => r.penaltiesCollected > 0n).length;
+  // THE COVERAGE EVERY AGGREGATE ON THIS SCREEN IS CAPTIONED WITH — see `views/coverage.ts`. One
+  // phrase, so a caption in 02-2 and a caption in 02-3 cannot drift into claiming two different
+  // windows over the same log, and so the word "all-time" appears only where `logCoverage.complete`
+  // has earned it.
+  const logged = logCoverage.rounds;
+  const coverage = coveragePhrase(logCoverage);
+  // ZERO IS A RESULT; `—` IS AN ABSENCE — and for a figure summed over the round log the difference
+  // is exactly whether the log has anything in it. An empty log backs no figure at all and dashes;
+  // a log of sixteen rounds in which nobody extracted genuinely took nothing, and printing `—` for
+  // that would be the page disclaiming a number it has. This is the same distinction the Treasury
+  // group makes between a null account and an account holding nothing, applied to the other
+  // reading of the same money, so the two groups can be compared without one of them abstaining.
+  const summed = (units: bigint): ReactNode => (logged > 0 ? usdCompact(units) : <Dash />);
+  // How many rounds this arena has EVER opened. Null when the arena account has not been read — the
+  // coverage line then claims no denominator rather than inventing one.
+  const opened = logCoverage.roundsEverOpened;
 
   return (
     <div className="scr">
@@ -132,9 +215,9 @@ export function DashboardView() {
         <div className="scr-head-main">
           <h1 className="display">Dashboard</h1>
           <p className="lede">
-            What is on the table, where you stand, and what the house is doing. Every all-time
-            figure is read from the permanent round log; anything the arena program cannot custody
-            is marked <Tag kind="sim" />.
+            What is on the table, where you stand, and what the house is doing. Every aggregate here
+            is counted {coverage}, and says so beside itself rather than calling itself all-time.
+            Anything the arena program cannot custody is marked <Tag kind="sim" />.
           </p>
         </div>
         <div className="scr-head-meta">
@@ -142,7 +225,13 @@ export function DashboardView() {
             Arena · <span className="u--ink">{tokA.name} vs {tokB.name}</span>
           </span>
           <span className="u">
-            Round · <span className="u--ink">{status.roundNo === null ? "—" : `#${status.roundNo}`}</span>
+            Round ·{" "}
+            <span className="u--ink">
+              {status.roundNo === null ? "—" : `#${status.roundNo}`}
+            </span>
+          </span>
+          <span className="u" title={coverageNote(logCoverage)}>
+            Rounds logged · <span className="u--ink">{coverageFigure(logCoverage)}</span>
           </span>
           <span className="u">
             Settled rounds · <span className="u--ink">{log.settled}</span>
@@ -183,7 +272,35 @@ export function DashboardView() {
             {/* Every `Fx` value below lives in a 1fr grid column, not a headline — compact, unlike
                 the hero above it that repeats this same pot. */}
             <Fx n="Pot · USD" v={live ? usdCompact(live.pot) : <Dash />} />
-            <Fx n="Fighters" v={live ? `${fighters}` : <Dash />} />
+            {/* Moved up out of 02-3, where it sat under a second copy of the pot beside it. This is
+                the band called "the arena right now"; a duplicate of the live pot three sections
+                further down was a reader being asked to check two tiles against each other. */}
+            <Fx
+              n="Value in play · USD"
+              v={
+                live && live.fighters.length
+                  ? usdCompact(live.fighters.reduce((s, f) => s + worth(f), 0n))
+                  : <Dash />
+              }
+              note="stakes plus everything raided so far"
+            />
+            <Fx
+              n="Fighters"
+              v={live ? `${fighters}` : <Dash />}
+              // THE BOT DISCLOSURE, on the screen that counts the field. `README.md`'s go-live list
+              // still carries "Bot disclosure in UI" open; 01-1 names the house fighters row by row
+              // and this says how many of the count are ours. Silent when NOTHING IS DISCLOSING
+              // (`houseFighterCount === null`) — a note reading "0 seated by the house" would be a
+              // claim this page cannot check. Loud at zero when a keeper IS disclosing, because
+              // "none of these are ours" is then a real and reassuring fact.
+              note={
+                live && houseFighters !== null
+                  ? houseFighters > 0
+                    ? `${houseFighters} seated by the house — named on the leaderboard's this-round board`
+                    : "none seated by the house — every fighter here is someone else"
+                  : undefined
+              }
+            />
             <Fx n="Phase" v={live ? live.phase.toUpperCase() : <Dash />} />
             <Fx
               n="Fight clock"
@@ -230,17 +347,24 @@ export function DashboardView() {
               v={sim.ledger.balances.uwu > 0 ? usdCompact(usdToUnits(sim.ledger.balances.uwu)) : <Dash />}
             />
             <Fx
-              n="Deposited all-time · USD"
+              n="Deposited · USD"
               v={sim.ledger.deposited > 0 ? usdCompact(usdToUnits(sim.ledger.deposited)) : <Dash />}
+              // This one IS a lifetime total and is allowed to say so — it is the ledger's own
+              // running sum in this browser's localStorage, not a window over a fetched log. It said
+              // "all-time" before, which was true here and false everywhere else on the screen; the
+              // word is gone so no reader has to work out which figures earned it.
+              note="every simulated deposit this browser has made"
             />
             <Fx n="Custodied on chain" v={<Dash />} note="the program holds no tokens" />
           </Group>
 
+          {/* The fee rate used to be the fourth row here, inside a group marked SIM — a real program
+              constant wearing the marker for "modelled locally". It is in 02-3 now, beside the fees
+              the chain has actually collected, which is the only place it can be checked. */}
           <Group title="Backing" tag="sim">
             <Fx n="Coverage" v={<Dash />} />
             <Fx n="Shortfall" v={<Dash />} />
             <Fx n="Solvency source" v="none" note="no custody, nothing to cover" />
-            <Fx n="Fee · deploy" v={`${(FEE_BPS / 100).toFixed(2)}%`} />
           </Group>
         </div>
         <p className="lede" style={{ marginTop: 16 }}>
@@ -255,12 +379,12 @@ export function DashboardView() {
       <Section
         index="02-2"
         title="Your position"
-        lede={`Every all-time figure below is the ${you.name} row of the all-time leaderboard, not a second calculation — the two can never disagree.`}
+        lede={`Every aggregate below is the ${you.name} row of the standings board, not a second calculation — the two can never disagree. Both are counted ${coverage}.`}
         tools={<span className="u">{you.short}</span>}
       >
         {/* The whole of 02-2 is `Fx` tiles in a 1fr grid, same as 02-1 — every money figure below
-            compacts, including the all-time ones: a wallet's lifetime staked/returned on the
-            live chain path has no cap the way a single round's stake does. */}
+            compacts, including the aggregates: a wallet's staked/returned over the log on the live
+            chain path has no cap the way a single round's stake does. */}
         {mine === null && inRing === null ? (
           <Empty>
             {history.loading
@@ -294,8 +418,18 @@ export function DashboardView() {
             </Group>
 
             <Group title="Flow" tag={chain}>
-              <Fx n="Staked all-time · USD" v={mine ? usdCompact(mine.staked) : <Dash />} />
-              <Fx n="Returned all-time · USD" v={mine ? usdCompact(mine.returned) : <Dash />} />
+              {/* "STAKED", NET OF THE FEE, AND SAYING SO. `StandingsRow.staked` sums per-player
+                  `stake`, which the chain stores after the entry fee has been taken at the door —
+                  so it is what reached the ring, not what this wallet was charged. `grossDeposits`
+                  cannot fix it here: the fee is recorded per ROUND, not per fighter, so there is no
+                  honest way to hand one player their share of it. The label carries the
+                  qualification instead of implying the wrong number. */}
+              <Fx
+                n="Staked · net of fee · USD"
+                v={mine ? usdCompact(mine.staked) : <Dash />}
+                note={`what reached the ring ${coverage} — the entry fee was taken before it`}
+              />
+              <Fx n="Returned · USD" v={mine ? usdCompact(mine.returned) : <Dash />} />
               <Fx
                 n="Return"
                 v={
@@ -305,7 +439,7 @@ export function DashboardView() {
                     <Dash />
                   )
                 }
-                note="returned ÷ staked, over every round"
+                note={`returned ÷ staked, ${coverage} — both sides of it net of the fee, so it is like-for-like`}
               />
               <Fx
                 n="Best round · USD"
@@ -327,7 +461,13 @@ export function DashboardView() {
                   )
                 }
               />
-              <Fx n="Deployed this round · USD" v={inRing ? usdCompact(inRing.stake) : <Dash />} />
+              {/* Same qualification as "Staked" above, and for the same reason: `FighterView.stake`
+                  is net-of-fee starting hp. "Deployed" claimed the gross. */}
+              <Fx
+                n="Reached the ring · USD"
+                v={inRing ? usdCompact(inRing.stake) : <Dash />}
+                note="your deploy less the entry fee, which the arena takes at the door"
+              />
               <Fx n="Still fighting · USD" v={inRing ? usdCompact(inRing.hp) : <Dash />} />
               <Fx
                 n="Raided this round · USD"
@@ -342,7 +482,7 @@ export function DashboardView() {
                 note="what is still fighting plus what has been raided"
               />
               <Fx
-                n="Against deployed"
+                n="Against what reached the ring"
                 v={inRing ? <Delta units={inRing.hp + inRing.banked - inRing.stake} /> : <Dash />}
                 note="unsettled — it moves until the fight ends or the bell rings"
               />
@@ -360,18 +500,24 @@ export function DashboardView() {
       <Section
         index="02-3"
         title="The house"
-        lede={`Where the money went, all-time, across ${history.rounds.length} logged ${history.rounds.length === 1 ? "round" : "rounds"}.`}
+        lede={`Where the money went, ${coverage} — and what the house's own books say it took.`}
       >
         <div className="two" style={{ alignItems: "start" }}>
           <div>
-            {/* All-time sums over the whole round log — the one figure on this half of the screen
-                with no per-round cap to bound it. Compact throughout, including the legend under
-                the split bar. */}
+            {/* Sums over the whole round log — the figures on this half of the screen with no
+                per-round cap to bound them. Compact throughout, including the legend under the
+                split bar.
+                "IN THE RING", NOT "DEPLOYED": this is `sum(player.stake)` per side, and the chain
+                stores that net of the entry fee. What players were charged is in the Volume group
+                opposite, where the round-level `feesCollected` makes it derivable; it cannot be
+                split per side, because the fee is not recorded per side. */}
+            {/* The coverage is stated once, in the section's lede three lines above — repeating it
+                in this label pushed the total onto a second line on a phone for no new fact. */}
             <div className="line" style={{ paddingBottom: 8 }}>
-              <span className="u u--ink">Deployed all-time · by side</span>
-              <span className="push u">{usdCompact(deployTotal)} total</span>
+              <span className="u u--ink">In the ring · by side</span>
+              <span className="push u">{usdCompact(ringTotal)} total</span>
             </div>
-            {deployTotal > 0n ? (
+            {ringTotal > 0n ? (
               <>
                 <div className="split">
                   <span className="split-a" style={{ width: `${pctA}%` }}>
@@ -396,13 +542,21 @@ export function DashboardView() {
 
             <div className="sc-g2" style={{ marginTop: 26 }}>
               <Group title={`Taken by ${tokA.name}`} tag={chain}>
-                <Fx n="All-time · USD" v={log.takenA > 0n ? usdCompact(log.takenA) : <Dash />} />
+                <Fx
+                  n="Raided · USD"
+                  v={summed(log.takenA)}
+                  note={coverage}
+                />
                 {/* With nothing settled there is no win record to report — "0 of 0" would be a
                     claim about a season that has not started. */}
                 <Fx n="Rounds won" v={log.settled > 0 ? `${log.winsA} of ${log.settled}` : <Dash />} />
               </Group>
               <Group title={`Taken by ${tokB.name}`} tag={chain}>
-                <Fx n="All-time · USD" v={log.takenB > 0n ? usdCompact(log.takenB) : <Dash />} />
+                <Fx
+                  n="Raided · USD"
+                  v={summed(log.takenB)}
+                  note={coverage}
+                />
                 <Fx n="Rounds won" v={log.settled > 0 ? `${log.winsB} of ${log.settled}` : <Dash />} />
               </Group>
             </div>
@@ -414,79 +568,131 @@ export function DashboardView() {
 
           <div>
             <div className="sc-g2">
-              {/* THE FIRST HOUSE FIGURE ON THIS PAGE THAT IS ACTUALLY REAL. Every other treasury
-                  number here models the original product's economy in localStorage, because this
-                  program custodies no tokens. The extract penalty is different: it is charged by the
-                  program, recorded on each Round account as `penalties_collected`, and read back out
-                  of the round log — so it carries the `chain` tag, and it is worth showing next to
-                  the simulated ones precisely so the contrast is visible. */}
-              <Group title="Early-exit take" tag={chain}>
+              {/* THE HOUSE'S OWN BOOKS, OFF THE ACCOUNT — the tile `UI-SPEC.md` Part 1 ordered fixed.
+                  What stood here was a localStorage counter accruing `FEE_BPS` on every SIMULATED
+                  deploy: a house take invented in this browser, sitting one column away from real
+                  chain money. The program has kept a `Treasury` PDA the whole time and nothing read
+                  it.
+
+                  NULL IS NOT ZERO, and this is the group where that rule earns its keep.
+                  `init_treasury` is a separate admin instruction, so an arena can legitimately exist
+                  without a treasury; and a page that has not read the account yet knows nothing
+                  either. Both render `—`. A treasury that exists and holds nothing renders `$0.00`,
+                  because "the house has taken nothing" is a fact worth being able to state. */}
+              <Group title="Treasury account" tag={chain}>
                 <Fx
-                  n="All-time · USD"
-                  v={penaltyTake > 0n ? usdCompact(penaltyTake) : <Dash />}
-                  note="what the house took from mid-fight extracts, across every logged round"
-                />
-                <Fx n="At the opening bell" v={bpsPct(Number(EXTRACT_PENALTY_START_BPS))} />
-                <Fx
-                  n="Rounds with an exit"
-                  v={roundsWithExits > 0 ? `${roundsWithExits} of ${history.rounds.length}` : <Dash />}
-                  note="decays to nothing as a fight runs, so a late exit pays nothing"
-                />
-              </Group>
-              {/* Treasury accrues at FEE_BPS on every simulated deploy with no reset besides the
-                  ledger's own — same unbounded-growth shape as the house float above, so it
-                  compacts for the same reason. */}
-              <Group title="Treasury" tag="sim">
-                <Fx
-                  n={`${tokA.name} · USD`}
-                  v={sim.ledger.treasury.ansem > 0 ? usdCompact(usdToUnits(sim.ledger.treasury.ansem)) : <Dash />}
+                  n="Entry fees · USD"
+                  v={treasury === null ? <Dash /> : usdCompact(treasury.feesAccrued)}
                 />
                 <Fx
-                  n={`${tokB.name} · USD`}
-                  v={sim.ledger.treasury.uwu > 0 ? usdCompact(usdToUnits(sim.ledger.treasury.uwu)) : <Dash />}
+                  n="Early-exit penalties · USD"
+                  v={treasury === null ? <Dash /> : usdCompact(treasury.penaltiesAccrued)}
                 />
-                <Fx n="Fee taken on deploy" v={`${(FEE_BPS / 100).toFixed(2)}%`} />
                 <Fx
                   n="Total taken · USD"
-                  v={treasury > 0 ? usdCompact(usdToUnits(treasury)) : <Dash />}
-                  note="simulated ledger, this browser only"
+                  v={
+                    treasury === null ? (
+                      <Dash />
+                    ) : (
+                      usdCompact(treasury.feesAccrued + treasury.penaltiesAccrued)
+                    )
+                  }
+                />
+                {/* THE COVERAGE OF THE TWO FIGURES ABOVE, and the reason neither may be called
+                    all-time: the treasury only learns of a round when `sweep_house_take` runs on it,
+                    so every unswept round is money the account has not counted yet. Printed against
+                    the rounds this arena has opened, which is what makes the gap visible. */}
+                <Fx
+                  n="Rounds swept"
+                  v={
+                    treasury === null ? (
+                      <Dash />
+                    ) : opened === null ? (
+                      treasury.roundsSwept.toString()
+                    ) : (
+                      `${treasury.roundsSwept} of ${opened}`
+                    )
+                  }
+                  note={
+                    treasury === null
+                      ? "the treasury account has not been read, or init_treasury has never been run on this arena — either way there is nothing to report, and a zero would be a claim"
+                      : "what the account has counted. Rounds settled but not yet swept are money it does not know about yet"
+                  }
                 />
               </Group>
-              <Group title="Round anchors" tag={chain}>
-                <Fx n="Rounds in the log" v={`${history.rounds.length}`} />
-                <Fx n="Settled" v={`${log.settled}`} />
-                <Fx n="Latest round" v={status.roundNo === null ? <Dash /> : `#${status.roundNo}`} />
+
+              {/* THE SAME MONEY, COUNTED THE OTHER WAY. Each round records its own take as it
+                  happens (`fees_collected`, `penalties_collected`); the treasury only hears about it
+                  when someone sweeps. Both readings are chain truth and they are allowed to
+                  disagree — the gap IS the unswept rounds, which is why the two groups sit side by
+                  side rather than one being picked as the answer. */}
+              <Group title="The rounds' own books" tag={chain}>
                 <Fx
-                  n="Anchor signature"
-                  v={<Dash />}
-                  note="each round IS its own account — there is no separate memo to link"
+                  n="House took · USD"
+                  v={summed(log.houseAll)}
+                  note={`entry fees plus early-exit penalties, ${coverage}`}
+                />
+                <Fx n="Entry fees · USD" v={summed(log.feesAll)} />
+                <Fx
+                  n="Early-exit penalties · USD"
+                  v={summed(log.penaltiesAll)}
+                />
+                <Fx
+                  n="Rounds with an exit"
+                  v={logged > 0 ? `${log.roundsWithExits} of ${logged}` : <Dash />}
+                  note={`the penalty is ${bpsPct(Number(EXTRACT_PENALTY_START_BPS))} at the opening bell and decays to nothing as a fight runs, so a late exit pays nothing`}
                 />
               </Group>
             </div>
             <div className="sc-g2" style={{ marginTop: 26 }}>
+              {/* WHAT PLAYERS WERE CHARGED vs WHAT REACHED THE RING, printed together. `pot` is net
+                  of the entry fee, so every figure this screen used to label "volume" or "deployed"
+                  off it was quietly smaller than what came out of players' wallets. `grossDeposits`
+                  is the honest version of that sentence and the two lines below are the same money
+                  either side of the door. */}
               <Group title="Volume" tag={chain}>
-                <Fx n="Pot, all rounds · USD" v={log.potAll > 0n ? usdCompact(log.potAll) : <Dash />} />
+                <Fx
+                  n="Charged at the door · USD"
+                  v={summed(log.grossAll)}
+                  note={`what players parted with ${coverage} — pot plus the entry fee taken on the way in`}
+                />
+                <Fx
+                  n="Reached the ring · USD"
+                  v={summed(log.potAll)}
+                  note="the pots, summed — what was actually fought over"
+                />
                 <Fx
                   n="Average pot · USD"
-                  v={
-                    history.rounds.length > 0 ? (
-                      usdCompact(log.potAll / BigInt(history.rounds.length))
-                    ) : (
-                      <Dash />
-                    )
-                  }
+                  v={logged > 0 ? usdCompact(log.potAll / BigInt(logged)) : <Dash />}
+                />
+                {/* The configured rate, mirrored client-side from `init_arena(fee_bps)` — this page
+                    does not read `Arena.fee_bps` back. It sits in a `chain` group because it
+                    describes the PROGRAM, exactly as the opening-bell penalty rate beside it does,
+                    and the note says which kind of figure it is. */}
+                <Fx
+                  n="Fee at the door"
+                  v={`${(FEE_BPS / 100).toFixed(2)}%`}
+                  note="the arena's configured rate, mirrored here — the fees above are what it actually collected"
                 />
               </Group>
-              <Group title="On the table now" tag={chain}>
-                <Fx n="Pot · USD" v={live ? usdCompact(live.pot) : <Dash />} />
+              {/* THE GROUP THAT LICENSES EVERY OTHER FIGURE ON THIS SCREEN. Each aggregate carries
+                  its own coverage phrase, and this is where the window itself is stated once. */}
+              <Group title="Coverage" tag={chain}>
                 <Fx
-                  n="Value in play · USD"
-                  v={
-                    live && live.fighters.length
-                      ? usdCompact(live.fighters.reduce((s, f) => s + worth(f), 0n))
-                      : <Dash />
-                  }
-                  note="stakes plus everything raided so far"
+                  n="Rounds in the log"
+                  v={coverageFigure(logCoverage)}
+                  note={coverageNote(logCoverage)}
+                />
+                <Fx n="Settled" v={`${log.settled}`} />
+                <Fx
+                  n="Rounds opened"
+                  v={opened === null ? <Dash /> : `${opened}`}
+                  note={opened === null ? "the arena account has not been read" : undefined}
+                />
+                <Fx
+                  n="Anchor signature"
+                  v={<Dash />}
+                  note="each round IS its own account — there is no separate memo to link"
                 />
               </Group>
             </div>

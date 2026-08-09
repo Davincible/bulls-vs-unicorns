@@ -17,7 +17,7 @@ import { useSecondTick } from "./useSecondTick.ts";
  *  because both are reading `Date.now()`, and they share ONE poll of the keeper's status file
  *  (`KeeperStatusProvider`) rather than opening one apiece. */
 export function useRoundPhase(): RoundPhaseCopy {
-  const { live, status } = useArena();
+  const { live, status, gate, actions } = useArena();
   const keeper = useSharedKeeperStatus();
 
   /** THE CONNECTOR, in the one place it does not need a clock — deciding whether to run one.
@@ -49,5 +49,13 @@ export function useRoundPhase(): RoundPhaseCopy {
     programError: status.programError !== null,
     loading: status.loading,
     cadence: roundCadence(keeper, nowMs),
+    // The player's half of the answer. It reaches the words here rather than at each surface so the
+    // dock, 00-3 and the announcer cannot disagree about whether a move is on offer — the same
+    // reason the phase itself was centralised.
+    gate,
+    // Keeps a mid-send surface on screen if the gate closes underneath it — a disconnect or a
+    // zero-balance poll landing between "Sending…" and the signature would otherwise replace the
+    // one panel reporting the transaction with a connect prompt. See `roundPhaseCopy`.
+    inFlight: actions.entering || actions.extracting,
   });
 }

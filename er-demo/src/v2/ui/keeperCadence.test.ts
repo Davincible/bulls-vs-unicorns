@@ -53,6 +53,7 @@ const BASE: KeeperStatus = {
     roundsCompleted: 42,
     lastError: null,
     wedgedRounds: [],
+    lowBalance: null,
   },
   chain: {
     cluster: "devnet",

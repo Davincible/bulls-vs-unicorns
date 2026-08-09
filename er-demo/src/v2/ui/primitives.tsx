@@ -275,6 +275,26 @@ export function Seg<T extends string | number>({
   );
 }
 
+/** THIS FIGHTER IS OURS. The keeper seats house wallets so a lobby is never empty, and an undisclosed
+ *  one in a list of players is — in `data/keeperStatus.ts`'s own words — "a misrepresentation of who
+ *  is in the round". `README.md`'s go-live list still has bot disclosure open; this is the mark that
+ *  closes it, and it belongs on EVERY surface that names a fighter.
+ *
+ *  IT IS A WORD, NOT A BADGE. `.sim` and `.live` are filled chips because they mark a FIGURE, where a
+ *  word beside a number reads as part of the number; this marks a NAME, and a tracked grey `.u`
+ *  beside a name is the page's existing way of saying something quiet about it (`· you`, `OUT`). It
+ *  also costs no new colour, no new fill and no new rule, which is the design law's whole position.
+ *
+ *  The title carries the disclosure itself rather than only the label, because a reader who has to
+ *  ask what "HOUSE" means is exactly the reader the disclosure exists for. */
+export function HouseTag() {
+  return (
+    <span className="u" title="Seated by the keeper so the lobby is never empty. It stakes real value and can win or lose like any other fighter — it is simply not another player.">
+      House
+    </span>
+  );
+}
+
 /** Provenance markers. Every money figure on the page carries one — the page shows chain truth, a
  *  simulated ledger, AND (when devnet has no round open) a replayed fixture, and which is which must
  *  never be a guess. `fixture` wears the same grey as `sim` on purpose: both mean "not the chain",

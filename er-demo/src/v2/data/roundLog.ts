@@ -16,6 +16,7 @@ import {
   nameFor,
   shortKey,
   type BigWin,
+  type LogCoverage,
   type RoundPlayer,
   type RoundSummary,
   type Side,
@@ -162,6 +163,34 @@ export function deriveSideRecord(rounds: RoundSummary[]): SideRecord {
     if (round.winner !== null) record.wins[round.winner] += 1;
   }
   return record;
+}
+
+/** HOW MUCH OF THE ARENA'S HISTORY EVERYTHING ABOVE WAS COMPUTED OVER — see `LogCoverage`.
+ *
+ *  The log is a WINDOW and has been since the day it was written: `useHistory` reads the newest
+ *  `MAX_ROUNDS = 250` accounts, tolerates a read that fails, and (since v7's `close_round_account`)
+ *  cannot read a round whose rent the authority has already reclaimed. `SideRecord` was given its own
+ *  coverage for exactly this reason and refuses the phrase "all time"; `standings`, `hall` and
+ *  `bigWins` inherit the same window and three screens say it anyway. Nothing is wrong today — the
+ *  arena has not run 250 rounds yet — which is how this class of bug ships.
+ *
+ *  `complete` IS FALSE WHENEVER THE DENOMINATOR IS UNKNOWN, not just when it disagrees. A page that
+ *  has not read the arena account cannot know whether its log is whole, and "we don't know" must
+ *  never resolve to the stronger of the two claims. The fixture takes the same route: its `roundsEver
+ *  Opened` is its own invented log length, so it is complete about itself and says so.
+ *
+ *  IT COUNTS ROUNDS, NOT SETTLED ROUNDS, because that is what the aggregates above consume — every
+ *  round account contributes its players to `deriveStandings` whether or not it has a winner yet.
+ *  `SideRecord.settled` is the settled-only coverage and stays the right number for a scoreline. */
+export function deriveLogCoverage(
+  rounds: RoundSummary[],
+  roundsEverOpened: bigint | null,
+): LogCoverage {
+  return {
+    rounds: rounds.length,
+    roundsEverOpened,
+    complete: roundsEverOpened !== null && BigInt(rounds.length) === roundsEverOpened,
+  };
 }
 
 export function deriveBigWins(rounds: RoundSummary[]): BigWin[] {

@@ -1,0 +1,46 @@
+/* =============================================================================================
+   THE HIT LOG — column template only.
+   =============================================================================================
+   Everything else it draws is a base.css primitive: `.row`, `.row--head`, `.row--you`, `.idx`,
+   `.num`, `.mk`, `.u`. No colour, no radius, no fill originates here — the only colour on a row is
+   the 7px side mark, which is the same square the rosters use and is labelled for a screen reader
+   because in this table it is the ONLY thing saying which side a fighter is on.
+
+   Its own file rather than a block in `ArenaView.css` because it has two homes: the arena screen
+   (00-4.1) and the 420px right-hand rail. A template that lived with one of them would either be
+   unavailable in the other or would be loaded by whichever screen happened to be mounted, which is
+   the kind of implicit dependency that works until somebody opens the rail on another screen.
+   ============================================================================================= */
+
+/* THE LOG IS A NARROW RECORD, NOT A WIDE TABLE, and this cap is the whole reason this rule exists.
+   Measured at 1440px before it: with the rows spanning the full section, `BRACKEN_79` sat at the far
+   left and the `HOLLOW_52` it had just raided was 900px away across empty paper — two names that only
+   mean anything as a PAIR, set too far apart to be read as one. The other tables on this screen earn
+   their width by having five money columns to line up; this one has four short cells and a reader
+   who has to associate two of them.
+   68ch, in the same spirit as `.lede`'s 64: a measure, not a pixel count, so it holds when the type
+   scale moves. In the 420px rail it is a no-op — the panel is already narrower than the cap. */
+.hitlog { max-width: 68ch; }
+
+/* Step / raider / off / took. The two name tracks are equal `1fr` on purpose: neither party to an
+   exchange outranks the other, and a wider "raider" column would read as though it did. */
+.hitrow { grid-template-columns: 46px 1fr 1fr 72px; }
+
+/* IN THE RAIL, THE STEP GOES. The rail is 420px with 20px of gutter either side, and four tracks
+   plus three 12px gaps leaves the two names ~120px each — enough for `KESTREL_12` and nothing more.
+   The step number is a position in a replay: useful on the arena screen beside a clock that is also
+   counting steps, and meaningless in a panel that shows no clock. `display: none` rather than a
+   narrower track, because a 20px step column is a number nobody can read taking width from two
+   names that need it. */
+.rail .hitrow { grid-template-columns: 1fr 1fr 66px; }
+/* `:first-child`, not `.idx` — the header row's step cell is a plain `<span>Step</span>` (it wears
+   `.row--head`'s own type), so a class selector would hide the figures and leave their label behind
+   over the wrong column. Dropping a grid child re-maps the rest onto the three tracks above. */
+.rail .hitrow > :first-child { display: none; }
+
+@media (max-width: 900px) {
+  /* Same trade, same reason: at this width the arena screen's own tables have already dropped their
+     optional columns (`.col-opt` in ArenaView.css) and the step is this table's optional column. */
+  .hitrow { grid-template-columns: 1fr 1fr 68px; }
+  .hitrow > :first-child { display: none; }
+}

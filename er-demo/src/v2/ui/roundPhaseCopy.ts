@@ -36,7 +36,27 @@ import {
   entrySecondsLeft,
   type LiveRound,
 } from "../contract.ts";
+import type { PlayBlock } from "../data/playGate.ts";
 import type { Cadence } from "./keeperCadence.ts";
+
+/**
+ * A one-clause `short` from `playGate.ts`/`walletFault.ts`, promoted to a standalone sentence.
+ *
+ * Those modules write `short` lower-case and unpunctuated ON PURPOSE — its contract is to be dropped
+ * inside a sentence the CALLER owns (`Unavailable — ${short}.`). This page has two callers that own a
+ * standalone sentence instead (this module and `ConnectPanel.tsx`), so the transform lives here, once,
+ * rather than as a second differently-punctuated copy of every string in `playGate.ts`.
+ *
+ * An existing terminal stop is left alone, which is not fussiness: the `unknown` fault's `short` is a
+ * chain error message reproduced VERBATIM (see `walletFault.ts`'s header) and arrives already
+ * punctuated. Capitalising a first letter is typography; adding a second full stop to someone else's
+ * sentence is editing it.
+ */
+export function asSentence(clause: string): string {
+  if (clause === "") return "";
+  const head = clause.charAt(0).toUpperCase() + clause.slice(1);
+  return /[.!?]$/.test(head) ? head : `${head}.`;
+}
 
 /** When the state changes, in the only two honest shapes there are.
  *
@@ -51,6 +71,16 @@ export interface RoundPhaseCopy {
   /** Which body a control surface should show: the deploy buttons, the extract button, or neither.
    *  Derived from `entriesOpen()`, never from the phase alone. */
   control: "deploy" | "extract" | "none";
+  /** WHAT `control` WOULD HAVE BEEN but for the player's own gate (`data/playGate.ts`) — and `null`
+   *  whenever the gate is not what suppressed it.
+   *
+   *  Two states that both render no buttons are not the same state, and a surface that cannot tell
+   *  them apart says the wrong thing in one of them. "You cannot deploy because the round is over"
+   *  wants the round's own words and nothing else; "you cannot deploy because you have no wallet"
+   *  wants a Connect button. This field is that distinction, and it is the only thing the dock needs
+   *  in order to stop nagging a reader about a wallet during a settled round they could not have
+   *  entered anyway. */
+  blocked: "deploy" | "extract" | null;
   /** Two or three words for the `.u` label. Changes rarely enough to be announced politely. */
   label: string;
   /** (1) What is true now. */
@@ -82,6 +112,18 @@ export interface RoundPhaseInput {
    *  and `no-keeper`, because it decides whether the chain's `lobby_closes_at` may be shown. See
    *  `lobbyTiming` below. */
   cadence: Cadence;
+  /** WHY THIS PLAYER CANNOT ACT, or null when they can — `data/playGate.ts`'s single verdict.
+   *
+   *  Optional, and absent means "not gated". Every existing caller and every existing test predates
+   *  it and describes a round rather than a player, which is exactly the shape this field is not
+   *  allowed to disturb. */
+  gate?: PlayBlock | null;
+  /** A TRANSACTION THIS PLAYER STARTED IS STILL IN THE AIR (`actions.entering || extracting`).
+   *
+   *  Optional and absent means "nothing in flight", so no existing caller or test is disturbed. It
+   *  exists for one narrow case — see `roundPhaseCopy`'s note on why a gate must not evict a control
+   *  mid-send. */
+  inFlight?: boolean;
 }
 
 /** THE ONE SENTENCE THAT MUST NEVER BE FAKED, factored out because Settled, Abandoned and "no round"
@@ -154,7 +196,10 @@ function lobbyTiming(cadence: Cadence, live: LiveRound, nowMs: number): PhaseTim
   return { kind: "countdown", before: "Closes in", seconds: secondsLeft, after: "." };
 }
 
-export function roundPhaseCopy(input: RoundPhaseInput): RoundPhaseCopy {
+/** THE ROUND'S OWN STATE, with no opinion about who is reading it. `roundPhaseCopy` below layers the
+ *  player's gate on top; keeping the two apart is what lets the gate COMPOSE with the phase — it
+ *  keeps the countdown a blocked player still wants to see — instead of replacing it. */
+function phaseCopy(input: RoundPhaseInput): Omit<RoundPhaseCopy, "blocked"> {
   const { live, nowMs, programError, loading, cadence } = input;
 
   // A dead program is not a phase, but it is the reason nothing can be pressed — and it outranks
@@ -322,4 +367,98 @@ export function roundPhaseCopy(input: RoundPhaseInput): RoundPhaseCopy {
         timing: nextLobbyTiming(cadence),
       };
   }
+}
+
+/** WHERE THE WAY OUT OF A BLOCK IS, in one clause.
+ *
+ *  `PlayBlock.detail` is two to four sentences — right for a panel with a button in it, far too much
+ *  for the single line this note gets. `short` says what is true; this says where to go, and the two
+ *  together are the whole answer at the size the note has to fit in.
+ *
+ *  It names SURFACES, not sentences: the words about what to do belong to `playGate.ts` and are
+ *  rendered in full by `ConnectPanel`. This only has to get a reader to the panel. The bottom bar's
+ *  Connect button is named because it is on screen on all five screens and never scrolls away, so it
+ *  is the one pointer that is true wherever this note is being read. */
+function gateRoute(gate: PlayBlock): string {
+  switch (gate.cta?.kind) {
+    case "connect":
+      return " Use Connect wallet in the bar at the bottom of the page.";
+    case "install":
+      return " Install Phantom, then reload this page.";
+    case "faucet":
+      return " Devnet SOL is free at faucet.solana.com.";
+    case "retry":
+      return " Reload the page.";
+    default:
+      // `no-program` and `connecting` both end on their own, and `short` has already said so. A
+      // manufactured instruction here would be an action where there genuinely is none.
+      return "";
+  }
+}
+
+/** The `.u` label for a gated state: the dock's head, its collapsed handle, and the word a screen
+ *  reader hears announced. One or two words, because the handle is a corner and `.dock-handle` sets
+ *  10px tracked uppercase on a single line — `cta.label` is button copy ("Get devnet SOL", "Reload
+ *  the page") and overflows it. Same meaning, handle-sized. */
+function gateLabel(gate: PlayBlock): string | null {
+  switch (gate.cta?.kind) {
+    case "connect":
+      return "Connect";
+    case "install":
+      return "Install";
+    case "faucet":
+      return "Needs SOL";
+    case "retry":
+      return "Reload";
+    default:
+      return null;
+  }
+}
+
+/**
+ * THE ROUND'S STATE, AS IT APPLIES TO THE PERSON READING IT.
+ *
+ * The gate outranks the phase for the CONTROL — a button the reader cannot use must not be offered,
+ * which is SPEC.md's rule — but it deliberately does NOT outrank the phase for the WORDS. A lobby
+ * closing in fourteen seconds is closing in fourteen seconds whether or not a wallet is connected,
+ * and replacing that with "no wallet is connected" would delete the one fact that tells a reader
+ * whether it is worth connecting right now. So `now` and `timing` survive intact and only `action` —
+ * the clause that answers "what can you do" — is taken over, because that answer really has changed.
+ *
+ * IT ONLY SPEAKS WHEN IT IS THE THING IN THE WAY. If the round is offering nothing anyway (Settled,
+ * Drawing, a closed lobby), the round's own words are already the complete answer and the gate says
+ * nothing at all — a settled round that nags a reader about a wallet they did not need is noise, and
+ * `blocked` stays null so no surface mistakes it for a funnel.
+ */
+export function roundPhaseCopy(input: RoundPhaseInput): RoundPhaseCopy {
+  const base = phaseCopy(input);
+  const gate = input.gate ?? null;
+
+  // Nothing in the way, or nothing being offered to get in the way of.
+  if (gate === null || base.control === "none") return { ...base, blocked: null };
+
+  // A GATE MUST NOT EVICT A CONTROL WHILE THAT CONTROL'S OWN TRANSACTION IS STILL SUBMITTING.
+  //
+  // The gate can turn non-null mid-send — Phantom disconnects, or the balance poll lands at zero
+  // after the fee was spent — and swapping `control` to "none" at that moment unmounts the deploy
+  // or extract body, taking its "Sending…" line with it and replacing it with a connect funnel.
+  // Nothing is corrupted (`useActions` keeps its own `entering`/`extracting`, and `requireReady`
+  // re-checks the gate at click time so a button and its transaction can never disagree), but the
+  // reader loses every trace that their transaction exists, at the one moment they are watching for
+  // it. The controls inside are already disabled by `entering`/`extracting`, so keeping the body is
+  // not an offer to press anything — it is the receipt staying on screen until the send resolves.
+  if (input.inFlight === true) return { ...base, blocked: null };
+
+  return {
+    ...base,
+    control: "none",
+    blocked: base.control,
+    // The label is the dock's head and its collapsed handle — one word standing in for the move on
+    // offer. With the move withdrawn, it names what would restore it instead of the move itself,
+    // which is what stops a handle reading "Deploy" over a panel that cannot deploy. A block with no
+    // control to offer (`no-program`, `connecting`) keeps the round's own label: both end on their
+    // own and neither is something to press.
+    label: gateLabel(gate) ?? base.label,
+    action: `${asSentence(gate.short)}${gateRoute(gate)}`,
+  };
 }

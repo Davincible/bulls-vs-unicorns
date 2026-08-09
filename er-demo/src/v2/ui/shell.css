@@ -138,6 +138,11 @@
 }
 .cbtn:hover { background: var(--on-chrome); color: var(--chrome); border-color: var(--on-chrome); }
 .cbtn.on { background: var(--on-chrome); color: var(--chrome); border-color: var(--on-chrome); }
+/* THE CALL TO ACTION, while a reader is blocked from playing. It borrows `.on`'s inverted treatment
+   rather than reaching for a colour: the design law reserves colour for the two sides, so "this is
+   the thing to press" has to be said in VALUE on this bar. Identical to `.on` when both apply, which
+   is the correct outcome — an open rail and a standing invitation are not two different emphases. */
+.cbtn--call { background: var(--on-chrome); color: var(--chrome); border-color: var(--on-chrome); }
 
 /* --- the right-hand rail ------------------------------------------------------------------- */
 
@@ -563,8 +568,15 @@
   .nav { flex: 1 1 auto; overflow-x: auto; scrollbar-width: none; }
   .nav::-webkit-scrollbar { display: none; }
   /* All five screens have to fit a 390px bar beside the wallet button, or the last one silently
-     scrolls out of sight with no affordance saying so. The scroll stays as a backstop. */
-  .nav > button { padding: 8px 4px; font-size: 9px; letter-spacing: 0.04em; }
+     scrolls out of sight with no affordance saying so. The scroll stays as a backstop.
+     `flex: none` IS WHAT MAKES THAT BACKSTOP REAL, and it was missing. A flex item's default
+     `min-width: auto` is what stops it shrinking past its content — but only while it is not
+     explicitly shrinkable, and these carry `min-width: 44px` from the target-size block above, which
+     overrides it. So the buttons compressed to 44px instead of overflowing, `overflow-x` had nothing
+     to scroll, and the labels ran into each other: measured at 390px with a second chrome button in
+     the bar, "LEADERBOARD" and "DASHBOARD" printed on top of one another with no gap. Refusing to
+     shrink is what turns a too-narrow bar into the scroll this block already documents. */
+  .nav > button { padding: 8px 4px; font-size: 9px; letter-spacing: 0.04em; flex: none; }
   .chrome--bottom .cbtn { padding: 5px 6px; letter-spacing: 0.06em; }
   .nav-i { display: none; }
   .chrome--bottom { gap: 8px; padding: 0 8px; }

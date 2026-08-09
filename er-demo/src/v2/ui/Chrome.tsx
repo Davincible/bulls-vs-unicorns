@@ -3,10 +3,12 @@
 // they're reading a table: what the round is doing, and whether their key can sign.
 
 import { MAX_STEPS, SIDE_TOKEN, clock, usdCompactSigned, type ViewId } from "../contract.ts";
+import type { PlayBlock } from "../data/playGate.ts";
 import { useArena } from "../data/useArena.ts";
 import { useShell } from "./shell.ts";
 import { TokenIcon } from "./TokenIcon.tsx";
 import { SCREEN_KEYS } from "./useKeyboardNav.ts";
+import { NARROW, useMediaQuery } from "./useMediaQuery.ts";
 
 const NAV: { id: ViewId; index: string; label: string }[] = [
   { id: "arena", index: "00", label: "Arena" },
@@ -97,27 +99,64 @@ export function TopChrome() {
         <StepBlocks steps={live?.stepsNow ?? 0} />
       </div>
 
+      {/* THREE DASHES ARE NOT A STATE. With no wallet connected these cells read `— / — / OFF`,
+          which is what a bar full of figures that failed to load looks like — and this strip's whole
+          job is to be the thing a player does not have to hunt for. An absent wallet is one fact, so
+          it is one cell, and it says the fact rather than leaving three blanks to be interpreted. */}
       <div className="chrome-right">
-        <span className="nowrap">
-          <span className="u">Sol</span>{" "}
-          <b>{wallet.solBalance === null ? "—" : wallet.solBalance.toFixed(3)}</b>
-        </span>
-        <span className="chrome-sep">/</span>
-        <span className="nowrap">
-          <span className="u">Key</span> <b>{wallet.short}</b>
-        </span>
-        <span className="chrome-sep">/</span>
-        <span className="nowrap">
-          <span className="u">Session</span> <b>{session.active ? "ON" : "OFF"}</b>
-        </span>
+        {wallet.status === "connected" ? (
+          <>
+            <span className="nowrap">
+              <span className="u">Sol</span>{" "}
+              <b>{wallet.solBalance === null ? "—" : wallet.solBalance.toFixed(3)}</b>
+            </span>
+            <span className="chrome-sep">/</span>
+            <span className="nowrap">
+              <span className="u">Key</span> <b>{wallet.short}</b>
+            </span>
+            <span className="chrome-sep">/</span>
+            <span className="nowrap">
+              <span className="u">Session</span> <b>{session.active ? "ON" : "OFF"}</b>
+            </span>
+          </>
+        ) : (
+          <span className="nowrap">
+            <span className="u">Wallet</span> <b>NOT CONNECTED</b>
+          </span>
+        )}
       </div>
     </header>
   );
 }
 
+/** WHAT THE WALLET BUTTON SHOULD SAY, given what is standing between this reader and playing.
+ *
+ *  The button opens the RAIL, so it names what the rail will help with rather than echoing the CTA
+ *  inside it verbatim — "Reload the page" would be a promise this button does not keep. The three
+ *  kinds a reader can act on get their own word; everything else is the resting label, because
+ *  `no-program` and `connecting` both clear on their own and neither is something to go and press. */
+function walletButtonLabel(gate: PlayBlock | null, sessionOn: boolean): string {
+  switch (gate?.cta?.kind) {
+    case "connect":
+      return "Connect wallet";
+    case "install":
+      return "Get a wallet";
+    case "faucet":
+      return "Get devnet SOL";
+    default:
+      return sessionOn ? "Wallet · session on" : "Wallet";
+  }
+}
+
 export function BottomChrome() {
-  const { view, setView, rail, setRail } = useShell();
-  const { session } = useArena();
+  const { view, setView, rail, setRail, openIntro } = useShell();
+  const { session, gate } = useArena();
+  const narrow = useMediaQuery(NARROW);
+
+  // THE ONE ENTRY POINT THAT IS ON ALL FIVE SCREENS AND NEVER SCROLLS AWAY. Connecting is the whole
+  // funnel for a new visitor, so while they are blocked this button stops being a quiet utility and
+  // becomes the page's call to action.
+  const calling = gate?.cta?.kind === "connect" || gate?.cta?.kind === "install" || gate?.cta?.kind === "faucet";
 
   return (
     <nav className="chrome chrome--bottom" aria-label="Screens">
@@ -142,13 +181,44 @@ export function BottomChrome() {
 
       <span className="chrome-spacer" />
 
+      {/* THE WAY BACK TO THE RULES. The takeover shows once per browser and had no second door: the
+          extract penalty, the caveat that Mayhem/Extraction is this page's intent rather than
+          anything the program enforces, and what the `sim` marker means were all one dismissal away
+          from being unreachable forever.
+          This bar is where it belongs and not the arena screen, for the same reason the wallet
+          button is here: it is on all five screens and never scrolls away, and "what are the rules
+          of this thing" is a question that gets asked from the Leaderboard as readily as from the
+          field. It sits before the wallet button because it is the quieter of the two — the wallet
+          is a call to action while a visitor is blocked, and nothing may come between that and the
+          right-hand edge the reader reaches for. */}
       <button
         type="button"
-        className={`cbtn${rail?.kind === "wallet" ? " on" : ""}`}
+        className="cbtn"
+        data-testid="chrome-intro-btn"
+        // It opens the takeover, which is a real `role="dialog"` with a focus trap — so say so.
+        //
+        // THE PRINTED LABEL SHORTENS BELOW `NARROW`; THE ACCESSIBLE NAME NEVER DOES. Measured at
+        // 390px: five nav buttons need 284px and the wallet button 66, which with the bar's gaps and
+        // padding is the whole viewport — so every character spent here is taken off the scrolling
+        // nav beside it. `[?]` is the page's own bracket idiom (`[00]`, `[$]`, `[F]`, `[W]`) doing
+        // the job the word did, at a third of the width, and `aria-label` keeps the sentence for
+        // anyone who is not reading pixels.
+        aria-haspopup="dialog"
+        aria-label="How this works"
+        title="How this works — the rules, the extract penalty, and what the sim marker means"
+        onClick={openIntro}
+      >
+        {narrow ? "[?]" : "How this works"}
+      </button>
+
+      <button
+        type="button"
+        className={`cbtn${rail?.kind === "wallet" ? " on" : ""}${calling ? " cbtn--call" : ""}`}
+        data-testid="chrome-wallet-btn"
         aria-expanded={rail?.kind === "wallet"}
         onClick={() => setRail(rail?.kind === "wallet" ? null : { kind: "wallet" })}
       >
-        Wallet {session.active ? "· session on" : ""}
+        {walletButtonLabel(gate, session.active)}
       </button>
     </nav>
   );

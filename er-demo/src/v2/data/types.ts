@@ -6,12 +6,20 @@
 import type { HitEvent } from "../../sim/hitEvents.ts";
 import type { VerifyResult } from "../../ui/verifyRound.ts";
 import type { AutoDeployHandle } from "./autoDeploy.ts";
+import type { SignerMode } from "./flags.ts";
+import type { PlayBlock } from "./playGate.ts";
+import type { SessionLife } from "./sessionExpiry.ts";
+import type { WalletStatus } from "./walletConnection.ts";
+import type { WalletFault } from "./walletFault.ts";
 import type {
   ArenaMeta,
   BigWin,
   BoardStyle,
+  CombatFeed,
   ExtractEligibility,
+  HouseDisclosure,
   LiveRound,
+  LogCoverage,
   Mode,
   RoundPlayer,
   RoundSummary,
@@ -20,6 +28,7 @@ import type {
   SimLedger,
   SimLedgerActions,
   StandingsRow,
+  TreasuryState,
 } from "../contract.ts";
 
 export type ToastKind = "info" | "error" | "a" | "b";
@@ -43,6 +52,13 @@ export type DataSource = "chain" | "fixture";
 export interface ArenaContextValue {
   source: DataSource;
 
+  /** THE LOCAL PLAYER. When nobody is connected, `pubkey` is `""` and the other two are `"—"`.
+   *
+   *  The empty string is the correct value rather than a sentinel hack: every consumer uses it for
+   *  equality against a fighter's wallet (`f.wallet === you.pubkey`), and no wallet is ever `""` —
+   *  so "nobody is you" falls out of the comparison for free, with no consumer needing to know that
+   *  a disconnected state exists. `name` is deliberately NOT `nameFor("")`, which would invent a
+   *  stable pseudonym for nobody and print it beside a Connect button. */
   you: { pubkey: string; short: string; name: string };
 
   status: {
@@ -56,8 +72,27 @@ export interface ArenaContextValue {
   };
 
   live: LiveRound | null;
-  /** The full precomputed hit stream for the current fight; empty outside Fight/Settled. */
+  /** The full precomputed hit stream for the current fight; empty outside Fight/Settled.
+   *
+   *  RAW, AND ALMOST NOTHING SHOULD WANT IT. It is the canvas's input — indices, bigint steps, no
+   *  fighters attached — and it runs to `MAX_STEPS` regardless of where the playhead is. A surface
+   *  that wants to NARRATE the fight wants `combat` below, which is this stream cut at the cursor and
+   *  resolved to fighters, done once instead of once per consumer. */
   hitEvents: HitEvent[];
+
+  /** THE FIGHT, IN EVENTS — the recent tail of `hitEvents`, resolved against the current roster. See
+   *  `CombatFeed` for the shape, the ordering guarantee and how a consumer dedupes against `at`. */
+  combat: CombatFeed;
+
+  /** WHO IN THE ROUND ON SCREEN IS THE HOUSE'S, counted from the same pass that set each
+   *  `FighterView.house`. Both counts are null when nothing is publishing a disclosure list, which is
+   *  a different fact from "none of them are" — see `HouseDisclosure`. */
+  houseDisclosure: HouseDisclosure;
+
+  /** THE ARENA'S HOUSE BOOKS, off the `Treasury` PDA. Null means not read yet OR never initialised
+   *  (`init_treasury` is a separate admin call) — never "holds nothing", which is a real state that
+   *  renders as a zero. See `TreasuryState`, and `houseTook()` for the same figure per round. */
+  treasury: TreasuryState | null;
 
   history: {
     /** Newest first. Every round account that exists, not just settled ones. */
@@ -66,8 +101,15 @@ export interface ArenaContextValue {
     error: string | null;
     refresh(): void;
   };
-  /** All-time, from the round log only — never from live balances. Best P/L first. */
+  /** From the round log only — never from live balances. Best P/L first.
+   *
+   *  NOT "ALL-TIME" UNLESS `logCoverage.complete` SAYS SO. The log is the newest N rounds, and this
+   *  aggregate inherits that window whole — see `logCoverage` directly below. */
   standings: StandingsRow[];
+  /** HOW MUCH OF THE ARENA'S HISTORY `standings`, `hall`, `bigWins` and `sideRecord` were actually
+   *  computed over — see `LogCoverage`. It exists so those four can stop claiming a window is all
+   *  time, which `SideRecord` has refused to do since it was written and nothing else has. */
+  logCoverage: LogCoverage;
   /** Profit only. It is a WINS ticker. */
   bigWins: BigWin[];
   /** Best single-round performances, all time. */
@@ -102,17 +144,62 @@ export interface ArenaContextValue {
     error: string | null;
     start(): Promise<void>;
     end(): Promise<void>;
+    /** HOW LONG IT HAS LEFT — INFERRED, AND ADVISORY ONLY.
+     *
+     *  Nothing can read a session's real expiry back (see `sessionExpiry.ts`): gum carries no
+     *  timestamp and the hour is a private const in `chain/session/useSessionKeyManager.ts`. This is
+     *  counted forward from when THIS browser started the session, so `{ known: false }` is a real
+     *  and common answer — a session restored from a previous visit has no local record.
+     *
+     *  NEVER GATE AN ACTION ON IT. If this says lapsed and the chain disagrees, the chain is right.
+     *  The authoritative handling is reactive: a refused transaction classifies as `session-expired`
+     *  and says to start a new one. */
+    life: SessionLife;
   };
 
   wallet: {
+    /** The connected account, or `""` when nobody is connected — see `you.pubkey`'s note on why the
+     *  empty string is the correct answer rather than a sentinel. */
     pubkey: string;
+    /** `"—"` when nobody is connected: this is rendered in the fixed top chrome, where a blank reads
+     *  as a figure that failed to load rather than as an absence of one. */
     short: string;
-    /** SOL, devnet, for transaction fees. Null while unknown. */
+    /** SOL, devnet, for transaction fees. Null while unknown — which is NOT zero, and the two must
+     *  never be conflated (`playGate` blocks on zero and not on null, for that reason). */
     solBalance: number | null;
+    /** DEVNET'S PUBLIC FAUCET, IN-PAGE. Offered on the burner path only; a real visitor is sent to
+     *  faucet.solana.com instead, because `requestAirdrop` rate-limits to uselessness (five
+     *  consecutive 429s, measured 2026-08-09) and a button that reliably fails is worse than none. */
     airdrop(): Promise<void>;
     airdropping: boolean;
     refresh(): void;
+
+    /** Which signer this page is running: the visitor's own wallet, or the local burner key
+     *  (`?signer=burner`). Decided once at load — see `flags.ts`. */
+    mode: SignerMode;
+    /** The connection state machine. Always `"connected"` in burner mode, where the key exists from
+     *  the first paint and none of the other states are reachable. */
+    status: WalletStatus;
+    /** The last thing the wallet said no with, already turned into player copy. Cleared on a
+     *  successful connect. */
+    fault: WalletFault | null;
+    /** Opens Phantom's approval popup. A no-op in burner mode. */
+    connect(): Promise<void>;
+    disconnect(): Promise<void>;
   };
+
+  /** WHY THE LOCAL PLAYER CANNOT ACT, or `null` when they can — the single verdict behind every
+   *  disabled control on the page (`playGate.ts`).
+   *
+   *  It exists as one field rather than as a check per surface because SPEC.md's copy rule ("a
+   *  button a player cannot press must say why, and what would make it pressable") is only
+   *  keepable if there is one answer: six surfaces asking the question independently would give six
+   *  answers, and five of them would go stale. The Deploy buttons, the Extract control and its dock,
+   *  the wallet panel and the phase copy all render THIS.
+   *
+   *  It does NOT gate on a session key. A session is an ergonomic upgrade — one approval instead of
+   *  one per action — not a precondition; requiring one would invent a rule the chain does not have. */
+  gate: PlayBlock | null;
 
   /** SIMULATED. localStorage, never chain — see contract.ts. Every surface showing one of these
    *  numbers must carry the `SIM` marker. */

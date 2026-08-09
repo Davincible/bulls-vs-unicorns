@@ -188,6 +188,36 @@
 .scr .sc-who-n { overflow: hidden; text-overflow: ellipsis; }
 .scr .sc-who-k { font: 400 10px/1 var(--mono); color: var(--ink-3); flex: none; }
 
+/* THE HOUSE MARKER — a fighter the keeper seated so a lobby is never empty.
+   IT IS A WORD, NOT A TREATMENT. The obligation here (README's go-live list, and `isHouseFighter`'s
+   own comment calling an undisclosed house fighter "a misrepresentation of who is in the round") is
+   that a reader KNOWS, and a shade or a colour is not knowing: it fails a screen reader, it fails a
+   print, and it fails anyone who has not been taught the legend. So the cell says "house".
+   A hairline box rather than the `.sim`/`.live` badges' filled block: those two are provenance —
+   where a NUMBER came from — and this is an attribute of a person. Reusing their weight would put
+   the loudest mark on the page beside sixteen names at once, and a lobby of house fighters would
+   read as sixteen warnings. `--ink-3` is the faintest ink that may carry a word (4.54:1 on the
+   sheet); `flex: none` keeps it whole while the name beside it ellipsises, because the name is
+   recoverable from the row's `title` and this is the fact that must not be lost to a narrow column.
+   It also renders INSIDE PROSE, in the notice above the board, where `display: inline-block` and the
+   baseline nudge keep it sitting in the line rather than on it. */
+.scr .sc-bot {
+  display: inline-block;
+  flex: none;
+  font: 400 9px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  border: 1px solid var(--rule-2);
+  padding: 2px 4px;
+  vertical-align: 1px;
+}
+
+/* One line of a round's own books, above the field it belongs to: what the players were charged,
+   what reached the ring, and what the house kept. Prose, not a table row — it wraps, and it is the
+   caption to the table under it rather than a column of it. */
+.scr .sc-books { margin: 0 0 12px; line-height: 1.6; }
+
 /* ---------------------------------------------------------------------------------------------
    DASHBOARD — hero figure and fact groups
    --------------------------------------------------------------------------------------------- */
@@ -393,7 +423,13 @@
   /* Tighter gutters between cells so a phone can still carry five real columns. */
   .scr .sc-tbl .row { gap: 8px; }
 
-  .scr .sc-tbl--lbr { --cols: 22px 58px minmax(0, 1fr) 82px 50px; }
+  /* 12px MOVED FROM TWO OVERSIZED TRACKS INTO THE NAME, and both were measured before they were
+     taken. The side cell is a 7px mark, a 5px gap and the longer token name at 10px tracked mono —
+     47px, in a 58px track. The worth cell is `usdCompact`, bounded at eight characters by
+     construction (`$999.9k`), which is 56px at 12px tabular mono in a track of 82px. Neither loses
+     a character at 54px and 74px; the fighter column gains the width the house marker costs, which
+     is the difference between `BRACKEN_79 HOUSE` and `BRACK… HOUSE` on five rows at once. */
+  .scr .sc-tbl--lbr { --cols: 22px 54px minmax(0, 1fr) 74px 50px; }
   .scr .sc-tbl--lba { --cols: 22px minmax(0, 1fr) 60px 90px 54px; }
   .scr .sc-tbl--lbh { --cols: 22px 58px minmax(0, 1fr) 50px 90px; }
   /* 66px on the third track, and the eight extra come out of the side column beside it. Measured,
@@ -424,6 +460,16 @@
   /* The wallet key is a proof, not a label. On a phone it costs 70px that the name needs, and the
      full key is still on the row's `title`. */
   .scr .sc-who-k { display: none; }
+
+  /* THE HOUSE MARKER STAYS; IT JUST STOPS COSTING A NAME. At 390px the fighter column is one `1fr`
+     track of ~118px, and `HOUSE` at desktop metrics takes 40px of it plus an 8px gap — enough to
+     ellipsise `HOLLOW_52`, `BRACKEN_79` and `GRAVEL_81` on the one board where five rows carry the
+     marker at once. Measured, and 13px is what it costs to fix: the gap comes down to 5px and the
+     marker gives up its horizontal padding and half its tracking. It is the last thing on the row
+     that may be dropped — the name is recoverable from the row's `title` and the wallet key already
+     is, but who is a house wallet is not recoverable from anything on a phone. */
+  .scr .sc-who { gap: 5px; }
+  .scr .sc-bot { padding: 2px 3px; letter-spacing: 0.06em; }
 
   /* A section's tools (tabs, totals) drop under its heading rather than fighting it for a line —
      scoped to this screen so the shared `.sec-head` keeps its desktop behaviour everywhere else. */

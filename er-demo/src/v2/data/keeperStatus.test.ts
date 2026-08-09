@@ -18,6 +18,7 @@ import { PHASE_NAME } from "../../chain/constants.ts";
 import {
   KEEPER_STATUS_SCHEMA,
   isHouseWallet,
+  isKeeperOutOfFunds,
   isKeeperStale,
   isKeeperStalled,
   keeperCountdown,
@@ -62,6 +63,7 @@ const BASE: KeeperStatus = {
     roundsCompleted: 42,
     lastError: null,
     wedgedRounds: [],
+    lowBalance: null,
   },
   chain: {
     cluster: "devnet",
@@ -461,5 +463,90 @@ describe("isHouseWallet", () => {
     // No keeper means no disclosure list, which is the honest answer — not a claim that every
     // fighter on screen is human.
     expect(isHouseWallet(null, HOUSE_WALLET)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Out of funds — the fourth state, and the one every other predicate calls healthy
+// ---------------------------------------------------------------------------------------------
+
+/** A payer below the keeper's floor. 0.03 SOL against a 0.05 floor, in lamports as the file carries
+ *  them — decimal strings, because a lamport count is a u64 and a JSON number would round it. */
+const LOW = { since: NOW - 300, lamports: "30000000", floorLamports: "50000000" };
+
+describe("isKeeperOutOfFunds", () => {
+  it("is true for a live keeper that has stopped being able to open rounds", () => {
+    // The state that made this field necessary: up, heartbeating, loop succeeding on every pass —
+    // because refusing to open IS the correct outcome of a pass — and no round will ever come again.
+    const s = withKeeper({ lowBalance: LOW });
+    expect(isKeeperStale(s, NOW)).toBe(false);
+    expect(isKeeperStalled(s, NOW)).toBe(false);
+    expect(isKeeperOutOfFunds(s, NOW)).toBe(true);
+  });
+
+  it("is false for a funded keeper", () => {
+    expect(isKeeperOutOfFunds(BASE, NOW)).toBe(false);
+  });
+
+  it("defers to DOWN, because a dead keeper's funding report describes a process that stopped", () => {
+    // Same precedence argument as `isKeeperStalled`: "the keeper is down" is both the stronger
+    // sentence and the only one still known to be true.
+    const s = withKeeper({ lowBalance: LOW, heartbeatAt: NOW - STALE_AFTER - 1 });
+    expect(isKeeperStale(s, NOW)).toBe(true);
+    expect(isKeeperOutOfFunds(s, NOW)).toBe(false);
+  });
+
+  it("defers to STALLED, so the three states stay mutually exclusive", () => {
+    // What lets a view branch four ways by asking independent questions in whatever order it writes
+    // them, instead of remembering a precedence it has to get right.
+    const s = withKeeper({ lowBalance: LOW, stalledSince: NOW - 60 });
+    expect(isKeeperStalled(s, NOW)).toBe(true);
+    expect(isKeeperOutOfFunds(s, NOW)).toBe(false);
+  });
+});
+
+describe("keeperCountdown while the arena is out of funds", () => {
+  it("refuses to promise a next lobby", () => {
+    // THE WHOLE POINT OF THE FIELD. Without it this is a settled round with a next-lobby time beside
+    // a perfectly healthy-looking keeper, and the page counts down to a round nothing will open.
+    const settled = { ...BASE, round: round({ ...inPhase("Settled") }), nextLobbyOpensAt: NOW + 8 };
+    expect(keeperCountdown(settled, NOW)).toEqual({ kind: "next-lobby", seconds: 8 });
+    expect(keeperCountdown({ ...settled, keeper: { ...settled.keeper, lowBalance: LOW } }, NOW))
+      .toEqual({ kind: "none" });
+  });
+
+  it("still counts an in-flight lobby down, because that round IS being finished", () => {
+    // The keeper drives a round already in flight to a terminal state whatever the balance says — it
+    // refuses to START work it may not finish, not to finish work already started. Blanking this
+    // countdown would be its own kind of lie, about a fight that is genuinely about to happen.
+    const lobby = { ...BASE, keeper: { ...BASE.keeper, lowBalance: LOW }, entriesCloseAt: NOW + 12 };
+    expect(keeperCountdown(lobby, NOW)).toEqual({ kind: "entries-close", seconds: 12 });
+  });
+});
+
+describe("parsing the funding field", () => {
+  it("carries it through as an explicit null and as a real report", () => {
+    expect(parseKeeperStatus(rawStatus())!.keeper.lowBalance).toBeNull();
+    const raw = rawStatus();
+    (raw.keeper as Record<string, unknown>).lowBalance = { ...LOW };
+    expect(parseKeeperStatus(raw)!.keeper.lowBalance).toEqual(LOW);
+  });
+
+  it("rejects a file that omits it entirely", () => {
+    // PRESENT OR MALFORMED, the same rule as `stalledSince`. Reading silence as "funded" would be the
+    // reader inventing the one fact that decides whether a countdown may be drawn.
+    const raw = rawStatus();
+    delete (raw.keeper as Record<string, unknown>).lowBalance;
+    expect(parseKeeperStatus(raw)).toBeNull();
+  });
+
+  it("rejects amounts that are not u64 strings", () => {
+    // Every consumer's next move is `BigInt(...)`, and `BigInt("")` is a silent 0 — which would render
+    // as an arena holding nothing, or as a floor nothing could fall below.
+    for (const bad of [{ ...LOW, lamports: 30_000_000 }, { ...LOW, lamports: "" }, { ...LOW, floorLamports: "1.5" }]) {
+      const raw = rawStatus();
+      (raw.keeper as Record<string, unknown>).lowBalance = bad;
+      expect(parseKeeperStatus(raw)).toBeNull();
+    }
   });
 });

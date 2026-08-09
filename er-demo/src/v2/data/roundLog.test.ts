@@ -11,6 +11,7 @@ import { grossDeposits, houseTook, type RoundSummary, type Side } from "../contr
 import {
   deriveBigWins,
   deriveHall,
+  deriveLogCoverage,
   deriveSideRecord,
   deriveStandings,
   summarizeRoundAccount,
@@ -279,5 +280,43 @@ describe("deriveSideRecord", () => {
   it("states a coverage that matches what it actually counted", () => {
     const record = deriveSideRecord(LOG);
     expect(record.wins[0] + record.wins[1]).toBe(record.settled);
+  });
+});
+
+describe("deriveLogCoverage", () => {
+  it("counts the rounds the aggregates were actually computed over", () => {
+    expect(deriveLogCoverage(LOG, 2n)).toEqual({
+      rounds: 2,
+      roundsEverOpened: 2n,
+      complete: true,
+    });
+  });
+
+  it("refuses `complete` when the log is a window onto a longer history", () => {
+    // THE BUG THIS EXISTS FOR. `useHistory` reads the newest 250 accounts; three screens then call
+    // the aggregate "all time". Nothing is wrong until the 251st round, which is how this class of
+    // bug ships.
+    expect(deriveLogCoverage(LOG, 250n).complete).toBe(false);
+  });
+
+  it("refuses `complete` when a read failed inside the window", () => {
+    // A round the RPC would not hand over is missing from the aggregate just as surely as one past
+    // the cap, and `useHistory` deliberately tolerates that rather than failing the whole page.
+    expect(deriveLogCoverage(LOG.slice(0, 1), 2n).complete).toBe(false);
+  });
+
+  it("refuses `complete` when the denominator is unknown", () => {
+    // Before the arena account has been read there is no way to know whether the log is whole, and
+    // "we don't know" must never resolve to the stronger of the two claims.
+    expect(deriveLogCoverage(LOG, null)).toEqual({
+      rounds: 2,
+      roundsEverOpened: null,
+      complete: false,
+    });
+  });
+
+  it("is complete over an arena that has never opened a round", () => {
+    // Vacuously, and correctly: an empty aggregate over an empty history is not missing anything.
+    expect(deriveLogCoverage([], 0n).complete).toBe(true);
   });
 });

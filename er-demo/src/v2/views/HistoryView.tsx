@@ -12,13 +12,30 @@
 // Both lists are disclosures built from real <button> elements rather than click handlers on a div.
 // That is the whole keyboard story: focus, Enter, Space and a focus ring all come for free, and
 // `aria-expanded` tells a screen reader what the arrow is about to do.
+//
+// TWO CLAIMS THIS SCREEN USED TO MAKE AND CANNOT BACK:
+//
+//   "EVERY ROUND THIS ARENA HAS EVER RUN". `useHistory` fetches the newest 250 round accounts and
+//   tolerates a read that fails. That is a window, and on an arena with 251 rounds the sentence
+//   becomes false with nothing on screen changing. The head now prints what was read against what
+//   the arena has opened, so the window is a visible figure rather than an assumption.
+//
+//   "DEPOSIT". `RoundPlayer.stake` is what the chain stored AFTER the arena took its entry fee at
+//   the door, so a column headed "Deposit" reported less than the player was charged. The per-round
+//   gross IS knowable — `grossDeposits()` off `pot + feesCollected` — and the expanded round panel
+//   now shows it beside the pot and names what the house kept. Per PLAYER it is not: the fee is
+//   recorded on the round, not on the fighter, so those columns carry the qualification in their
+//   label instead of a number this page would have had to invent.
 
 import { useMemo, useState } from "react";
 import { useArena } from "../data/useArena.ts";
 import { Empty, Mark, Money, Section, Tag } from "../ui/primitives.tsx";
 import { ScrollBox } from "./ScrollBox.tsx";
+import { coverageFigure, coverageNote } from "./coverage.ts";
 import {
   SIDE_TOKEN,
+  grossDeposits,
+  houseTook,
   usd,
   usdCompact,
   usdCompactSigned,
@@ -41,7 +58,7 @@ interface MyEntry {
 }
 
 export function HistoryView() {
-  const { history, you, live, source } = useArena();
+  const { history, logCoverage, you, live, source } = useArena();
 
   const mine = useMemo<MyEntry[]>(() => {
     const out: MyEntry[] = [];
@@ -66,6 +83,12 @@ export function HistoryView() {
     return { staked, back, pnl: back - staked, won };
   }, [mine]);
 
+  // THE WINDOW THIS SCREEN IS. `logCoverage` knows both what was read back and what the arena has
+  // actually opened, which is the difference between "every round" (a claim) and "the newest 250 of
+  // 613" (a fact). See `views/coverage.ts`.
+  const logged = logCoverage.rounds;
+  const opened = logCoverage.roundsEverOpened;
+
   return (
     <div className="scr">
       <header className="scr-head">
@@ -73,14 +96,19 @@ export function HistoryView() {
         <div className="scr-head-main">
           <h1 className="display">History</h1>
           <p className="lede">
-            Every round this arena has ever run, and every player in it. Read from the round
+            The rounds this page has read back, and every player in them. Read from the round
             accounts themselves — the log survives reloads, wallets and operators, because it was
-            never in the browser to begin with.
+            never in the browser to begin with.{" "}
+            {logCoverage.complete
+              ? `All ${logged} this arena has opened are here.`
+              : opened === null
+                ? `The ${logged} newest are here; how many the arena has opened is not known to this page.`
+                : `The ${logged} newest of ${opened} are here — the rest are still on chain, they are simply not fetched.`}
           </p>
         </div>
         <div className="scr-head-meta">
-          <span className="u">
-            Rounds logged · <span className="u--ink">{history.rounds.length}</span>
+          <span className="u" title={coverageNote(logCoverage)}>
+            Rounds logged · <span className="u--ink">{coverageFigure(logCoverage)}</span>
           </span>
           <span className="u">
             Yours · <span className="u--ink">{mine.length}</span>
@@ -98,7 +126,7 @@ export function HistoryView() {
       <Section
         index="04-1"
         title="My previous rounds"
-        lede="What you deployed, everything you got back — raided, banked and extracted included — and the difference. Your side can lose the round and you can still come out ahead: raids bank as you take them. Open a row for the round it happened in."
+        lede="What reached the ring for you — your deploy less the arena's entry fee, which is taken at the door — everything you got back, raided, banked and extracted included, and the difference. Your side can lose the round and you can still come out ahead: raids bank as you take them. Open a row for the round it happened in."
         tools={
           mine.length ? (
             <span className="u">
@@ -128,7 +156,14 @@ export function HistoryView() {
                   questions, and this column answers the first one. A row can read "no" beside a
                   positive P/L, and that is the game working as designed. */}
               <div title="Did the side you deployed on win the round?">Side won</div>
-              <div className="r sc-s">Deposit</div>
+              {/* "NET DEPOSIT": `stake` is stored after the entry fee. See the head of this file for
+                  why the gross cannot be given per player. */}
+              <div
+                className="r sc-s"
+                title="What reached the ring — your deposit net of the arena's entry fee, which is charged at the door and never enters the pot"
+              >
+                Net deposit
+              </div>
               <div className="r sc-s">Got back</div>
               <div className="r">P/L</div>
               <div />
@@ -152,7 +187,7 @@ export function HistoryView() {
       <Section
         index="04-2"
         title={EVERY_ROUND}
-        lede="Newest first. Each round opens to everyone who deployed in it, what they staked and what they walked away with."
+        lede="Newest first. Each round opens to everyone who deployed in it, what reached the ring for them and what they walked away with. The pot is net of the arena's entry fee; an opened round states what its players were charged at the door beside it."
       >
         {history.rounds.length === 0 ? (
           <Empty>
@@ -237,6 +272,19 @@ function MyRow({ entry }: { entry: MyEntry }) {
               <div className="sc-grp-h">
                 <span className="u u--ink">The round</span>
               </div>
+              {/* THE TWO SIDES OF THE DOOR, in the panel a reader opens precisely to check the
+                  arithmetic. `pot` is net of the entry fee, so it is what was fought over; the fee
+                  is what the arena took before any of it reached the ring. Shown only when the
+                  round recorded a fee — a round from a program revision that predates
+                  `fees_collected` genuinely collected nothing, and printing "charged $X, pot $X"
+                  twice would be noise. */}
+              {round.feesCollected > 0n ? (
+                <Fact
+                  n="Charged at the door · USD"
+                  v={usd(grossDeposits(round))}
+                  title="What the players in this round were actually charged: the pot plus the arena's entry fee, which is taken on the way in and never enters the pot."
+                />
+              ) : null}
               <Fact n="Pot · USD" v={usd(round.pot)} />
               {/* Without this the round's own books look wrong: the player finals below sum to LESS
                   than the pot whenever anyone extracted, because the extract penalty left the round
@@ -248,6 +296,15 @@ function MyRow({ entry }: { entry: MyEntry }) {
                   n="House took · early exits"
                   v={usd(round.penaltiesCollected)}
                   title="The extract penalty on everything pulled out of this round mid-fight. It is the only value besides the entry fee that leaves a round — everything else moves between fighters, which is why the finals below plus this equal the pot."
+                />
+              ) : null}
+              {/* Both sources at once, through the one definition `houseTook()` exists to be — shown
+                  only when they are both in play, since either alone is already on its own line. */}
+              {round.feesCollected > 0n && round.penaltiesCollected > 0n ? (
+                <Fact
+                  n="House took · total"
+                  v={usd(houseTook(round))}
+                  title="The entry fee taken at the door plus the early-exit penalties taken mid-fight — everything this round earned the house."
                 />
               ) : null}
               <Fact n="Fighters" v={`${round.fighterCount}`} />
@@ -268,11 +325,16 @@ function MyRow({ entry }: { entry: MyEntry }) {
               <div className="sc-grp-h">
                 <span className="u u--ink">Your money</span>
               </div>
-              <Fact n="Deployed · USD" v={usd(me.stake, 2)} />
+              <Fact
+                n="Reached the ring · USD"
+                v={usd(me.stake, 2)}
+                title="Your deposit less the arena's entry fee. The fee is charged per entry and recorded on the round, not on you, so what you personally paid at the door cannot be split back out here — the round's own figure is above."
+              />
               <Fact n="Returned · USD" v={usd(me.final, 2)} />
               <Fact
                 n="Return"
                 v={me.stake > 0n ? `${(Number(me.final) / Number(me.stake)).toFixed(2)}×` : "—"}
+                title="Returned ÷ what reached the ring. Both are net of the entry fee, so the ratio is like-for-like."
               />
             </div>
             <div className="sc-grp">
@@ -346,12 +408,42 @@ function RoundRow({
       </button>
       {open ? (
         <div className="sc-det">
+          {/* THE ROUND'S BOOKS, IN ONE LINE, above the field it belongs to. The row above prints the
+              pot; the pot is net of the entry fee, so on its own it understates what this round's
+              players were charged. `grossDeposits` and `houseTook` are the two figures that close
+              that gap, and they appear only on rounds that recorded one — a round from a program
+              revision without `fees_collected` collected nothing, which is the true value, not a
+              missing read. */}
+          {houseTook(round) > 0n ? (
+            <p className="u sc-books">
+              {/* The door clause appears only when there WAS a fee. On a round from a revision that
+                  charged none, gross and pot are the same number and printing both would invent a
+                  distinction this round does not have. */}
+              {round.feesCollected > 0n ? (
+                <>
+                  Charged at the door ·{" "}
+                  <span className="u--ink">{usdCompact(grossDeposits(round))}</span> · reached the
+                  ring <span className="u--ink">{usdCompact(round.pot)}</span> ·{" "}
+                </>
+              ) : null}
+              House took <span className="u--ink">{usdCompact(houseTook(round))}</span>
+              {round.feesCollected > 0n && round.penaltiesCollected > 0n
+                ? ` — ${usdCompact(round.feesCollected)} entry fee, ${usdCompact(round.penaltiesCollected)} early exits`
+                : round.penaltiesCollected > 0n
+                  ? " in early-exit penalties"
+                  : " in entry fees"}
+            </p>
+          ) : null}
           <div className="rows sc-tbl sc-tbl--plr" role="table" aria-label={`Round ${round.roundNo} players`}>
             <div className="row row--head" role="row">
               <div role="columnheader">Fighter</div>
               <div role="columnheader">Side</div>
-              <div role="columnheader" className="r sc-s">
-                Staked
+              <div
+                role="columnheader"
+                className="r sc-s"
+                title="What reached the ring for this player — their deposit net of the arena's entry fee"
+              >
+                Net stake
               </div>
               <div role="columnheader" className="r sc-s">
                 Final

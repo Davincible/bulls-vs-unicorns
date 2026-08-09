@@ -29,6 +29,14 @@ import { useEffect, useState } from "react";
  *  `shell.css`, `screens.css` and `ArenaView.css`; those and this must move together. */
 export const NARROW = "(max-width: 900px)";
 
+/** THE OTHER QUERY THE PAGE ASKS IN JS, and the reason it is here rather than inline at its call
+ *  site. `base.css` already kills every transition and animation under this preference, which covers
+ *  everything that MOVES — but the arena's running commentary is content that APPEARS and DISAPPEARS
+ *  on its own every few seconds, and no stylesheet rule can turn that off. `App.tsx` reads this to
+ *  decide the commentary toggle's starting position (see the note there); `arena/ArenaCanvas.tsx`
+ *  asks `matchMedia` directly because it needs the answer inside a rAF loop rather than as state. */
+export const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
+
 /** True while `query` matches, re-read whenever it changes.
  *
  *  Seeded synchronously in the `useState` initialiser rather than in the effect, because callers use

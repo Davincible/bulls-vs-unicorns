@@ -16,6 +16,7 @@
 // maintained mirror of lib.rs.
 
 import { FIGHT_TIMEOUT_SECONDS, MAX_STEPS, stepsPerSecond, type PhaseName, type Side } from "../contract.ts";
+import type { SignerMode } from "./flags.ts";
 
 /** Just enough of a fighter to know whether their side still has anyone in the ring. */
 export interface PaceFighter {
@@ -66,8 +67,10 @@ export interface DriveFightInput {
   /** True when the page is showing the fixture — there is no chain round to advance. */
   fallback: boolean;
   sessionActive: boolean;
-  /** The burner's SOL, or null while the first balance poll is still out. */
+  /** The signer's SOL, or null while the first balance poll is still out. */
   solBalance: number | null;
+  /** WHO WOULD PAY FOR THE TICKS. See the wallet-mode clause in `shouldDriveFight`. */
+  mode: SignerMode;
 }
 
 /**
@@ -89,9 +92,29 @@ export interface DriveFightInput {
  * Not gated on phase or on there being a backlog: `useFightTicker` already refuses outside Fight and
  * stays silent when the cursor is current, and duplicating either check here would be a second place
  * for them to be wrong.
+ *
+ * ------------------------------------------------------------------------------------------------
+ * THE WALLET-MODE CLAUSE, which is doing two jobs at once.
+ *
+ * FIRST, THE OBVIOUS ONE. `useFightTicker` polls every 400ms and sends a transaction whenever the
+ * cursor has moved. With a connected Phantom and no session key, EVERY ONE OF THOSE would open an
+ * approval popup — roughly two and a half a second, for the length of a fight. That is not a degraded
+ * experience, it is an unusable page. So in wallet mode the ticker runs only when a session key is
+ * paying and signing, which is exactly the arrangement the session feature exists to create.
+ *
+ * SECOND, AND LOAD-BEARING: THIS IS WHAT MAKES THE PLACEHOLDER KEYPAIR UNREACHABLE.
+ * `chain/useFightTicker.ts` takes a required `keypair: Keypair` and uses it only on the branch where
+ * `session` is null — and it may not be edited by this workstream. In wallet mode there is no
+ * keypair to give it, so `identity.ts` hands it a freshly generated, never-persisted, never-funded
+ * one. This clause is the guarantee that the branch which would touch it cannot execute: wallet mode
+ * requires `sessionActive`, and `sessionActive` means the ticker takes the session branch. The tests
+ * on this function are that guarantee's proof, and deleting the clause silently arms a signer that
+ * holds nothing.
+ * ------------------------------------------------------------------------------------------------
  */
-export function shouldDriveFight({ fallback, sessionActive, solBalance }: DriveFightInput): boolean {
+export function shouldDriveFight({ fallback, sessionActive, solBalance, mode }: DriveFightInput): boolean {
   if (fallback) return false;
+  if (mode === "wallet") return sessionActive;
   if (sessionActive) return true;
   return solBalance !== 0;
 }

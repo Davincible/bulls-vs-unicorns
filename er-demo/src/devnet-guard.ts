@@ -50,20 +50,67 @@ const MAINNET = [
 // eslint-disable-next-line no-control-regex
 const stripUrlNoise = (s: string) => s.replace(/[\x00-\x1f\x7f]/g, "");
 
+/** A URL with any API key in its query string masked, safe to put in a log line or an error message.
+ *
+ *  EXPORTED rather than inlined, which is the one place this file diverges from
+ *  `engine/src/devnet-guard.ts` beyond the port note above. It was already written twice in the two
+ *  throws below, and a paid RPC endpoint is now reachable through configuration
+ *  (`scripts/keeper/endpoints.ts`), which means a third caller wants to print one. Three copies of a
+ *  redaction regex is three chances for one of them to be the copy that leaks the key — and the whole
+ *  point of a redactor is that it is the same everywhere it is used. */
+export function redactUrlSecrets(url: string): string {
+  const masked = url.replace(/([?&](api-key|key|token)=)[^&]+/gi, "$1***");
+  // THE PATH TOO, NOT JUST THE QUERY STRING — and this is the half that was missing. Only one of the
+  // four RPC providers this project names puts its credential in a query parameter; the other three
+  // put it in the PATH, where a query-only redactor prints it in full:
+  //
+  //     https://devnet.helius-rpc.com/?api-key=TOKEN          query  — caught by the line above
+  //     https://NN.solana-devnet.quiknode.pro/TOKEN/          path   — was printed verbatim
+  //     https://NN.devnet.rpcpool.com/TOKEN                   path
+  //     https://solana-devnet.g.alchemy.com/v2/KEY            path
+  //
+  // All four pass the devnet allowlist, so all four are things an operator can legitimately be
+  // running — and the boot banner prints the endpoint into `fly logs`, which is not a secret store.
+  //
+  // ALLOWLIST BY LENGTH, in the same spirit as the guard above: a path segment long enough to be a
+  // credential is treated as one. Real route segments on an RPC endpoint are short and few (`/v2`,
+  // `/rpc`); an API key is not. Eight characters is comfortably below every token shape above and
+  // comfortably above the routes, and erring toward masking a route is the harmless direction —
+  // this string is for a human to recognise an endpoint by, not to copy back out.
+  try {
+    const parsed = new URL(masked);
+    const maskedPath = parsed.pathname.replace(/\/[^/]{8,}/g, "/***");
+    // NOTHING TO MASK MEANS NOTHING TO REWRITE, and returning the input untouched here is the whole
+    // reason this is a comparison rather than an unconditional assignment. `new URL(x).toString()`
+    // NORMALISES — it turns `https://api.devnet.solana.com` into `…com/` — and this string's other
+    // job is to let an operator confirm at a glance that the endpoint in use is the one they set. A
+    // redactor that quietly edits a URL it found no secret in is answering a slightly different
+    // question than the one asked. When there IS a secret the round trip is free, because the value
+    // has already been altered beyond copying back out.
+    if (maskedPath === parsed.pathname) return masked;
+    parsed.pathname = maskedPath;
+    return parsed.toString();
+  } catch {
+    // Not parseable as a URL — which is itself a thing worth printing, since the guard's own error
+    // messages call this on values that failed to be endpoints. Return what the query pass produced
+    // rather than the raw input.
+    return masked;
+  }
+}
+
 export function assertDevnetUrl(url: string, what = "endpoint"): void {
   const u = stripUrlNoise(String(url || "").trim());
   if (!u) throw new MainnetBlocked(`${what}: empty URL — refusing to guess a cluster.`);
   for (const re of MAINNET) {
     if (re.test(u)) {
       throw new MainnetBlocked(
-        `${what} points at MAINNET (${u.replace(/([?&](api-key|key|token)=)[^&]+/gi, "$1***")}). ` +
+        `${what} points at MAINNET (${redactUrlSecrets(u)}). ` +
         `This is the MagicBlock ER demo — it is devnet-only by construction. Refusing to start.`);
     }
   }
   if (SAFE.some(re => re.test(u))) return;
   throw new MainnetBlocked(
-    `${what} could not be positively identified as devnet: ` +
-    `${u.replace(/([?&](api-key|key|token)=)[^&]+/gi, "$1***")}\n` +
+    `${what} could not be positively identified as devnet: ${redactUrlSecrets(u)}\n` +
     `This guard fails CLOSED — an allowlist, not a denylist, because a denylist silently permits ` +
     `every endpoint nobody thought to ban. Put "devnet" in the host, or use api.devnet.solana.com.`);
 }

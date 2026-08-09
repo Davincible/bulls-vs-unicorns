@@ -114,6 +114,20 @@ export interface FighterView {
   hp: bigint;
   /** Value raided off the other side (and, after an extract, the ring value that was pulled out). */
   banked: bigint;
+  /** TRUE FOR A HOUSE WALLET the keeper seated to keep the lobby from being empty.
+   *
+   *  Resolved in `data/houseFighters.ts` from `keeperStatus.ts`'s `isHouseWallet()`, against the list
+   *  the keeper publishes in its own status file. Until that was wired a six-fighter lobby read as
+   *  six people; that helper's own comment calls an undisclosed house fighter "a misrepresentation of
+   *  who is in the round", and README's go-live list carries bot disclosure as an obligation. Every
+   *  surface that lists fighters is expected to say which ones are ours.
+   *
+   *  `false` when the keeper is silent or absent: the honest default is "not known to be house", and
+   *  a page with no keeper has no basis to accuse anyone of being one. WHICH MEANS `false` ALONE IS
+   *  NOT A CLAIM THAT A FIGHTER IS A PERSON — a roster of them means either "none of these are ours"
+   *  or "nothing told us". `houseDisclosure` on the context is the field that tells those two apart,
+   *  and any caption counting these marks must read it rather than counting them itself. */
+  house: boolean;
   dead: boolean;
   /** True for the local burner wallet's own fighter. */
   isYou: boolean;
@@ -263,6 +277,123 @@ export interface RoundSummary {
  *  `penaltiesCollected` alone and silently missed half the answer. */
 export function houseTook(round: { penaltiesCollected: bigint; feesCollected: bigint }): bigint {
   return round.penaltiesCollected + round.feesCollected;
+}
+
+/** THE HOUSE'S OWN BOOKS, read off the chain rather than modelled.
+ *
+ *  The program keeps a `Treasury` PDA (base layer, one per arena) carrying what it has actually
+ *  taken: the entry fee on every deploy, and the decaying premium on every early exit. Until now the
+ *  Dashboard rendered a `sim` treasury out of localStorage beside it, which is precisely the tile
+ *  `UI-SPEC.md` Part 1 ordered fixed: "should read the treasury ACCOUNT, not the counter."
+ *
+ *  Nullable, and the distinction matters: `null` means the account has not been read yet or has never
+ *  been initialised (`init_treasury` is a separate admin call), which is a different fact from a
+ *  treasury holding nothing. The first renders `—`, the second renders a zero. */
+export interface TreasuryState {
+  /** Entry fees accrued, all rounds swept so far. */
+  feesAccrued: bigint;
+  /** Extract penalties accrued. */
+  penaltiesAccrued: bigint;
+  /** How many rounds have been swept into it — the coverage of the two figures above, and the reason
+   *  neither may be called "all time" while rounds remain unswept. */
+  roundsSwept: bigint;
+}
+
+/** ONE THING THAT HAPPENED IN THE FIGHT, for the surfaces that narrate it.
+ *
+ *  Derived in `data/` from the same `hitEvents` stream the canvas already replays — not a second
+ *  source. The original game talked to the player continuously ("you raided $4.10 off turboTina",
+ *  "gigaGwei hit you for $2.80") and v2 has been silent between Deploy and the settled plate, which
+ *  is the largest drop in feel between the two. `mine` is what a toast filter keys on: everything is
+ *  worth logging, only your own hits are worth interrupting you for. */
+export interface CombatEvent {
+  /** Position in the replay, so a consumer can dedupe and order without a clock. */
+  step: number;
+  attacker: FighterView;
+  defender: FighterView;
+  amount: bigint;
+  /** True when either party is the local player. */
+  mine: boolean;
+}
+
+/** THE FIGHT'S RECENT PAST, resolved once in `data/` and shaped for the two surfaces that want it.
+ *
+ *  IT IS A WINDOW, NOT THE STREAM. `hitEvents` is the whole fight — up to `MAX_STEPS` entries,
+ *  precomputed the instant the seed reveals — and neither surface that narrates it wants that: a log
+ *  shows the last handful, a toast rail shows what happened since it last looked. Handing views the
+ *  raw array would put the same cursor arithmetic (where is the playhead, which of these have I
+ *  already said out loud) in every one of them, at `stepsPerSecond(n)` and four re-renders a second,
+ *  each free to get it subtly differently. This is that arithmetic done once.
+ *
+ *  ASCENDING BY STEP — oldest first, the same order `hitEvents` itself carries. That order is a
+ *  correctness property for the toast path and only a preference for the log: a rail that announces
+ *  step 900 before step 890 is telling the player the fight happened in an order it did not. A log
+ *  wanting newest-at-top reverses a forty-element array, or renders in `column-reverse` and does not
+ *  even do that.
+ *
+ *  HOW A CONSUMER DEDUPES. Every entry carries `step`, and `at` is the cursor the window was cut at.
+ *  Keep the last `at` you acted on; act on everything with a greater `step`; store the new `at`.
+ *  Initialise that mark to `at` rather than to 0 on mount — a page opened mid-fight, or one whose
+ *  playhead has just jumped from the lobby to a fight in progress, otherwise fires the entire
+ *  backlog at once. */
+export interface CombatFeed {
+  /** The last N hits at or before `at`, ascending. Empty outside Fight/Settled, and empty on a
+   *  settled round whose stream was never computed (no seed). */
+  recent: CombatEvent[];
+  /** The same window filtered to `mine` — the toast rail's source, so it does not re-filter on every
+   *  tick. A subset of `recent` by construction: both are cut at the same cursor from the same
+   *  window, so a hit in one and not the other is impossible. */
+  mine: CombatEvent[];
+  /** The replay cursor this window was cut at (`LiveRound.stepsNow`). Everything above has
+   *  `step <= at`. */
+  at: number;
+}
+
+/** WHO IS ACTUALLY IN THE ROUND ON SCREEN — the house's share of it, stated.
+ *
+ *  The keeper seats house wallets so a lobby is never empty, and README's go-live list carries "Bot
+ *  disclosure in UI" as an obligation rather than a feature. This is the counted form of
+ *  `FighterView.house`: the marks and the count come out of one pass in `data/`, so a roster showing
+ *  five marks and a caption reading "5 house" can never disagree.
+ *
+ *  BOTH COUNTS ARE NULL TOGETHER, AND NULL IS THE WHOLE POINT OF THE TYPE. `house: false` on every
+ *  fighter means one of two completely different things — nobody in this round is ours, or nothing is
+ *  publishing a list to check against — and a caption reading "0 house" claims the first while the
+ *  page is in the second. Null makes that unrenderable as a number: a view has to reach for `—`,
+ *  which is UI-SPEC's rule for an unbacked figure and the honest sentence here. */
+export interface HouseDisclosure {
+  /** Fighters in the round on screen resolved as the house's. Null when nothing backs the claim. */
+  houseFighterCount: number | null;
+  /** The rest. Null on exactly the same condition — with no list, "how many are real people" is
+   *  equally unanswerable. */
+  realFighterCount: number | null;
+  /** The keeper's own sentence about why it seats them (`KeeperStatus.house.disclosure`), so the
+   *  page quotes the party making the claim rather than paraphrasing it. Null when nothing is
+   *  disclosing. */
+  note: string | null;
+}
+
+/** HOW MUCH OF THIS ARENA'S HISTORY THE FIGURES ON SCREEN WERE COMPUTED OVER.
+ *
+ *  `standings`, `hall`, `bigWins` and `sideRecord` are all aggregated from `history.rounds`, which is
+ *  the NEWEST N round accounts (`useHistory`'s `MAX_ROUNDS`), minus any read that failed, minus any
+ *  round whose account the authority has since reclaimed (`close_round_account`). Every one of those
+ *  is a window, and every screen showing one of those aggregates has said "all time" over it.
+ *
+ *  `SideRecord` already carries its own coverage for exactly this reason and refuses the phrase; this
+ *  is the same fact for everything else derived from the same log, so no screen has to reconstruct it
+ *  out of `history.rounds.length` and a hope about what the denominator is. */
+export interface LogCoverage {
+  /** Round accounts the aggregates were actually computed over. */
+  rounds: number;
+  /** How many rounds this arena has EVER opened (`Arena.round_counter`), or null when that has not
+   *  been read — which is the state the page is in before the first arena fetch lands, and the
+   *  permanent state of the fixture's invented log. */
+  roundsEverOpened: bigint | null;
+  /** TRUE WHEN "ALL TIME" IS ACTUALLY TRUE — every round the arena ever opened is in the aggregate.
+   *  False whenever anything is missing AND whenever the denominator is unknown, so the phrase is
+   *  permitted only where it can be backed. */
+  complete: boolean;
 }
 
 /** WHAT PLAYERS WERE ACTUALLY CHARGED to be in this round — the pot plus the fee taken at the door.
