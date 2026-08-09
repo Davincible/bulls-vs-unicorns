@@ -17,6 +17,7 @@ import type {
   BoardStyle,
   CombatFeed,
   ExtractEligibility,
+  FeeRate,
   HouseDisclosure,
   LiveRound,
   LogCoverage,
@@ -93,6 +94,17 @@ export interface ArenaContextValue {
    *  (`init_treasury` is a separate admin call) — never "holds nothing", which is a real state that
    *  renders as a zero. See `TreasuryState`, and `houseTook()` for the same figure per round. */
   treasury: TreasuryState | null;
+
+  /** WHAT ENTRY COSTS, off `Arena.fee_bps` — the rate the program will actually charge, not a
+   *  constant this build was compiled with.
+   *
+   *  Arena state, like `treasury` beside it, and it stays REAL on the fixture FALLBACK for the same
+   *  reason: the fallback is about there being no ROUND, and the account that carries the rate
+   *  usually reads perfectly well in that state. Only a forced `?fixture=1` gets an invented one.
+   *
+   *  `known` is false until the first arena read lands. Never render `bps` as a bare figure while it
+   *  is — `views/feeCopy.ts` holds the wording, and the reason. */
+  fee: FeeRate;
 
   history: {
     /** Newest first. Every round account that exists, not just settled ones. */

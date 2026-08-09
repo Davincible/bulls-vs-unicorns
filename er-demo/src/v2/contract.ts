@@ -487,12 +487,15 @@ export interface SimBalances {
 
 export interface SimLedger {
   balances: SimBalances;
-  /** House take, accrued at `FEE_BPS` on every simulated deploy. */
+  /** House take, accrued on every simulated deploy at the rate the ARENA was charging when it was
+   *  booked — `recordDeploy` is handed the live `FeeRate`, not a constant. See that function. */
   treasury: SimBalances;
   /** All-time simulated deposits/withdrawals, for the dashboard bands. */
   deposited: number;
   withdrawn: number;
-  /** Referral earnings, 10% of house fee on referred play (original's rate). */
+  /** Referral earnings — `REFERRAL_SHARE_PCT` of the house fee on referred play, the original's
+   *  rate. Named rather than written out as "10%": the screen that prints this balance prints the
+   *  rate beside it, and prose is how the two drift apart. */
   referralEarned: number;
   referralCount: number;
 }
@@ -544,20 +547,65 @@ export {
 // is exactly one right one (see that module's note on the canonical cursor).
 export { EXTRACT_PENALTY_START_BPS } from "../sim/erSim.ts";
 
-/** The arena's deploy fee.
+/** WHAT THE PAGE SHOWS BEFORE THE CHAIN HAS TOLD IT ANYTHING. Not "the fee".
  *
- *  THIS CONSTANT IS STRUCTURALLY WRONG AND IS A STOPGAP. `fee_bps` is not a compile-time fact: it is
- *  a field on the Arena account that `set_fee_bps` may change at any moment, against players who are
- *  mid-lobby, without a redeploy. It was moved 20 -> 100 on devnet while the site was live, and for
- *  the minutes between that transaction and the next Vercel build every surface below — the intro
- *  overlay a first-time player reads before anything else, the stake dock, the dashboard — quoted a
- *  rate five times lower than the one the chain was actually charging.
+ *  `fee_bps` is a `u16` on the Arena account. `set_fee_bps` moves it at any moment, `enter` reads it
+ *  LIVE, and a change lands against players already standing in the lobby — so it is not a
+ *  compile-time fact and this constant cannot be one either. It is the figure rendered in the window
+ *  between first paint and the first arena read, and in that window every surface MARKS it as unread
+ *  rather than stating it flat (see `FeeRate` below and `views/feeCopy.ts` for the wording).
  *
- *  The header of this file already states the rule this violates: a second hand-copy of a moving
- *  constant is how a UI ends up describing a different game from the one being settled. The fix is
- *  to read `Arena.fee_bps` and treat this as the pre-fetch fallback only. Until that lands, ANY
- *  `set_fee_bps` MUST be followed by editing this line and redeploying, in that order. */
+ *  WHY THERE IS A NUMBER HERE AT ALL. The intro overlay is the first thing a first-time player reads
+ *  and it has to say what entry costs; `—` would teach them nothing. So the pre-read window gets the
+ *  last rate this build was cut against, labelled as exactly that.
+ *
+ *  THE INCIDENT. This used to BE the rate, hardcoded. It was moved 20 -> 100 on devnet while the site
+ *  was serving, and until the next Vercel build the overlay told players entry cost 0.20% while the
+ *  chain charged 1.00%. `useChain.ts` now reads the account on the poll that was already running, so
+ *  a rate change reaches the page in seconds and no redeploy is involved. Keeping this figure in step
+ *  with the deployed arena is a courtesy to the first frame — nothing depends on it being right. */
 export const FEE_BPS = 100;
+
+/** THE ENTRY RATE AS THIS PAGE CURRENTLY KNOWS IT — the figure, and whether anything backs it.
+ *
+ *  TWO FIELDS RATHER THAN `number | null`, and the difference from `LogCoverage.roundsEverOpened` is
+ *  the reason. Nothing NEEDS a round count, so there null is the honest answer and the screens phrase
+ *  around it. Here every consumer has work that cannot be done with null — the dock has to price a
+ *  stake, the overlay has to finish its sentence — so the number is always present and `known` is
+ *  what stops it being presented as a fact. The two together make "we have not read it" impossible to
+ *  render as a confident claim, which is the whole failure being engineered out. */
+export interface FeeRate {
+  /** Basis points, to compute and to format with. The arena's own `fee_bps` once read; `FEE_BPS`
+   *  until then. */
+  bps: number;
+  /** True only when `bps` came off the Arena account. False means the fallback is on screen — either
+   *  the first read has not landed or it failed. */
+  known: boolean;
+}
+
+/** The one place `FEE_BPS` is allowed to become a displayed rate. `null` in, fallback out. */
+export function feeRate(chainFeeBps: number | null): FeeRate {
+  return chainFeeBps === null ? { bps: FEE_BPS, known: false } : { bps: chainFeeBps, known: true };
+}
+
+/** WHAT THE DOOR TAKES OFF A STAKE — `split_entry`'s `stake * fee_bps / BPS` in lib.rs, floor
+ *  division and all, so the "in the ring" figure a deploy surface prints is the one the program will
+ *  actually credit rather than a rounded-up guess at it.
+ *
+ *  It is a function because two surfaces price the same stake (00-3's lede and the dock's fee line)
+ *  and they had a copy of this expression each. Zero bps is a real rate the authority may set and it
+ *  falls out as zero here — there is no division by `bps` anywhere on this path. */
+export function feeOn(stakeUnits: bigint, fee: FeeRate): bigint {
+  return (stakeUnits * BigInt(fee.bps)) / 10_000n;
+}
+
+/** The referrer's cut of the house fee, as a percentage of it — the original game's 10%.
+ *
+ *  HERE BECAUSE IT WAS IN TWO PLACES. `simLedger.ts` accrued at `0.1` and `ReferralsView` quoted
+ *  `10`, and the screen's worked example is printed directly above the balance the ledger accrues —
+ *  so a change to one would have put two different rates in one paragraph. Same failure as the fee
+ *  itself, one screen over. */
+export const REFERRAL_SHARE_PCT = 10;
 
 /** The original's convert fee. Simulated-ledger only. */
 export const CONVERT_BPS = 30;

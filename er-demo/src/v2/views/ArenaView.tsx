@@ -13,7 +13,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ARENAS,
   EXTRACT_PENALTY_START_BPS,
-  FEE_BPS,
   FIGHT_TIMEOUT_SECONDS,
   MAX_STEPS,
   MIN_STAKE_USD,
@@ -26,6 +25,7 @@ import {
   clock,
   counted,
   entriesOpen,
+  feeOn,
   nameFor,
   shortKey,
   sideTotals,
@@ -43,6 +43,7 @@ import {
 import { useArena } from "../data/useArena.ts";
 import { abandonText, simBankrollUsd, type AmountRule } from "../data/autoDeploy.ts";
 import { houseNote } from "../data/houseFighters.ts";
+import { feePhrase } from "./feeCopy.ts";
 import { ArenaCanvas } from "../arena/ArenaCanvas.tsx";
 import { CombatLog } from "../ui/CombatLog.tsx";
 import { Bar, Dash, Empty, HouseTag, KV, KVs, Mark, Money, Section, Seg, Tag } from "../ui/primitives.tsx";
@@ -814,7 +815,7 @@ function controlsFor(rule: AmountRule, armed: boolean): { stake: number; pct: nu
 }
 
 function Deploy() {
-  const { live, status, actions, autoDeploy, mode, setMode, toasts, gate } = useArena();
+  const { live, status, actions, autoDeploy, fee, mode, setMode, toasts, gate } = useArena();
   // Read once, at mount, from whatever rule is standing — never on every render, which would make
   // these controls unusable while armed.
   const [initial] = useState(() => controlsFor(autoDeploy.rule, autoDeploy.armed));
@@ -836,7 +837,7 @@ function Deploy() {
 
   const phase = live?.phase ?? null;
   const stakeUnits = usdToUnits(stake);
-  const feeUnits = (stakeUnits * BigInt(FEE_BPS)) / 10_000n;
+  const feeUnits = feeOn(stakeUnits, fee);
 
   /** A LIVE CLOCK, because the deposit deadline is a time and not a phase.
    *
@@ -896,7 +897,7 @@ function Deploy() {
       }
       lede={
         open
-          ? `Stake is an on-chain u64, shown at ${UNITS_PER_USD.toLocaleString("en-US")} units = $1.00. The arena deducts ${(FEE_BPS / 100).toFixed(2)}% on entry, so ${usd(stakeUnits)} puts ${usd(stakeUnits - feeUnits)} in the ring. Max ${usd(usdToUnits(STAKE_CAP_USD))} a side.`
+          ? `Stake is an on-chain u64, shown at ${UNITS_PER_USD.toLocaleString("en-US")} units = $1.00. The arena deducts ${feePhrase(fee)} on entry, so ${usd(stakeUnits)} puts ${usd(stakeUnits - feeUnits)} in the ring. Max ${usd(usdToUnits(STAKE_CAP_USD))} a side.`
           : undefined
       }
     >

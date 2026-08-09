@@ -47,9 +47,9 @@ import type { ReactNode } from "react";
 import { useArena } from "../data/useArena.ts";
 import { Dash, Empty, Mark, Section, Tag } from "../ui/primitives.tsx";
 import { coverageFigure, coverageNote, coveragePhrase } from "./coverage.ts";
+import { feeFigure, feeNote } from "./feeCopy.ts";
 import {
   EXTRACT_PENALTY_START_BPS,
-  FEE_BPS,
   FIGHT_TIMEOUT_SECONDS,
   SIDE_TOKEN,
   bpsPct,
@@ -74,6 +74,7 @@ export function DashboardView() {
     logCoverage,
     houseDisclosure,
     treasury,
+    fee,
     you,
     sim,
     status,
@@ -668,14 +669,23 @@ export function DashboardView() {
                   n="Average pot · USD"
                   v={logged > 0 ? usdCompact(log.potAll / BigInt(logged)) : <Dash />}
                 />
-                {/* The configured rate, mirrored client-side from `init_arena(fee_bps)` — this page
-                    does not read `Arena.fee_bps` back. It sits in a `chain` group because it
-                    describes the PROGRAM, exactly as the opening-bell penalty rate beside it does,
-                    and the note says which kind of figure it is. */}
+                {/* THE RATE, READ BACK OFF `Arena.fee_bps` — it used to be a client-side mirror of
+                    `init_arena(fee_bps)`, which is what a comment here said and what made this tile
+                    wrong for as long as it took to redeploy after `set_fee_bps` moved the rate. It
+                    sits in a `chain` group because it now belongs in one.
+
+                    IT DASHES WHEN UNREAD, exactly like "Rounds opened" three tiles away and off the
+                    same account: a standalone figure with nothing behind it is a `—` on this page,
+                    and a rate is the last figure that should be guessed at in a column of collected
+                    money. The two are different facts, which is why they can differ — the rate is
+                    what the door charges now, the fees are what past rounds actually paid. */}
                 <Fx
                   n="Fee at the door"
-                  v={`${(FEE_BPS / 100).toFixed(2)}%`}
-                  note="the arena's configured rate, mirrored here — the fees above are what it actually collected"
+                  v={feeFigure(fee) ?? <Dash />}
+                  // The shared note says where the figure comes from; the clause after it is this
+                  // tile's own, and it is the one that stops a reader holding the rate against the
+                  // two collected-fee figures directly above and finding them inconsistent.
+                  note={`${feeNote(fee)} The fees above are what it actually collected, at whatever rate was in force at the time.`}
                 />
               </Group>
               {/* THE GROUP THAT LICENSES EVERY OTHER FIGURE ON THIS SCREEN. Each aggregate carries

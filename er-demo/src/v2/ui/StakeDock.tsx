@@ -27,25 +27,27 @@
 //   the round — and "permanently within reach" is exactly what it wants to be. A player who has
 //   scrolled to the rosters to see who is still standing is precisely the player who needs it.
 //
-// WHAT IT COSTS IS ON THE CONTROL. The arena deducts `FEE_BPS` on entry, so the figure typed is not
-// the figure that reaches the ring, and extracting is charged a decaying penalty. Both are printed
-// beside the button that incurs them — a compact surface is a reason to be brief, never a reason to
-// drop the price.
+// WHAT IT COSTS IS ON THE CONTROL. The arena deducts `Arena.fee_bps` on entry — read off the account
+// and never a build-time constant, see `contract.ts`'s `FEE_BPS` for the incident that rule came from
+// — so the figure typed is not the figure that reaches the ring, and extracting is charged a decaying
+// penalty. Both are printed beside the button that incurs them: a compact surface is a reason to be
+// brief, never a reason to drop the price.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  FEE_BPS,
   SIDE_TOKEN,
   STAKE_CAP_USD,
   STAKE_PRESETS,
   bpsPct,
+  feeOn,
   usd,
   usdCompact,
   usdToUnits,
   type Side,
 } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
+import { feeNote, feePhrase } from "../views/feeCopy.ts";
 import { ConnectPanel } from "./ConnectPanel.tsx";
 import { Seg } from "./primitives.tsx";
 import { RoundPhaseNote } from "./RoundPhaseNote.tsx";
@@ -158,14 +160,14 @@ function useDockHeight(): (el: HTMLElement | null) => void {
 // ---------------------------------------------------------------------------------------------
 
 function DeployBody() {
-  const { actions, toasts } = useArena();
+  const { actions, fee, toasts } = useArena();
   // Deliberately NOT shared with 00-3's stake state. Two controls that silently rewrote each other's
   // amount across four screens of scroll would be a worse surprise than two independent ones, and
   // there is no chain state here to keep in sync — `enter()` takes the amount at the moment it is
   // pressed. $20 rather than the section's $5: this is the "put more in" control.
   const [stake, setStake] = useState(20);
   const stakeUnits = usdToUnits(stake);
-  const feeUnits = (stakeUnits * BigInt(FEE_BPS)) / 10_000n;
+  const feeUnits = feeOn(stakeUnits, fee);
 
   const deploy = useCallback(
     async (side: Side) => {
@@ -208,9 +210,9 @@ function DeployBody() {
           stake, drawn off `STAKE_PRESETS`/`STAKE_CAP_USD` and never above $100 — cents are the whole
           point of a fee line at this size, and there is no chain-scale figure here to protect a
           column from. */}
-      <p className="u dock-fee">
+      <p className="u dock-fee" title={feeNote(fee)}>
         {usd(stakeUnits, 2)} → <span className="num">{usd(stakeUnits - feeUnits, 2)}</span> in the
-        ring · {(FEE_BPS / 100).toFixed(2)}% fee
+        ring · {feePhrase(fee)} fee
       </p>
 
       <div className="dock-sides">

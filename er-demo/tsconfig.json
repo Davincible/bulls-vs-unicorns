@@ -1,3 +1,17 @@
+// A SOLUTION FILE, NOT A PROJECT. `files: []` is deliberate — the real configuration is in the two
+// referenced projects — but it has a trap in it worth naming, because it cost this repo real
+// confidence rather than merely being a curiosity.
+//
+// `npx tsc --noEmit` here type-checks EXACTLY NOTHING. It reads this file, finds an empty `files`
+// array, ignores `references` entirely (only `-b`/`--build` follows those), and exits 0. It prints
+// no warning and takes about a second, so it looks precisely like a passing type-check. It was
+// reported as "tsc clean" three times in one session — including in commit messages — over a tree
+// that had never been checked at all. `npx tsc --noEmit --listFiles | wc -l` answers 0, which is the
+// quickest way to see it for yourself.
+//
+// The gate is `npm run typecheck` (`tsc -b --force`), which is what `npm run build` already ran and
+// what CI must run. `--force` because `-b` is incremental and will happily skip work on the strength
+// of a stale `.tsbuildinfo`, which is a second way to get a green result that means nothing.
 {
   "files": [],
   "references": [

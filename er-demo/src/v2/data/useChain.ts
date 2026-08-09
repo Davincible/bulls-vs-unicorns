@@ -17,8 +17,12 @@ import { BASE_RPC, ROUTER_URL } from "../../chain/constants.ts";
 import { createProgram, type BullsArenaProgram } from "../../chain/program.ts";
 import { arenaPda, roundPdaForRoundNo } from "../../chain/round.ts";
 
-/** How often the arena's `round_counter` is re-read. Not the round poll — this only has to notice
- *  that a NEW round was opened, which happens between demos, not between frames. */
+/** How often the arena account is re-read. Not the round poll — it only has to notice that a NEW
+ *  round was opened, which happens between demos and not between frames.
+ *
+ *  IT IS ALSO HOW FAST A RATE CHANGE REACHES THE PAGE. `fee_bps` comes off this same fetch (see
+ *  below), so `set_fee_bps` is on screen within five seconds of landing, everywhere, with no build.
+ *  That is the whole reason the fee is read here rather than by a poll of its own. */
 const ARENA_POLL_MS = 5000;
 
 export interface ChainHandles {
@@ -32,6 +36,10 @@ export interface ChainHandles {
   /** The arena's own `round_counter`, null until it has been read once. `0n` means the arena exists
    *  but no round has ever been opened. */
   roundCounter: bigint | null;
+  /** The arena's own `fee_bps`, off the same fetch as `roundCounter`. Null until it has been read
+   *  once, which `contract.ts`'s `feeRate()` turns into the marked fallback rather than into a
+   *  confident number — see `FeeRate`. */
+  feeBps: number | null;
   arenaError: string | null;
   /** The round on screen: `?round=<n>` if pinned, otherwise the arena's latest. */
   roundNo: bigint | null;
@@ -99,6 +107,7 @@ export function useChain(wallet: Wallet, enabled: boolean): ChainHandles {
   const pinned = useMemo(() => parseRoundNoFromUrl(window.location.search), []);
 
   const [roundCounter, setRoundCounter] = useState<bigint | null>(null);
+  const [feeBps, setFeeBps] = useState<number | null>(null);
   const [arenaError, setArenaError] = useState<string | null>(null);
   // Guards a slow arena read from an older `program` landing after a newer one started — same pattern
   // as chain/useRound.ts, for the same reason.
@@ -115,6 +124,17 @@ export function useChain(wallet: Wallet, enabled: boolean): ChainHandles {
         const a = await program.account.arena.fetch(arena);
         if (stale()) return;
         setRoundCounter(BigInt(a.roundCounter.toString()));
+        // THE RATE, OFF THE SAME BYTES. No second request, no second poll — `enter` reads
+        // `arena.fee_bps` live, so the page that quotes the rate should read it from the account
+        // that sets it, and this is the read that was already happening.
+        //
+        // VALIDATED RATHER THAN TRUSTED, for one specific reason: `feeOn()` calls `BigInt(bps)`
+        // inside a render, and `BigInt(NaN)` THROWS. Anchor decodes a u16 and should never hand us
+        // anything else, but a decoder disagreeing with the deployed account layout is not
+        // hypothetical here — this repo has already served an IDL ahead of a deploy and broken
+        // decoding for every account the program owned. A malformed rate must degrade to "not read",
+        // which renders the marked fallback; it must not white-screen the arena.
+        setFeeBps(Number.isInteger(a.feeBps) && a.feeBps >= 0 ? a.feeBps : null);
         setArenaError(null);
       } catch (e) {
         if (stale()) return;
@@ -142,6 +162,7 @@ export function useChain(wallet: Wallet, enabled: boolean): ChainHandles {
     programError,
     arena,
     roundCounter,
+    feeBps,
     arenaError,
     roundNo,
     roundPda,

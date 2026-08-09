@@ -12,6 +12,18 @@
 // nothing here can detect every case, but the obvious guard is cheap: this refuses while the current
 // round is in Fight, and warns if the open lobby already holds fighters.
 //
+// THE FRONT END FOLLOWS ON ITS OWN — nothing to redeploy, and no source file to edit afterwards.
+// The site reads `Arena.fee_bps` off the arena poll it was already running (`src/v2/data/useChain.ts`)
+// and re-reads it every five seconds, so a rate set here is on every surface that quotes it — the
+// intro overlay, the deploy panels, the dashboard tile, the referrals maths — within seconds of this
+// transaction confirming. `FEE_BPS` in `src/v2/contract.ts` is now only what the page shows in the
+// moment before that first read lands, and it is labelled as unread while it is on screen.
+//
+// That was NOT true until this was wired, and the gap cost a live page: the rate moved 20 -> 100 here
+// while the front end was serving a hardcoded 20, and it kept quoting a fifth of what players were
+// being charged until the next Vercel build. Verify with a browser, not with the console line below:
+// this script confirms what the ACCOUNT says, which was never the part that was wrong.
+//
 // It is deliberately NOT wired into the keeper. A rate change is a decision somebody makes, and a
 // process that could make it on its own is a process that could make it by accident.
 

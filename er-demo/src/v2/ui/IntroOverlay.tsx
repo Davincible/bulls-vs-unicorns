@@ -8,13 +8,14 @@
 import { useEffect, useRef } from "react";
 import {
   EXTRACT_PENALTY_START_BPS,
-  FEE_BPS,
   FIGHT_TIMEOUT_SECONDS,
   MAX_STEPS,
   SIDE_TOKEN,
   UNITS_PER_USD,
   bpsPct,
 } from "../contract.ts";
+import { useArena } from "../data/useArena.ts";
+import { feeNote, feePhrase } from "../views/feeCopy.ts";
 import { useFocusTrap } from "./useFocusTrap.ts";
 
 /** The opening-bell rate, said in words. Formatted from the program's own constant rather than
@@ -25,6 +26,10 @@ const START_PENALTY = bpsPct(Number(EXTRACT_PENALTY_START_BPS));
 export function IntroOverlay({ onClose }: { onClose(): void }) {
   const ref = useRef<HTMLButtonElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  // THE ENTRY RATE IS READ, NOT COMPILED IN. This overlay is the reason: it is the first thing a
+  // first-time player reads, and when the rate moved 20 -> 100 on devnet mid-session this paragraph
+  // spent the gap until the next build quoting a fifth of what the chain was charging. See `FEE_BPS`.
+  const { fee } = useArena();
 
   // A DIALOGUE IS TWO CLAIMS, AND THE MARKUP ONLY MADE ONE. `aria-modal="true"` below tells a screen
   // reader that nothing outside this takeover exists; it tells the browser nothing at all, so Tab
@@ -124,8 +129,9 @@ export function IntroOverlay({ onClose }: { onClose(): void }) {
             <span>
               Stakes are on-chain u64 units, pegged for display at{" "}
               {UNITS_PER_USD.toLocaleString("en-US")} units = $1.00. Value leaves a round in exactly
-              two places: the arena deducts {(FEE_BPS / 100).toFixed(2)}% from your stake on entry,
-              and the extract penalty above takes its slice of anything you pull out early.
+              two places: the arena deducts{" "}
+              <span title={feeNote(fee)}>{feePhrase(fee)}</span> from your stake on entry, and the
+              extract penalty above takes its slice of anything you pull out early.
               Everything else only ever moves between fighters. A fight runs at two steps per second
               per fighter and stops at {MAX_STEPS.toLocaleString("en-US")} steps; once one side has
               nobody left standing — or the {FIGHT_TIMEOUT_SECONDS}-second bell rings — anyone may

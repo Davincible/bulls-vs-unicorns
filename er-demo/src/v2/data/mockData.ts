@@ -252,6 +252,25 @@ export const MOCK_TREASURY: TreasuryState = {
   roundsSwept: BigInt(MOCK_HISTORY.length),
 };
 
+/** THE FIXTURE ARENA'S ENTRY RATE, in basis points — what `?fixture=1` shows where the chain path
+ *  shows `Arena.fee_bps`.
+ *
+ *  20, because that is what `init_arena` creates this arena with everywhere it is created for real:
+ *  `scripts/keeper/config.ts`'s `ARENA_FEE_BPS`, and every `verify-*.ts` that stands one up. The
+ *  fixture's arena is a fiction, and the honest fiction is the one the real thing was born as.
+ *
+ *  IT DOES NOT CONTRADICT `MOCK_TREASURY`'s ZEROS, and the apparent contradiction is worth naming
+ *  because it is a property of the real arena too. A rate is what the door charges NOW; the fee
+ *  columns are what past rounds actually collected. `set_fee_bps` means the two are free to differ,
+ *  and on devnet today they do — rounds opened at 20 bps sit in the log while the arena charges 100.
+ *  The dashboard tile's own note already says which kind of figure it is.
+ *
+ *  NOT ZERO, though zero would have matched the log exactly. Zero would render "0% fee" through the
+ *  deploy panel, the takeover and the referrals worked example, and `?fixture=1` is the surface this
+ *  page is reviewed on — a reviewer would never see the copy that matters in the state that matters.
+ *  Zero is exercised where it belongs, in `feeCopy.test.ts`. */
+export const MOCK_FEE_BPS = 20;
+
 // `deriveStandings`/`deriveBigWins`/`deriveHall` used to live here. They now live in `roundLog.ts`
 // and are shared: the fixture's rounds and devnet's rounds are the same `RoundSummary[]` shape, so
 // aggregating them twice was two chances to disagree about what a standing means. Nothing about the

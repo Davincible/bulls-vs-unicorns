@@ -17,15 +17,19 @@
 // the two. Floating point is correct for a simulation of dollars; it would not be for a real balance,
 // and no real balance passes through this file.
 
-import { CONVERT_BPS, FEE_BPS, type SimBalances, type SimLedger, type TokenKey } from "../contract.ts";
+import {
+  CONVERT_BPS,
+  REFERRAL_SHARE_PCT,
+  type FeeRate,
+  type SimBalances,
+  type SimLedger,
+  type TokenKey,
+} from "../contract.ts";
 
 /** Versioned: the shape of `SimLedger` is allowed to change, and when it does, a stored ledger from
  *  the previous shape must be ignored rather than half-read. Bump the suffix, don't migrate — this is
  *  play money by construction. */
 export const SIM_LEDGER_KEY = "v2.sim.ledger.1";
-
-/** 10% of the house fee, the original's referral rate. */
-const REFERRAL_SHARE = 0.1;
 
 const BPS_DIVISOR = 10_000;
 
@@ -155,24 +159,37 @@ export function topUp(ledger: SimLedger): SimLedger {
 
 /**
  * Books a CONFIRMED deploy against the simulated custody layer: the stake leaves the player's
- * simulated balance and the arena's fee (`FEE_BPS`, matching `init_arena(fee_bps)` as deployed)
- * accrues to the house.
+ * simulated balance and the arena's fee accrues to the house.
+ *
+ * THE RATE IS A PARAMETER, AND THAT IS THE POINT. This module is play money — but it is play money
+ * booked off a REAL event: the provider calls this from `useOnEntered` when a chain `enter()`
+ * confirms, and the chain charged whatever `Arena.fee_bps` said at that instant. Accruing at a
+ * build-time constant instead would put a house take in this ledger that no player was ever charged,
+ * and the referrals screen prints the accrued balance directly beneath the live rate — so the two
+ * would be visibly different numbers describing the same deploy, one paragraph apart. That is the
+ * defect this whole path exists to close, and the ledger is not exempt from it just because the
+ * dollars are invented. The caller passes the same `FeeRate` the page is displaying.
  *
  * IT NEVER GATES THE REAL ACTION. `enter()` on chain does not know this ledger exists, so refusing a
  * deploy because simulated play money ran out would be a fiction blocking a fact. The balance floors
  * at zero and the deploy still happened.
  *
  * REFERRALS — A MODEL, NOT AN OBSERVATION. No client can see someone else using your link, and the
- * chain has no referral concept at all. So `referralEarned` demonstrates the original's rate (10% of
- * the house fee) against the only play this browser can actually see — your own — and only once the
- * referral wiring is active in the sim (`referralCount > 0`, set by arriving on a `?ref=` link). It
- * is a rate made visible, never a claim that anyone was referred; the `SIM` marker on the referrals
- * screen is doing real work.
+ * chain has no referral concept at all. So `referralEarned` demonstrates the original's rate
+ * (`REFERRAL_SHARE_PCT` of the house fee) against the only play this browser can actually see —
+ * your own — and only once the referral wiring is active in the sim (`referralCount > 0`, set by
+ * arriving on a `?ref=` link). It is a rate made visible, never a claim that anyone was referred;
+ * the `SIM` marker on the referrals screen is doing real work.
  */
-export function recordDeploy(ledger: SimLedger, token: TokenKey, amountUsd: number): SimLedger {
+export function recordDeploy(
+  ledger: SimLedger,
+  token: TokenKey,
+  amountUsd: number,
+  arenaFee: FeeRate,
+): SimLedger {
   if (!isValidAmount(amountUsd)) return ledger;
-  const fee = (amountUsd * FEE_BPS) / BPS_DIVISOR;
-  const referral = ledger.referralCount > 0 ? fee * REFERRAL_SHARE : 0;
+  const fee = (amountUsd * arenaFee.bps) / BPS_DIVISOR;
+  const referral = ledger.referralCount > 0 ? (fee * REFERRAL_SHARE_PCT) / 100 : 0;
   return {
     ...ledger,
     balances: withBalance(ledger.balances, token, Math.max(0, ledger.balances[token] - amountUsd)),

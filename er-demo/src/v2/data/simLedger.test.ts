@@ -3,7 +3,7 @@
 // somebody poking at devtools) has to degrade to a fresh ledger rather than white-screening the app.
 
 import { describe, expect, it } from "vitest";
-import { CONVERT_BPS, FEE_BPS, type SimLedger } from "../contract.ts";
+import { CONVERT_BPS, FEE_BPS, REFERRAL_SHARE_PCT, feeRate, type SimLedger } from "../contract.ts";
 import {
   INITIAL_LEDGER,
   convert,
@@ -59,16 +59,37 @@ describe("convert", () => {
 });
 
 describe("recordDeploy", () => {
-  it("debits the stake and accrues the arena fee to the treasury", () => {
-    const l = recordDeploy(START, "ansem", 100);
+  it("debits the stake and accrues the arena's LIVE rate to the treasury", () => {
+    const l = recordDeploy(START, "ansem", 100, feeRate(20));
     expect(l.balances.ansem).toBe(START.balances.ansem - 100);
-    expect(l.treasury.ansem).toBe((100 * FEE_BPS) / 10_000);
+    expect(l.treasury.ansem).toBe(0.2);
     expect(l.referralEarned).toBe(0);
+  });
+
+  // THE REGRESSION THIS FILE MISSED. It asserted against `FEE_BPS` — so when the arena's rate moved
+  // 20 -> 100 the ledger accrued five times as much and this test moved with it, agreeing with the
+  // code instead of checking it. A ledger booked off a CONFIRMED chain deploy has to charge what the
+  // door charged, and the door is the arena account.
+  it("follows the arena, not the build-time fallback", () => {
+    const cheap = recordDeploy(START, "ansem", 100, feeRate(20));
+    const dear = recordDeploy(START, "ansem", 100, feeRate(1_000));
+    expect(cheap.treasury.ansem).toBe(0.2);
+    expect(dear.treasury.ansem).toBe(10);
+    expect(dear.treasury.ansem).not.toBe(cheap.treasury.ansem);
+  });
+
+  it("takes nothing at all when the arena's rate is zero", () => {
+    // 0 bps is a rate the authority may legitimately set, and a free door must book a free door —
+    // not a NaN, and not the fallback quietly standing in for a rate that was read as zero.
+    const l = recordDeploy(START, "ansem", 100, feeRate(0));
+    expect(l.balances.ansem).toBe(START.balances.ansem - 100);
+    expect(l.treasury.ansem).toBe(0);
+    expect(Number.isNaN(l.treasury.ansem)).toBe(false);
   });
 
   it("never blocks or negates a deploy the chain already accepted", () => {
     const broke = { ...START, balances: { ...START.balances, uwu: 5 } };
-    const l = recordDeploy(broke, "uwu", 100);
+    const l = recordDeploy(broke, "uwu", 100, feeRate(FEE_BPS));
     expect(l.balances.uwu).toBe(0);
     expect(l.treasury.uwu).toBeGreaterThan(0);
   });
@@ -76,9 +97,9 @@ describe("recordDeploy", () => {
   it("splits the referral share out of the house fee once a referral is registered", () => {
     const referred = registerReferral(START, true);
     expect(referred.referralCount).toBe(1);
-    const l = recordDeploy(referred, "ansem", 100);
-    const fee = (100 * FEE_BPS) / 10_000;
-    expect(l.referralEarned).toBeCloseTo(fee * 0.1, 12);
+    const l = recordDeploy(referred, "ansem", 100, feeRate(20));
+    const fee = (100 * 20) / 10_000;
+    expect(l.referralEarned).toBeCloseTo((fee * REFERRAL_SHARE_PCT) / 100, 12);
     // The referral share comes OUT of the house's take — it is not minted alongside it.
     expect(l.treasury.ansem + l.referralEarned).toBeCloseTo(fee, 12);
   });

@@ -38,7 +38,7 @@ import { PROGRAM_ID } from "../../chain/constants.ts";
 import { useFightTicker } from "../../chain/useFightTicker.ts";
 import { useAppSessionManager } from "../../chain/session/useSessionKeyManager.ts";
 import { toAnchorWallet, useSigner } from "../../chain/useSigner.ts";
-import { nameFor, shortKey, type Side } from "../contract.ts";
+import { feeRate, nameFor, shortKey, type FeeRate, type Side } from "../contract.ts";
 import { simBankrollUsd } from "./autoDeploy.ts";
 import { useAutoDeploy } from "./useAutoDeploy.ts";
 import { FIXTURE_FORCED, SIGNER_MODE } from "./flags.ts";
@@ -48,6 +48,7 @@ import { playBlock } from "./playGate.ts";
 import { NO_COMBAT, combatFeed } from "./combatFeed.ts";
 import { houseDisclosureOf, withHouseMarks } from "./houseFighters.ts";
 import { useHouseRoster } from "./keeperFeed.ts";
+import { MOCK_FEE_BPS } from "./mockData.ts";
 import { useTreasury } from "./useTreasury.ts";
 import { forgetSession, noteSessionStarted, readSessionStartedAt, sessionLife } from "./sessionExpiry.ts";
 import {
@@ -88,12 +89,23 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
  * built, and the repeat rule needs `actions.enter` in order to be built, so one of the two has to be
  * wired after the fact. A ref written on render is the cheapest honest way to close that loop; the
  * alternative is a context between two hooks that sit four lines apart.
+ *
+ * THE FEE GOES THROUGH A REF FOR A SECOND, DIFFERENT REASON. It is read at CONFIRMATION time rather
+ * than captured when this callback was built, which is both the more accurate rate (the door charged
+ * whatever the arena said when the transaction landed, and the newest poll is the closest thing to
+ * that) and the one that does not rebuild `onEntered` — and with it every callback in `useActions`
+ * that depends on it — each time the arena poll returns a changed `fee_bps`.
  */
-function useOnEntered(recordDeploy: (side: Side, stakeUnits: bigint) => void) {
+function useOnEntered(
+  recordDeploy: (side: Side, stakeUnits: bigint, arenaFee: FeeRate) => void,
+  fee: FeeRate,
+) {
   const noteDeployRef = useRef<((side: Side) => void) | null>(null);
+  const feeRef = useRef(fee);
+  feeRef.current = fee;
   const onEntered = useCallback(
     (side: Side, stakeUnits: bigint) => {
-      recordDeploy(side, stakeUnits);
+      recordDeploy(side, stakeUnits, feeRef.current);
       noteDeployRef.current?.(side);
     },
     [recordDeploy],
@@ -103,7 +115,11 @@ function useOnEntered(recordDeploy: (side: Side, stakeUnits: bigint) => void) {
 
 function FixtureArenaProvider({ children }: { children: ReactNode }) {
   const shell = useShell();
-  const { onEntered, noteDeployRef } = useOnEntered(shell.simLedger.recordDeploy);
+  // KNOWN, AND INVENTED, AND BOTH ARE TRUE. There is no arena account to be waiting on here, so
+  // `known: false` would describe a read that is never going to happen; the fixture's rate is simply
+  // present, exactly as its treasury and its house roster are. `MOCK_FEE_BPS` says why it is 20.
+  const fee = useMemo(() => feeRate(MOCK_FEE_BPS), []);
+  const { onEntered, noteDeployRef } = useOnEntered(shell.simLedger.recordDeploy, fee);
   const fixture = useFixtureArena({
     active: true,
     push: shell.toasts.push,
@@ -127,6 +143,7 @@ function FixtureArenaProvider({ children }: { children: ReactNode }) {
   const value: ArenaContextValue = {
     source: "fixture",
     ...fixture,
+    fee,
     autoDeploy,
     status: {
       // Nothing failed — the fixture was ASKED for. Reporting a program error here would send the
@@ -244,6 +261,11 @@ function ChainArena({
   );
   const history = useHistory(chain.program, chain.arena, chain.roundCounter, youPubkey);
 
+  // WHAT THE DOOR CHARGES, off the arena account rather than off a constant this build was compiled
+  // with. It rides the arena poll that was already fetching `round_counter` (see `useChain.ts`), so
+  // this costs no request; `known` is false only until that first read lands, or if it failed.
+  const fee = useMemo(() => feeRate(chain.feeBps), [chain.feeBps]);
+
   // WHO IN THIS ROUND IS THE HOUSE'S. Subscribed here, at the top of the data layer, rather than read
   // from `ui/KeeperStatusProvider`'s context — that provider is mounted BELOW this one and its
   // context is therefore unreachable from here. `keeperFeed.ts` explains why the answer was to move
@@ -297,7 +319,7 @@ function ChainArena({
     [identity.mode, identity.status, identity.fault, chain.program, providerPresent, walletValue.solBalance, youPubkey],
   );
 
-  const { onEntered, noteDeployRef } = useOnEntered(shell.simLedger.recordDeploy);
+  const { onEntered, noteDeployRef } = useOnEntered(shell.simLedger.recordDeploy, fee);
   const actions = useActions({
     program: chain.program,
     router: chain.router,
@@ -507,6 +529,12 @@ function ChainArena({
         // single tile `UI-SPEC.md` ordered fixed because it was showing a modelled number beside a
         // real one. When the chain genuinely cannot be read this is null, which renders `—`.
         treasury,
+        // AND THE FEE, ON EXACTLY THE TREASURY'S ARGUMENT — it is arena state, the fallback is about
+        // there being no ROUND, and in the fallback's commonest cause ("no round has been opened
+        // yet") the arena account reads perfectly well. A visitor waiting out the gap between rounds
+        // is entitled to the rate the next one will charge them, not the fixture's invented 20. When
+        // the arena genuinely cannot be read, `known` is false and the surfaces say so.
+        fee,
         ...shellValue(shell, fixture.you.pubkey),
       }
     : {
@@ -518,6 +546,7 @@ function ChainArena({
         combat,
         houseDisclosure,
         treasury,
+        fee,
         history,
         standings,
         logCoverage,

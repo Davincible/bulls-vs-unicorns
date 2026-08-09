@@ -10,25 +10,24 @@
 import { useEffect, useState } from "react";
 import { useArena } from "../data/useArena.ts";
 import { Dash, KV, KVs, Section, Tag } from "../ui/primitives.tsx";
-import { FEE_BPS, SIDE_TOKEN, usd, usdToUnits } from "../contract.ts";
+import { REFERRAL_SHARE_PCT, SIDE_TOKEN, usd, usdToUnits } from "../contract.ts";
+import { feeFigure, feeNote, feePhrase, referralExample } from "./feeCopy.ts";
 import "./screens.css";
 
-/** The referrer's cut of the house fee, matching the original game's 10%. */
-const REFERRAL_SHARE_PCT = 10;
-
-/** WHAT "10% OF THE HOUSE FEE" IS ACTUALLY WORTH, on a round number a player can hold in their head.
+/** The deploy the worked example below is priced against — a round number a reader can hold in their
+ *  head while they check it.
  *
- *  Stated because the headline rate is two big-sounding percentages of each other and of almost
- *  nothing: 10% of 0.20% is two hundredths of one percent of a deploy. A page that says "10% of the
- *  house fee" and stops has told the truth and left the reader with the wrong number. Priced through
- *  `usdToUnits`/`usd` like every other figure here rather than written out as a string, so it can
- *  never drift from `FEE_BPS`. */
+ *  THE EXAMPLE ITSELF IS COMPUTED, from the rate the arena is charging right now (`referralExample`).
+ *  It used to be two module constants folded against `FEE_BPS` at build time, under a comment that
+ *  spelled the answer out in prose — "10% of 0.20% is two hundredths of one percent" — which was
+ *  false the moment the rate moved to 1.00% and stayed false until someone noticed. Prose that
+ *  restates arithmetic goes stale silently; arithmetic does not. The sentence below now names no rate
+ *  it has not been handed. */
 const EXAMPLE_DEPLOY_USD = 100;
-const EXAMPLE_HOUSE_FEE_USD = (EXAMPLE_DEPLOY_USD * FEE_BPS) / 10_000;
-const EXAMPLE_SHARE_USD = (EXAMPLE_HOUSE_FEE_USD * REFERRAL_SHARE_PCT) / 100;
 
 export function ReferralsView() {
-  const { sim, you, toasts } = useArena();
+  const { sim, fee, you, toasts } = useArena();
+  const example = referralExample(fee, EXAMPLE_DEPLOY_USD);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -160,11 +159,17 @@ export function ReferralsView() {
             />
             <KV label="Players referred" value={count > 0 ? String(count) : <Dash />} />
             <KV label="Your share of the fee" value={`${REFERRAL_SHARE_PCT}%`} />
-            <KV label="House fee · per deploy" value={`${(FEE_BPS / 100).toFixed(2)}%`} />
+            {/* A STANDALONE FIGURE, so it dashes rather than guessing — the same rule the
+                dashboard's fee tile follows, for the same reason. See `feeCopy.ts`. */}
+            <KV
+              label="House fee · per deploy"
+              value={feeFigure(fee) ?? <Dash />}
+              title={feeNote(fee)}
+            />
           </KVs>
           <p className="lede sc-refnote">
-            {REFERRAL_SHARE_PCT}% of a {(FEE_BPS / 100).toFixed(2)}% fee is{" "}
-            <b>{usd(usdToUnits(EXAMPLE_SHARE_USD))} on a {usd(usdToUnits(EXAMPLE_DEPLOY_USD), 0)} deploy</b> —
+            {REFERRAL_SHARE_PCT}% of a {feePhrase(fee)} fee is{" "}
+            <b>{usd(usdToUnits(example.shareUsd))} on a {usd(usdToUnits(EXAMPLE_DEPLOY_USD), 0)} deploy</b> —
             the rate is a share of the door, not of anyone's stake or winnings.{" "}
             {count > 0
               ? null
@@ -184,7 +189,7 @@ export function ReferralsView() {
           <div className="sc-term">
             <span className="idx">03-3.1</span>
             <p>
-              The house takes <b>{(FEE_BPS / 100).toFixed(2)}%</b> of every deploy. That is the only
+              The house takes <b title={feeNote(fee)}>{feePhrase(fee)}</b> of every deploy. That is the only
               fee in the game, and it is taken once, at the door — nothing is skimmed off a raid, a
               payout or an extraction.
             </p>
