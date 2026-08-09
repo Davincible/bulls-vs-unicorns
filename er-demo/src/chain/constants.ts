@@ -12,9 +12,16 @@ export const BASE_RPC = "https://api.devnet.solana.com";
 assertDevnetUrl(ROUTER_URL, "Magic Router");
 assertDevnetUrl(BASE_RPC, "base devnet RPC");
 
-// The proven, security-reviewed, deployed bulls-arena program. Matches idl.address in
+// The deployed bulls-arena program (v2 address). Matches idl.address in
 // public/idl/bulls_arena.json — asserted equal at runtime in idl.ts rather than trusted blindly.
-export const PROGRAM_ID = new PublicKey("F59NksP2bYZhP4wD7fgR1sP729UHNPitrBiYrrKF1sYW");
+//
+// v2 because MagicBlock's ER validators cache a program's bytecode on first use and don't re-clone
+// it after a base-layer upgrade (MAGICBLOCK_FEEDBACK.md). Every public devnet validator had a
+// pre-Phase-6 clone of the v1 id, so no route could run the current code on a delegated round. The
+// cache is keyed by program id, so a fresh id sidesteps it. v1
+// (F59NksP2bYZhP4wD7fgR1sP729UHNPitrBiYrrKF1sYW) remains a valid deployment of this same source and
+// every verification signature recorded against it still stands — see lib.rs's declare_id! note.
+export const PROGRAM_ID = new PublicKey("4uqVSyHtx7CBaXUL2qy7cN4eV3MzqmvucapGHN1imFYm");
 
 // Verified from the ephemeral-vrf-sdk crate source (MEGA_QUEUE.md ER-060) — the EPHEMERAL queue,
 // not the base one, because by the time close_lobby_and_draw runs the round is already

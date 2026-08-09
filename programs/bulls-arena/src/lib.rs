@@ -42,7 +42,17 @@ use ephemeral_rollups_sdk::vrf::types::SerializableAccountMeta;
 // and a wallet popup there undercuts the "real-time because of the ER" pitch worse than one at entry.
 use session_keys::{session_auth_or, Session, SessionError, SessionToken};
 
-declare_id!("F59NksP2bYZhP4wD7fgR1sP729UHNPitrBiYrrKF1sYW"); // devnet program keypair: .devnet/program-keypair.json
+// v2 ADDRESS, and the reason is infrastructure, not code. The original devnet id
+// (F59NksP2bYZhP4wD7fgR1sP729UHNPitrBiYrrKF1sYW, keypair .devnet/program-keypair.json) is still a
+// valid deployment of this same source and every verification signature in MEGA_QUEUE.md /
+// MAGICBLOCK_FEEDBACK.md against it stands. But MagicBlock's ER validators cache a program's
+// executable bytecode on first use and do not re-clone it after a base-layer upgrade (see
+// MAGICBLOCK_FEEDBACK.md) — by the end of this session every public devnet validator was serving a
+// pre-Phase-6 build of that id, or gating writes, leaving no route on which a live delegated round
+// could run the current code. That cache is keyed by PROGRAM ID, so a fresh id has no stale clone
+// anywhere and the first delegation pulls the current bytecode. This is a workaround for their cache,
+// not a fix to anything here; the old id can be used again once its clones age out.
+declare_id!("4uqVSyHtx7CBaXUL2qy7cN4eV3MzqmvucapGHN1imFYm"); // devnet keypair: .devnet/program-keypair-v2.json
 
 pub const ARENA_SEED: &[u8] = b"arena";
 pub const ROUND_SEED: &[u8] = b"round";
