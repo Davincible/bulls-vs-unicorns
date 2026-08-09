@@ -40,11 +40,11 @@ export interface RenderFighter {
   dead?: boolean;
 }
 
-/** The top-level prop contract for `PixiCanvas` (and therefore for whatever wires it into the real
- *  app once Phase 3's store lands — see PixiCanvas.tsx's header comment for the full integration
- *  note). Every field is plain data; nothing here depends on zustand or on `useRound`'s hook shape,
- *  so this component has no dependency on a store existing to be exercised standalone (see
- *  render/harness/ for exactly that). */
+/** The top-level prop contract for `PixiCanvas`, wired into the real app in `App.tsx`. Every field is
+ *  plain data; nothing here depends on zustand or on `useRound`'s hook shape, so this component has no
+ *  dependency on a store existing — see PixiCanvas.tsx's header comment for the full integration
+ *  note and App.tsx's own comment on why hitEvents/fighters are passed as props rather than routed
+ *  through the store. */
 export interface PixiCanvasProps {
   fighters: RenderFighter[];
   /** The full precomputed hit sequence for the CURRENT fight, ordered by `step`, from

@@ -40,6 +40,41 @@
   gap: 4px;
 }
 
+/* Integration pass — canvas prominent/large on the left, the plain-text panels (RoundPanel, Enter,
+   Extract, Verify) as a narrower sidebar to the right. Fixed desktop layout only, per the plan's 80/20
+   cut ("mobile responsiveness" is explicitly not in scope) — a judge's laptop, not a phone. */
+.app-layout {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+.app-arena {
+  flex: 0 0 auto;
+}
+
+.app-arena-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 960px;
+  height: 540px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted, #888);
+  text-align: center;
+  padding: 0 48px;
+}
+
+.app-sidebar {
+  flex: 1 1 360px;
+  min-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
 /* ExtractButton.tsx / VerifyPanel.tsx (Phase 5) — additive only, doesn't touch anything above.
    Plain color-coded status text, matching this file's own "no styling investment beyond legibility"
    precedent, but color-coded because ExtractButton/VerifyPanel are explicitly the two screens where

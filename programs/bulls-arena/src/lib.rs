@@ -85,9 +85,39 @@ pub const DUST: u64 = 1_000;
 /// choose; the result is now purely a function of the VRF seed and how much real time has genuinely
 /// passed, which is exactly what "provably fair" is supposed to mean.
 pub const STEPS_PER_SECOND: u64 = 175;
-/// ER-030 measured ~7,293 steps fit in one transaction's compute budget (187.4 CU/step against a
-/// 1.4M CU ceiling); capped well under that with margin for the settlement pass and commit CPI.
-pub const MAX_STEPS: u64 = 7_000;
+/// Re-measured this session (task #15) after MAX_STEPS=7,000 — ER-030's number — turned out to have
+/// ZERO real margin against the CURRENT `resolve`: a round left open past ~40s failed on-chain with
+/// "1,399,850 of 1,399,850 CUs consumed, exceeded CUs meter" (devnet round #9, permanently stuck).
+///
+/// ER-030's 187.4 CU/step was measured against an OLDER `resolve` — before this session's security
+/// fix restructured `steps` from a caller argument into a time-derived value — AND `bench_fight`
+/// itself had drifted from `run_fight` by then (see its own comment): one cheap `a % 2 == d % 2`
+/// check standing in for THREE real ones (side, wallet, dead), missing the 32-byte Pubkey compare
+/// `run_fight` always pays. Re-measured by fixing `bench_fight` to call `run_fight` directly (so it
+/// cannot drift again) and sweeping it on a local `solana-test-validator` running the current build
+/// — CU accounting is a deterministic property of the bytecode and inputs, not the cluster, so this
+/// is as real as a devnet number without spending devnet SOL to get it. Result: cost is NOT linear
+/// per step (it falls from ~271 to ~198 CU/step as fighters die and more steps hit the cheap
+/// early-`continue` path), and the measured total crosses the 1.4M ceiling between 6,800 steps
+/// (1,389,142 CU — the loop alone, 99.2% of the ceiling) and 6,900 (over) — confirming the reported
+/// failure at 7,000 was real, not a fluke, and that this bench path (once fixed) reproduces it.
+///
+/// 4,000 steps measures at 864,996 CU for the loop alone (61.8% of the ceiling) — this constant
+/// covers only `run_fight`; the real `resolve` also pays for the `Round` account's borsh
+/// deserialise-in and serialise-out (~937 bytes), the `require!`/`Clock::get()` guards, the
+/// `RoundSettled` event, and the CPI to the Magic commit program, none of which `bench_fight`'s
+/// bare-signer context exercises. There is no verified number for that remainder — ER-030 guessed
+/// 30k CU for it and was wrong about the loop itself, so guessing again here would repeat the same
+/// mistake. Instead: 4,000 leaves 535,004 CU (38.2%) of headroom for it, which would have to be
+/// ~5x any prior guess before this stopped being real margin — and the actual total is checked for
+/// real in this session's regression test (a round resolved after the cap, with a real signature),
+/// not assumed from this comment.
+///
+/// STEPS_PER_SECOND unchanged, so the cap is now reached at 4,000 / 175 ≈ 22.9s instead of 40s — a
+/// round resolved after that sees a fight frozen at the same outcome no matter how much later it's
+/// actually called. This does not shrink `extract()`'s real window: that window is bounded by when
+/// `resolve` is actually invoked (an off-chain/keeper decision), not by MAX_STEPS.
+pub const MAX_STEPS: u64 = 4_000;
 /// A fight must run for at least this long before anyone can resolve it. Without a floor, resolve()
 /// could be called the instant Fight begins (steps = 0) and extract() — the mechanic this whole
 /// migration exists to make load-bearing — would never get a real window to matter.
@@ -329,25 +359,33 @@ pub mod bulls_arena {
     pub fn bench_fight(_ctx: Context<BenchFight>, steps: u32, fighters: u8) -> Result<()> {
         require!(steps > 0 && steps <= 20_000, ArenaError::BadStepCount);
         let n = (fighters as usize).clamp(2, MAX_FIGHTERS);
-        let seed = [7u8; 32];
-        let mut hp = [1_000_000_000u64; MAX_FIGHTERS];
-        let mut banked = [0u64; MAX_FIGHTERS];
 
-        for step in 0..steps {
-            let h = hashv(&[seed.as_ref(), (step as u64).to_le_bytes().as_ref()]).to_bytes();
-            let a = (u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize) % n;
-            let mut d = (u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize) % n;
-            if d == a { d = (d + 1) % n; }
-            if a % 2 == d % 2 { continue; }              // stand-in for the same-side check
-            let roll = (h[8] as u64) % 24 + 4;
-            let mut dmg = hp[d].saturating_mul(roll) / 100;
-            if hp[d] <= DUST || dmg == 0 { dmg = hp[d]; }
-            if dmg == 0 { continue; }
-            hp[d] = hp[d].saturating_sub(dmg);
-            banked[a] = banked[a].saturating_add(dmg);
+        // Found while re-measuring for the MAX_STEPS fix (this session): this probe used to be a
+        // hand-copied stand-in for `run_fight`'s loop — one check (`a % 2 == d % 2`) doing duty for
+        // THREE (side, wallet, dead), no `dead` write, and a bare `u64` HP array instead of the real
+        // 58-byte `Fighter`. That undercounts the cost of every step (skips a 32-byte Pubkey compare
+        // the real loop always pays) while also never letting anyone go `dead`, so it OVERcounts how
+        // often the expensive damage branch fires late in a fight, once real fighters would have
+        // started dying. Which error dominated was exactly the kind of thing "estimate carefully" is
+        // no substitute for measuring — it drifted enough that steps=7,000 exceeded a 1.4M-CU
+        // transaction on the real, current `resolve`. Calling `run_fight` directly — the same
+        // function it's meant to describe, per its own doc comment — is the only way this cannot
+        // drift again.
+        let mut arr = [Fighter::default(); MAX_FIGHTERS];
+        for (i, f) in arr.iter_mut().enumerate().take(n) {
+            *f = Fighter {
+                wallet: Pubkey::new_from_array([(i as u8) + 1; 32]), // distinct per fighter, like real entries
+                side: (i % 2) as u8,                                  // alternating, like a real matched book
+                dead: 0,
+                stake: 1_000_000_000,
+                hp: 1_000_000_000,
+                banked: 0,
+            };
         }
-        // consume the results so the optimiser cannot delete the loop and report a fictitious cost
-        msg!("bench {} steps, {} fighters, hp0={} banked0={}", steps, n, hp[0], banked[0]);
+        let seed = [7u8; 32];
+        let winner = run_fight(&mut arr, n, &seed, steps);
+        // consume the result so the optimiser cannot delete the loop and report a fictitious cost
+        msg!("bench {} steps, {} fighters, winner={} hp0={} banked0={}", steps, n, winner, arr[0].hp, arr[0].banked);
         Ok(())
     }
 

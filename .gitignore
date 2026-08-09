@@ -23,3 +23,8 @@ target/
 .toolchain/
 .xwin-cache/
 target/
+
+# Local agent/editor tooling state — machine-specific, never source.
+.opencode/
+.localindex/
+.claude/settings.local.json

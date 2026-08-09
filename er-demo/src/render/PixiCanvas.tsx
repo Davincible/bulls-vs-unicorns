@@ -14,8 +14,9 @@
 //     non-null (per the plan doc's chain<->render wiring section).
 //   - `fightStartedAtMs`: `Number(round.fightStartedAt) * 1000`, or `null` before the Fight phase.
 //   - `phase`: `round.phaseName`, read-only context (not used to gate playhead advancement).
-// This component has NO dependency on zustand/a store — it's plain props in, canvas out, so it can
-// be exercised standalone (see render/harness/) before the store side of the app exists.
+// This component has NO dependency on zustand/a store — it's plain props in, canvas out. (It was
+// exercised standalone against a fixture in `render/harness/` during Phase 4's own build, before
+// App.tsx wired it into the real app; that temporary harness was deleted in the integration pass.)
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Application, Container } from "pixi.js";
 import { Particles, ParticlesProvider, type ParticlesPluginRegistrar } from "@tsparticles/react";
