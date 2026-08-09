@@ -94,6 +94,14 @@ upgrade landed and then debug a phantom bug in their new code.
 **Suggested minimum:** expose the executing bytecode's hash/length over RPC so a client can detect
 staleness deterministically, instead of inferring it from account sizes and error-message archaeology.
 
+**What actually unblocked us: burning the program id.** The cache is keyed by program id, so a freshly
+generated id has no poisoned clone on any validator and the first delegation pulls current bytecode.
+We deployed v2 at `4uqVSyHtx7CBaXUL2qy7cN4eV3MzqmvucapGHN1imFYm` and the end-to-end flow that had been
+blocked for hours — session-signed `enter`, VRF draw, session-signed `extract` in Fight phase — worked
+on the first attempt. That this is the *only* self-service recovery available is itself the strongest
+argument for the RPC surface suggested above: a developer whose upgrade lands correctly on the base
+layer currently has no supported way to make an already-warm validator run it.
+
 ---
 
 ## 2026-08-09 — Two smaller `gum-react-sdk` / `session-keys` notes

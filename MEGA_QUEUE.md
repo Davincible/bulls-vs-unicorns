@@ -458,11 +458,13 @@ because this fork cannot reach mainnet by construction (ER-000).
 > from the ring — directly moving the round's outcome — and every existing assertion would still have
 > passed. It is now a permanent test, not an ad-hoc check.
 >
-> **NOT proven:** a session-signed `extract` *landing in real Fight phase* with a confirmed
-> signature. Authorization is proven three ways and the handler body is byte-unchanged, but the
-> transaction was never landed, because reaching Fight requires the VRF oracle and therefore the ER —
-> and every public devnet ER validator is currently serving pre-upgrade bytecode or gating writes
-> (see below). Stated plainly rather than papered over.
+> **NOW ALSO PROVEN (`er-demo/scripts/verify-session-extract.mjs`, round #6):** a session-signed
+> `extract()` **landing in real Fight phase**, on a real ER validator, after a real VRF callback —
+> sig `3MiotyrGHQAjERfyKqC3v49Mqd127HuM4pBv3fBKBP4ode8Gv9X5mCoTbifqRywK8hQVFcvDpQHGDVpjHHdgSCak`.
+> `hp 499000 -> banked 499000, dead=1`, asserted exactly. Player A's wallet signed **once**
+> (`create_session`) and never signed the extract itself — which is the entire point of the feature.
+> Unblocked by the v2 program id (see below); it had been blocked purely by MagicBlock's stale
+> validator caches, never by anything in this code.
 >
 > **One real bug this shook out, worth remembering:** `anchor-lang = "1.0.2"` (Cargo's default caret
 > range) silently resolved to **1.1.2**, whose `anchor-syn` migration from syn 1.x to syn 2.0 broke
