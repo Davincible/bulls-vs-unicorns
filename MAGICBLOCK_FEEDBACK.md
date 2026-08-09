@@ -10,6 +10,40 @@ documentation or capability), **[BUG]**, or **[FEATURE REQUEST]**.
 
 ---
 
+## 2026-08-09 — Ephemeral validators don't re-clone a program's bytecode after a base-layer upgrade
+
+Context: fixing a compute-budget bug in our program (`programs/bulls-arena`), we upgraded the
+deployed program (base-layer `anchor upgrade`, standard `BPFLoaderUpgradeable` flow) and confirmed
+the new bytecode on the base layer before testing. `resolve()` on a *fresh* round, delegated and
+run through the default router-selected ER validator (`devnet-as.magicblock.app`), still failed with
+the exact pre-fix error — three-plus minutes after the base-layer upgrade had already confirmed.
+
+**[BUG or GAP, unclear which without visibility into the validator's own code]** The ER validator
+appears to clone a program's executable bytecode into its own local (`LoaderV4`-owned, from the
+account it creates) copy on first use, and does not re-clone it when the base-layer program is
+upgraded. A `BPFLoaderUpgradeable` program's own `Program` account never changes on upgrade — only
+its separate `ProgramData` account does — so if the validator's cache invalidation subscribes to (or
+diffs) the `Program` account rather than `ProgramData`, it would structurally never observe an
+upgrade. We didn't have visibility into the validator's actual cache-invalidation logic to confirm
+which; this is diagnosis from external behavior (`simulateTransaction` against the ER endpoint
+directly, reading `unitsConsumed`/logs), not a source read.
+
+**Cost to us:** a confusing ~15 minutes where a verified, redeployed fix appeared to still be broken
+on-chain, before realizing the *base layer* had the fix and the *ER validator* didn't.
+
+**Workaround found:** `delegate_round`'s `DelegateConfig.validator` (passed via
+`remaining_accounts[0]`) can pin a specific ER validator instead of accepting the router's default.
+Pinning a different validator (`devnet-us.magicblock.app`) on a fresh round got a clean clone of the
+current bytecode immediately. Regression-verified for real this way — see `MEGA_QUEUE.md`'s task #15
+entry for the full signature trail.
+
+**[FEATURE REQUEST]** Either invalidate the ER-side bytecode cache on a `ProgramData` write (not just
+the `Program` account), or document the actual cache lifetime/invalidation trigger explicitly so a
+developer redeploying mid-session knows to expect (and how to force past) stale bytecode on
+already-warm validators, rather than discovering it by accident.
+
+---
+
 ## 2026-08-09 — Phase 0 spike: Session Keys + Ephemeral Rollup delegation
 
 Context: we spent a session verifying whether MagicBlock's Session Keys mechanism
