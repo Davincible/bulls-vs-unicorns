@@ -1,0 +1,1081 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bulls ⚔ Unicorns — pitch</title>
+<style>
+/* =============================================================================================
+   BULLS ⚔ UNICORNS — PITCH DECK
+   =============================================================================================
+   The same design law as er-demo/src/v2/styles/base.css, scaled for a projector. Pure white,
+   black text, no cards, no radius, no shadows, no gradients. Hairline rules and whitespace do
+   all the separating. Tiny uppercase mono micro-labels, numbered section indices, mono tabular
+   figures, one big display number per slide. Colour is reserved: --a ANSEM green, --b UWU
+   violet, --hot for loss. Nothing else gets colour.
+
+   Two deliberate departures from base.css, both because this is projected, not read:
+
+     1. `--k`, a single type scale tied to the smaller of the two viewport axes, so the deck keeps
+        its proportions from 1440x900 up to 1920x1080 and beyond. Every size derives from it.
+     2. `--ink-3`/`--ink-4` are darker here than on the page (#6f6f6f / #9b9b9b vs #8a8a8a /
+        #b5b5b5). A projector lifts blacks and washes out the low end; base.css's greys survive a
+        laptop screen at arm's length and disappear from the back of a room. #6f6f6f holds 5.0:1
+        on white, so every micro-label clears WCAG AA as well.
+   ============================================================================================= */
+
+:root {
+  --paper: #ffffff;
+  --ink: #0b0b0b;
+  --ink-2: #4d4d4d;
+  --ink-3: #6f6f6f;
+  --ink-4: #9b9b9b;
+  --rule: #e0e0e0;
+  --rule-2: #cccccc;
+  --wash: #f6f6f6;
+
+  --a: #2b8c39;          /* side 0 — ANSEM  */
+  --b: #8f09bf;          /* side 1 — UWU    */
+  --accent: #f7ce2b;     /* on --ink backgrounds only, never on white */
+  --hot: #c4291a;        /* loss, danger */
+
+  --sans: "Helvetica Neue", Helvetica, Inter, "Segoe UI", Arial, sans-serif;
+  --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* The projector scale. 1920x1080 -> 17.28px. 1440x900 -> 14.4px. 2560x1440 -> 23.0px. */
+  --k: min(0.9vw, 1.6vh);
+  --chrome-h: calc(var(--k) * 2.15);
+  --gut: calc(var(--k) * 2.8);
+  --tick: 120ms;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+body {
+  color: var(--ink);
+  font: 400 calc(var(--k) * 1.15) / 1.45 var(--sans);
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection { background: var(--ink); color: var(--paper); }
+:focus-visible { outline: 1px solid var(--ink); outline-offset: 3px; }
+
+/* =============================================================================================
+   TYPE PRIMITIVES — base.css's, re-cut for the back of the room
+   ============================================================================================= */
+
+.u {
+  font: 400 calc(var(--k) * 0.94) / 1.2 var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.u--ink { color: var(--ink); }
+.u--faint { color: var(--ink-4); }
+
+.idx {
+  font: 400 calc(var(--k) * 0.94) / 1.2 var(--mono);
+  letter-spacing: 0.08em;
+  color: var(--ink-4);
+  white-space: nowrap;
+}
+
+.display {
+  font: 500 calc(var(--k) * 5.6) / 0.92 var(--sans);
+  letter-spacing: -0.035em;
+  text-transform: uppercase;
+  margin: 0;
+}
+.display--xl   { font-size: calc(var(--k) * 8.2); }
+.display--mono {
+  font-family: var(--mono);
+  font-weight: 400;
+  letter-spacing: -0.05em;
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+}
+/* The unit that trails a big figure — present, subordinate, never competing with the number. */
+.unit {
+  font-size: 0.3em;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+  margin-left: 0.28em;
+  text-transform: uppercase;
+}
+
+.h {
+  font: 500 calc(var(--k) * 1.78) / 1.15 var(--sans);
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  margin: 0;
+}
+
+.lede {
+  font: 400 calc(var(--k) * 1.34) / 1.5 var(--sans);
+  color: var(--ink-2);
+  max-width: 54ch;
+  margin: 0;
+}
+.lede--wide { max-width: 74ch; }
+
+.dim { color: var(--ink-3); }
+.pos { color: var(--a); }
+.neg { color: var(--hot); }
+
+.sim, .live {
+  font: 400 calc(var(--k) * 0.82) / 1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--paper);
+  padding: calc(var(--k) * 0.22) calc(var(--k) * 0.34);
+  white-space: nowrap;
+}
+.sim  { background: var(--ink-4); }
+.live { background: var(--ink); }
+
+.mk {
+  width: calc(var(--k) * 0.66);
+  height: calc(var(--k) * 0.66);
+  flex: none;
+  display: inline-block;
+  background: var(--ink);
+}
+.mk--a { background: var(--a); }
+.mk--b { background: var(--b); }
+
+.line { display: flex; align-items: center; gap: calc(var(--k) * 0.8); }
+.push { margin-left: auto; }
+
+/* The crossed swords in the product's name, drawn rather than typed: the ⚔ glyph arrives as an
+   emoji outline on most systems and sits wrong against Helvetica at display weight. This is two
+   solid blades at ±34°, so it carries the same ink as the letters around it. */
+.sw { width: 0.92em; height: 0.92em; vertical-align: -0.13em; fill: currentColor; }
+.sw--sm { width: 1.05em; height: 1.05em; vertical-align: -0.2em; }
+
+/* =============================================================================================
+   THE FRAME — fixed black status bars, the product's signature
+   ============================================================================================= */
+
+.chrome {
+  position: fixed;
+  left: 0; right: 0;
+  height: var(--chrome-h);
+  background: var(--ink);
+  color: var(--paper);
+  display: flex;
+  align-items: center;
+  gap: calc(var(--k) * 1.1);
+  padding: 0 calc(var(--k) * 0.9);
+  z-index: 80;
+  font: 400 calc(var(--k) * 0.88) / 1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  user-select: none;
+}
+.chrome--top { top: 0; }
+.chrome--bottom { bottom: 0; }
+.chrome .u { color: rgba(255,255,255,0.55); font-size: inherit; letter-spacing: inherit; }
+.chrome-sep { color: rgba(255,255,255,0.32); }
+.chrome-spacer { flex: 1; }
+.chrome b { font-weight: 400; color: var(--paper); white-space: nowrap; }
+
+/* The segmented ticker, straight off the fight clock in the product's top bar. One block per
+   slide, filled to here, and every block is a jump target. */
+.ticker { display: flex; gap: 2px; align-items: center; }
+.ticker button {
+  width: calc(var(--k) * 0.66);
+  height: calc(var(--k) * 0.76);
+  padding: 0;
+  border: 0;
+  background: rgba(255,255,255,0.26);
+  cursor: pointer;
+  transition: background var(--tick) linear;
+}
+.ticker button.done { background: rgba(255,255,255,0.7); }
+.ticker button.now  { background: var(--accent); }
+.ticker button:hover { background: var(--paper); }
+.ticker button:focus-visible { outline: 1px solid var(--paper); outline-offset: 1px; }
+
+/* The progress rule, hard against the bottom edge of the screen. */
+.progress {
+  position: fixed;
+  left: 0; bottom: 0;
+  height: 2px;
+  background: var(--accent);
+  z-index: 90;
+  transition: width var(--tick) linear;
+}
+
+/* =============================================================================================
+   THE DECK
+   ============================================================================================= */
+
+.deck {
+  position: fixed;
+  inset: var(--chrome-h) 0;
+  cursor: pointer;
+}
+
+.slide {
+  position: absolute;
+  inset: 0;
+  padding: calc(var(--k) * 2.0) var(--gut);
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--tick) linear;
+}
+.slide.on { opacity: 1; visibility: visible; }
+
+/* The faint "+" survey marks from the reference. The tile is drawn at its final size so the
+   stroke is never scaled — a 1px cross stretched to tile size is a plaid tablecloth, not a
+   survey mark. Decorative only. */
+.slide::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='186' height='142'><path d='M93 65v12M87 71h12' stroke='%23d2d2d2' stroke-width='1'/></svg>");
+  background-repeat: repeat;
+  z-index: 0;
+}
+.slide > * { position: relative; z-index: 1; }
+
+/* A slide head: hairline rule, index, heading, meta on the right. No box. */
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--k) * 1.15);
+  border-top: 1px solid var(--ink);
+  padding-top: calc(var(--k) * 0.6);
+  flex: none;
+}
+.head .meta { margin-left: auto; display: flex; align-items: center; gap: calc(var(--k) * 0.85); }
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: calc(var(--k) * 1.8);
+  padding: calc(var(--k) * 2.2) 0 calc(var(--k) * 1.4);
+}
+/* A hero over a list: anchor the two to the top and the bottom of the slide and let the air fall
+   between them, rather than centring the pair and stranding it. */
+.body--split { justify-content: space-between; }
+.foot { flex: none; }
+
+/* =============================================================================================
+   LISTS — a rule and rows. Never a card.
+   `--fill` lets the rows share the slide's whole height, so a four-row list is a composed page
+   rather than a block stranded under the heading.
+   ============================================================================================= */
+
+.list { border-top: 1px solid var(--ink); }
+.list--fill { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+.item {
+  display: grid;
+  grid-template-columns: calc(var(--k) * 2.6) calc(var(--k) * 26) minmax(0, 1fr);
+  align-items: baseline;
+  align-content: center;
+  gap: calc(var(--k) * 1.6);
+  padding: calc(var(--k) * 1.0) 0;
+  border-bottom: 1px solid var(--rule);
+}
+.list--fill > .item { flex: 1; }
+.item-k {
+  font: 500 calc(var(--k) * 1.78) / 1.12 var(--sans);
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+.item-k--mono {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: calc(var(--k) * 1.3);
+  letter-spacing: -0.01em;
+  text-transform: none;
+}
+.item-v {
+  font: 400 calc(var(--k) * 1.32) / 1.42 var(--sans);
+  color: var(--ink-2);
+  max-width: 68ch;
+}
+.item-v strong { font-weight: 500; color: var(--ink); }
+
+/* The claim list — no descriptions, just the statements, at display weight. */
+.claims { border-top: 1px solid var(--ink); display: flex; flex-direction: column; }
+.claim {
+  display: grid;
+  grid-template-columns: calc(var(--k) * 2.6) 1fr;
+  gap: calc(var(--k) * 1.6);
+  align-items: baseline;
+  align-content: center;
+  padding: calc(var(--k) * 1.3) 0;
+  border-bottom: 1px solid var(--rule);
+  font: 500 calc(var(--k) * 2.15) / 1.15 var(--sans);
+  letter-spacing: -0.025em;
+  text-transform: uppercase;
+}
+
+/* The fee rows — the figure is the row. */
+.fee {
+  display: grid;
+  grid-template-columns: calc(var(--k) * 11) 1fr;
+  gap: calc(var(--k) * 1.8);
+  align-items: center;
+  align-content: center;
+  padding: calc(var(--k) * 1.0) 0;
+  border-bottom: 1px solid var(--rule);
+}
+.fee-n {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: calc(var(--k) * 3.7);
+  letter-spacing: -0.05em;
+  line-height: 1;
+}
+.fee-n .dim { font-size: 0.52em; letter-spacing: 0; }
+
+/* =============================================================================================
+   KV STRIP — value over label, hairline-separated, never boxed
+   ============================================================================================= */
+
+.kvs {
+  display: grid;
+  gap: 0;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  border-top: 1px solid var(--ink);
+  padding-top: calc(var(--k) * 1.0);
+}
+.kv {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--k) * 0.5);
+  min-width: 0;
+  padding: calc(var(--k) * 0.5) calc(var(--k) * 1.5);
+  border-left: 1px solid var(--rule);
+}
+.kv:first-child { padding-left: 0; border-left: 0; }
+.kv-v {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: calc(var(--k) * 2.6);
+  letter-spacing: -0.045em;
+  line-height: 1;
+  white-space: nowrap;
+}
+.kv-n {
+  font: 400 calc(var(--k) * 0.88) / 1.25 var(--mono);
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* =============================================================================================
+   THE SPLIT BAR — the only place a side colour touches a rectangle
+   ============================================================================================= */
+
+.split {
+  display: flex;
+  height: calc(var(--k) * 2.2);
+  border: 1px solid var(--ink);
+  overflow: hidden;
+  background: var(--paper);
+}
+.split > span {
+  display: flex;
+  align-items: center;
+  font: 400 calc(var(--k) * 0.94) / 1 var(--mono);
+  letter-spacing: 0.1em;
+  color: var(--paper);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.split-a { background: var(--a); padding-left: calc(var(--k) * 0.75); }
+.split-b { background: var(--b); justify-content: flex-end; padding-right: calc(var(--k) * 0.75); }
+
+/* =============================================================================================
+   COIN MARKS — square, hairline-bordered. No radius, even here.
+   ============================================================================================= */
+
+.coin {
+  display: block;
+  width: calc(var(--k) * 3.6);
+  height: calc(var(--k) * 3.6);
+  border: 1px solid var(--ink);
+  object-fit: cover;
+  flex: none;
+}
+.coin--lg { width: calc(var(--k) * 6.2); height: calc(var(--k) * 6.2); }
+
+/* The two sides, faced off across the full width. Used on the title and the closing slide, so
+   the deck opens and shuts on the same object. */
+.sides {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--ink);
+  padding-top: calc(var(--k) * 1.0);
+  gap: calc(var(--k) * 2);
+}
+.side { display: flex; align-items: center; gap: calc(var(--k) * 1.0); min-width: 0; }
+.side-name { font: 500 calc(var(--k) * 1.9) / 1 var(--sans); letter-spacing: -0.02em; text-transform: uppercase; }
+
+/* =============================================================================================
+   PER-SLIDE LAYOUTS
+   ============================================================================================= */
+
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: calc(var(--k) * 3.6); }
+
+/* 01 — the two communities */
+.side-col { display: flex; flex-direction: column; gap: calc(var(--k) * 1.2); border-top: 1px solid var(--ink); padding-top: calc(var(--k) * 1.05); }
+.side-mc { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: calc(var(--k) * 5.0); line-height: 0.95; letter-spacing: -0.05em; }
+.facts { display: flex; flex-direction: column; }
+.fact { display: flex; align-items: baseline; gap: calc(var(--k) * 1.2); padding: calc(var(--k) * 0.72) 0; border-bottom: 1px solid var(--rule); }
+.fact:first-child { border-top: 1px solid var(--rule); }
+.fact-v { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: calc(var(--k) * 1.42); letter-spacing: -0.02em; margin-left: auto; }
+
+/* 04 — how a round works */
+.steps { display: grid; grid-template-columns: repeat(5, 1fr); }
+.step {
+  border-top: 1px solid var(--ink);
+  border-left: 1px solid var(--rule);
+  padding: calc(var(--k) * 1.0) calc(var(--k) * 1.2) calc(var(--k) * 0.6);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--k) * 0.7);
+  min-height: calc(var(--k) * 15);
+}
+.step:first-child { border-left: 0; padding-left: 0; }
+.step-n { font: 400 calc(var(--k) * 0.94) / 1 var(--mono); color: var(--ink-4); letter-spacing: 0.08em; }
+.step-k { font: 500 calc(var(--k) * 1.7) / 1.1 var(--sans); letter-spacing: -0.02em; text-transform: uppercase; }
+.step-v { font: 400 calc(var(--k) * 1.1) / 1.4 var(--sans); color: var(--ink-2); }
+.step-l { margin-top: auto; padding-top: calc(var(--k) * 1); }
+
+/* The delegation span, a bracket over exactly the steps it covers. */
+.span-row { display: grid; grid-template-columns: repeat(5, 1fr); align-items: end; }
+.span {
+  grid-column: 3 / 5;
+  border: 1px solid var(--ink);
+  border-bottom: 0;
+  height: calc(var(--k) * 2.6);
+  position: relative;
+}
+.span-label {
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--paper);
+  padding: 0 calc(var(--k) * 0.8);
+  white-space: nowrap;
+}
+.span-edge { position: absolute; bottom: calc(100% + var(--k) * 0.5); background: var(--paper); white-space: nowrap; padding: 0 calc(var(--k) * 0.3); }
+.span-edge--l { left: calc(var(--k) * -0.3); }
+.span-edge--r { right: calc(var(--k) * -0.3); }
+
+/* 05 — latency */
+.lat { display: grid; grid-template-columns: auto auto; justify-content: start; align-items: stretch; gap: calc(var(--k) * 4.4); }
+.lat-then {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: calc(var(--k) * 0.85);
+  border-left: 1px solid var(--rule-2);
+  padding-left: calc(var(--k) * 4.4);
+}
+.lat-num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: calc(var(--k) * 3.4);
+  letter-spacing: -0.045em;
+  line-height: 1;
+  color: var(--ink-3);
+  align-self: flex-start;
+}
+/* The rule crosses the figure, not its unit — the unit is still true. */
+.struck { position: relative; }
+.struck::after { content: ""; position: absolute; left: -4%; right: -4%; top: 50%; height: 1px; background: var(--ink-3); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+/* A short viewport — projector letterboxing, small laptops. Give the body its room back. */
+@media (max-height: 720px) {
+  .body { gap: calc(var(--k) * 1.2); padding: calc(var(--k) * 1.0) 0; }
+  .item { padding: calc(var(--k) * 0.8) 0; }
+  .step { min-height: 0; }
+}
+</style>
+
+<!-- The crossed-swords ornament, defined once. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="sw" viewBox="0 0 100 100">
+    <g transform="rotate(34 50 50)">
+      <polygon points="50,6 55,18 55,58 45,58 45,18"/>
+      <rect x="33" y="58" width="34" height="5.5"/>
+      <rect x="46.5" y="63.5" width="7" height="19"/>
+      <rect x="42" y="82.5" width="16" height="7"/>
+    </g>
+    <g transform="rotate(-34 50 50)">
+      <polygon points="50,6 55,18 55,58 45,58 45,18"/>
+      <rect x="33" y="58" width="34" height="5.5"/>
+      <rect x="46.5" y="63.5" width="7" height="19"/>
+      <rect x="42" y="82.5" width="16" height="7"/>
+    </g>
+  </symbol>
+</svg>
+
+<!-- ==========================================================================================
+     TOP CHROME
+     ========================================================================================== -->
+<div class="chrome chrome--top">
+  <b>BULLS <svg class="sw sw--sm" aria-hidden="true"><use href="#sw"/></svg> UNICORNS</b>
+  <span class="chrome-sep">/</span>
+  <span class="u">Hackathon pitch</span>
+  <span class="chrome-spacer"></span>
+  <span class="u">Solana mainnet</span>
+  <span class="chrome-sep">·</span>
+  <span class="u">Magicblock</span>
+  <b>EPHEMERAL ROLLUPS</b>
+</div>
+
+<!-- ==========================================================================================
+     THE DECK
+     ========================================================================================== -->
+<main class="deck" id="deck">
+
+  <!-- 00 ================================================================= TITLE -->
+  <section class="slide" data-label="Title">
+    <div class="head">
+      <span class="idx">00</span>
+      <h2 class="h">Read this once</h2>
+      <div class="meta"><span class="live">live</span><span class="u">Solana mainnet</span></div>
+    </div>
+    <div class="body">
+      <h1 class="display display--xl">Bulls <svg class="sw" aria-hidden="true"><use href="#sw"/></svg> Unicorns</h1>
+      <p class="lede lede--wide">Built to spark a rivalry between two of the largest Solana
+        communities by liquidity. Deploy your tokens into a side, fight, and take theirs.</p>
+    </div>
+    <div class="foot">
+      <div class="sides">
+        <div class="side">
+          <img class="coin coin--lg" src="ansem.jpg" alt="">
+          <span class="mk mk--a"></span>
+          <span class="side-name">Ansem</span>
+          <span class="u">Side 0</span>
+        </div>
+        <div class="side">
+          <span class="u">Side 1</span>
+          <span class="side-name">Unicorn</span>
+          <span class="mk mk--b"></span>
+          <img class="coin coin--lg" src="uwu.jpg" alt="">
+        </div>
+      </div>
+      <div class="u" style="padding-top:calc(var(--k) * 1.1)">Max · Built for the Unicorn community · ER rollups added for this hackathon</div>
+    </div>
+  </section>
+
+  <!-- 01 ================================================================= THE TWO COMMUNITIES -->
+  <section class="slide" data-label="The two communities">
+    <div class="head">
+      <span class="idx">01</span>
+      <h2 class="h">The two communities</h2>
+      <div class="meta"><span class="u">Two of the largest on Solana by liquidity</span></div>
+    </div>
+    <div class="body">
+      <div class="two">
+        <div class="side-col">
+          <div class="line"><img class="coin" src="ansem.jpg" alt=""><span class="mk mk--a"></span><span class="side-name">Ansem</span></div>
+          <div class="side-mc">$160<span class="dim">M</span></div>
+          <div class="u">Market cap</div>
+          <p class="lede" style="padding-top:calc(var(--k) * .6)">Ansem's own community, and the other
+            side of the rivalry — close by, and the obvious opponent.</p>
+        </div>
+        <div class="side-col">
+          <div class="line"><img class="coin" src="uwu.jpg" alt=""><span class="mk mk--b"></span><span class="side-name">Unicorn</span></div>
+          <div class="side-mc">$26<span class="dim">M</span></div>
+          <div class="u">Market cap</div>
+          <div class="facts">
+            <div class="fact"><span class="u">Holders</span><span class="fact-v">19,000</span></div>
+            <div class="fact"><span class="u">Around for</span><span class="fact-v">3 years</span></div>
+            <div class="fact"><span class="u">Works closely with</span><span class="fact-v">Pump.fun</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="split" role="img" aria-label="ANSEM 160 million market cap against UNICORN 26 million">
+        <span class="split-a" style="width:86%">ANSEM&nbsp;·&nbsp;$160M</span>
+        <span class="split-b" style="width:14%">$26M</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 ================================================================= THE PROBLEM -->
+  <section class="slide" data-label="The problem">
+    <div class="head">
+      <span class="idx">02</span>
+      <h2 class="h">The problem</h2>
+    </div>
+    <div class="body body--split">
+      <h3 class="display">The capital<br>is sat dead</h3>
+      <div class="claims">
+        <div class="claim"><span class="idx">01</span><span>No use for a memecoin besides buy&nbsp;/&nbsp;sell</span></div>
+        <div class="claim"><span class="idx">02</span><span>Communities compete on price, not strength</span></div>
+        <div class="claim"><span class="idx">03</span><span>Nothing to do long term besides hold</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 ================================================================= THE SOLUTION -->
+  <section class="slide" data-label="The solution">
+    <div class="head">
+      <span class="idx">03</span>
+      <h2 class="h">The solution</h2>
+    </div>
+    <div class="body body--split">
+      <h3 class="display">Put the capital<br>to work</h3>
+      <div class="claims">
+        <div class="claim"><span class="idx">01</span><span>Gamified PvP battles between tokens</span></div>
+        <div class="claim"><span class="idx">02</span><span>Steal your competition's tokens</span></div>
+        <div class="claim"><span class="idx">03</span><span>Communities show their size to each other</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 ================================================================= HOW A ROUND WORKS -->
+  <section class="slide" data-label="How a round works">
+    <div class="head">
+      <span class="idx">04</span>
+      <h2 class="h">How a round works</h2>
+      <div class="meta"><span class="u">One round · 30–60 seconds of fight</span></div>
+    </div>
+    <div class="body">
+      <div>
+        <div class="span-row">
+          <div class="span">
+            <span class="u u--ink span-label">Ephemeral rollup · delegated for the round's lifespan</span>
+            <span class="u span-edge span-edge--l">delegate_round</span>
+            <span class="u span-edge span-edge--r">commit + undelegate</span>
+          </div>
+        </div>
+        <div class="steps">
+          <div class="step">
+            <span class="step-n">01</span>
+            <span class="step-k">Lobby</span>
+            <span class="step-v">Both sides deploy tokens into the round.</span>
+            <span class="u step-l">Base layer</span>
+          </div>
+          <div class="step">
+            <span class="step-n">02</span>
+            <span class="step-k">VRF draw</span>
+            <span class="step-v">The seed is drawn the moment the lobby closes.</span>
+            <span class="u step-l">VRF</span>
+          </div>
+          <div class="step">
+            <span class="step-n">03</span>
+            <span class="step-k">Fight</span>
+            <span class="step-v">Fighters collide and take value off each other.</span>
+            <span class="u u--ink step-l">Rollup</span>
+          </div>
+          <div class="step">
+            <span class="step-n">04</span>
+            <span class="step-k">Extract</span>
+            <span class="step-v">Bank what you have raided and walk, mid-fight.</span>
+            <span class="u u--ink step-l">Rollup</span>
+          </div>
+          <div class="step">
+            <span class="step-n">05</span>
+            <span class="step-k">Settle</span>
+            <span class="step-v">The result commits back and pays out.</span>
+            <span class="u step-l">Base layer</span>
+          </div>
+        </div>
+      </div>
+      <p class="lede lede--wide">The seed is drawn before anyone can see it, so the outcome is locked
+        the instant entries close.</p>
+    </div>
+  </section>
+
+  <!-- 05 ================================================================= WHY A ROLLUP -->
+  <section class="slide" data-label="Why a rollup">
+    <div class="head">
+      <span class="idx">05</span>
+      <h2 class="h">Why it is a rollup</h2>
+      <div class="meta"><span class="u">Added for this hackathon</span></div>
+    </div>
+    <div class="body" style="gap:calc(var(--k) * 4.4)">
+      <div class="lat">
+        <div>
+          <div class="display display--xl display--mono">~10<span class="unit">ms</span></div>
+          <div class="u u--ink" style="padding-top:calc(var(--k) * 1.0)">A move landing, inside the rollup</div>
+        </div>
+        <div class="lat-then">
+          <div class="lat-num"><span class="struck">400</span><span class="unit">ms</span></div>
+          <div class="u">The same move on the base layer</div>
+        </div>
+      </div>
+      <div class="claims">
+        <div class="claim"><span class="idx">01</span><span>Every 30–60 second fight is its own ephemeral rollup</span></div>
+        <div class="claim"><span class="idx">02</span><span>We delegate the round for its whole lifespan</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 ================================================================= THE STACK -->
+  <section class="slide" data-label="The stack">
+    <div class="head">
+      <span class="idx">06</span>
+      <h2 class="h">What we built on</h2>
+      <div class="meta"><span class="u">Four pieces</span></div>
+    </div>
+    <div class="body">
+      <div class="list list--fill">
+        <div class="item">
+          <span class="idx">01</span>
+          <span class="item-k">Magic Router</span>
+          <span class="item-v">Players connect through it once. It gets each request to the right layer behind the scenes.</span>
+        </div>
+        <div class="item">
+          <span class="idx">02</span>
+          <span class="item-k">VRF</span>
+          <span class="item-v">We draw the fight seed on it right after the lobby closes, so the outcome is <strong>locked before anyone can see it</strong>.</span>
+        </div>
+        <div class="item">
+          <span class="idx">03</span>
+          <span class="item-k">Session keys</span>
+          <span class="item-v">Used for the extract action, so a player can bail mid-fight <strong>without a wallet pop-up</strong>.</span>
+        </div>
+        <div class="item">
+          <span class="idx">04</span>
+          <span class="item-k item-k--mono">delegate_round&nbsp;/<br>undelegate</span>
+          <span class="item-v">We open each round into the rollup, then commit and settle back to the main chain once the fight resolves.</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 07 ================================================================= VERIFIED -->
+  <section class="slide" data-label="Verified">
+    <div class="head">
+      <span class="idx">07</span>
+      <h2 class="h">Verified, not claimed</h2>
+      <div class="meta"><span class="live">devnet</span><span class="u">Signed and observed</span></div>
+    </div>
+    <div class="body">
+      <div class="list list--fill">
+        <div class="item">
+          <span class="idx">01</span>
+          <span class="item-k">Session keys work</span>
+          <span class="item-v">A real <strong>enter</strong> and a real <strong>extract</strong>, both signed by a session key — the burner wallet was not a signer.</span>
+        </div>
+        <div class="item">
+          <span class="idx">02</span>
+          <span class="item-k item-k--mono" style="font-size:calc(var(--k) * 1.8)">~350 ms</span>
+          <span class="item-v">Measured round trip for tick transactions into the ER.</span>
+        </div>
+        <div class="item">
+          <span class="idx">03</span>
+          <span class="item-k">Provably fair</span>
+          <span class="item-v">A settled round independently re-verified in the browser from its VRF seed.</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 08 ================================================================= TESTING -->
+  <section class="slide" data-label="Testing">
+    <div class="head">
+      <span class="idx">08</span>
+      <h2 class="h">Testing</h2>
+      <div class="meta"><span class="u">2 small rounds · 3 days · Unicorn community</span></div>
+    </div>
+    <div class="body">
+      <div>
+        <div class="display display--xl display--mono">$15,000</div>
+        <div class="u u--ink" style="padding-top:calc(var(--k) * 1.0)">Volume</div>
+      </div>
+      <div class="kvs">
+        <div class="kv"><span class="kv-v">1,000+</span><span class="kv-n">Transactions</span></div>
+        <div class="kv"><span class="kv-v">32</span><span class="kv-n">Wallets</span></div>
+        <div class="kv"><span class="kv-v">$30</span><span class="kv-n">Fees generated</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 09 ================================================================= MAINNET -->
+  <section class="slide" data-label="Mainnet">
+    <div class="head">
+      <span class="idx">09</span>
+      <h2 class="h">Mainnet deployment</h2>
+      <div class="meta"><span class="live">mainnet</span><span class="u">First 6 hours</span></div>
+    </div>
+    <div class="body">
+      <div class="two" style="align-items:end">
+        <div>
+          <div class="display display--xl display--mono">$30,000</div>
+          <div class="u u--ink" style="padding-top:calc(var(--k) * 1.0)">Traded hands</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:calc(var(--k) * .9)">
+          <div class="line">
+            <span class="u u--ink">Deposited</span>
+            <span class="push u">$4,000 total</span>
+          </div>
+          <div class="split" role="img" aria-label="ANSEM deposited 1,500 dollars; UNICORN deposited 2,500 dollars">
+            <span class="split-a" style="width:37.5%">ANSEM&nbsp;·&nbsp;$1,500</span>
+            <span class="split-b" style="width:62.5%">$2,500&nbsp;·&nbsp;UNICORN</span>
+          </div>
+        </div>
+      </div>
+      <div class="kvs">
+        <div class="kv"><span class="kv-v">6</span><span class="kv-n">Hours live</span></div>
+        <div class="kv"><span class="kv-v">500</span><span class="kv-n">Matches + transactions</span></div>
+        <div class="kv"><span class="kv-v">26</span><span class="kv-n">Users</span></div>
+        <div class="kv"><span class="kv-v">$60</span><span class="kv-n">Fees</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10 ================================================================= REVENUE -->
+  <section class="slide" data-label="Revenue model">
+    <div class="head">
+      <span class="idx">10</span>
+      <h2 class="h">Revenue model</h2>
+      <div class="meta"><span class="u">Three fees</span></div>
+    </div>
+    <div class="body">
+      <div class="list list--fill">
+        <div class="fee" style="flex:1">
+          <span class="fee-n">0.2<span class="dim">%</span></span>
+          <span class="item-k">Deployment fee</span>
+        </div>
+        <div class="fee" style="flex:1">
+          <span class="fee-n">0.3<span class="dim">%</span></span>
+          <span class="item-k">Internal token conversion</span>
+        </div>
+        <div class="fee" style="flex:1">
+          <span class="fee-n">0.1<span class="dim">%</span></span>
+          <span class="item-k">External token conversion</span>
+        </div>
+      </div>
+      <p class="lede">The house takes its slice on the way in and on every conversion — never on the
+        fight itself.</p>
+    </div>
+  </section>
+
+  <!-- 11 ================================================================= WHAT'S NEXT -->
+  <section class="slide" data-label="What's next">
+    <div class="head">
+      <span class="idx">11</span>
+      <h2 class="h">What's next</h2>
+    </div>
+    <div class="body">
+      <div class="list list--fill">
+        <div class="item">
+          <span class="idx">01</span>
+          <span class="item-k">Distributions</span>
+          <span class="item-v"><strong>Launched today.</strong> First distribution to the Unicorn community, second to the Ansem community.</span>
+        </div>
+        <div class="item">
+          <span class="idx">02</span>
+          <span class="item-k">More game modes</span>
+          <span class="item-v">The arena picker is already built for them.</span>
+        </div>
+        <div class="item">
+          <span class="idx">03</span>
+          <span class="item-k">Battle simulator</span>
+          <span class="item-v"><span class="sim">exploring</span> &nbsp;Agents build a strategy and compete against other agents.</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 12 ================================================================= CLOSING -->
+  <section class="slide" data-label="Live now">
+    <div class="head">
+      <span class="idx">12</span>
+      <h2 class="h">Live now</h2>
+      <div class="meta"><span class="live">mainnet</span></div>
+    </div>
+    <div class="body">
+      <h2 class="display display--xl">Bulls <svg class="sw" aria-hidden="true"><use href="#sw"/></svg> Unicorns</h2>
+      <div class="sides">
+        <div class="side">
+          <img class="coin coin--lg" src="ansem.jpg" alt="">
+          <span class="mk mk--a"></span>
+          <span class="side-name">Ansem</span>
+        </div>
+        <p class="lede" style="text-align:right">Two memecoin communities, one arena, on Solana
+          mainnet — every fight in its own ephemeral rollup.</p>
+        <div class="side">
+          <span class="side-name">Unicorn</span>
+          <span class="mk mk--b"></span>
+          <img class="coin coin--lg" src="uwu.jpg" alt="">
+        </div>
+      </div>
+      <div class="kvs">
+        <div class="kv"><span class="kv-v">$30,000</span><span class="kv-n">Traded hands · 6 hours</span></div>
+        <div class="kv"><span class="kv-v">26</span><span class="kv-n">Users</span></div>
+        <div class="kv"><span class="kv-v">500</span><span class="kv-n">Matches + transactions</span></div>
+        <div class="kv"><span class="kv-v">~10 ms</span><span class="kv-n">A move, in the rollup</span></div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ==========================================================================================
+     BOTTOM CHROME
+     ========================================================================================== -->
+<div class="chrome chrome--bottom">
+  <b>BULLS <svg class="sw sw--sm" aria-hidden="true"><use href="#sw"/></svg> UNICORNS</b>
+  <span class="chrome-sep">/</span>
+  <span class="u" id="slideLabel">Title</span>
+  <span class="chrome-spacer"></span>
+  <span class="u">◀&nbsp;▶</span>
+  <nav class="ticker" id="ticker" aria-label="Slides"></nav>
+  <span class="chrome-sep">·</span>
+  <b id="counter">01 / 13</b>
+</div>
+<div class="progress" id="progress" style="width:0"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var slides  = Array.prototype.slice.call(document.querySelectorAll(".slide"));
+  var deck    = document.getElementById("deck");
+  var ticker  = document.getElementById("ticker");
+  var counter = document.getElementById("counter");
+  var label   = document.getElementById("slideLabel");
+  var bar     = document.getElementById("progress");
+  var n       = slides.length;
+  var at      = 0;
+
+  function pad(i) { return (i < 10 ? "0" : "") + i; }
+
+  // ---- the ticker: one block per slide, straight off the product's fight clock ---------------
+  var blocks = slides.map(function (s, i) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("aria-label", "Slide " + (i + 1) + ": " + s.dataset.label);
+    b.addEventListener("click", function (e) { e.stopPropagation(); go(i); });
+    ticker.appendChild(b);
+    return b;
+  });
+
+  // ---- render --------------------------------------------------------------------------------
+  function render() {
+    slides.forEach(function (s, i) {
+      var on = i === at;
+      s.classList.toggle("on", on);
+      s.setAttribute("aria-hidden", on ? "false" : "true");
+      if (on) { s.removeAttribute("inert"); } else { s.setAttribute("inert", ""); }
+    });
+    blocks.forEach(function (b, i) {
+      b.className = i === at ? "now" : (i < at ? "done" : "");
+      b.setAttribute("aria-current", i === at ? "true" : "false");
+    });
+    counter.textContent = pad(at + 1) + " / " + pad(n);
+    label.textContent = slides[at].dataset.label;
+    bar.style.width = (at / (n - 1) * 100) + "%";
+    document.title = pad(at + 1) + " " + slides[at].dataset.label + " — Bulls ⚔ Unicorns";
+  }
+
+  // ---- navigation ----------------------------------------------------------------------------
+  function go(i, quiet) {
+    at = Math.max(0, Math.min(n - 1, i));
+    render();
+    if (!quiet) writeUrl();
+  }
+  function next() { go(at + 1); }
+  function prev() { go(at - 1); }
+
+  // The hash carries the position so a reload holds it. `?slide=N` is the deep link the presenter
+  // is handed; replaceState keeps the deck out of the back button and falls back to a plain hash
+  // assignment wherever the browser refuses it (some file:// contexts do).
+  var writing = false;
+  function writeUrl() {
+    var h = "#" + (at + 1);
+    if (location.hash === h) return;
+    writing = true;
+    try { history.replaceState(null, "", h); }
+    catch (e) { location.hash = h; }
+    setTimeout(function () { writing = false; }, 0);
+  }
+  window.addEventListener("hashchange", function () {
+    if (writing) return;
+    var i = parseInt(location.hash.slice(1), 10);
+    if (!isNaN(i)) go(i - 1, true);
+  });
+
+  // ---- keyboard ------------------------------------------------------------------------------
+  // Digits buffer for 700ms, so "1" then "2" is slide 12 and a lone "4" is slide 4. Each keystroke
+  // jumps immediately, so a single digit never waits on the timeout to land.
+  var buf = "", bufT = null;
+  function digit(d) {
+    clearTimeout(bufT);
+    buf += d;
+    var target = parseInt(buf, 10);
+    if (target >= 1 && target <= n) go(target - 1);
+    if (parseInt(buf + "0", 10) > n) { buf = ""; }   // no longer number can start with this
+    else { bufT = setTimeout(function () { buf = ""; }, 700); }
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var k = e.key;
+    if (k === "ArrowRight" || k === "ArrowDown" || k === "PageDown" || k === " " ||
+        k === "Spacebar" || k === "Enter" || k === "n") { next(); }
+    else if (k === "ArrowLeft" || k === "ArrowUp" || k === "PageUp" ||
+             k === "Backspace" || k === "p") { prev(); }
+    else if (k === "Home") { go(0); }
+    else if (k === "End") { go(n - 1); }
+    else if (k >= "0" && k <= "9") { digit(k); }
+    else if (k === "f" || k === "F") {
+      if (document.fullscreenElement) { document.exitFullscreen(); }
+      else if (document.documentElement.requestFullscreen) { document.documentElement.requestFullscreen(); }
+    }
+    else { return; }
+    e.preventDefault();
+  });
+
+  // ---- click: the left quarter goes back, the rest advances -----------------------------------
+  deck.addEventListener("click", function (e) {
+    if (e.target.closest("a, button")) return;
+    if (e.clientX < window.innerWidth * 0.25) { prev(); } else { next(); }
+  });
+
+  // ---- touch ----------------------------------------------------------------------------------
+  var tx = 0, ty = 0, tt = 0;
+  deck.addEventListener("touchstart", function (e) {
+    var t = e.changedTouches[0];
+    tx = t.clientX; ty = t.clientY; tt = Date.now();
+  }, { passive: true });
+  deck.addEventListener("touchend", function (e) {
+    var t = e.changedTouches[0];
+    var dx = t.clientX - tx, dy = t.clientY - ty;
+    if (Date.now() - tt > 800) return;
+    if (Math.abs(dx) < 45 || Math.abs(dx) < Math.abs(dy)) return;
+    if (dx < 0) { next(); } else { prev(); }
+  }, { passive: true });
+
+  // ---- boot -----------------------------------------------------------------------------------
+  var q = /[?&]slide=(\d+)/.exec(location.search);
+  var h = /^#(\d+)$/.exec(location.hash);
+  var start = q ? parseInt(q[1], 10) : (h ? parseInt(h[1], 10) : 1);
+  go((isNaN(start) ? 1 : start) - 1);
+})();
+</script>
