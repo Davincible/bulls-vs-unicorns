@@ -4,15 +4,19 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- Paints the browser chrome and the pre-hydration canvas the page's own near-black, so a
-         reload doesn't flash a white document before React mounts. `color-scheme` here (as well as
-         in index.css) is what stops the UA drawing a white background for that first frame. -->
-    <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#0a0b0f" />
-    <title>bulls-arena — Ephemeral Rollup demo (devnet)</title>
+    <!-- The sheet is a variable now (`src/v2/styles/paper.ts`), so this cannot name a colour: a
+         theme link opens on lime or cyan and a hardcoded `theme-color` would leave the browser
+         chrome disagreeing with the page. `color-scheme: light` is still right for every sheet —
+         all of them are light, and it is what stops the UA painting a dark first frame. -->
+    <meta name="color-scheme" content="light" />
+    <title>ANSEM ⚔ UWU — ARENA</title>
   </head>
   <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <!-- THE FRONT DOOR. This was the original React app until v2 replaced it here; that app now
+         lives at `/legacy.html`, unchanged and still building from `src/main.tsx`.
+         `/arena.html` is kept as an alias of this page so every `?theme=…` link already shared,
+         every screenshot caption and every agent brief pointing at it still resolves. -->
+    <div id="v2-root"></div>
+    <script type="module" src="/src/v2/main.tsx"></script>
   </body>
 </html>

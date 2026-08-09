@@ -10,7 +10,12 @@
 /* The reference's faint "+" survey marks. base.css's `.marks` scales a 9px glyph up to the whole
    175x135 tile, which renders as grey slabs rather than marks; this draws the cross at a fixed 9px
    inside a 175x135 tile instead, which is the effect that rule was after. Scoped to this view so
-   nothing else inherits the override. */
+   nothing else inherits the override.
+
+   Masked rather than coloured in the data URI, for the reason base.css's `.marks` gives: a `url()`
+   cannot read a custom property, and a baked-in grey is a white smear on a coloured sheet. This also
+   retires the private #dcdcdc it used to carry, which had drifted four values off the same mark drawn
+   on the field beside it — the exact drift `arena/palette.ts`'s header warns about. */
 .hero-marks { position: relative; }
 .hero-marks::before {
   content: "";
@@ -18,8 +23,11 @@
   inset: 0;
   pointer-events: none;
   z-index: 0;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='175' height='135'><path d='M87.5 63v9M83 67.5h9' stroke='%23dcdcdc' stroke-width='1'/></svg>");
-  background-repeat: repeat;
+  background-color: var(--mark);
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='175' height='135'><path d='M87.5 63v9M83 67.5h9' stroke='black' stroke-width='1'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='175' height='135'><path d='M87.5 63v9M83 67.5h9' stroke='black' stroke-width='1'/></svg>");
+  -webkit-mask-repeat: repeat;
+  mask-repeat: repeat;
 }
 .hero-marks > * { position: relative; z-index: 1; }
 
@@ -31,6 +39,16 @@
   padding: 30px 0 26px;
   min-height: 168px;
 }
+/* THE HERO POT IS THE ONE FIGURE ON THIS SCREEN THAT DOES NOT COMPACT (see ArenaView.tsx), so it is
+   the one that has to be allowed to be long. A grid item's default `min-width: auto` refuses to
+   shrink below its content, and `$13,487,910,540,099.00` has no break opportunity in it — a comma
+   between digits is not one — so at chain scale the 1fr track would grow past its share and shove
+   the `auto` clock column off the right edge of the page. `min-width: 0` lets the track hold its
+   share; `overflow-wrap: anywhere` lets the number wrap inside it rather than spilling out of it.
+   Neither rule does anything at all to a normal pot, which is the point: the layout stops depending
+   on the figure being small. */
+.hero > * { min-width: 0; }
+.hero .display { overflow-wrap: anywhere; }
 .hero-r { text-align: right; }
 .hero-phase {
   font: 500 clamp(20px, 2.4vw, 32px) / 1 var(--sans);
@@ -76,12 +94,28 @@
 .frame--blank { border-color: transparent; }
 .frame--blank .ovl { background: transparent; border-color: transparent; }
 
-/* Overlays: hairline-boxed white, flush to the frame's own edge so they read as part of the
-   instrument rather than as floating labels. Never translucent — a dark panel over a white field
-   is the exact "app chrome" look this design exists to avoid. */
+/* AND ONCE THE BOX IS GONE, THE TEXT NEEDS THE CASING THE BOX WAS DOING.
+   In `blank` these overlays are bare glyphs sitting straight on the field, so a fighter drifting
+   under `You · ANSEM` or `672/4,000` puts a coin face behind the words and neither survives. The
+   canvas already solved this problem for its own labels — `casedText()` strokes them in paper before
+   filling them in ink, which is what a map does with a place name over a contour line. This is the
+   same move in CSS, for the one set of words on the field the canvas cannot reach, because they are
+   DOM.
+   `paint-order: stroke fill` is what makes it a casing rather than an outline: without it the stroke
+   paints ON TOP of the glyph and thickens it into a smear. And it is a stroke, not a background —
+   a filled panel is precisely what `base.css` forbids and what `--blank` exists to remove. */
+.frame--blank .ovl {
+  paint-order: stroke fill;
+  -webkit-text-stroke: 3px var(--paper);
+}
+
+/* Overlays: hairline-boxed, flush to the frame's own edge so they read as part of the instrument
+   rather than as floating labels. Never translucent — a dark panel over a light field is the exact
+   "app chrome" look this design exists to avoid. `--paper-2`: these sit ON the canvas, which paints
+   `--paper`, so on a coloured sheet the lift is what stops them dissolving into the field. */
 .ovl {
   position: absolute;
-  background: var(--paper);
+  background: var(--paper-2);
   border: 1px solid var(--ink);
   padding: 6px 9px;
   z-index: 2;
@@ -100,7 +134,7 @@
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  background: var(--paper);
+  background: var(--paper-2);
   border: 1px solid var(--ink);
   border-top-width: 3px;
   padding: 18px 26px;
@@ -249,7 +283,9 @@
   /* 16:9 leaves a 200px-tall field on a phone. The fight is the point of the screen — give it a
      shape it can actually be watched in. */
   .frame { aspect-ratio: 4 / 3; }
-  .closed { flex-wrap: wrap; }
+  /* `.closed` needed a `flex-wrap` here while it was a `.line` holding a label beside a sentence.
+     It now holds `RoundPhaseNote`, which stacks by itself at every width, so the rule is gone
+     rather than left behind to be read as load-bearing by the next person. */
   /* Two top corners is one too many on a phone: the phase tag and the position HUD collide. Drop
      the HUD to the opposite corner and retire the lobby hint, which the deploy section below
      repeats in full anyway. */

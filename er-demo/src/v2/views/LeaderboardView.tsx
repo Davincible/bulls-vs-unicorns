@@ -13,11 +13,12 @@
 // leaderboard and the dashboard's "your position" band are physically incapable of disagreeing.
 
 import { useMemo, useState } from "react";
-import { useArena } from "../data/ArenaProvider.tsx";
+import { useArena } from "../data/useArena.ts";
 import { Bar, Empty, Mark, Money, Section, Tabs, Tag } from "../ui/primitives.tsx";
 import {
   SIDE_TOKEN,
   usd,
+  usdCompact,
   worth,
   type FighterView,
   type RoundPlayer,
@@ -249,14 +250,18 @@ function RoundBoard({ fighters }: { fighters: FighterView[] }) {
               <div role="cell" className="sc-hp">
                 <Bar value={f.hp} max={f.stake} side={f.side} />
               </div>
+              {/* This board is the widest live table on the page (three money columns plus a health
+                  bar) against fixed 70-88px tracks — on the chain path a live fighter's ring/bank/
+                  worth are all up to twenty characters and right-aligned, so a full `usd()` here
+                  spills leftward into the column beside it. Compact. */}
               <div role="cell" className="num r sc-s">
-                {usd(f.hp)}
+                {usdCompact(f.hp)}
               </div>
               <div role="cell" className="num r sc-s">
-                {f.banked > 0n ? usd(f.banked) : <span className="none">—</span>}
+                {f.banked > 0n ? usdCompact(f.banked) : <span className="none">—</span>}
               </div>
               <div role="cell" className="num r">
-                {usd(worth(f))}
+                {usdCompact(worth(f))}
               </div>
               <div role="cell" className="u sc-st">
                 {st.label}
@@ -340,6 +345,9 @@ function AllTime({
         <div className="row row--head" role="row">
           <div role="columnheader">#</div>
           <div role="columnheader">Wallet</div>
+          {/* `usd(top)` here stays full precision on purpose: this string lives only inside a
+              `title=` tooltip, prose a reader opens deliberately to check the board's scale against
+              an exact figure — not a grid cell that has to fit a fixed track. */}
           <div
             role="columnheader"
             className="sc-w"
@@ -393,13 +401,13 @@ function AllTime({
                 same reason `roi` does. `returned` never dashes: nothing coming back is a real, and
                 very common, outcome. */}
             <div role="cell" className="num r sc-s">
-              {r.staked > 0n ? usd(r.staked) : <span className="none">—</span>}
+              {r.staked > 0n ? usdCompact(r.staked) : <span className="none">—</span>}
             </div>
             <div role="cell" className="num r sc-s">
-              {usd(r.returned)}
+              {usdCompact(r.returned)}
             </div>
             <div role="cell" className="r">
-              <Money units={r.pnl} signed />
+              <Money units={r.pnl} signed compact />
             </div>
             <div role="cell" className="num r" title={r.roi === null ? undefined : `${r.roi.toFixed(2)}× returned`}>
               {/* ROI is `returned ÷ staked`; shown as the gain on that, so it reads with the same
@@ -453,6 +461,8 @@ function Hall({
           <div role="columnheader">#</div>
           <div role="columnheader">Side</div>
           <div role="columnheader">Fighter</div>
+          {/* Same rule as 01-2's scale header: `usd(top)` is tooltip prose, not a grid cell, so it
+              keeps the exact figure. */}
           <div
             role="columnheader"
             className="sc-w"
@@ -507,14 +517,14 @@ function Hall({
               {/* A zero deposit has no `→` to describe — it is the same missing basis that dashes the
                   return multiple in the next cell but one. */}
               <div role="cell" className="num r sc-s">
-                {p.stake > 0n ? usd(p.stake) : <span className="none">—</span>}{" "}
-                <span className="dim">→</span> {usd(p.final)}
+                {p.stake > 0n ? usdCompact(p.stake) : <span className="none">—</span>}{" "}
+                <span className="dim">→</span> {usdCompact(p.final)}
               </div>
               <div role="cell" className="num r">
                 {mult === null ? <span className="none">—</span> : `${mult.toFixed(2)}×`}
               </div>
               <div role="cell" className="r">
-                <Money units={p.pnl} signed />
+                <Money units={p.pnl} signed compact />
               </div>
             </div>
           );

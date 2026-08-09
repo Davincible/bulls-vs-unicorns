@@ -60,11 +60,14 @@ describe("hitEvents.ts reproduces the checked-in Rust parity fixture", () => {
       { wallet: e.wallet, side: e.side, dead: 0, stake: e.stake, hp: e.stake, banked: 0n }
     ));
     for (const event of events) applyHitEvent(replay, event);
-    // `penaltiesCollected: 0n` because this replay is built from HIT events alone, and a hit never
-    // pays the house — only `extract()` does, and none happens here. It is the honest starting value
-    // for a round reconstructed from the event stream, not a placeholder.
+    // Both house counters start at zero, and both are honest values here rather than placeholders.
+    // This replay is built from HIT events alone: a hit never pays the house, only `extract()` does,
+    // and none happens here. And the fee is charged by `enter()`, which this reconstruction skips
+    // entirely — it starts from entries the chain had already netted (see `HitEventEntry`), so there
+    // is no gross for a fee to be taken from and no fee for this round to have collected.
     const replayedRound = {
-      seed: FIXTURE_SEED, fighters: replay, tickCount: 0n, pot: 0n, penaltiesCollected: 0n, winner: null,
+      seed: FIXTURE_SEED, fighters: replay, tickCount: 0n, pot: 0n,
+      penaltiesCollected: 0n, feesCollected: 0n, winner: null,
     };
     const winner = settle(replayedRound);
 

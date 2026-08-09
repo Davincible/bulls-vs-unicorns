@@ -35,15 +35,23 @@ export default defineConfig({
     react(),
     nodePolyfills({ include: ['buffer', 'process', 'crypto', 'stream', 'string_decoder'] }),
   ],
-  // Two entries. `index.html` is the existing app, untouched; `arena.html` is the v2 page
-  // (src/v2/), which shares only chain/ and sim/ with it — by import, never by mutation. Dev needs
-  // nothing here (Vite serves any .html in the root), but a build would silently ship only
-  // index.html without this.
+  // THREE ENTRIES, and which one is `/` is the point.
+  //
+  //   index.html   the v2 page (src/v2/) — the front door.
+  //   arena.html   the SAME page, kept as an alias. v2 lived here while it was being built, so
+  //                every `?theme=…` link already shared and every screenshot caption pointing at it
+  //                still resolves. It costs one build entry; breaking a shared URL costs trust.
+  //   legacy.html  the original app (src/main.tsx), moved aside rather than deleted — it is still
+  //                somebody's live workstream.
+  //
+  // Dev needs none of this (Vite serves any .html in the root); a build would silently ship only
+  // index.html without it, which is how an alias quietly stops existing in production.
   build: {
     rollupOptions: {
       input: {
-        main: resolve(__dirname, 'index.html'),
-        arena: resolve(__dirname, 'arena.html'),
+        main: resolve(import.meta.dirname, 'index.html'),
+        arena: resolve(import.meta.dirname, 'arena.html'),
+        legacy: resolve(import.meta.dirname, 'legacy.html'),
       },
     },
   },

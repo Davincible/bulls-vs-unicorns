@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { PublicKey } from "@solana/web3.js";
 import { PHASE_NAME } from "./constants.ts";
-import type { BullsArenaProgram, RawRoundAccount } from "./program.ts";
+import { bnOr0, type BullsArenaProgram, type RawRoundAccount } from "./program.ts";
 
 export interface FighterState {
   wallet: PublicKey;
@@ -33,6 +33,17 @@ export interface RoundState {
    *  checking conservation — `sum(hp + banked) + penaltiesCollected === pot` — and by any UI that
    *  wants to show what leaving early has cost the table so far. */
   penaltiesCollected: bigint;
+  /** The other half of the house's take: the arena's entry fee, cumulative over every `enter`,
+   *  top-ups included.
+   *
+   *  IT CHANGES WHAT `pot` MEANS TO A READER, which is the reason to carry it up here rather than
+   *  leave it on the raw account. `pot` is the sum of NET stakes — the fee was taken at the door and
+   *  never entered the ring — so `pot` is what is being fought over, and `pot + feesCollected` is
+   *  what players actually paid. Anything that puts a pot on screen next to the word "staked" wants
+   *  the second number. See `Round.fees_collected` in lib.rs. */
+  feesCollected: bigint;
+  /** Whether `sweep_house_take` has already booked this round's take onto the arena's `Treasury`. */
+  houseSwept: boolean;
   seedCommit: number[];
   seed: number[];
   /** When the lobby opened and when it stops taking entries, in on-chain unix seconds.
@@ -55,18 +66,6 @@ export interface RoundState {
   fighters: FighterState[];
 }
 
-/** A `BN` that may not be there at all, as a `bigint`.
- *
- *  Anchor decodes an account against whatever IDL this build shipped with, and that IDL can be a
- *  revision AHEAD of the program actually deployed — which is the normal state of affairs for the
- *  minutes or days between a program change and its deploy. Fields added in the newer revision come
- *  back `undefined`, and `undefined.toString()` throws inside the poll: one field the chain has not
- *  heard of yet, and the page can read no round at all. Zero is the honest stand-in, and every reader
- *  of these fields treats zero as "not set" rather than as a timestamp. */
-function bnOr0(value: { toString(): string } | undefined | null): bigint {
-  return value === undefined || value === null ? 0n : BigInt(value.toString());
-}
-
 function toPlainRound(raw: RawRoundAccount): RoundState {
   return {
     arena: raw.arena,
@@ -77,12 +76,19 @@ function toPlainRound(raw: RawRoundAccount): RoundState {
     fighterCount: raw.fighterCount,
     tickCount: BigInt(raw.tickCount.toString()),
     pot: BigInt(raw.pot.toString()),
-    penaltiesCollected: BigInt(raw.penaltiesCollected.toString()),
+    // `bnOr0`, not `raw.x.toString()`, for every field below: decoded against a program revision
+    // that predates them they are simply absent, and dereferencing them there would throw inside a
+    // poll — turning "the chain is one deploy behind this build" into "the page cannot read any
+    // round at all". `penaltiesCollected` was written the bare way and had the bug latent the whole
+    // time; it is not hypothetical which revisions this app gets pointed at, so it is fixed here
+    // rather than left for the deploy that would have found it.
+    penaltiesCollected: bnOr0(raw.penaltiesCollected),
+    feesCollected: bnOr0(raw.feesCollected),
+    // Same reason, expressed for a bool: absent means the revision has no sweep, which means nothing
+    // has been swept.
+    houseSwept: raw.houseSwept ?? false,
     seedCommit: raw.seedCommit,
     seed: raw.seed,
-    // `bnOr0`, not `raw.x.toString()`: decoded against a program revision that predates these fields
-    // they are simply absent, and dereferencing them there would throw inside a poll — turning "the
-    // chain is one deploy behind this build" into "the page cannot read any round at all".
     lobbyOpenedAt: bnOr0(raw.lobbyOpenedAt),
     lobbyClosesAt: bnOr0(raw.lobbyClosesAt),
     fightStartedAt: BigInt(raw.fightStartedAt.toString()),

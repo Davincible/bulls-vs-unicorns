@@ -5,7 +5,7 @@
 // specific to one screen stays with that screen.
 
 import type { ReactNode } from "react";
-import { usd, usdSigned, type Side } from "../contract.ts";
+import { usd, usdCompact, usdCompactSigned, usdSigned, type Side } from "../contract.ts";
 
 /** A section: hairline rule, index number, heading, optional tools on the right. No box, no fill —
  *  that is the whole point of the design. */
@@ -145,22 +145,46 @@ export function Tag({ kind }: { kind: "sim" | "live" | "fixture" }) {
   return <span className="sim">{kind}</span>;
 }
 
-/** Money, formatted one way, everywhere. */
+/** Money, formatted one way, everywhere.
+ *
+ *  `compact` is what every fixed-width money column on this page should be passing: `$13.2k` instead
+ *  of `$13,487,910,540,099`, per `contract.ts`'s `usdCompact` — a chain figure printed in full is
+ *  twenty characters against a 70px grid track, and a right-aligned overflow spills leftward over
+ *  the column beside it. It ignores `dp`, which is a full-precision knob and has no meaning once the
+ *  figure has been scaled.
+ *
+ *  THE EXACT FIGURE IS ALWAYS STILL REACHABLE. Compacting loses money on purpose, so the full
+ *  two-decimal string goes on the cell's `title` — but only when it actually differs from what was
+ *  rendered, because below $1,000 `usdCompact` IS the full string and a tooltip repeating the text
+ *  under the cursor is noise on every row of the table. */
 export function Money({
   units,
   signed,
   dp,
+  compact,
   className,
 }: {
   units: bigint;
   signed?: boolean;
   dp?: number;
+  compact?: boolean;
   className?: string;
 }) {
   const tone = signed ? (units > 0n ? " pos" : units < 0n ? " neg" : "") : "";
+  const text = compact
+    ? signed
+      ? usdCompactSigned(units)
+      : usdCompact(units)
+    : signed
+      ? usdSigned(units, dp)
+      : usd(units, dp);
+  const exact = signed ? usdSigned(units, 2) : usd(units, 2);
   return (
-    <span className={`num${tone}${className ? ` ${className}` : ""}`}>
-      {signed ? usdSigned(units, dp) : usd(units, dp)}
+    <span
+      className={`num${tone}${className ? ` ${className}` : ""}`}
+      title={compact && text !== exact ? exact : undefined}
+    >
+      {text}
     </span>
   );
 }

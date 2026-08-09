@@ -106,6 +106,42 @@ test("the fee is taken on entry and matches the engine's 20 bps", () => {
   assert.equal(r.pot, 998_000n, "the pot is net of fee, as the engine records it");
 });
 
+// THE BUG, AS AN ASSERTION — the mirror of lib.rs's `the_fee_is_recorded_rather_than_discarded`.
+//
+// `enter` has always computed the fee, subtracted it, and let the local go out of scope. Every player
+// paid it, every round, and it was recorded nowhere — on chain or here. The test above is the one
+// that existed, and it passes just as happily against the bug, because it only ever asked what the
+// fighter and the pot were left with.
+//
+// PHRASED AGAINST THE TOTAL, NOT AGAINST CONSERVATION, and that choice is the point. The fee never
+// enters the ring, so it cancels out of `conservationHolds` (see that function's comment) and an
+// identity test would pass against the bug too. Deleting `round.feesCollected += fee` from `enter`
+// fails the first assertion here, on `0 !== 8_000`, and fails nothing else in this file.
+//
+// The rate is chosen so every number below is exact: 1_000_000 × 20 / 10_000 = 2_000, no rounding.
+test("the fee is RECORDED, not merely subtracted — including on a top-up", () => {
+  const r = newRound(seedOf("fee-recorded"));
+  for (const [i, side] of [[1, 0], [2, 0], [3, 1], [4, 1]] as [number, 0 | 1][]) {
+    enter(r, `w${i}`, side, 1_000_000n, 20n);
+  }
+  assert.equal(r.feesCollected, 8_000n, "four entries at 20 bps on 1,000,000 each");
+  assert.equal(r.pot, 3_992_000n, "the pot is the sum of NET stakes");
+  assert.equal(r.fighters.length, 4);
+
+  // A TOP-UP IS AN ENTRY. The same wallet on the same side merges into its existing fighter rather
+  // than spawning a second one, and it pays the fee exactly as a first entry does. A counter bumped
+  // inside the `else` branch of `enter`'s find-or-insert would satisfy every assertion above and fail
+  // here — which is why the top-up is in this test and not in one of its own.
+  enter(r, "w1", 0, 500_000n, 20n);
+  assert.equal(r.fighters.length, 4, "a top-up must not add a fighter");
+  assert.equal(r.feesCollected, 9_000n, "the top-up's 1,000 is on the books too");
+  assert.equal(r.pot, 3_992_000n + 499_000n);
+
+  // What players were actually charged, arrived at from the opposite direction: the gross this test
+  // handed to `enter`, added up. `pot` alone is 4,491,000 and is nobody's deposit total.
+  assert.equal(r.pot + r.feesCollected, 4_500_000n, "gross = 4 × 1,000,000 + 500,000");
+});
+
 test("the lobby cannot exceed MAX_FIGHTERS", () => {
   const r = newRound(seedOf("full"));
   for (let i = 0; i < MAX_FIGHTERS; i++) enter(r, `w${i}`, (i % 2) as 0 | 1, 1_000n, 20n);
@@ -139,7 +175,7 @@ test("the tick hash is sha256(seed ++ le_u64(cursor)) — the preimage the Rust 
 // Without mid-fight input the outcome is a pure function of (seed, entries) — decided before the
 // fight starts, with the animation replaying a result that already exists. Nothing precomputed
 // needs 10ms blocks. These pin the properties that make it a real decision rather than a free win.
-import { extract, conservationHolds } from "../er-sim.ts";
+import { extract, conservationHolds, houseTook, grossDeposits } from "../er-sim.ts";
 
 test("extracting banks what you hold and takes you out of the ring", () => {
   const r = lobby(seedOf("ex"), 4);
@@ -165,7 +201,14 @@ test("extraction conserves total value", () => {
   // amount the house recorded. Conservation is the identity that keeps both halves honest.
   assert.equal(totalValue(r), before - a.penalty - b.penalty, "extraction must not mint or burn");
   assert.equal(r.penaltiesCollected, a.penalty + b.penalty, "the leak must be recorded, not just taken");
-  assert.equal(conservationHolds(r), true, "sum(hp+banked) + penaltiesCollected must equal the pot");
+  assert.equal(conservationHolds(r), true, "playersHold + houseTook must equal grossDeposits");
+
+  // Both halves of the house's take are non-zero here — `lobby()` enters at 20 bps — which is what
+  // makes this a real exercise of the identity rather than of half of it. The fee is on both sides
+  // and cancels; drop it from one side only and this assertion is what notices.
+  assert.ok(r.feesCollected > 0n, "the lineup was entered at a real rate, so a fee was charged");
+  assert.equal(houseTook(r), r.penaltiesCollected + r.feesCollected);
+  assert.equal(totalValue(r) + houseTook(r), grossDeposits(r));
 });
 
 // The decision has to be able to LOSE, or it is not a decision.

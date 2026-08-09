@@ -9,7 +9,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ViewId } from "./contract.ts";
-import { ArenaProvider, useArena } from "./data/ArenaProvider.tsx";
+import { ArenaProvider } from "./data/ArenaProvider.tsx";
+import { useArena } from "./data/useArena.ts";
 import { BottomChrome, TopChrome } from "./ui/Chrome.tsx";
 import { IntroOverlay } from "./ui/IntroOverlay.tsx";
 import { SideRail } from "./ui/SideRail.tsx";

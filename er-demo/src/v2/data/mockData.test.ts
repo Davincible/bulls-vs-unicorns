@@ -171,8 +171,17 @@ describe("the fixture's past rounds", () => {
     }
   });
 
-  it("claims no house take, because nobody in these rounds extracted", () => {
-    for (const round of MOCK_HISTORY) expect(round.penaltiesCollected).toBe(0n);
+  // BOTH SOURCES OF THE HOUSE'S TAKE, and the same rule for each: the fixture may not claim revenue
+  // that no round in it produced. Nobody extracts in these rounds, so there is no penalty; the stakes
+  // are handed to the roster directly with no `enter()` anywhere, so there is no fee and `pot` is
+  // already the gross. The Dashboard sums both across history and puts the total on screen under a
+  // heading a reader is invited to check against real round accounts — a non-zero figure here would
+  // be an invented number in the one place the page asks to be trusted.
+  it("claims no house take, because nobody extracted and nobody was charged to enter", () => {
+    for (const round of MOCK_HISTORY) {
+      expect(round.penaltiesCollected, `round ${round.roundNo}`).toBe(0n);
+      expect(round.feesCollected, `round ${round.roundNo}`).toBe(0n);
+    }
   });
 
   it("keeps both sides populated, so no round was won by default", () => {

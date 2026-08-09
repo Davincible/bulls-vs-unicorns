@@ -1,6 +1,10 @@
-// THE COMPOSITION ROOT of v2's data layer. Two exports, `ArenaProvider` and `useArena()`, and
-// nothing in this file computes anything — every hook it calls lives beside it in `data/`, which is
-// what keeps this readable as a wiring diagram instead of a six-hundred-line hook.
+// THE COMPOSITION ROOT of v2's data layer. ONE export, `ArenaProvider`, and nothing in this file
+// computes anything — every hook it calls lives beside it in `data/`, which is what keeps this
+// readable as a wiring diagram instead of a six-hundred-line hook.
+//
+// `useArena()` is next door in `data/useArena.ts`, and the reason it is not here is written up in
+// that file: a module that exports anything other than components cannot be hot-refreshed, and this
+// one sits at the root of the whole page's import graph. Keep this file components-only.
 //
 // TWO PROVIDERS, PICKED ONCE. `?fixture=1` renders a provider that never constructs a program, never
 // opens a session, and never touches the network — so the page is fully reviewable with no wallet, no
@@ -13,7 +17,7 @@
 // hooks, so a flag that could flip mid-session would change a component's hook list. It is a
 // deep-link. Changing it is a reload.
 
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { PROGRAM_ID } from "../../chain/constants.ts";
 import { useFightTicker } from "../../chain/useFightTicker.ts";
@@ -33,20 +37,13 @@ import { useLiveRound } from "./useLiveRound.ts";
 import { useShell, type Shell } from "./useShell.ts";
 import { useVerify } from "./useVerify.ts";
 import { useWallet } from "./useWallet.ts";
+import { ArenaContext } from "./useArena.ts";
 import type { ArenaContextValue } from "./types.ts";
-
-const ArenaContext = createContext<ArenaContextValue | null>(null);
 
 export function ArenaProvider({ children }: { children: ReactNode }) {
   return FIXTURE_FORCED
     ? <FixtureArenaProvider>{children}</FixtureArenaProvider>
     : <ChainArenaProvider>{children}</ChainArenaProvider>;
-}
-
-export function useArena(): ArenaContextValue {
-  const ctx = useContext(ArenaContext);
-  if (!ctx) throw new Error("useArena() must be called inside <ArenaProvider>");
-  return ctx;
 }
 
 // ---------------------------------------------------------------------------------------------

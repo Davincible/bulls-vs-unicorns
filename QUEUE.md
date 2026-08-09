@@ -30,8 +30,21 @@ stalling the run.
       wallets must still converge and clash as before. B1 must not have made anyone passive.
 - [ ] **B3. Sub-cent damage on screen.** `fmt` renders 3dp below a cent, but confirm floaters and
       the standings rows actually show `$0.001` rather than rounding to `$0.00`.
-- [ ] **B4. Auto-deploy is unreliable** — fires some rounds, not others.
-- [ ] **B5. Auto-deploy must always fire at the START of a round**, not mid-lobby.
+- [ ] **B4. Auto-deploy is unreliable** — fires some rounds, not others. **Fixed in `er-demo/src/v2/`
+      (`data/autoDeploy.ts`); still open in `web/index.html`, which carries its own repeat control.**
+      Four causes, all real, all reproduced: a failed deploy marked the round done *before* awaiting
+      the transaction, so any failure dropped that round for good; the rule lived inside the Deploy
+      panel, which the screen switch unmounts, so reading the Leaderboard silently disarmed it; the
+      armed amount was read from a control that reset on that same unmount; and — the root cause —
+      `phase === "Lobby"` is not "you can deposit", because the program refuses `enter` from
+      `lobby_closes_at` while the phase only moves when an operator's `close_lobby_and_draw` lands.
+      Whichever of those the old stack shares, port the shape rather than the patch: the rule is a
+      pure function (`decideAutoDeploy`) with 41 tests, because "fires some rounds" is a claim about
+      a distribution and one run cannot answer it.
+- [ ] **B5. Auto-deploy must always fire at the START of a round**, not mid-lobby. **Fixed in v2;
+      still open in `web/`.** Arming never deposits into the round already on screen — it names the
+      round it will start from — and once armed it deposits within a second or two of a new lobby
+      opening. Measured on devnet: 1s, 2s, 1s after lobby-open across three consecutive rounds.
 - [ ] **B6. Reactive whale response.** Bots currently match only at the moment a player enters. They
       should keep watching the book and *raise* if a whale enters after them — overage is refunded
       by the matched book anyway, so there is no downside to over-committing.

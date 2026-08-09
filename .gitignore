@@ -24,6 +24,11 @@ target/
 .xwin-cache/
 target/
 
+# The round keeper's published status file. Generated once a second by a running keeper, and its
+# ABSENCE is meaningful: the front end reads a 404 as "no keeper is running here", which is the
+# correct answer on a fresh checkout. Committing one would ship a permanently stale heartbeat.
+er-demo/public/keeper-status.json
+
 # Local agent/editor tooling state — machine-specific, never source.
 .opencode/
 .localindex/

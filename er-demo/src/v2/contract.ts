@@ -235,7 +235,42 @@ export interface RoundSummary {
    *  unaffected either way — the penalty is deducted before anything reaches `banked`, so `final`
    *  already has it taken out. */
   penaltiesCollected: bigint;
+  /** `Round.fees_collected` — the arena's entry fee this round charged, cumulative over every entry
+   *  and top-up.
+   *
+   *  Carried for a different reason than `penaltiesCollected`, and the difference is the whole point.
+   *  The penalty is money that left the RING, so a round's books genuinely do not balance without it.
+   *  The fee never entered the ring at all; it was taken at the door, and `pot` is already net of it.
+   *  So this term changes no identity — it changes what `pot` MEANS. A page that shows a pot and
+   *  calls it "staked" is reporting a number smaller than what players were charged, and
+   *  `grossDeposits` is the honest version of that sentence. Per-player figures are unaffected:
+   *  `stake` is net, so `pnl` was already like-for-like.
+   *
+   *  Zero on any round read from a program revision that predates the field — which is the true
+   *  value there, not a placeholder, because that revision collected nothing. */
+  feesCollected: bigint;
   players: RoundPlayer[];
+}
+
+/** WHAT THE HOUSE MADE FROM ONE ROUND — its two sources added up, in one place.
+ *
+ *  A function rather than a field on `RoundSummary` on purpose. It is derived, exactly, from two
+ *  fields already on the record; stored, it would be a third number that fixtures and future
+ *  constructors could set inconsistently, and nothing would notice. As a function there is one
+ *  definition and no invariant to break. It exists at all because "what did the house make" was
+ *  previously a subtraction each caller wrote for itself — or, more often, wrote as
+ *  `penaltiesCollected` alone and silently missed half the answer. */
+export function houseTook(round: { penaltiesCollected: bigint; feesCollected: bigint }): bigint {
+  return round.penaltiesCollected + round.feesCollected;
+}
+
+/** WHAT PLAYERS WERE ACTUALLY CHARGED to be in this round — the pot plus the fee taken at the door.
+ *
+ *  `pot` is the sum of NET stakes and always has been, so it is the money in the ring, not the money
+ *  players parted with. Use this wherever the label is "staked", "deposited" or "entry"; use `pot`
+ *  wherever the label is "prize" or "at stake". */
+export function grossDeposits(round: { pot: bigint; feesCollected: bigint }): bigint {
+  return round.pot + round.feesCollected;
 }
 
 export interface RoundPlayer {
@@ -489,6 +524,95 @@ export function usdSigned(units: bigint, dp?: number): string {
   const s = usd(units < 0n ? -units : units, dp);
   if (units === 0n) return s;
   return units < 0n ? `−${s}` : `+${s}`;
+}
+
+/** ONE CENT, IN UNITS. Exact by construction — the peg is dollars and `UNITS_PER_USD` is a power of
+ *  ten — so no float ever touches this threshold.
+ *
+ *  It is the floor below which a dollar figure on this page is printed as a BOUND (`<$0.01`) rather
+ *  than as a number, because two decimal places print a real amount as `$0.00`, and "the house takes
+ *  nothing" is a different claim from "the house takes less than a cent". Exported so the one rule
+ *  has one home: `usdCompact` below and `ArenaView`'s full-precision `penaltyText`/`keepText` render
+ *  at different resolutions but must agree on where the floor is. */
+export const ONE_CENT_UNITS = UNITS_PER_USD / 100n;
+
+/** The compact ladder, ascending, each step 1,000x the last. `T` is the top because it is the top:
+ *  a u64 is at most 18,446,744,073,709,551,615 units, i.e. $18.4T at this peg, so nothing this
+ *  program can hold ever needs a suffix beyond it. Lowercase `k`, uppercase for the rest — SI's own
+ *  casing, and what `Intl`'s uppercase `13K` gets wrong beside a lowercase-heavy mono column. */
+const COMPACT_STEPS = ["k", "M", "B", "T"] as const;
+
+/** MONEY THAT FITS IN A TABLE CELL — `$13.2k`, `$1.4M`, `$980.50`, `<$0.01`.
+ *
+ *  WHY THIS EXISTS. `usd()` prints in full, and in full a live round's figures are up to twenty
+ *  characters (`$13,487,910,540,099`) against 70–88px mono columns in the rosters and standings.
+ *  Grid tracks are fixed, so the surplus does not widen the column — it spills, and because money
+ *  columns are right-aligned it spills LEFTWARD, straight over the figure next door. Three columns
+ *  of that is what Max saw: not a wide table, an unreadable one. The fixture never showed it (its
+ *  stakes are $6–$100); the chain path does, on every row.
+ *
+ *  THE THRESHOLDS, and what each is protecting:
+ *    · under $1,000 — two decimals, exactly as `usd()` already behaves there. Cents are load-bearing
+ *      at this game's stake sizes: the per-side cap is $100 and real fighters sit at $8–$100, so a
+ *      $12.40 fighter and a $12.90 one must not both read "$12".
+ *    · from $1,000 — `k` at one decimal. One is the most a mono column can spend and still fit the
+ *      widest case (`−$999.9k`, eight characters ≈ 56px) inside the narrowest money track on the
+ *      page (66px). Two decimals would cost another 7px for a digit nobody acts on at that scale.
+ *    · from $1,000,000 / $1,000,000,000 / $1,000,000,000,000 — `M`, `B`, `T` on the same rule.
+ *  A trailing `.0` is stripped, so it reads `$13k` and not `$13.0k`. The tier is chosen from the
+ *  ROUNDED figure, not the raw one, so $999,999 comes out `$1M` rather than the `$1000.0k` a naive
+ *  divide-then-round produces at the top of every tier.
+ *
+ *  HAND-ROLLED, NOT `Intl`'s `notation: "compact"`. Measured, not assumed: `Intl` emits `13K` (wrong
+ *  case), collapses `0.02` to `0` at `maximumFractionDigits: 1` (a real balance rendered as nothing),
+ *  and its width is locale-negotiated — `de-DE` gives `1,4 Mio.`, seven characters and a space where
+ *  `en-US` gives four. Figures on this page are tabular mono in fixed tracks; a formatter whose
+ *  output length depends on the visitor's locale is a formatter that breaks the column somewhere
+ *  else. This one's output is bounded at eight characters, always.
+ *
+ *  IT IS FOR CONSTRAINED CONTEXTS ONLY — table cells, the dock, the sticky bar, canvas labels. It
+ *  loses money by design (`$13.2k` hides up to $50), so anywhere a reader is meant to CHECK a
+ *  number, `usd()` still runs: the 00-1 hero pot, 00-3.1's bank/penalty ledger, 00-7's verify
+ *  comparison and History's expanded round detail. Wherever it does run, the exact `usd()` string is
+ *  carried in a `title` on the cell — a truncated number with no way to reach the real one is a
+ *  worse lie than a wide column. */
+export function usdCompact(units: bigint): string {
+  const negative = units < 0n;
+  const magnitude = negative ? -units : units;
+  const sign = negative ? "−" : "";
+
+  // Below a cent but not nothing. Stated as a bound at both resolutions, so this is the one string
+  // the compact and full-precision paths share — see `ONE_CENT_UNITS`.
+  if (magnitude > 0n && magnitude < ONE_CENT_UNITS) return `${sign}<$0.01`;
+
+  // The tier boundary is tested against what the two-decimal path WOULD PRINT, not against the raw
+  // value: $999.999 formats as "$1,000.00", nine characters with a thousands separator in it, which
+  // is neither compact nor a shape this ladder ever means to emit. Rounding first sends it to "$1k".
+  const dollars = unitsToUsd(magnitude);
+  if (Math.round(dollars * 100) / 100 < 1000) return `${sign}$${usdFormatter(2).format(dollars)}`;
+
+  let scaled = dollars / 1000;
+  let step = 0;
+  // Step up while ROUNDING would carry past this tier's ceiling: 999,999 scales to 999.999, which
+  // renders "1000.0k" if taken at face value and "$1M" once the carry is honoured.
+  while (step < COMPACT_STEPS.length - 1 && Math.round(scaled * 10) / 10 >= 1000) {
+    scaled /= 1000;
+    step += 1;
+  }
+  const figure = scaled.toFixed(1);
+  return `${sign}$${figure.endsWith(".0") ? figure.slice(0, -2) : figure}${COMPACT_STEPS[step]}`;
+}
+
+/** Compact, with an explicit sign — the P/L columns' formatter, and `usdSigned`'s rules exactly.
+ *
+ *  EXACTLY ZERO GETS NO SIGN, for the reason spelled out on `usdSigned`: `+$0.00` in a column of
+ *  real gains scans as a tiny win rather than as breaking even. A sub-cent loss reads `−<$0.01` and
+ *  never `−$0.00`, which is the same floor `ArenaView`'s extract panel has always applied — a player
+ *  being charged something must never be told they are being charged nothing. */
+export function usdCompactSigned(units: bigint): string {
+  const magnitude = usdCompact(units < 0n ? -units : units);
+  if (units === 0n) return magnitude;
+  return units < 0n ? `−${magnitude}` : `+${magnitude}`;
 }
 
 /** A basis-point rate as a percentage: `20%`, `9.3%`, `0%`.

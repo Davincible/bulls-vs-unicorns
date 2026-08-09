@@ -24,6 +24,7 @@
 
 import { SIDE_TOKEN, sideTotals, usd } from "../contract.ts";
 import { createImpactController } from "./impact.ts";
+import { createChromeMap } from "./chrome.ts";
 import { createInkMap } from "./ink.ts";
 import { drawBodies, drawEmpty, drawLattice, drawReadout } from "./draw.ts";
 import { drawScoreboard } from "./scoreboard.ts";
@@ -58,6 +59,15 @@ export interface ArenaLoop {
   resize(cssWidth: number, cssHeight: number): void;
   /** Which fighter is at this point, for the click handler. `null` for empty field. */
   pick(x: number, y: number): number | null;
+  /** Re-read base.css's tokens off the canvas's computed style.
+   *
+   *  The palette is resolved at mount and at `start()` and then held, because for the page's whole
+   *  life it never changed — a `getComputedStyle` per frame is a forced style recalculation sixty
+   *  times a second to fetch ten strings that are always the same. `styles/paper.ts` made the sheet a
+   *  variable, so there is now exactly one moment when it does change, and this is the hook for it.
+   *  Deliberately a push from the thing that changed the tokens rather than the loop watching for it:
+   *  the caller knows precisely when, and the loop should not be paying to find out. */
+  retint(): void;
 }
 
 export interface ArenaLoopDeps {
@@ -104,10 +114,12 @@ export function createArenaLoop(deps: ArenaLoopDeps): ArenaLoop {
   primeFaces();
   const impact = createImpactController();
   const tracker = createTargetTracker();
-  // One map of where the frame's text is, shared by the three things that put text on the field —
+  // One map of where the frame's text is, shared by the four things that put text on the field —
   // see ink.ts. Owned here because it is a property of the FRAME rather than of any one painter, and
-  // because the order it is filled in is the priority order between them.
+  // because the order it is filled in is the priority order between them. The fourth is the shell's
+  // own HUD, which is DOM and cannot ask for itself; `chrome` measures it and claims on its behalf.
   const ink = createInkMap();
+  const chrome = createChromeMap(canvas);
 
   let field: ArenaField | null = null;
   let replay: ReplayState | null = null;
@@ -248,8 +260,11 @@ export function createArenaLoop(deps: ArenaLoopDeps): ArenaLoop {
     if (p.board === "survey") drawLattice(ctx, cssWidth, cssHeight, palette);
 
     // A new frame of text. Reset here, AFTER `impact.fire` has read last frame's map and before the
-    // first thing that claims into it.
+    // first thing that claims into it — and the first thing that claims into it is the shell's own
+    // HUD, which is drawn over this canvas by the DOM and is therefore the one piece of text on the
+    // frame that nothing here is free to move. See chrome.ts.
     ink.reset();
+    chrome.claim(ink);
 
     if (f.bodies.length === 0) {
       drawEmpty(ctx, cssWidth, cssHeight, palette, p.phase);
@@ -304,6 +319,10 @@ export function createArenaLoop(deps: ArenaLoopDeps): ArenaLoop {
       if (!field) return null;
       const body = bodyAt(field, x, y);
       return body ? body.id : null;
+    },
+
+    retint() {
+      palette = readPalette(canvas);
     },
   };
 }

@@ -12,17 +12,29 @@
 // So there is one map of the frame's text, filled in draw order, and everything that comes after
 // asks it before it draws. The order is the priority, and it is deliberate:
 //
-//   1. THE WATERMARK claims first. It is the ground and it cannot move — it is positioned off the
-//      field's geometry, not off anything that drifts.
+//   0. THE SHELL'S CHROME claims before anything canvas-side does. It is DOM — the phase/clock HUD
+//      and the position readout, drawn OVER this canvas and, in the default board style, with no
+//      paper behind them at all. It cannot ask the map, so chrome.ts asks on its behalf, and it goes
+//      first because it is the only text here that is not even ours to move.
+//   1. THE WATERMARK claims next. It is the ground and it very nearly cannot move — it is
+//      positioned off the field's geometry, not off anything that drifts. Its record band is the one
+//      row that yields, and only to chrome: see scoreboard.ts.
 //   2. LABELS claim next, in draw.ts's own stable order (you, then the living, then the largest,
 //      `id` as the tiebreak). A name is the one thing on this field that has to be there.
 //   3. FLOATERS only ASK. They never claim against a label and they are never allowed to displace
 //      one: they last 900ms and a fighter's name lasts the round. A floater with nowhere to go is
 //      dropped, which is a much smaller loss than an unreadable name.
 //
-// DISCS ARE NOT IN HERE, and that is the design, not an omission. A fighter crossing the watermark is
-// the fight happening in front of its scoreboard; text crossing text is two things saying different
-// words in the same pixels. Only the second one is a failure.
+// DISCS ARE NOT IN HERE, and that is still the design. A fighter crossing the watermark is the fight
+// happening in front of its scoreboard; text crossing text is two things saying different words in
+// the same pixels. Only the second one is a failure.
+//
+// What DID change is that one consumer needs a stricter question than this map answers. At sixteen
+// fighters a label lands on a neighbour's FACE often enough to matter — a 9.5px name cased in paper
+// over a photographic coin is not text over text, but it is not legible either. `layoutLabels` tests
+// the discs itself, against `field.bodies`, as a second predicate alongside `hits`. Deliberately not
+// by claiming them in here: a disc in this map would also block the damage figures, which are placed
+// directly over the defender's head by design and would simply stop appearing.
 //
 // Boxes are inclusive of a small pad — the labels' paper casing is 2px wide, so two boxes that merely
 // abut still touch on the page.

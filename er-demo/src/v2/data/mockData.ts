@@ -178,6 +178,11 @@ function mockRound(roundNo: number, r: () => number): RoundSummary {
     // A non-zero figure here would be a fabricated house take sitting in a column a reader is meant
     // to be able to check against a round account.
     penaltiesCollected: 0n,
+    // Zero for a sharper reason than the penalty's: `pot` above is accumulated from the stakes this
+    // generator hands out directly, with no `enter()` anywhere to have charged anything. So these
+    // stakes ARE the gross, and a fee here would not be an unverifiable figure — it would be a false
+    // one, claiming money that no player in this fixture was ever charged.
+    feesCollected: 0n,
     players,
   };
 }

@@ -83,7 +83,28 @@ export interface ArenaField {
  *  a wide one was two dots adrift in white. Tying it to the room each fighter actually has makes a
  *  duel large and a brawl compact, at every panel size, with no special cases. */
 const BASE_RADIUS_SHARE = 0.115;
-const BASE_RADIUS_RANGE = [11, 48] as const;
+/** …and the FLOOR must not be reachable by any geometry the shell can actually produce, or it
+ *  quietly repeals the rule above.
+ *
+ *  It was 11, and 11 binds in exactly one case: a phone. A 360x270 field carrying the program's
+ *  sixteen gives `roomPerFighter` ≈ 78px, so the share wants 9.0 and the clamp hands back 11 — 22%
+ *  more radius, 49% more area, on the one frame with the least paper to spare. A load test measured
+ *  the consequence from the other end: at sixteen on a phone the fighters' labels came to 2.5x the
+ *  total area of the discs they annotate. That number is not itself the fault (labels are fixed-size
+ *  by design — see draw.ts's LABEL_H), but a floor inflating disc ink by half on the frame where the
+ *  labels have nowhere to go is the field taking room from the labels and giving it to nothing.
+ *
+ *  So the floor gives, not the invariant. The invariant is load-bearing — it is what makes a duel
+ *  large and a brawl compact at every panel size WITH NO SPECIAL CASES, and a clamp that fires on
+ *  one real device is a special case wearing a constant's clothes.
+ *
+ *  8 rather than 0 because a floor is still wanted for degenerate geometry, and 8 is a number with a
+ *  reason: `draw.ts`'s FACE_MIN_RADIUS is 6.5, so at 8 a fighter of MEDIAN worth still carries its
+ *  coin's artwork at every size the shell can render. Below that the median fighter would fall back
+ *  to a flat disc and the field would lose the "a fighter is its coin" reading wholesale, which is a
+ *  far worse trade than a crowded phone. It binds only under ~350x260 at sixteen — narrower than any
+ *  phone this page targets. */
+const BASE_RADIUS_RANGE = [8, 48] as const;
 /** Clamps on `sqrt(hp / refStake)`. Without the floor a nearly-dead fighter becomes a subpixel dot
  *  with a label floating over nothing; without the ceiling one runaway winner eats the field. Both
  *  bounds are wide enough that the interesting range — roughly a tenth of the band to four times it

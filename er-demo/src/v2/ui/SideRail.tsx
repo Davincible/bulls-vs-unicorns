@@ -6,20 +6,24 @@ import type { ReactNode } from "react";
 import {
   SIDE_TOKEN,
   TOKENS,
-  usd,
-  usdSigned,
+  usdCompact,
+  usdCompactSigned,
   usdToUnits,
   worth,
   type TokenKey,
 } from "../contract.ts";
-import { useArena } from "../data/ArenaProvider.tsx";
+import { useArena } from "../data/useArena.ts";
+import { PaperTheme } from "./PaperTheme.tsx";
 import { Bar, Dash, Mark, Tag } from "./primitives.tsx";
 import { useShell, type Rail } from "./shell.ts";
 
 /** Simulated balances are plain numbers, not chain units — but they must still be FORMATTED by the
- *  one shared money formatter, or two panels end up disagreeing about what "$5" looks like. */
+ *  one shared money formatter, or two panels end up disagreeing about what "$5" looks like. Compact:
+ *  the rail is 420px wide and these grow without a ceiling — "+ $100 & $100" is one button press
+ *  away, repeatable forever, and a balance sheet that has absorbed a hundred top-ups is not a
+ *  hypothetical here the way a fixed on-chain stake is. */
 function simUsd(amount: number): string {
-  return usd(usdToUnits(amount));
+  return usdCompact(usdToUnits(amount));
 }
 
 function Block({ title, tools, children }: { title: string; tools?: ReactNode; children: ReactNode }) {
@@ -218,6 +222,11 @@ function WalletTenant() {
           </button>
         </div>
       </Block>
+
+      {/* Last, and deliberately below the money: it is the only thing in this rail that is about the
+          page rather than about the player, and while it is being reviewed it should be the easiest
+          thing here to walk past. */}
+      <PaperTheme />
     </>
   );
 }
@@ -254,18 +263,20 @@ function FighterTenant({ wallet }: { wallet: string }) {
         {wallet}
       </p>
 
+      {/* This whole block sits in a `.fact` row of a 420px rail — the narrowest money surface on
+          the page besides the dock — so every figure in it compacts. */}
       {f ? (
         <Block title={`This round · ${SIDE_TOKEN[f.side].name}`} tools={<Tag kind={prov} />}>
           <Fact name="Status">{status}</Fact>
-          <Fact name="Stake (net of fee)">{usd(f.stake)}</Fact>
-          <Fact name="In the ring">{usd(f.hp)}</Fact>
-          <Fact name="Banked">{f.banked > 0n ? usd(f.banked) : <Dash />}</Fact>
-          <Fact name="Worth now">{usd(worth(f))}</Fact>
+          <Fact name="Stake (net of fee)">{usdCompact(f.stake)}</Fact>
+          <Fact name="In the ring">{usdCompact(f.hp)}</Fact>
+          <Fact name="Banked">{f.banked > 0n ? usdCompact(f.banked) : <Dash />}</Fact>
+          <Fact name="Worth now">{usdCompact(worth(f))}</Fact>
           <Fact name="P/L">
             {pnl === null ? (
               <Dash />
             ) : (
-              <span className={pnl > 0n ? "pos" : pnl < 0n ? "neg" : undefined}>{usdSigned(pnl)}</span>
+              <span className={pnl > 0n ? "pos" : pnl < 0n ? "neg" : undefined}>{usdCompactSigned(pnl)}</span>
             )}
           </Fact>
           <div style={{ marginTop: 12 }}>
@@ -285,17 +296,17 @@ function FighterTenant({ wallet }: { wallet: string }) {
           <>
             <Fact name="Rounds">{record.rounds}</Fact>
             <Fact name="Rounds on the winning side">{record.wins}</Fact>
-            <Fact name="Staked">{usd(record.staked)}</Fact>
-            <Fact name="Returned">{usd(record.returned)}</Fact>
+            <Fact name="Staked">{usdCompact(record.staked)}</Fact>
+            <Fact name="Returned">{usdCompact(record.returned)}</Fact>
             <Fact name="P/L">
               <span className={record.pnl > 0n ? "pos" : record.pnl < 0n ? "neg" : undefined}>
-                {usdSigned(record.pnl)}
+                {usdCompactSigned(record.pnl)}
               </span>
             </Fact>
             <Fact name="Return on stake">
               {record.roi === null ? <Dash /> : `${(record.roi * 100).toFixed(0)}%`}
             </Fact>
-            <Fact name="Best round">{record.best > 0n ? usdSigned(record.best) : <Dash />}</Fact>
+            <Fact name="Best round">{record.best > 0n ? usdCompactSigned(record.best) : <Dash />}</Fact>
           </>
         ) : (
           <p className="u" style={{ padding: "8px 0" }}>

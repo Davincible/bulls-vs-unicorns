@@ -1,0 +1,63 @@
+/* The paper switcher. A dev control living in the wallet rail — see PaperTheme.tsx for why it is
+   there and not on the page. Layout and one hairline; every colour it shows is a resolved token. */
+
+.pap-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+}
+
+/* A swatch IS its theme: filled with that sheet's actual paper at the strength currently set, and
+   labelled in ink on top of it. So the control never says "lime" next to a colour chip — it shows the
+   page's own type on the page's own paper, which is the thing being judged. It also means the label
+   is a live contrast test: if a swatch's name is hard to read, that sheet is hard to read. */
+.pap-sw {
+  height: 32px;
+  width: 100%;
+  padding: 0;
+  border: 1px solid var(--rule-2);
+  color: var(--ink);
+  font: 400 9.5px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color var(--tick), border-width 0s;
+}
+.pap-sw:hover { border-color: var(--ink); }
+/* Selection is a heavier frame, not a glow and not a tick in a corner. `border-box` sizing means the
+   swatch does not move when it thickens — only the sheet showing through it gets smaller, which reads
+   as "this one is framed". The name in the caption below repeats the choice in words, because a
+   ring is a second colour cue on a control whose entire subject is colour. */
+.pap-sw[aria-pressed="true"] { border: 3px solid var(--ink); }
+
+.pap-cap {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 0 2px;
+}
+
+.pap-tint {
+  display: grid;
+  grid-template-columns: 40px 1fr 44px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 2px;
+}
+.pap-tint > .num { text-align: right; font-size: 12px; }
+
+/* The measurements. Four ratios, mono and tabular, wrapped as a sentence rather than tabled — this is
+   a readout to glance at while dragging, not a report. */
+.pap-num {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 12px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--rule);
+  margin-top: 10px;
+}
+.pap-num > span { display: flex; align-items: baseline; gap: 5px; }
+.pap-num .num { font-size: 11px; }
+/* A ratio that has fallen below the bar named beside it. `--hot` is the page's existing word for
+   "this number is bad news", and it is the honest one here. */
+.pap-num .pap-bad { color: var(--hot); }

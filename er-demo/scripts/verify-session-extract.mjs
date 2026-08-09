@@ -83,12 +83,30 @@ async function send(conn, ixs, signers, label) {
   return sig;
 }
 
+/** `Round::SIZE` in lib.rs, which is what `#[account(init, space = ...)]` allocates — so a round
+ *  account is this long exactly, on either layer, delegated or not.
+ *
+ *  THE TRIPWIRE THE DECODER BELOW HAS NEEDED FOR THREE REVISIONS. Every field inserted into `Round`
+ *  so far has been inserted BEFORE the fighter array, and the decoder's failure mode is not an
+ *  exception — it is fighters read N bytes early, i.e. plausible wallets and plausible lamport
+ *  figures that are simply not the ones on chain. This constant turns "somebody remembered" into
+ *  "the layout is the one this file was written against, or the script stops". It cannot tell you
+ *  WHICH field moved, but it fails on the run where the change lands rather than on the day someone
+ *  disbelieves an hp figure. 1,102 = 174 bytes of header + 58 x 16 fighters; it was 1,093 before
+ *  `fees_collected` (8) and `house_swept` (1). */
+const ROUND_SIZE = 1102;
+
 /** Reads Round straight off whichever layer is asked — Anchor's own decoder expects the program to
  *  own the account, and a delegated account is owned by the Delegation Program. */
 async function readRound(conn, roundPda) {
   const acc = await conn.getAccountInfo(roundPda);
   if (!acc) throw new Error(`round not found on ${conn.rpcEndpoint}`);
   const d = acc.data;
+  if (d.length !== ROUND_SIZE) {
+    throw new Error(`Round is ${d.length} bytes, this decoder was written for ${ROUND_SIZE}. The account layout ` +
+      `changed; every offset below is suspect. Re-derive them from \`impl Round { SIZE }\` in lib.rs ` +
+      `before trusting a single number this script prints.`);
+  }
   let o = 8 + 32 + 8;
   const phase = d[o]; o += 3;
   const fighterCount = d.readUInt16LE(o); o += 2 + 8;
@@ -97,13 +115,32 @@ async function readRound(conn, roundPda) {
   // from extract penalties. A hand-rolled decoder is exactly the thing a new field breaks silently:
   // skip it without reading it and every fighter below is decoded 8 bytes early, which produces
   // plausible-looking nonsense rather than an error.
-  const penaltiesCollected = d.readBigUInt64LE(o); o += 8 + 32 + 32;
+  const penaltiesCollected = d.readBigUInt64LE(o); o += 8;
   // ...and it happened again, exactly as predicted above: `lobby_opened_at` and `lobby_closes_at`
   // landed HERE, between `seed` and `fight_started_at`, and this decoder read every fighter 16 bytes
-  // early until these two lines existed. Read rather than skipped, because `lobby_closes_at` is not
-  // incidental to this script — step 4 waits on it.
-  const lobbyOpenedAt = d.readBigInt64LE(o); o += 8;
-  const lobbyClosesAt = d.readBigInt64LE(o); o += 8 + 8;   // + fight_started_at, still unused here
+  // early until these two lines existed.
+  //
+  // AND NOW A THIRD TIME, IN THIS EXACT GAP. `fees_collected` (8) and `house_swept` (1) were inserted
+  // between `penalties_collected` and `seed_commit`: nine bytes, which moved the fighter array from
+  // offset 165 to 174. Without these two lines this loop would still read it at 165, and every wallet,
+  // hp and banked figure below would be nonsense that looks like data. The prediction above has now
+  // been right twice, which is enough evidence to stop relying on the next person reading it — hence
+  // `ROUND_SIZE` and the bool check below.
+  //
+  // `fees_collected` is READ, not skipped, because this script's conservation check needs it: the
+  // house takes at the door as well as on the way out, and `pot` is the sum of stakes NET of that fee.
+  // `house_swept` is read too, though nothing here consumes it, and that is the point — a borsh bool
+  // is 0 or 1 and nothing else, so this one byte is a free alignment check on every offset above it.
+  // Skipping it would save a line and throw away the only self-verifying byte in the header.
+  const feesCollected = d.readBigUInt64LE(o); o += 8;
+  const houseSwept = d[o]; o += 1;
+  if (houseSwept !== 0 && houseSwept !== 1) {
+    throw new Error(`house_swept decoded as ${houseSwept} at offset ${o - 1}, and a bool is 0 or 1. ` +
+      `This decoder is misaligned — do not trust the fighters it returns.`);
+  }
+  o += 32 + 32;                                            // seed_commit, seed
+  const lobbyOpenedAt = d.readBigInt64LE(o); o += 8;        // read: step 4 waits on the pair below
+  const lobbyClosesAt = d.readBigInt64LE(o); o += 8 + 8;    // + fight_started_at, still unused here
   const fighters = [];
   for (let i = 0; i < fighterCount; i++) {
     const b = o + i * 58;
@@ -112,7 +149,7 @@ async function readRound(conn, roundPda) {
       stake: d.readBigUInt64LE(b + 34), hp: d.readBigUInt64LE(b + 42), banked: d.readBigUInt64LE(b + 50),
     });
   }
-  return { phase, fighterCount, pot, penaltiesCollected, lobbyOpenedAt, lobbyClosesAt, fighters };
+  return { phase, fighterCount, pot, penaltiesCollected, feesCollected, houseSwept, lobbyOpenedAt, lobbyClosesAt, fighters };
 }
 
 /** Sleep until the round's own `lobby_closes_at` has passed, because `close_lobby_and_draw` refuses
@@ -270,16 +307,34 @@ async function waitForLobbyDeadline(round) {
   // with a decaying penalty going to the house. Conservation is the invariant that survives both —
   // and it is the stronger statement anyway, because it covers the whole round rather than one
   // fighter.
-  const held = (r) => r.fighters.reduce((n, f) => n + f.hp + f.banked, 0n);
+  //
+  // THREE NAMED QUANTITIES, the same three every verifier in this repo now computes:
+  //
+  //     playersHold   = sum(hp + banked)                     still owed to fighters
+  //     houseTook     = penaltiesCollected + feesCollected   the house's take from this round
+  //     grossDeposits = pot + feesCollected                  what players were actually charged
+  //
+  // The fee term is honest bookkeeping, not a stronger check. It is the old
+  // `playersHold + penaltiesCollected === pot` with `feesCollected` added to BOTH sides — the fee was
+  // taken at the door and never entered the ring, so it cancels, and a check that dropped it from both
+  // sides would pass and fail on exactly the same rounds. What it buys is that `pot` stops reading as
+  // "what the two players paid" (it is the sum of NET stakes: 500_000 and 400_000 went out of their
+  // wallets, less than that arrived in the ring) and that the house's take is one named number rather
+  // than a subtraction. The load-bearing half is still `playersHold + penaltiesCollected === pot`,
+  // and the fee is pinned elsewhere — see `assertConserved` in verify-stepped-fight.ts for where.
+  const playersHold = (r) => r.fighters.reduce((n, f) => n + f.hp + f.banked, 0n);
   for (const [label, r] of [["before", roundBefore], ["after", roundAfter]]) {
-    const total = held(r) + r.penaltiesCollected;
-    if (total !== r.pot) {
-      throw new Error(`value not conserved ${label} the extract: sum(hp+banked)=${held(r)} + penalties=${r.penaltiesCollected} vs pot=${r.pot}`);
+    const houseTook = r.penaltiesCollected + r.feesCollected;
+    if (playersHold(r) + houseTook !== r.pot + r.feesCollected) {
+      throw new Error(`value not conserved ${label} the extract: playersHold=${playersHold(r)} + ` +
+        `houseTook=${houseTook} (penalties=${r.penaltiesCollected} + fees=${r.feesCollected}) != ` +
+        `grossDeposits=${r.pot + r.feesCollected} (pot=${r.pot} + fees=${r.feesCollected})`);
     }
   }
   if (after.banked <= before.banked) throw new Error(`extract banked nothing: ${before.banked} -> ${after.banked}`);
   const penalty = roundAfter.penaltiesCollected - roundBefore.penaltiesCollected;
-  ok(`hp left the ring, ${after.banked - before.banked} banked and ${penalty} to the house; conservation exact on both sides`);
+  ok(`hp left the ring, ${after.banked - before.banked} banked and ${penalty} to the house in penalty ` +
+     `(on top of ${roundAfter.feesCollected} taken in entry fees); conservation exact on both sides`);
   ok(`player A's wallet signed ONCE (create_session) — never this transaction`);
 
   console.log(`\n${c.g}${c.b}PASS${c.x} — session-signed extract() lands in real Fight phase, on a real ER validator.`);

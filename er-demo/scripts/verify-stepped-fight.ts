@@ -13,8 +13,8 @@
 // genuinely fell, extracts, and requires the payout to be strictly less than the stake. It also
 // checks four things that would each quietly undo that if they broke:
 //
-//   * value conservation (sum of hp+banked, plus the house's recorded extract penalties, == pot) at
-//     every checkpoint — the invariant that catches an economics bug in one line;
+//   * value conservation (what fighters still hold, plus everything the house took, == what players
+//     were charged) at every checkpoint — the invariant that catches an economics bug in one line;
 //   * that `extract()` advances the fight ITSELF, without anyone having ticked first — otherwise a
 //     player could simply refuse to tick and extract at a stale, larger hp, which is the same free
 //     refund in a different disguise;
@@ -105,6 +105,7 @@ interface Snapshot {
   tickCount: bigint;
   pot: bigint;
   penaltiesCollected: bigint;
+  feesCollected: bigint;
   fighters: { wallet: PublicKey; side: number; dead: number; stake: bigint; hp: bigint; banked: bigint }[];
 }
 
@@ -114,6 +115,7 @@ function snapshot(raw: RawRoundAccount): Snapshot {
     tickCount: BigInt(raw.tickCount.toString()),
     pot: BigInt(raw.pot.toString()),
     penaltiesCollected: BigInt(raw.penaltiesCollected.toString()),
+    feesCollected: BigInt(raw.feesCollected.toString()),
     fighters: raw.fighters.slice(0, raw.fighterCount).map((f) => ({
       wallet: f.wallet, side: f.side, dead: f.dead,
       stake: BigInt(f.stake.toString()), hp: BigInt(f.hp.toString()), banked: BigInt(f.banked.toString()),
@@ -124,16 +126,45 @@ function snapshot(raw: RawRoundAccount): Snapshot {
 /** Value MOVES; it is never created or destroyed. Asserted at every checkpoint rather than once at
  *  the end, so a break is attributed to the instruction that caused it.
  *
- *  THE IDENTITY HAS THREE TERMS NOW. `extract()` charges a decaying penalty that goes to the house,
- *  so value legitimately LEAVES the round and `sum(hp + banked)` is below the pot on any round where
- *  somebody extracted. The chain records what left, in `Round.penalties_collected`, so this stays an
- *  exact equality rather than becoming an inequality — which matters, because an inequality would
- *  pass just as happily if the house took twice what the published curve says. */
+ *  THE HOUSE TAKES TWICE, AND BOTH HALVES ARE NAMED HERE. `extract()` charges a decaying penalty, so
+ *  value legitimately LEAVES the round and `sum(hp + banked)` is below the pot on any round where
+ *  somebody extracted; and `enter` charges the arena's fee at the door, which never entered the ring
+ *  at all. The chain records both, so this stays an exact equality rather than becoming an inequality
+ *  — which matters, because an inequality would pass just as happily if the house took twice what the
+ *  published curve says.
+ *
+ *      playersHold   = sum(hp + banked)                       still owed to fighters
+ *      houseTook     = penaltiesCollected + feesCollected     the house's take from this round
+ *      grossDeposits = pot + feesCollected                    what players were actually charged
+ *
+ *  BE PLAIN ABOUT THE FEE TERM. Algebraically this is the old identity
+ *  (`playersHold + penaltiesCollected === pot`) with `feesCollected` added to BOTH sides — the fee was
+ *  taken at the door, so it cancels. It is NOT a stronger check and cannot be: a verifier that dropped
+ *  the term from both sides would pass and fail on exactly the same rounds this one does. What it buys
+ *  is that `pot` stops being mistakable for what players paid (it is the sum of NET stakes), and that
+ *  `houseTook` becomes a named quantity every verifier computes the same way instead of a subtraction
+ *  each one does differently or not at all. The load-bearing half is still
+ *  `playersHold + penaltiesCollected === pot`.
+ *
+ *  SO NOTHING HERE PINS THE FEE. It is pinned in lib.rs's `the_fee_is_recorded_rather_than_discarded`
+ *  (which asserts `credit_entry` against a known gross), in the `Entered` event (which publishes the
+ *  gross and the fee per entry so any single charge can be re-checked against the published rate),
+ *  and on real devnet in `verify-extract-penalty.ts`, which enters a known constant stake and asserts
+ *  `feesCollected` against the arena's own `fee_bps`.
+ *
+ *  This script COULD run that same assertion — its two entries are known-gross literals and it fetches
+ *  the arena in step 1 — and deliberately does not. A check restated in two scripts is a check that
+ *  can rot in one of them, and the fee is not this script's claim: `extract()` banks only what remains
+ *  is. Naming where the fee IS pinned is the useful thing to leave here. */
 function assertConserved(s: Snapshot, where: string): void {
-  const held = s.fighters.reduce((n, f) => n + f.hp + f.banked, 0n);
-  if (held + s.penaltiesCollected !== s.pot) {
+  const playersHold = s.fighters.reduce((n, f) => n + f.hp + f.banked, 0n);
+  const houseTook = s.penaltiesCollected + s.feesCollected;
+  const grossDeposits = s.pot + s.feesCollected;
+  if (playersHold + houseTook !== grossDeposits) {
     throw new Error(
-      `value not conserved ${where}: sum(hp+banked)=${held} + penalties=${s.penaltiesCollected} vs pot=${s.pot}`,
+      `value not conserved ${where}: playersHold=${playersHold} + houseTook=${houseTook} ` +
+      `(penalties=${s.penaltiesCollected} + fees=${s.feesCollected}) != grossDeposits=${grossDeposits} ` +
+      `(pot=${s.pot} + fees=${s.feesCollected})`,
     );
   }
 }
@@ -400,9 +431,13 @@ const pct = (part: bigint, whole: bigint) => `${(Number(part) / Number(whole) * 
       throw new Error(`the house's take disagrees with the mirror: chain ${penaltyOnChain} vs mirror ${penalty}. ` +
         `The penalty is a published curve, so the two must derive the same number from the same cursor.`);
     }
-    ok(`the house took ${penalty} (${pct(penalty, taken)} of what left the ring), recorded on-chain and matched by the mirror`);
+    ok(`the house's penalty was ${penalty} (${pct(penalty, taken)} of what left the ring), recorded on-chain and ` +
+       `matched by the mirror; it took a further ${afterExtract.feesCollected} in entry fees at the door`);
 
-    console.log(`     stake at entry         ${stakeA}`);
+    // "NET stake", because `Fighter.stake` is what `credit_entry` credited AFTER the fee came off —
+    // the same trap as `pot`, one field down, and this line used to walk straight into it by calling
+    // 998_000 the "stake at entry" when 1_000_000 was what left the player's wallet.
+    console.log(`     net stake at entry     ${stakeA}`);
     console.log(`     hp before the catch-up ${hpAtDecision}`);
     console.log(`     ${c.b}LEFT THE RING          ${taken}   ${pct(taken, stakeA)} of the stake${c.x}`);
     console.log(`     ${c.b}OF WHICH BANKED        ${kept}   (penalty ${penalty})${c.x}`);
@@ -456,6 +491,15 @@ const pct = (part: bigint, whole: bigint) => `${(Number(part) / Number(whole) * 
       console.log(`  ${f.wallet.toBase58().slice(0, 8)}…  side ${f.side}  stake ${f.stake}  hp ${f.hp}  banked ${f.banked}  dead ${f.dead}`);
     }
     console.log(`  pot ${final.pot}  cursor ${final.tickCount}`);
+    // The same three lines `verify-extract-penalty.ts` ends on, so the two scripts' output can be read
+    // against each other without translating one set of names into the other.
+    {
+      const playersHold = final.fighters.reduce((n, f) => n + f.hp + f.banked, 0n);
+      const houseTook = final.penaltiesCollected + final.feesCollected;
+      console.log(`  playersHold ${playersHold} + houseTook ${houseTook} ` +
+                  `(${final.penaltiesCollected} penalties + ${final.feesCollected} fees) ` +
+                  `= grossDeposits ${playersHold + houseTook}`);
+    }
 
     console.log(`\n${c.g}${c.b}PASS${c.x} — the fight advanced on-chain and extract banked only what remained.`);
     console.log(JSON.stringify(signatures, null, 2));

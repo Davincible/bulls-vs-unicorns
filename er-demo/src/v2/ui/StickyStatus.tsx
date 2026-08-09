@@ -20,9 +20,10 @@
 // winner and the length the fight ran once Settled) rather than `0:00` next to a live-looking rule.
 
 import { useEffect, useRef, useState } from "react";
-import { FIGHT_TIMEOUT_SECONDS, MAX_STEPS, SIDE_TOKEN, clock, sideTotals, usd } from "../contract.ts";
-import { useArena } from "../data/ArenaProvider.tsx";
+import { FIGHT_TIMEOUT_SECONDS, MAX_STEPS, SIDE_TOKEN, clock, sideTotals, usdCompact } from "../contract.ts";
+import { useArena } from "../data/useArena.ts";
 import { Bar } from "./primitives.tsx";
+import { useShell } from "./shell.ts";
 
 /** One label/figure pair in the right-hand group. The label is what keeps the bar honest — a bare
  *  `1:23` beside a clock-shaped `0:37` is two different facts wearing the same clothes. */
@@ -37,8 +38,19 @@ function F({ name, value }: { name: string; value: string }) {
 
 export function StickyStatus() {
   const { live, status } = useArena();
+  const { view } = useShell();
   const anchorRef = useRef<HTMLSpanElement>(null);
-  const [past, setPast] = useState(false);
+  const [scrolledPast, setScrolledPast] = useState(false);
+
+  // PINNED OPEN OFF THE ARENA SCREEN (Max's direction: "that bar should always be visible if you are
+  // on any other page that is not the main game page, so you can always see what's going on").
+  //
+  // The scroll trigger exists because on 00 ARENA the strip is a DUPLICATE: the hero figure and the
+  // strength bar are right there, and showing both at once is the same fact twice. Nothing on the
+  // leaderboard, dashboard, referrals or history screens carries the live score at all — so on those
+  // there is nothing to duplicate and no reason to make someone scroll to earn it. A round can settle
+  // while you are reading the all-time table, and that is exactly when you want to see it happen.
+  const shown = view !== "arena" || scrolledPast;
 
   // HOW THE REVEAL IS TRIGGERED.
   //
@@ -59,7 +71,7 @@ export function StickyStatus() {
     const io = new IntersectionObserver(
       (entries) => {
         const last = entries[entries.length - 1];
-        if (last) setPast(!last.isIntersecting);
+        if (last) setScrolledPast(!last.isIntersecting);
       },
       { threshold: 0 },
     );
@@ -117,10 +129,10 @@ export function StickyStatus() {
           accessibility tree and the tab order entirely while it is off screen. */}
       <div
         ref={barRef}
-        className={`sbar${past ? " sbar--on" : ""}`}
+        className={`sbar${shown ? " sbar--on" : ""}`}
         role="region"
         aria-label="Round status"
-        aria-hidden={!past}
+        aria-hidden={!shown}
       >
         <div className="sbar-in">
           <span className="sbar-id">
@@ -131,17 +143,20 @@ export function StickyStatus() {
           {/* The score, in the vocabulary 00-2 already established: side total, split bar, side
               total. Same element, same colour rules, a third of the height — a second way of drawing
               the same fact would make the two disagree at a glance. */}
+          {/* A 40px-tall strip pinned above every other section on the page — the tightest fixed
+              track here, so both side totals and the aria-label restating them for a screen reader
+              compact together rather than one giving a truncated figure and the other the real one. */}
           <span className="sbar-score">
-            <span className="num sbar-a">{live ? usd(aTot) : "—"}</span>
+            <span className="num sbar-a">{live ? usdCompact(aTot) : "—"}</span>
             <span
               className="split sbar-split"
               role="img"
-              aria-label={`${SIDE_TOKEN[0].name} holds ${usd(aTot)}, ${SIDE_TOKEN[1].name} holds ${usd(bTot)}`}
+              aria-label={`${SIDE_TOKEN[0].name} holds ${usdCompact(aTot)}, ${SIDE_TOKEN[1].name} holds ${usdCompact(bTot)}`}
             >
               <span className="split-a" style={{ width: `${aPct}%` }} />
               <span className="split-b" style={{ width: `${100 - aPct}%` }} />
             </span>
-            <span className="num sbar-b">{live ? usd(bTot) : "—"}</span>
+            <span className="num sbar-b">{live ? usdCompact(bTot) : "—"}</span>
           </span>
 
           <span className="sbar-prog">
@@ -173,13 +188,13 @@ export function StickyStatus() {
             ) : phase === "Drawing" && live ? (
               <>
                 <F name="Entered" value={String(live.fighters.length)} />
-                <F name="Pot" value={usd(live.pot)} />
+                <F name="Pot" value={usdCompact(live.pot)} />
                 <F name="Seed" value="DRAWING" />
               </>
             ) : phase === "Lobby" && live ? (
               <>
                 <F name="Entered" value={String(live.fighters.length)} />
-                <F name="Pot" value={usd(live.pot)} />
+                <F name="Pot" value={usdCompact(live.pot)} />
                 <F name="Fight" value="NOT STARTED" />
               </>
             ) : (

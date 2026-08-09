@@ -1,7 +1,9 @@
 # v2 — "paper terminal" arena page
 
-A second, from-scratch front end for the same on-chain game, served at **`/arena.html`**
-(`arena.html` → `src/v2/main.tsx` → `src/v2/App.tsx`). The existing app at `/` is untouched: v2
+The front end for this on-chain game, served at **`/`** (`index.html` → `src/v2/main.tsx` →
+`src/v2/App.tsx`), with **`/arena.html`** kept as an alias of the same page — v2 lived there while it
+was being built and links to it were shared. The original app moved to **`/legacy.html`**, unchanged
+and still building from `src/main.tsx`; it is not deleted because it is a live workstream. v2
 shares only `src/chain/**`, `src/sim/**` and `src/ui/verifyRound.ts` with it, **by import only —
 never edit a file outside `src/v2/`**.
 
@@ -45,12 +47,22 @@ don't restate its types or re-implement its formatters.**
 
 ## The data contract
 
-`src/v2/data/ArenaProvider.tsx` exports:
+The data layer is entered through two files, and the split is load-bearing rather than tidy:
 
 ```ts
+// src/v2/data/ArenaProvider.tsx — components ONLY, so Fast Refresh can hot-swap it
 export function ArenaProvider(props: { children: React.ReactNode }): JSX.Element
+
+// src/v2/data/useArena.ts — the hook and the context object
 export function useArena(): ArenaContextValue
 ```
+
+Keep `ArenaProvider.tsx` free of non-component exports. React Fast Refresh can only refresh a module
+whose exports are all components, and this one sits at the root of the page's import graph — when it
+cannot refresh, it invalidates instead, the context drops to null, and the whole page blanks with
+`useArena() must be called inside <ArenaProvider>` on an edit that had nothing to do with it. That
+failure is dev-only, which is what makes it expensive: it never reaches a build, and it looks like a
+bug in whatever you were editing.
 
 ```ts
 interface ArenaContextValue {

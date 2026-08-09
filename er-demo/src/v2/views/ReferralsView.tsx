@@ -8,7 +8,7 @@
 // money-shaped number with nothing behind it is the one thing this page must never ship.
 
 import { useEffect, useState } from "react";
-import { useArena } from "../data/ArenaProvider.tsx";
+import { useArena } from "../data/useArena.ts";
 import { Dash, KV, KVs, Section, Tag } from "../ui/primitives.tsx";
 import { FEE_BPS, SIDE_TOKEN, usd, usdToUnits } from "../contract.ts";
 import "./screens.css";
@@ -51,6 +51,22 @@ export function ReferralsView() {
   const shareText = `I'm fighting in the ${SIDE_TOKEN[0].name} ⚔ ${SIDE_TOKEN[1].name} arena. Pick a side, raid the other one, extract before it ends.`;
   const shareHref = `https://x.com/intent/post?text=${encodeURIComponent(shareText)}&url=${encodeURIComponent(sim.refLink)}`;
 
+  // `refLink` is `${origin}${pathname}?ref=${pubkey}` (see `useShell.ts`) — thirty-eight-odd
+  // boilerplate characters every wallet shares, followed by the one part that is actually THIS
+  // wallet's: the pubkey. At a 390px viewport the box is ~336px of usable width against a ~600px
+  // string, so something has to give, and it should never be the pubkey — a trailing ellipsis
+  // (the box's old behaviour) hides exactly the part a referrer needs to eyeball to know the link
+  // is theirs. Splitting on `ref=` and giving the boring head an ellipsis while the pubkey tail
+  // never shrinks reads, visually, as middle-truncation ("http://localhost:5…ref=MwMBw…t9KJ2")
+  // without the jitter of measuring characters in JS: it is two flex children, sized by CSS alone,
+  // so it holds at any width including 1440px where nothing needs to shrink at all. If the split
+  // point isn't found (defensive — the format changed, or this is a non-`ref=` link some day), the
+  // whole string goes in the head span and truncates the old way rather than silently disappearing.
+  const REF_PARAM = "ref=";
+  const refParamAt = sim.refLink.indexOf(REF_PARAM);
+  const linkHead = refParamAt === -1 ? sim.refLink : sim.refLink.slice(0, refParamAt + REF_PARAM.length);
+  const linkTail = refParamAt === -1 ? "" : sim.refLink.slice(refParamAt + REF_PARAM.length);
+
   const earned = sim.ledger.referralEarned;
   const count = sim.ledger.referralCount;
 
@@ -90,8 +106,17 @@ export function ReferralsView() {
         lede="It carries your wallet as a ref parameter. Anyone who lands on it and deploys is attributed to you."
       >
         <div className="sc-linkrow sc-refmeasure">
+          {/* The visible truncation is CSS-only — `linkHead`/`linkTail` are a straight character
+              split of the real string, not a JS-shortened one, so there is nothing for a screen
+              reader to lose. `text-overflow: ellipsis` clips paint, not the DOM: assistive tech
+              reading this `<code>` in browse mode reads both spans' full text nodes regardless of
+              what is visually clipped, so the announcement is already the complete url with no
+              sr-only duplicate needed — a second hidden copy would only risk the url being read
+              twice. `title` stays as the hover tooltip for sighted mouse users, who get no benefit
+              from browse-mode text. */}
           <code className="sc-linkbox" title={sim.refLink}>
-            {sim.refLink}
+            <span className="sc-linkhead">{linkHead}</span>
+            <span className="sc-linktail">{linkTail}</span>
           </code>
           <button type="button" className="btn" onClick={copy}>
             {copied ? "Copied" : "Copy link"}

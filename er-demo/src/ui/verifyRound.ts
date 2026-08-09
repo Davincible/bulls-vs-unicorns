@@ -32,19 +32,54 @@
 //                        fighter carrying the extraction fingerprint at all (wrong seed, wrong
 //                        entries, wrong step count, or a genuine algorithm bug).
 //
-// THE CONSERVATION CHECK HAS A THIRD TERM NOW, and getting this wrong would have been worse than
-// leaving the module alone. `extract()` charges a decaying penalty that goes to the house
+// THE CONSERVATION CHECK HAS A THIRD TERM, and getting this wrong would have been worse than leaving
+// the module alone. `extract()` charges a decaying penalty that goes to the house
 // (lib.rs `EXTRACT_PENALTY_START_BPS`), so value genuinely LEAVES the round: `sum(hp + banked)` is
 // strictly less than the pot on any round where somebody extracted. Checked the old way, every such
 // round would fail conservation, and failing conservation is precisely what disqualifies the honest
 // "extraction-likely" verdict — so the panel would have reported a flat MISMATCH on exactly the
 // rounds this whole three-way distinction was built to protect. The chain records what left, in
-// `Round.penalties_collected`, so the identity stays exact and stays checkable:
+// `Round.penalties_collected`, so the identity stays exact and stays checkable.
 //
-//     sum(hp + banked) + penaltiesCollected == pot
+// AND A FOURTH, which is where the house's OTHER take is named. `Round.fees_collected` is the arena's
+// entry fee, charged on every `enter` and — until the revision that added the field — recorded
+// nowhere at all. The three quantities this module now reports:
 //
-// A round with no extractions has `penaltiesCollected == 0` and this reduces to the old check, which
-// is why the pre-penalty fixtures in verifyRound.test.ts still read the same.
+//     playersHold   = sum(hp + banked)                       still owed to fighters
+//     houseTook     = penaltiesCollected + feesCollected     the house's take from this round
+//     grossDeposits = pot + feesCollected                    what players were actually charged
+//
+//     playersHold + houseTook === grossDeposits
+//
+// SAY PLAINLY WHAT THAT IS. Algebraically it is the old identity with `feesCollected` added to BOTH
+// sides — the fee was taken at the door and never entered the ring, so it cancels. It is therefore
+// NOT a stronger check, and it cannot be: a verifier that dropped the term from both sides would
+// pass and fail on exactly the same rounds this one does. Two things it does buy, neither of them a
+// stronger check and both worth the term:
+//
+//   * `pot` stops being mistakable for what players paid. `pot` is the sum of NET stakes. A panel
+//     that puts it on screen labelled "staked" is understating every entry by the fee.
+//   * `houseTook` becomes a named quantity that every verifier computes the same way, instead of a
+//     subtraction each one performs differently — or, as was the case here and in three of the four
+//     devnet scripts, performs as `penaltiesCollected` alone and misses half the answer.
+//
+// WHAT ACTUALLY PINS THE FEE IS NOT THIS IDENTITY, and pretending otherwise would be the more
+// dangerous kind of check — one that looks like evidence and is not. Because the fee cancels, a
+// round whose `feesCollected` is flatly wrong still satisfies the identity above, and
+// `verifyRound.test.ts` asserts that limit out loud so nobody later mistakes a passing panel for a
+// verified fee. The fee is pinned instead at the point of collection: lib.rs's `Entered` event
+// publishes the gross and the fee per entry, and its `the_fee_is_recorded_rather_than_discarded`
+// test asserts `credit_entry` against a known gross. Neither is reachable from a settled round
+// account, which is all this module is given.
+//
+// The falsifiable half of the identity is the pair underneath it, and the first of these is the one
+// the verdict turns on:
+//
+//     playersHold + penaltiesCollected === pot    the ring conserves against the NET pot
+//     pot + feesCollected === grossDeposits       the gross is the pot plus the fee (definitional)
+//
+// A round with no extractions and no fee has both terms at zero and this reduces to the original
+// check, which is why the oldest fixtures in verifyRound.test.ts still read the same.
 
 import type { RoundState } from "../chain/useRound.ts";
 import { settle, type ERFighter } from "../sim/erSim.ts";
@@ -73,6 +108,9 @@ export interface VerifyResult {
   winnerRecomputed: 0 | 1;
   winnerMatches: boolean;
   fighters: FighterComparison[];
+  /** The NET pot — `sum(f.stake)`, which is what the fighters were credited with, the fee already
+   *  taken. Summed from the fighter array rather than read from `round.pot` so it is derived from the
+   *  same rows every other number here is derived from. */
   potOnChain: bigint;
   /** sum(on-chain hp + banked) across fighters — what the TABLE still holds. On a round where
    *  somebody extracted this is legitimately LESS than `potOnChain`, by exactly
@@ -82,8 +120,25 @@ export interface VerifyResult {
    *  extracted from. Exposed so a panel can show the difference rather than leaving a viewer to
    *  wonder why the two numbers above disagree. */
   penaltiesCollectedOnChain: bigint;
-  /** `totalValueOnChain + penaltiesCollectedOnChain === potOnChain`. Still exact, still not something
-   *  a human pressing Extract can break — see the module header. */
+  /** `Round.fees_collected`: the entry fee this round charged, over every entry and top-up. Zero on
+   *  a round read from a program revision that predates the field — which is the true value there,
+   *  since that revision recorded no fee anywhere (see `bnOr0` in chain/program.ts).
+   *
+   *  Reported, but NOT checkable from this account: it cancels out of the identity below. See the
+   *  module header for where it is actually pinned. */
+  feesCollectedOnChain: bigint;
+  /** `penaltiesCollectedOnChain + feesCollectedOnChain` — the whole of the house's take from this
+   *  round, in one number, so no caller has to remember there are two sources. */
+  houseTookOnChain: bigint;
+  /** `potOnChain + feesCollectedOnChain` — what players were actually charged to be here, as opposed
+   *  to what is being fought over. This is the number a panel should show beside the word "staked". */
+  grossDepositsOnChain: bigint;
+  /** `totalValueOnChain + houseTookOnChain === grossDepositsOnChain`.
+   *
+   *  Exact, and not something a human pressing Extract can break. Identical in force to the old
+   *  `totalValue + penalties === pot` — the fee sits on both sides and cancels — so this flag still
+   *  falsifies exactly one thing: that the ring conserves against the net pot. The module header
+   *  spells out why the fee is carried anyway and what does pin it. */
   conservationHoldsOnChain: boolean;
 }
 
@@ -112,7 +167,10 @@ export function verifyRound(round: RoundState): VerifyResult {
   const potOnChain = round.fighters.reduce((sum, f) => sum + f.stake, 0n);
   const totalValueOnChain = round.fighters.reduce((sum, f) => sum + f.hp + f.banked, 0n);
   const penaltiesCollectedOnChain = round.penaltiesCollected;
-  const conservationHoldsOnChain = totalValueOnChain + penaltiesCollectedOnChain === potOnChain;
+  const feesCollectedOnChain = round.feesCollected;
+  const houseTookOnChain = penaltiesCollectedOnChain + feesCollectedOnChain;
+  const grossDepositsOnChain = potOnChain + feesCollectedOnChain;
+  const conservationHoldsOnChain = totalValueOnChain + houseTookOnChain === grossDepositsOnChain;
 
   const recomputedByKey = new Map<string, ERFighter>(
     recomputed.fighters.map((f) => [`${f.wallet}:${f.side}`, f]),
@@ -165,6 +223,9 @@ export function verifyRound(round: RoundState): VerifyResult {
     potOnChain,
     totalValueOnChain,
     penaltiesCollectedOnChain,
+    feesCollectedOnChain,
+    houseTookOnChain,
+    grossDepositsOnChain,
     conservationHoldsOnChain,
   };
 }

@@ -42,14 +42,25 @@ use ephemeral_rollups_sdk::vrf::types::SerializableAccountMeta;
 // and a wallet popup there undercuts the "real-time because of the ER" pitch worse than one at entry.
 use session_keys::{session_auth_or, Session, SessionError, SessionToken};
 
-// v4 ADDRESS, and the reason is infrastructure, not code — for the FOURTH time, from the same cause.
+// v5 ADDRESS, and the reason is infrastructure, not code — for the FIFTH time, from the same cause.
 //
 // MagicBlock's ER validators clone a program's executable bytecode on first use and do not re-clone
 // it after a base-layer upgrade (MAGICBLOCK_FEEDBACK.md). The cache is keyed by PROGRAM ID, so a
 // fresh id has no stale clone anywhere and the first delegation pulls the current build. v1
-// (F59NksP2bYZhP4wD7fgR1sP729UHNPitrBiYrrKF1sYW), v2 (4uqVSyHtx7CBaXUL2qy7cN4eV3MzqmvucapGHN1imFYm)
-// and v3 (8s3x42af7gcNXDCTNheDtteQxeBS2D1p9xuU8C5Jgfrt) are all still valid deployments of this same
+// (F59NksP2bYZhP4wD7fgR1sP729UHNPitrBiYrrKF1sYW), v2 (4uqVSyHtx7CBaXUL2qy7cN4eV3MzqmvucapGHN1imFYm),
+// v3 (8s3x42af7gcNXDCTNheDtteQxeBS2D1p9xuU8C5Jgfrt) and v4
+// (CchN3JPWta2uVxKhwScBQhtPG5gpsaRzf3RA4aPCDam2) are all still valid deployments of this same
 // source, and every verification signature recorded against them stands.
+//
+// EVERY PRIOR ID IS WRITTEN DOWN HERE FOR A REASON THAT HAS NOW BEEN PAID FOR TWICE. The id appears
+// in the IDL in TWO encodings — as a base58 `address` string, and as a 32-byte array under
+// `delegate_round.buffer_round_pda.pda.program` — and a propagation that fixed only the string form
+// left the byte array pinned to v4 while `declare_id!` said v5. Anything deriving that PDA through
+// anchor's IDL resolver then computed a buffer address under the wrong program and the deployed
+// program rejected it with `ConstraintSeeds`. It stayed latent only because the demo path derives
+// the delegation PDAs through the ephemeral-rollups SDK instead. `scripts/idlgen.py` now rewrites
+// pubkeys by VALUE in both encodings and refuses to emit an IDL containing any pubkey that is
+// neither this program nor a named external one — see `EXTERNAL_PROGRAMS` there.
 //
 // v3's note recorded that this was MEASURED rather than inferred, by comparing clone LENGTHS — and
 // then corrected itself, because length tracks the deploy's `--max-len` rather than the ELF inside
@@ -67,6 +78,19 @@ declare_id!("CH7K8rDXgPQRs9CCHG9EK5kd1YSDZyPkCDGArcz4PSNP"); // devnet keypair: 
 
 pub const ARENA_SEED: &[u8] = b"arena";
 pub const ROUND_SEED: &[u8] = b"round";
+/// The house's books, one account per arena — see `Treasury`.
+///
+/// A SEPARATE PDA RATHER THAN THREE MORE FIELDS ON `Arena`, and the reason is deployability. `Arena`
+/// is already live: growing an `#[account]` struct makes every existing account of that type too
+/// short to deserialise, so folding the running totals into `Arena` would have made this change
+/// undeployable against any arena already in existence. A new PDA has no such problem — it does not
+/// exist yet anywhere, so `init_treasury` is the whole migration.
+///
+/// It is also the shape the custody design already asked for. ARCHITECTURE-N-TEAM.md §4.2 puts the
+/// entry fee in an "arena treasury ATA"; an ATA needs an owner, and a PDA that already means "this
+/// arena's house account" is exactly that owner — it can sign the transfer out. Had this been three
+/// fields on `Arena`, the arrival of real tokens would have needed a new account anyway.
+pub const TREASURY_SEED: &[u8] = b"treasury";
 
 /// Hard ceiling on fighters in one round. Sized so the whole round is ONE account and therefore one
 /// atomic commit.
@@ -88,6 +112,20 @@ pub const MAX_FIGHTERS: usize = 16;
 
 /// Basis points denominator, matching the off-chain engine's FEE = 0.002 (20 bps).
 pub const BPS: u64 = 10_000;
+
+/// THE MOST THE HOUSE MAY EVER CHARGE TO ENTER — 10%, checked by `init_arena` AND `set_fee_bps`.
+///
+/// Named rather than written out twice, and the difference is not cosmetic now that the rate is
+/// mutable. `init_arena`'s bound was a typo guard on a number the deployer picked once and lived
+/// with. `set_fee_bps` re-opens that decision to a live key at any moment, against players who may
+/// already be in a lobby — so this constant is the entire answer to "how much can the house raise
+/// the rake to", and the two guards being literally the same number is the thing that makes the
+/// answer true. Written out twice, one of them drifts and the ceiling silently stops being a
+/// ceiling.
+///
+/// It bounds ENTRY only. `EXTRACT_PENALTY_START_BPS` is a compile-time constant with no setter, so
+/// the other house edge cannot be moved at all without a deploy.
+pub const MAX_FEE_BPS: u16 = 1_000;
 
 /// Below this, a fighter is finished off rather than left to decay.
 ///
@@ -482,6 +520,26 @@ pub fn split_extraction(taken: u64, fighter_count: usize, cursor: u64) -> (u64, 
     (taken - penalty, penalty)
 }
 
+/// Split a GROSS stake into what reaches the ring and what the house takes at the door. The entry
+/// half of `split_extraction`, and deliberately the same shape: one function, one rounding rule,
+/// asserted rather than argued.
+///
+/// `u128` for the multiply for the same reason `split_extraction` uses it, and it is a FIX here
+/// rather than a matching flourish. This arithmetic used to be `stake.checked_mul(fee_bps)? / BPS`
+/// inline in `enter`, which returns `MathOverflow` for any stake above `u64::MAX / fee_bps` —
+/// refusing an entry over an intermediate that never needed to be 64 bits. Widening the intermediate
+/// makes the overflow not exist instead of reporting it, and the result is bounded by
+/// `stake × 1_000 / 10_000`, a tenth of `stake`, so narrowing back is exact and `stake - fee` cannot
+/// go negative. Both facts are asserted in `the_entry_fee_can_never_exceed_the_ceiling`.
+///
+/// Floors, so the house rounds DOWN and the player rounds up. That direction is the safe one: a
+/// fee that rounded up could exceed the published rate on small stakes, and "the house never takes
+/// more than `fee_bps`" is a statement worth being able to make without a caveat.
+pub fn split_entry(stake: u64, fee_bps: u64) -> (u64, u64) {
+    let fee = (stake as u128 * fee_bps as u128 / BPS as u128) as u64;
+    (stake - fee, fee)
+}
+
 /// HOW FAR THE FIGHT HAS GENUINELY PROGRESSED at `now`. This one function is the definition of the
 /// round's state: every instruction that reads or moves the fight brings the stored cursor up to this
 /// and never past it.
@@ -598,6 +656,74 @@ fn catch_up(r: &mut Round, now: i64, limit: u64) -> u64 {
     steps
 }
 
+/// EVERYTHING `enter` WRITES, once its guards have passed: the fee off the top, the fighter credited
+/// or topped up, the pot, and the house's take. Returns `(net, fee)` for the event.
+///
+/// It is a function for the same reason `lobby_window` is one — inline, none of it is reachable from
+/// a native test, and "the fee is recorded" would be a claim rather than something
+/// `the_fee_is_recorded_rather_than_discarded` actually runs. That is not a hypothetical standard
+/// here: the fee being computed and then dropped is the bug this function exists because of, and it
+/// survived because nothing could execute this arithmetic without a validator.
+///
+/// The caller has already checked the phase, the side, the deadline and `stake > 0`, so the failures
+/// left in here are arithmetic — every add is checked, because `pot`, `hp` and `fees_collected` are
+/// all cumulative over an unbounded number of top-ups — and a full lobby.
+///
+/// `RoundFull` IS RE-CHECKED HERE EVEN THOUGH `enter` ALREADY REFUSED, and it is not defensive
+/// padding. `enter` checks it early on purpose, so a player arriving at a full lobby is told the
+/// lobby is FULL rather than that they were too slow — that ordering is a message, not a guard, and
+/// it belongs where it is. But the write below indexes `fighters` by a count, and a helper that
+/// PANICS on an unguarded call is a hazard the moment it has a second caller. `get_mut` turns the
+/// only unbounded index in this program into a total function for one comparison the bounds check
+/// was already paying for.
+fn credit_entry(r: &mut Round, who: Pubkey, side: u8, stake: u64, fee_bps: u64) -> Result<(u64, u64)> {
+    let (net, fee) = split_entry(stake, fee_bps);
+
+    let n = r.fighter_count as usize;   // read the count BEFORE borrowing fighters mutably
+    if let Some(f) = r.fighters[..n]
+        .iter_mut()
+        .find(|f| f.wallet == who && f.side == side)
+    {
+        f.stake = f.stake.checked_add(net).ok_or(ArenaError::MathOverflow)?;
+        f.hp = f.hp.checked_add(net).ok_or(ArenaError::MathOverflow)?;
+    } else {
+        let slot = r.fighters.get_mut(n).ok_or(ArenaError::RoundFull)?;
+        *slot = Fighter { wallet: who, side, stake: net, hp: net, banked: 0, dead: 0 };
+        r.fighter_count += 1;
+    }
+    r.pot = r.pot.checked_add(net).ok_or(ArenaError::MathOverflow)?;
+    // The house's cut, RECORDED rather than merely subtracted — the same discipline `extract`
+    // already applies to the penalty. See `Round.fees_collected`.
+    r.fees_collected = r.fees_collected.checked_add(fee).ok_or(ArenaError::MathOverflow)?;
+    Ok((net, fee))
+}
+
+/// EVERYTHING `sweep_house_take` WRITES — the guards that make a permissionless sweep safe, the flag
+/// that makes it once-only, and the two additions. Returns what this round contributed.
+///
+/// Hoisted out of the instruction for the same reason as `credit_entry`: the properties that matter
+/// here are "it cannot be run twice" and "it cannot be run before the numbers stop moving", and
+/// neither is checkable from a native test while they live inside a `Context`. `the_sweep_cannot_be_
+/// double_claimed` and `an_unfinished_round_cannot_be_swept` run this exact function.
+///
+/// The flag is set BEFORE the additions, not after. It makes no difference to correctness — a failed
+/// instruction reverts every write — but it puts the guard and the thing it guards adjacent, so
+/// there is no version of this function where an early return lands between them.
+fn apply_sweep(r: &mut Round, t: &mut Treasury) -> Result<(u64, u64)> {
+    require!(
+        r.phase == Phase::Settled as u8 || r.phase == Phase::Abandoned as u8,
+        ArenaError::RoundNotTerminal
+    );
+    require!(!r.house_swept, ArenaError::AlreadySwept);
+    r.house_swept = true;
+
+    let (fees, penalties) = (r.fees_collected, r.penalties_collected);
+    t.fees_accrued = t.fees_accrued.checked_add(fees).ok_or(ArenaError::MathOverflow)?;
+    t.penalties_accrued = t.penalties_accrued.checked_add(penalties).ok_or(ArenaError::MathOverflow)?;
+    t.rounds_swept = t.rounds_swept.checked_add(1).ok_or(ArenaError::MathOverflow)?;
+    Ok((fees, penalties))
+}
+
 #[ephemeral]
 #[program]
 pub mod bulls_arena {
@@ -605,7 +731,7 @@ pub mod bulls_arena {
 
     /// One-time arena config. Base layer; never delegated — everything reads it.
     pub fn init_arena(ctx: Context<InitArena>, fee_bps: u16, token_a: Pubkey, token_b: Pubkey) -> Result<()> {
-        require!(fee_bps <= 1_000, ArenaError::FeeTooHigh); // 10% ceiling, not a judgement on the rate
+        require!(fee_bps <= MAX_FEE_BPS, ArenaError::FeeTooHigh); // a ceiling, not a judgement on the rate
         let a = &mut ctx.accounts.arena;
         a.authority = ctx.accounts.authority.key();
         a.fee_bps = fee_bps;
@@ -613,6 +739,49 @@ pub mod bulls_arena {
         a.token_b = token_b;
         a.round_counter = 0;
         a.bump = ctx.bumps.arena;
+        Ok(())
+    }
+
+    /// RE-PRICE ENTRY. Authority only, same 10% ceiling `init_arena` applies.
+    ///
+    /// WHY IT HAS TO EXIST: `fee_bps` was written once at `init_arena` and never again, so moving
+    /// 20 bps to 100 bps meant standing up a WHOLE NEW ARENA — new PDA, new round counter, every
+    /// round of history stranded behind the old one — to change one `u16`. That is not a re-pricing
+    /// mechanism, it is a migration, and it made the rate effectively immutable for the life of a
+    /// deployment. A number the operator is expected to tune should not be welded to an account's
+    /// birth.
+    ///
+    /// THE CEILING IS THE SAME CHECK, NOT A SECOND ONE, and that matters more here than at
+    /// `init_arena`. An init-time bound is a typo guard on a value the deployer chose deliberately;
+    /// this is a bound on a value that can be changed at any moment, by a live key, against players
+    /// who are mid-lobby. `MAX_FEE_BPS` is what makes "the house can raise the rake"
+    /// a bounded statement rather than an open one — the worst an authority (or a stolen authority
+    /// key) can do is 10%, and it is 10% on ENTRY only, since nothing else in the round reads this.
+    /// `EXTRACT_PENALTY_START_BPS` is deliberately a constant and stays out of reach entirely.
+    ///
+    /// WHAT IT DOES NOT DO: freeze the rate for a round already in progress. `enter` reads
+    /// `arena.fee_bps` live, so a change that lands mid-lobby charges later entrants a different
+    /// rate from earlier ones in the same round, and nothing on the round records which rate applied
+    /// to whom. Two things bound that, and they are worth stating rather than leaving to be found:
+    ///   * The round is still self-describing IN AGGREGATE — `fees_collected / (pot +
+    ///     fees_collected)` is the rate the round ACTUALLY charged, which is stronger evidence than
+    ///     a stored nominal rate would be — and `Entered` carries the exact gross and fee per entry,
+    ///     so the per-wallet rate is recoverable from the log even across a mid-lobby change.
+    ///   * The operational rule is simply to re-price between rounds. `FeeBpsChanged` is emitted so
+    ///     that when it was changed is a matter of record and not of recollection.
+    ///
+    /// The structural fix is to stamp the rate onto the round at `open_round`, and it belongs with
+    /// the work that already does exactly that: ARCHITECTURE-N-TEAM.md §4.2 freezes the price feed
+    /// onto the round at open, and `enter` moves to the base layer in the same change. The fee
+    /// should be frozen in that same pass, alongside the prices, by the same argument. Doing it here
+    /// instead would cost `Round` two bytes and change `Enter`'s account list for a hazard that is
+    /// operational today and disappears entirely when that work lands.
+    pub fn set_fee_bps(ctx: Context<SetFeeBps>, fee_bps: u16) -> Result<()> {
+        require!(fee_bps <= MAX_FEE_BPS, ArenaError::FeeTooHigh);
+        let a = &mut ctx.accounts.arena;
+        let previous = a.fee_bps;
+        a.fee_bps = fee_bps;
+        emit!(FeeBpsChanged { arena: a.key(), previous, current: fee_bps });
         Ok(())
     }
 
@@ -643,6 +812,8 @@ pub mod bulls_arena {
         r.winner = 0;
         r.pot = 0;
         r.penalties_collected = 0;
+        r.fees_collected = 0;
+        r.house_swept = false;
         r.fighter_count = 0;
         r.tick_count = 0;
         (r.lobby_opened_at, r.lobby_closes_at) = lobby_window(now, lobby_seconds);
@@ -680,6 +851,19 @@ pub mod bulls_arena {
     ///
     /// `stake` is the GROSS amount; the fee is taken here so the on-chain arithmetic matches the
     /// engine's, where a stake is recorded net of the deploy fee.
+    ///
+    /// THE FEE IS NOW RECORDED, AND UNTIL THIS SESSION IT WAS NOT. It was computed, subtracted from
+    /// the player, and dropped on the floor when the local went out of scope — every round, for the
+    /// whole life of this program. See `Round.fees_collected` for why that happened (there was no
+    /// account a rollup transaction could legally write it to) and what the identity looks like now
+    /// that it is on the books.
+    ///
+    /// `Entered` carries the GROSS stake and the fee, because this instruction is the only place
+    /// either number ever exists. `Round` stores the fee only in aggregate and each fighter's
+    /// `stake` net, so without the event the fee a PARTICULAR wallet paid is unrecoverable from
+    /// chain state — and separating house-bot fees from player fees is the whole of the question
+    /// "what does the fee actually earn". `Extracted` publishes `amount`/`penalty` for exactly the
+    /// same reason.
     ///
     /// THE DEADLINE IS ENFORCED HERE, not only at the draw, and that is what makes the countdown on
     /// screen honest rather than advisory. If entries were still accepted past `lobby_closes_at` — as
@@ -720,22 +904,9 @@ pub mod bulls_arena {
         // One entry per wallet per side — a repeat tops up rather than spawning a second fighter,
         // mirroring the engine, where a duplicate id merges into the existing entry.
         let who = ctx.accounts.player.key();
-        let fee = stake.checked_mul(arena_fee).ok_or(ArenaError::MathOverflow)? / BPS;
-        let net = stake.checked_sub(fee).ok_or(ArenaError::MathOverflow)?;
+        let (_net, fee) = credit_entry(r, who, side, stake, arena_fee)?;
 
-        let n = r.fighter_count as usize;   // read the count BEFORE borrowing fighters mutably
-        if let Some(f) = r.fighters[..n]
-            .iter_mut()
-            .find(|f| f.wallet == who && f.side == side)
-        {
-            f.stake = f.stake.checked_add(net).ok_or(ArenaError::MathOverflow)?;
-            f.hp = f.hp.checked_add(net).ok_or(ArenaError::MathOverflow)?;
-        } else {
-            let i = n;
-            r.fighters[i] = Fighter { wallet: who, side, stake: net, hp: net, banked: 0, dead: 0 };
-            r.fighter_count += 1;
-        }
-        r.pot = r.pot.checked_add(net).ok_or(ArenaError::MathOverflow)?;
+        emit!(Entered { round_no: r.round_no, player: who, side, stake, fee });
         Ok(())
     }
 
@@ -1164,6 +1335,98 @@ pub mod bulls_arena {
         .build_and_invoke()?;
         Ok(())
     }
+
+    /// Open the house's books for this arena. Authority only, once.
+    ///
+    /// SEPARATE FROM `init_arena` RATHER THAN FOLDED INTO IT, and the reason is that an arena
+    /// already exists. Folding this in would have made the running totals reachable only by a
+    /// deployment that also creates a fresh arena — which is to say, only by abandoning the round
+    /// history keyed to the current one. As its own instruction, an arena that predates the whole
+    /// idea of a treasury gains one with a single transaction and nothing else changes.
+    ///
+    /// The cost of the split is that it can be FORGOTTEN, and `sweep_house_take` then fails on a
+    /// missing account until someone runs it. That is a loud, recoverable, one-transaction failure
+    /// on a keeper path — the right shape of failure to trade for not stranding history.
+    pub fn init_treasury(ctx: Context<InitTreasury>) -> Result<()> {
+        let t = &mut ctx.accounts.treasury;
+        t.arena = ctx.accounts.arena.key();
+        t.fees_accrued = 0;
+        t.penalties_accrued = 0;
+        t.rounds_swept = 0;
+        t.bump = ctx.bumps.treasury;
+        Ok(())
+    }
+
+    /// SWEEP — move a finished round's house take onto the arena's running total.
+    ///
+    /// THIS IS THE STEP THAT MAKES THE HOUSE'S REVENUE A NUMBER RATHER THAN A PILE OF ROUNDS. Both
+    /// house takes are recorded per-round, in the rollup, because that is the only account a rollup
+    /// transaction can write (see `Round.fees_collected`). Per-round is where they have to be
+    /// COLLECTED and it is a useless place to READ them: "what has the house made" would mean
+    /// fetching every round account ever opened and adding them up, forever, and the answer would
+    /// silently change meaning the first time a round account was closed for rent.
+    ///
+    /// WHY IT CANNOT RUN ANY EARLIER. The round is delegated for its entire playable life, which
+    /// means its base-layer account is owned by the Delegation Program — and `Account<'info, Round>`
+    /// checks owner before anything else, so a delegated round cannot even be deserialised here.
+    /// That is not a guard someone remembered to write; it is the account model refusing. Only after
+    /// `close_round` (or `abandon_round`) commits and undelegates does this instruction become
+    /// callable at all.
+    ///
+    /// PERMISSIONLESS, on exactly the argument `tick`, `resolve` and `abandon_round` already make:
+    /// every precondition is chain truth (the phase, the swept flag) and NOTHING about the outcome
+    /// is chosen by the caller. The amounts come off the round, and the destination is derived from
+    /// seeds rather than supplied — `treasury` is `[TREASURY_SEED, arena]` with `has_one = arena`,
+    /// so there is no account a caller could pass that would send this anywhere else. That property
+    /// is what lets it stay permissionless when it starts moving real tokens: ARCHITECTURE-N-TEAM.md
+    /// §4.5 requires that no step of the money path depend on the operator showing up, and a sweep
+    /// only the authority could call would be the first one that did.
+    ///
+    /// THE PHASE GUARD IS LOAD-BEARING AND IS NOT A FORMALITY. `open_round` runs before
+    /// `delegate_round`, so there is a window in which a brand-new round sits on the base layer,
+    /// undelegated, in `Lobby`, with `fees_collected == 0`. Without the guard, any passer-by could
+    /// sweep it in that window, take nothing, set `house_swept`, and permanently forfeit every fee
+    /// that round went on to collect. Permissionless plus a mutable flag needs the flag to only ever
+    /// be settable once the underlying number can no longer move — and `Settled`/`Abandoned` are
+    /// exactly the phases where it cannot.
+    ///
+    /// DOUBLE-CLAIM IS STOPPED BY A FLAG ON THE ROUND, and the alternative is worth recording
+    /// because it looked better. A watermark on the treasury (`sweep round n only if n == swept + 1`,
+    /// mirroring `open_round`'s `RoundOutOfOrder`) costs zero bytes and proves the total is COMPLETE
+    /// rather than merely a subset. It was rejected on liveness: one round that can never be swept
+    /// — the `Phase::Drawing` hole `abandon_round` documents has no exit, so such a round never
+    /// undelegates — would block every later round's fees forever. A per-round flag makes one stuck
+    /// round cost exactly one stuck round. `Treasury.rounds_swept` recovers most of what the
+    /// watermark offered: a count that can be held against the arena's `round_counter`.
+    ///
+    /// WHICH HALF OF THIS SURVIVES CUSTODY, said plainly so the next person does not have to guess:
+    ///   * THE STOPGAP is the fee half. Today the program moves no value at all (see the file
+    ///     header), so `fees_accrued` is a ledger the off-chain treasury is paid against. Under
+    ///     §4.2 `enter` moves to the base layer and transfers the fee to the arena's treasury ATA in
+    ///     the same instruction that charges it — at which point the fee never touches `Round` and
+    ///     this half of the sweep has nothing left to do. `fees_accrued` then becomes a mirror of a
+    ///     balance rather than a claim on one.
+    ///   * THE PART THAT SURVIVES is the penalty half, and the account this all writes to. Penalties
+    ///     are charged mid-fight, INSIDE the rollup, where the treasury ATA is unreachable by
+    ///     construction — so they must keep accruing on the round and being swept afterwards. §4.2
+    ///     names that instruction `sweep_penalties()`; this is it, one phase early. When custody
+    ///     lands, the body gains a token transfer out of the round's escrow and this same PDA is the
+    ///     ATA's owner, signing with `[TREASURY_SEED, arena, bump]`. The guards, the phase check,
+    ///     the flag, the permissionlessness and the seeds are all unchanged by that; only the
+    ///     increment becomes a transfer.
+    pub fn sweep_house_take(ctx: Context<SweepHouseTake>, _round_no: u64) -> Result<()> {
+        let round_no = ctx.accounts.round.round_no;
+        let (fees, penalties) = apply_sweep(&mut ctx.accounts.round, &mut ctx.accounts.treasury)?;
+        let t = &ctx.accounts.treasury;
+        emit!(HouseSwept {
+            round_no,
+            fees,
+            penalties,
+            fees_accrued: t.fees_accrued,
+            penalties_accrued: t.penalties_accrued,
+        });
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1188,6 +1451,10 @@ pub struct Fighter {
 /// hold a fight — see `abandon_round`. It is a fifth PHASE rather than a flag on `Settled` because
 /// nothing was settled: there is no winner, no seed, no fight to verify, and a client that read
 /// `Settled` would go looking for all three. Appended, so every existing phase keeps its number.
+// `Copy` so a test can sweep the phase table (`for phase in [Phase::Lobby, ...]`) and still name the
+// value it just wrote in the failure message. Costs the deployed binary nothing — this is a
+// field-less enum and the cast was always a no-op.
+#[derive(Clone, Copy)]
 #[repr(u8)]
 pub enum Phase { Lobby = 0, Drawing = 1, Fight = 2, Settled = 3, Abandoned = 4 }
 
@@ -1234,6 +1501,66 @@ pub struct Round {
     /// so the treasury is paid off-chain from the ledger, and this is the number that settlement is
     /// owed against.
     pub penalties_collected: u64,
+    /// THE OTHER HOUSE TAKE — the arena's entry fee, cumulative across every `enter` this round saw,
+    /// top-ups included. AND UNTIL THIS SESSION IT WAS NOT RECORDED ANYWHERE AT ALL.
+    ///
+    /// WHAT THE BUG ACTUALLY WAS. `enter` has always computed `stake × fee_bps / BPS`, subtracted it
+    /// from the player, and credited the fighter the remainder. The fee itself was a local that went
+    /// out of scope one line later. Not stored, not transferred, not emitted. Every player paid it,
+    /// every round, and the house received nothing — `Arena.fee_bps` was a number whose only effect
+    /// was to make stakes smaller. The pot was net of a fee that existed nowhere.
+    ///
+    /// WHY IT SURVIVED, WHICH IS THE PART WORTH KNOWING. It was not an oversight in the arithmetic;
+    /// there was no legal destination. `enter` executes INSIDE THE ROLLUP — the round is delegated
+    /// from lobby open — and `Arena` lives on the base layer and is never delegated. A rollup
+    /// transaction cannot write a base-layer account, so at the instant the fee is charged the only
+    /// writable account in scope is the round itself. `penalties_collected` had already met that
+    /// exact wall and answered it exactly this way; the fee simply never got the same treatment, and
+    /// the asymmetry is what let one house edge be plumbed while the other evaporated in silence.
+    ///
+    /// So this field is the answer, and `sweep_house_take` is where it goes afterwards, once the
+    /// round has undelegated and a base-layer account is reachable again.
+    ///
+    /// CONSERVATION, RESTATED IN GROSS TERMS. `pot` is the sum of NET stakes, so the old identity
+    /// was never wrong — it was narrow. It described the money INSIDE the ring and said nothing
+    /// about what players had actually been charged to get there. Three quantities, the third of
+    /// which is the one this whole change exists to produce:
+    ///
+    /// ```text
+    /// players_hold   = sum(hp + banked)                    still owed to fighters
+    /// house_took     = penalties_collected + fees_collected the house's take from this round
+    /// gross_deposits = pot + fees_collected                what players were actually charged
+    ///
+    /// players_hold + house_took == gross_deposits
+    /// ```
+    ///
+    /// BE CLEAR ABOUT WHAT THAT IS AND IS NOT. Algebraically it is the old identity with
+    /// `fees_collected` added to both sides, because the fee is the one quantity here that never
+    /// entered the ring — it was taken at the door. So it does not make the check STRONGER, and a
+    /// verifier that dropped the term from both sides would still pass. What it makes is the
+    /// statement HONEST: `pot` stops being mistakable for what players paid, and `house_took` — the
+    /// number the whole exercise is about — becomes a named quantity every verifier computes instead
+    /// of a subtraction each one does differently or not at all.
+    ///
+    /// The thing that actually pins the fee is therefore NOT this identity, and pretending otherwise
+    /// would be the more dangerous kind of test. It is `enter` itself, asserted directly against a
+    /// known gross stake in `the_fee_is_recorded_rather_than_discarded`, and the `Entered` event,
+    /// which publishes the gross and the fee per entry so any single charge can be re-checked
+    /// against the published rate.
+    ///
+    /// A RECORD, NOT CUSTODY, exactly as `penalties_collected` is: this program holds no balances
+    /// (see the file header), so both are claims the off-chain treasury is settled against until
+    /// ARCHITECTURE-N-TEAM.md §4 lands. See `sweep_house_take` for which half of that survives.
+    pub fees_collected: u64,
+    /// Has `sweep_house_take` already taken this round's `fees_collected + penalties_collected` onto
+    /// the arena's `Treasury`? One bit, so a permissionless sweep cannot be run twice.
+    ///
+    /// ON THE ROUND RATHER THAN INFERRED, because there is nothing to infer it from: the sweep moves
+    /// no value out of the round (the totals stay for auditing — zeroing them would destroy the very
+    /// record conservation is checked against), so after a sweep the account is byte-identical to
+    /// before it except for this flag. Without it the second call is indistinguishable from the
+    /// first and the house's total inflates by one round every time anyone presses the button.
+    pub house_swept: bool,
     pub seed_commit: [u8; 32],
     pub seed: [u8; 32],
     /// WHEN THE LOBBY OPENED, AND WHEN IT STOPS TAKING ENTRIES — the countdown, as chain truth.
@@ -1331,19 +1658,67 @@ pub struct Round {
 }
 impl Round {
     // 8 discriminator + 32 arena + 8 round_no + 1 phase + 1 winner + 1 bump + 2 count
-    // + 8 ticks + 8 pot + 8 penalties_collected + 32 commit + 32 seed
-    // + 8 lobby_opened_at + 8 lobby_closes_at + 8 fight_started_at + fighters
+    // + 8 ticks + 8 pot + 8 penalties_collected + 8 fees_collected + 1 house_swept
+    // + 32 commit + 32 seed + 8 lobby_opened_at + 8 lobby_closes_at + 8 fight_started_at + fighters
     //
-    // 1,093 bytes, up from 1,077. The two lobby timestamps cost sixteen of them, i.e. 111,360 more
-    // lamports of rent-exempt deposit per round (16 × 6,960 = 0.00011 SOL) — worth stating because
-    // this program's payer is a rate-limited faucet, and worth keeping in proportion: it is a
-    // hundred-thousandth of what a round already costs to open.
+    // 1,102 bytes, up from 1,093. The house's books cost nine of them — eight for `fees_collected`
+    // and one for `house_swept` — i.e. 62,640 more lamports of rent-exempt deposit per round
+    // (9 × 6,960 = 0.00006 SOL). Worth stating because this program's payer is a rate-limited
+    // faucet, and worth keeping in proportion: at 20 bps a single 1 SOL entry pays that back
+    // thirty times over, and it was previously paying it to nobody.
+    //
+    // NINE RATHER THAN THE EIGHT A NEW `u64` COSTS. The ninth is the double-claim guard, and the
+    // alternatives that cost zero bytes were both worse: a sweep watermark on the treasury couples
+    // every later round's fees to one round that can never be swept (see `sweep_house_take`), and a
+    // sixth `Phase` would have to be duplicated for the abandoned branch and would break every
+    // client that reads `phase == 3` as "settled, forever".
     //
     // Checked rather than recited: `the_account_is_exactly_the_size_its_layout_needs` borsh-encodes a
     // real `Round` and asserts the length, so a field added without touching this line fails a native
     // test instead of failing on devnet as a serialisation error nobody can read.
-    pub const SIZE: usize = 8 + 32 + 8 + 1 + 1 + 1 + 2 + 8 + 8 + 8 + 32 + 32 + 8 + 8 + 8 + (58 * MAX_FIGHTERS);
+    pub const SIZE: usize = 8 + 32 + 8 + 1 + 1 + 1 + 2 + 8 + 8 + 8 + 8 + 1 + 32 + 32 + 8 + 8 + 8 + (58 * MAX_FIGHTERS);
 }
+
+/// THE HOUSE'S BOOKS FOR ONE ARENA — where a finished round's take goes to be added up.
+///
+/// `Round.fees_collected` and `Round.penalties_collected` are where the house's money is COLLECTED,
+/// because a rollup transaction can write nothing else. They are a poor place to read it from: the
+/// answer to "what has this arena made" would be a scan of every round account ever opened, which
+/// gets slower forever and stops being answerable at all the first time a settled round is closed
+/// for its rent. This account is that answer, in one fetch, and `sweep_house_take` is the only thing
+/// that writes it.
+///
+/// THE TWO SOURCES ARE KEPT APART ON PURPOSE. They are not the same kind of money and they do not
+/// have the same future. `fees_accrued` is a rate the house SETS, charged on every entry; under
+/// ARCHITECTURE-N-TEAM.md §4.2 it stops passing through here at all, because a base-layer `enter`
+/// transfers it straight to the treasury ATA. `penalties_accrued` is a behavioural charge on a
+/// decision players MAKE mid-fight, it can only ever be collected inside the rollup, and it will
+/// still be swept exactly like this when tokens are real. Summed into one field they would be
+/// indistinguishable the moment anyone asked which half was which — and the first question anyone
+/// asks of a revenue number is where it came from.
+///
+/// `rounds_swept` is the completeness check. The sweep is per-round and independent (see
+/// `sweep_house_take` for why it is not a watermark), so nothing structurally guarantees the totals
+/// cover every round — but `rounds_swept` against `Arena.round_counter` says how many are missing,
+/// in one subtraction, without fetching anything.
+///
+/// WHAT IT BECOMES: the owner of the arena's treasury ATA. §4.2's "arena treasury ATA" needs an
+/// authority that can sign transfers out, and `[TREASURY_SEED, arena]` is already exactly the thing
+/// that means "this arena's house account". The fields here then read as the ledger against that
+/// balance rather than in place of it.
+#[account]
+pub struct Treasury {
+    pub arena: Pubkey,
+    /// Sum of `Round.fees_collected` over every swept round — the entry fee, cumulative.
+    pub fees_accrued: u64,
+    /// Sum of `Round.penalties_collected` over every swept round — early-exit penalties, cumulative.
+    pub penalties_accrued: u64,
+    /// How many rounds have been swept into the two totals above. Hold it against
+    /// `Arena.round_counter` to see how many finished rounds are still unswept.
+    pub rounds_swept: u64,
+    pub bump: u8,
+}
+impl Treasury { pub const SIZE: usize = 8 + 32 + 8 + 8 + 8 + 1; }
 
 // ---------------------------------------------------------------------------------------------
 // Contexts
@@ -1356,6 +1731,73 @@ pub struct InitArena<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
+}
+
+/// `has_one = authority` is the whole authorization, and it is the same one `OpenRound` uses. The
+/// arena stores its authority; only that key may re-price entry.
+#[derive(Accounts)]
+pub struct SetFeeBps<'info> {
+    #[account(mut, seeds = [ARENA_SEED], bump = arena.bump, has_one = authority)]
+    pub arena: Account<'info, Arena>,
+    pub authority: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct InitTreasury<'info> {
+    #[account(seeds = [ARENA_SEED], bump = arena.bump, has_one = authority)]
+    pub arena: Account<'info, Arena>,
+    #[account(init, payer = authority, space = Treasury::SIZE,
+              seeds = [TREASURY_SEED, arena.key().as_ref()], bump)]
+    pub treasury: Account<'info, Treasury>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// NO SIGNER FIELD BEYOND THE FEE PAYER, and no authority anywhere in it — see `sweep_house_take`
+/// for the argument. What makes that safe is entirely structural and lives in these constraints:
+///
+///   * `round` is pinned by its seeds to `round_no` under THIS arena, and `has_one = arena` ties it
+///     to the arena the treasury also belongs to. A round of some other arena cannot be swept into
+///     this one's books.
+///   * `treasury` is pinned by its seeds to that same arena, with `has_one = arena` again. THE
+///     DESTINATION IS DERIVED, NOT SUPPLIED — there is no account a caller can pass that would send
+///     the sweep anywhere else, which is the property that has to hold when this instruction starts
+///     moving tokens rather than incrementing a counter.
+///   * `round` being an `Account<'info, Round>` is itself a guard: a delegated round is owned by the
+///     Delegation Program, so it fails the owner check before any of this is reached.
+///
+/// `Box`ED, AND THIS IS THE FOURTH-KNOWN-BY-NAME APPEARANCE OF THE SAME 4 KB STACK. `Account<'info,
+/// T>` deserialises onto the stack inside the generated `try_accounts`, and this is the first context
+/// in the program to name THREE of them at once. `cargo build-sbf` on the unboxed version:
+///
+/// ```text
+/// Error: Function ...SweepHouseTake as anchor_lang::Accounts...::try_accounts overflows the maximum
+/// allowed frame space by accessing an offset 128 bytes greater than the maximum of 4096.
+/// Estimated function frame size: 4224 bytes.
+/// ```
+///
+/// 128 bytes over. `Round` is 1,192 B on the stack (measured in
+/// `the_account_is_exactly_the_size_its_layout_needs`) and anchor materialises it more than once
+/// across deserialise-and-move, so a context holding it alongside two others has no headroom left.
+/// Boxing moves the deserialised `Round` to the heap and the frame drops under the ceiling.
+///
+/// SHIPPING IT UNBOXED WOULD NOT HAVE FAILED THE BUILD — `build-sbf` prints this and exits 0. It
+/// would have failed on devnet, as "Access violation reading 8 bytes at address 0x18": a message
+/// that names neither the stack nor the size, and which cost this repo a full debugging session at
+/// `MAX_FIGHTERS = 40` (see that constant). Checking the build output is the only reason this was
+/// caught here rather than there.
+#[derive(Accounts)]
+#[instruction(round_no: u64)]
+pub struct SweepHouseTake<'info> {
+    #[account(seeds = [ARENA_SEED], bump = arena.bump)]
+    pub arena: Account<'info, Arena>,
+    #[account(mut, has_one = arena,
+              seeds = [ROUND_SEED, arena.key().as_ref(), &round_no.to_le_bytes()], bump = round.bump)]
+    pub round: Box<Account<'info, Round>>,
+    #[account(mut, has_one = arena,
+              seeds = [TREASURY_SEED, arena.key().as_ref()], bump = treasury.bump)]
+    pub treasury: Account<'info, Treasury>,
 }
 
 #[derive(Accounts)]
@@ -1510,6 +1952,26 @@ pub struct Resolve<'info> {
 /// landed, which is what makes the rate checkable from this event alone: it must equal
 /// `extract_penalty_bps(fighter_count, cursor)`, and `fighter_count` was frozen at lobby close.
 #[event] pub struct Extracted { pub round_no: u64, pub player: Pubkey, pub amount: u64, pub penalty: u64, pub cursor: u64 }
+/// `stake` is GROSS — what the player was charged. `fee` is the house's cut of it, and the fighter
+/// was credited `stake - fee`; a client showing "you staked X, fee Y" wants exactly that
+/// subtraction, the same shape `Extracted` already publishes for the penalty.
+///
+/// THIS IS THE ONLY PLACE EITHER NUMBER SURVIVES. `Round` stores each fighter's stake NET and the
+/// fee only in aggregate (`fees_collected`), so without this event neither the gross a particular
+/// wallet paid nor the fee it paid is recoverable from chain state at all. That matters for one
+/// question in particular: with house wallets entering every round, most of `fees_collected` can be
+/// the house paying itself, and telling real revenue from circular revenue needs the fee attributed
+/// per wallet. It also makes a single charge checkable against the published rate — `fee` must equal
+/// `stake × Arena.fee_bps / 10_000` at the rate in force when this landed.
+#[event] pub struct Entered { pub round_no: u64, pub player: Pubkey, pub side: u8, pub stake: u64, pub fee: u64 }
+/// A round's house take moved onto the arena's books. `fees`/`penalties` are what THIS round
+/// contributed; `fees_accrued`/`penalties_accrued` are the arena's running totals after it, so a
+/// listener that never fetches the `Treasury` account still has the current position. Emitted once
+/// per round and never again — `Round.house_swept` makes a second one impossible.
+#[event] pub struct HouseSwept { pub round_no: u64, pub fees: u64, pub penalties: u64, pub fees_accrued: u64, pub penalties_accrued: u64 }
+/// Entry was re-priced. Both ends, because "the fee is now 100 bps" is only half a fact — what an
+/// auditor reconciling a round against a rate needs is which rate stopped applying and when.
+#[event] pub struct FeeBpsChanged { pub arena: Pubkey, pub previous: u16, pub current: u16 }
 
 #[error_code]
 pub enum ArenaError {
@@ -1531,6 +1993,8 @@ pub enum ArenaError {
     #[msg("the lobby deadline has passed — this round is no longer taking entries")] LobbyClosed,
     #[msg("the lobby deadline has not passed and the round is not full")] LobbyStillOpen,
     #[msg("this lobby can still become a fight — it may not be abandoned")] LobbyNotAbandonable,
+    #[msg("this round has not finished — its house take cannot be swept yet")] RoundNotTerminal,
+    #[msg("this round's house take has already been swept")] AlreadySwept,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2214,9 +2678,11 @@ mod lobby_tests {
     /// The second assertion is the 4 KB STACK, which this program has already been bitten by once:
     /// `Account<'info, Round>` deserialises onto the stack, and at 40 fighters devnet reported the
     /// overflow as "Access violation reading 8 bytes at address 0x18" — a message that names neither
-    /// the stack nor the size (see `MAX_FIGHTERS`). MEASURED with the two new timestamps in: 1,184 B
-    /// of a 4,096 B frame, up from 1,168. The margin is recorded as a number rather than asserted to
-    /// be "plenty", and the bound is checked rather than remembered.
+    /// the stack nor the size (see `MAX_FIGHTERS`). MEASURED with the house's books in: 1,192 B of a
+    /// 4,096 B frame, up from 1,184 — `fees_collected` and `house_swept` cost eight of those, the
+    /// ninth borsh byte disappearing into the `u64`'s alignment. The margin is recorded as a number
+    /// rather than asserted to be "plenty", and the bound is checked rather than remembered.
+    /// `cargo build-sbf` reports no `Stack offset ... exceeded` for this build.
     #[test]
     fn the_account_is_exactly_the_size_its_layout_needs() {
         let round = Round {
@@ -2229,6 +2695,8 @@ mod lobby_tests {
             tick_count: 0,
             pot: 0,
             penalties_collected: 0,
+            fees_collected: 0,
+            house_swept: false,
             seed_commit: [0u8; 32],
             seed: [0u8; 32],
             lobby_opened_at: OPENED,
@@ -2248,5 +2716,318 @@ mod lobby_tests {
 
         let stack = core::mem::size_of::<Round>();
         assert!(stack < 2_048, "Round is {} B on the stack — the frame is 4 KB, see MAX_FIGHTERS", stack);
+    }
+
+    /// The same measurement for `Treasury`, for the same reason and before it can bite: this account
+    /// is created by `init_treasury` with `space = Treasury::SIZE` exactly once per arena, and an
+    /// under-allocation would present as `sweep_house_take` failing to serialise a value it had
+    /// already, from the caller's point of view, successfully computed.
+    #[test]
+    fn the_treasury_is_exactly_the_size_its_layout_needs() {
+        let treasury = Treasury {
+            arena: Pubkey::default(),
+            fees_accrued: 0,
+            penalties_accrued: 0,
+            rounds_swept: 0,
+            bump: 255,
+        };
+        let mut encoded = Vec::<u8>::new();
+        treasury.serialize(&mut encoded).expect("a Treasury must borsh-encode");
+        assert_eq!(
+            8 + encoded.len(), Treasury::SIZE,
+            "Treasury::SIZE ({}) does not match 8 + the real encoding ({})",
+            Treasury::SIZE, 8 + encoded.len(),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE HOUSE'S BOOKS. Native host tests, same command as the modules above.
+//
+// WHAT THESE ARE PROTECTING is a number that was zero for the whole life of this program while
+// players were being charged for it every round. `enter` computed the fee, subtracted it, and let
+// the local go out of scope — see `Round.fees_collected`. Nothing caught it, and the reason nothing
+// caught it is the reason these tests are shaped the way they are: the arithmetic lived inside an
+// instruction body, where no native test can reach it, so the only thing that could ever have
+// noticed was someone reading the four lines and seeing that `fee` was never used again.
+//
+// So every test below runs `credit_entry` and `apply_sweep` — the ACTUAL functions the instructions
+// call, hoisted out for exactly this purpose — rather than a restatement of what they do. This repo
+// has been bitten three times by a test that described the code instead of running it (`bench_fight`
+// drifting from `run_fight`, the DUST floor, and the `#[event]` doc extractor), and a re-description
+// of an accounting rule is the worst of the three: it agrees with the bug.
+// ---------------------------------------------------------------------------------------------
+#[cfg(test)]
+mod house_tests {
+    use super::*;
+
+    const FEE_BPS: u64 = 20;        // the deployed rate, matching the engine's FEE = 0.002
+    fn pk(b: u8) -> Pubkey { Pubkey::new_from_array([b; 32]) }
+
+    /// A `Round` as `open_round` leaves it: everything zeroed, phase Lobby.
+    fn fresh_round() -> Round {
+        Round {
+            arena: Pubkey::default(),
+            round_no: 1,
+            phase: Phase::Lobby as u8,
+            winner: 0,
+            bump: 255,
+            fighter_count: 0,
+            tick_count: 0,
+            pot: 0,
+            penalties_collected: 0,
+            fees_collected: 0,
+            house_swept: false,
+            seed_commit: [0u8; 32],
+            seed: [0u8; 32],
+            lobby_opened_at: 1_700_000_000,
+            lobby_closes_at: 1_700_000_060,
+            fight_started_at: 0,
+            fighters: [Fighter::default(); MAX_FIGHTERS],
+        }
+    }
+
+    fn fresh_treasury() -> Treasury {
+        Treasury { arena: Pubkey::default(), fees_accrued: 0, penalties_accrued: 0, rounds_swept: 0, bump: 255 }
+    }
+
+    /// The three quantities `Round.fees_collected`'s doc comment defines, computed the way every
+    /// verifier in the repo now computes them.
+    fn books(r: &Round) -> (u64, u64, u64) {
+        let n = r.fighter_count as usize;
+        let players_hold: u64 = r.fighters[..n].iter().map(|f| f.hp + f.banked).sum();
+        let house_took = r.penalties_collected + r.fees_collected;
+        let gross_deposits = r.pot + r.fees_collected;
+        (players_hold, house_took, gross_deposits)
+    }
+
+    /// THE BUG, AS AN ASSERTION. Four entries and a top-up, against a rate whose arithmetic is exact
+    /// so that every expected number below is a fact rather than a rounding argument.
+    ///
+    /// MUTATION-TESTED BY CONSTRUCTION: delete `r.fees_collected = ...` from `credit_entry` — which
+    /// is precisely the state this program shipped in — and the first assertion fails on
+    /// `0 != 2_000`. Nothing else in the file catches that deletion, which is the whole reason this
+    /// test is phrased against the total rather than against the identity: the fee cancels out of the
+    /// conservation identity (see the field's doc comment), so an identity test would pass happily
+    /// against the bug.
+    #[test]
+    fn the_fee_is_recorded_rather_than_discarded() {
+        let mut r = fresh_round();
+
+        // 1 SOL-ish, four ways. 1_000_000 × 20 / 10_000 = 2_000 exactly, no rounding anywhere.
+        for (i, side) in [(1u8, 0u8), (2, 0), (3, 1), (4, 1)] {
+            let (net, fee) = credit_entry(&mut r, pk(i), side, 1_000_000, FEE_BPS).unwrap();
+            assert_eq!((net, fee), (998_000, 2_000), "entry {}", i);
+        }
+        assert_eq!(r.fees_collected, 8_000, "four entries at 20 bps on 1_000_000 each");
+        assert_eq!(r.pot, 3_992_000, "the pot is the sum of NET stakes");
+        assert_eq!(r.fighter_count, 4);
+
+        // A TOP-UP IS AN ENTRY. The same wallet on the same side merges into its existing fighter
+        // rather than spawning a second one — and the fee is charged and recorded on the top-up
+        // exactly as on the first entry. A fee counter incremented only on the `else` branch of
+        // `credit_entry`'s find-or-insert would pass every assertion above and fail here.
+        let (net, fee) = credit_entry(&mut r, pk(1), 0, 500_000, FEE_BPS).unwrap();
+        assert_eq!((net, fee), (499_000, 1_000));
+        assert_eq!(r.fighter_count, 4, "a top-up must not add a fighter");
+        assert_eq!(r.fighters[0].stake, 998_000 + 499_000);
+        assert_eq!(r.fighters[0].hp, r.fighters[0].stake, "hp starts at the whole net stake");
+        assert_eq!(r.fees_collected, 9_000, "the top-up's fee is on the books too");
+        assert_eq!(r.pot, 3_992_000 + 499_000);
+
+        // The same wallet on the OTHER side is a second fighter, and is charged again.
+        let (_, fee) = credit_entry(&mut r, pk(1), 1, 1_000_000, FEE_BPS).unwrap();
+        assert_eq!(fee, 2_000);
+        assert_eq!(r.fighter_count, 5, "both sides of one wallet are two fighters");
+        assert_eq!(r.fees_collected, 11_000);
+
+        // And the whole point, stated as the identity: what players were charged is the pot plus
+        // what the house took at the door, to the lamport.
+        let gross_charged = 4 * 1_000_000 + 500_000 + 1_000_000;
+        assert_eq!(r.pot + r.fees_collected, gross_charged);
+
+        // A FULL LOBBY REFUSES RATHER THAN PANICS. `enter` refuses first, with a better message —
+        // but this function must be total on its own, because the write below the find-or-insert is
+        // an index by a count, and a helper that panics on an unguarded call is a hazard as soon as
+        // it has a second caller.
+        while (r.fighter_count as usize) < MAX_FIGHTERS {
+            let filler = pk(r.fighter_count as u8 + 100);
+            credit_entry(&mut r, filler, 0, 1_000, FEE_BPS).unwrap();
+        }
+        let (full_fees, full_pot) = (r.fees_collected, r.pot);
+        assert!(credit_entry(&mut r, pk(200), 0, 1_000_000, FEE_BPS).is_err(), "a full lobby must refuse");
+        assert_eq!((r.fees_collected, r.pot), (full_fees, full_pot), "a refused entry charges nothing");
+    }
+
+    /// EVERY LAMPORT CHARGED IS EITHER STILL OWED TO A PLAYER OR WAS TAKEN BY THE HOUSE — with BOTH
+    /// house takes non-zero at once, which no test in this repo previously exercised because one of
+    /// them could not be non-zero.
+    ///
+    /// The identity is checked at four moments, and the two house terms are asserted to be non-zero
+    /// before it is trusted: a conservation test in which nothing ever leaked passes against any
+    /// implementation at all.
+    #[test]
+    fn conservation_holds_with_both_fees_and_penalties_nonzero() {
+        let seed: [u8; 32] = core::array::from_fn(|i| i as u8);
+        let mut r = fresh_round();
+
+        // Deliberately RAGGED stakes, so a fee that rounded the wrong way or was counted once for
+        // two entries shows up as a mismatch rather than cancelling.
+        for (i, side, stake) in [(1u8, 0u8, 1_000_003u64), (2, 0, 2_500_000), (3, 1, 1_800_007), (4, 1, 900_000)] {
+            credit_entry(&mut r, pk(i), side, stake, FEE_BPS).unwrap();
+        }
+        let gross_charged = 1_000_003 + 2_500_000 + 1_800_007 + 900_000u64;
+        assert!(r.fees_collected > 0, "the fee must actually have been charged");
+
+        let check = |r: &Round, where_: &str| {
+            let (players_hold, house_took, gross_deposits) = books(r);
+            assert_eq!(players_hold + house_took, gross_deposits, "conservation {}", where_);
+            // ...and `gross_deposits` really is what players paid, not a number derived to fit.
+            assert_eq!(gross_deposits, gross_charged, "gross {}", where_);
+        };
+        check(&r, "at lobby close");
+
+        r.phase = Phase::Fight as u8;
+        let n = r.fighter_count as usize;
+
+        // An early extract, priced steeply, and a late one priced at almost nothing — so the penalty
+        // total is the sum of two genuinely different rates rather than one doubled.
+        advance_fight(&mut r.fighters, n, &seed, 0, 10);
+        r.tick_count = 10;
+        let (kept, penalty) = split_extraction(r.fighters[0].hp, n, 10);
+        assert!(penalty > 0, "the early extractor must actually be charged");
+        r.fighters[0].banked += kept; r.fighters[0].hp = 0; r.fighters[0].dead = 1;
+        r.penalties_collected += penalty;
+        check(&r, "after the early extract");
+
+        advance_fight(&mut r.fighters, n, &seed, 10, 170);
+        r.tick_count = 180;
+        assert!(r.fighters[1].hp > 0, "the late extractor must still be standing at cursor 180");
+        let (kept, penalty) = split_extraction(r.fighters[1].hp, n, 180);
+        r.fighters[1].banked += kept; r.fighters[1].hp = 0; r.fighters[1].dead = 1;
+        r.penalties_collected += penalty;
+        check(&r, "after the late extract");
+
+        advance_fight(&mut r.fighters, n, &seed, 180, MAX_STEPS - 180);
+        r.tick_count = MAX_STEPS;
+        check(&r, "at the end of the fight");
+
+        // BOTH terms carried weight. Without this the identity above could hold vacuously.
+        assert!(r.penalties_collected > 0 && r.fees_collected > 0);
+
+        // THE DECOMPOSITION, WHICH IS THE PART THAT IS ACTUALLY FALSIFIABLE. The fee cancels out of
+        // the identity above — it never entered the ring — so these two halves are what a mutation
+        // has to survive: the ring conserves against the NET pot, and the gross is the pot plus the
+        // fee. Drop the fee from `credit_entry` and the second line fails.
+        let (players_hold, _, _) = books(&r);
+        assert_eq!(players_hold + r.penalties_collected, r.pot, "the ring conserves against the pot");
+        assert_eq!(r.pot + r.fees_collected, gross_charged, "the gross is the pot plus the fee");
+    }
+
+    /// THE SWEEP MOVES A ROUND'S TAKE ONCE — and the second attempt is refused rather than ignored.
+    ///
+    /// A permissionless instruction that silently no-ops on a repeat would be the friendlier design
+    /// and the wrong one: `sweep_house_take` is the only writer of a running total, and "did my sweep
+    /// land" must have a truthful answer. Refusing says so; succeeding-having-done-nothing does not.
+    #[test]
+    fn the_sweep_cannot_be_double_claimed() {
+        let mut r = fresh_round();
+        credit_entry(&mut r, pk(1), 0, 1_000_000, FEE_BPS).unwrap();
+        credit_entry(&mut r, pk(2), 1, 1_000_000, FEE_BPS).unwrap();
+
+        // A REAL extract at the opening bell rather than a fabricated penalty total. The difference
+        // is not pedantry: a penalty that did not come out of somebody's `hp` breaks conservation,
+        // and the assertion further down would then be checking a round that could not exist. (It
+        // caught exactly that while this test was being written.)
+        let (kept, penalty) = split_extraction(r.fighters[0].hp, 2, 0);
+        assert_eq!(penalty, 199_600, "20% of 998_000 at the opening bell");
+        r.fighters[0].banked += kept; r.fighters[0].hp = 0; r.fighters[0].dead = 1;
+        r.penalties_collected += penalty;
+        r.phase = Phase::Settled as u8;
+
+        let mut t = fresh_treasury();
+        let (fees, penalties) = apply_sweep(&mut r, &mut t).unwrap();
+        assert_eq!((fees, penalties), (4_000, 199_600));
+        assert_eq!((t.fees_accrued, t.penalties_accrued, t.rounds_swept), (4_000, 199_600, 1));
+        assert!(r.house_swept);
+
+        // Again, and it must refuse. Checked on the TOTALS as well as the error, because the failure
+        // that matters is not "an error was not returned" — it is a treasury that grew twice.
+        assert!(apply_sweep(&mut r, &mut t).is_err(), "a swept round must never be swept again");
+        assert_eq!((t.fees_accrued, t.penalties_accrued, t.rounds_swept), (4_000, 199_600, 1));
+
+        // THE RECORD SURVIVES THE SWEEP. Zeroing the round's totals would have made the flag
+        // unnecessary — and would have destroyed the numbers every conservation check is run
+        // against, turning a settled round into one whose books no longer balance.
+        assert_eq!((r.fees_collected, r.penalties_collected), (4_000, 199_600));
+        let (players_hold, house_took, gross_deposits) = books(&r);
+        assert_eq!(players_hold + house_took, gross_deposits, "a swept round still balances");
+
+        // A SECOND ROUND ACCUMULATES ON TOP rather than replacing — the whole point of the account.
+        let mut r2 = fresh_round();
+        r2.round_no = 2;
+        credit_entry(&mut r2, pk(3), 0, 5_000_000, FEE_BPS).unwrap();
+        r2.phase = Phase::Abandoned as u8;   // an under-subscribed lobby still charged its one entry
+        apply_sweep(&mut r2, &mut t).unwrap();
+        assert_eq!((t.fees_accrued, t.penalties_accrued, t.rounds_swept), (14_000, 199_600, 2));
+    }
+
+    /// THE PHASE GUARD, AND IT IS THE ONE THAT MAKES PERMISSIONLESSNESS SAFE. `open_round` runs
+    /// before `delegate_round`, so a brand-new round is briefly undelegated, on the base layer, in
+    /// `Lobby`, with nothing collected yet. Without this guard any passer-by could sweep it in that
+    /// window — taking nothing, setting `house_swept`, and permanently forfeiting every fee the
+    /// round went on to collect. A one-way flag may only be settable once the number it guards can
+    /// no longer move.
+    #[test]
+    fn an_unfinished_round_cannot_be_swept() {
+        for phase in [Phase::Lobby, Phase::Drawing, Phase::Fight] {
+            let mut r = fresh_round();
+            credit_entry(&mut r, pk(1), 0, 1_000_000, FEE_BPS).unwrap();
+            r.phase = phase as u8;
+
+            let mut t = fresh_treasury();
+            assert!(apply_sweep(&mut r, &mut t).is_err(), "phase {} must not be sweepable", phase as u8);
+            assert!(!r.house_swept, "a refused sweep must not have set the flag");
+            assert_eq!((t.fees_accrued, t.rounds_swept), (0, 0));
+        }
+
+        // Both terminal phases ARE sweepable — an abandoned lobby can hold a fee from the one entry
+        // it took before it died, and that fee is owed to the house exactly like any other.
+        for phase in [Phase::Settled, Phase::Abandoned] {
+            let mut r = fresh_round();
+            credit_entry(&mut r, pk(1), 0, 1_000_000, FEE_BPS).unwrap();
+            r.phase = phase as u8;
+            let mut t = fresh_treasury();
+            assert_eq!(apply_sweep(&mut r, &mut t).unwrap(), (2_000, 0));
+        }
+    }
+
+    /// THE CEILING, AND WHAT IT ACTUALLY BOUNDS. `set_fee_bps` re-opens a decision that used to be
+    /// welded to `init_arena`, so this constant is the whole answer to "how much can the house raise
+    /// the rake to" — and the answer has to hold at the boundary and for every stake, not just for
+    /// the rates anyone expects to use.
+    #[test]
+    fn the_entry_fee_can_never_exceed_the_ceiling() {
+        assert_eq!(MAX_FEE_BPS, 1_000, "the published ceiling is 10%");
+        assert!((MAX_FEE_BPS as u64) < BPS, "a fee at or above 100% would take the whole stake");
+
+        for bps in [0u64, 1, 20, 100, 500, MAX_FEE_BPS as u64] {
+            for stake in [1u64, 2, 999, 1_000, 1_000_003, u64::MAX / 2, u64::MAX] {
+                let (net, fee) = split_entry(stake, bps);
+                // Exact, in both directions: nothing is created and nothing is lost to the split.
+                assert_eq!(net.checked_add(fee), Some(stake), "the split must be exact");
+                // Never more than the ceiling, whatever the rate asked for — this is the promise.
+                assert!(fee <= stake / 10, "fee {} over a tenth of {} at {} bps", fee, stake, bps);
+                // ...and never more than the rate asked for either, because it FLOORS.
+                assert!((fee as u128) * BPS as u128 <= stake as u128 * bps as u128);
+            }
+        }
+
+        // THE OVERFLOW THAT USED TO EXIST. `stake.checked_mul(fee_bps)? / BPS` returned MathOverflow
+        // for any stake above `u64::MAX / fee_bps` — refusing a legitimate entry over an intermediate
+        // that never needed to be 64 bits wide. The u128 intermediate makes it not a failure case.
+        assert_eq!(split_entry(u64::MAX, 20), (u64::MAX - 36_893_488_147_419_103, 36_893_488_147_419_103));
+        // Free entry is a legal configuration and must cost exactly nothing.
+        assert_eq!(split_entry(1_000_000, 0), (1_000_000, 0));
     }
 }

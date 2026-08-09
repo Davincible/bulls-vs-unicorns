@@ -15,11 +15,28 @@
      5. Colour is reserved: `--a`/`--b` for the two sides, `--hot` for loss/danger, ink for
         everything else. Never colour a heading, a border or a background with a side colour.
      6. Motion is 120ms and linear-ish. Nothing bounces.
+     7. THE SHEET IS A VARIABLE. Every value below that is near-white is defined by its distance from
+        `--paper`, never as a literal of its own — `styles/paper.ts` re-derives the whole ladder from
+        one hue and one strength, so a coloured sheet retints the page, the rails and the arena field
+        together instead of leaving a set of greys behind that were only ever right on white. Anything
+        added here that is "a light grey" belongs in that ladder. The values in this file ARE the white
+        sheet, and paper.ts recovers its proportions from them; changing one here changes it for every
+        sheet, which is the intent.
    ============================================================================================= */
 
 :root {
   /* --- ink ------------------------------------------------------------------------------- */
   --paper: #ffffff;
+  /* THE RAISED SHEET — one step lighter, for anything that FLOATS above the page: the arena's corner
+     overlays and result plate, the deploy dock, the right-hand rail, the toasts, the sticky status
+     strip, the takeover. Rule 2 forbids shadows and translucent fills, which leaves value as the only
+     way a panel can say it is on top of something; on a white page there was no value to spend and
+     the 1px ink border carried it alone, which is why every one of these used to be plain `--paper`.
+     On a coloured sheet that same rule makes a panel read as a hole cut in the page instead of a card
+     over it. `paper.ts` mixes this back toward white, so it is still exactly `--paper` here and the
+     white page is unchanged — the depth appears only where there is colour to lift out of.
+     IN-FLOW elements stay on `--paper`: a button, an input, a table are part of the sheet, not on it. */
+  --paper-2: #ffffff;
   --ink: #0b0b0b;
   --ink-2: #4d4d4d;
   --ink-3: #8a8a8a;
@@ -27,6 +44,31 @@
   --rule: #e4e4e4;
   --rule-2: #cccccc;
   --wash: #f6f6f6;
+
+  /* The three faintest marks on the page. They were literals inside `arena/palette.ts` — correct
+     while the sheet was always white, and three white-derived greys smeared across a coloured field
+     the moment it wasn't. They are tokens now because the field and the page draw the same marks and
+     must agree about them; `--mark` in particular is used BOTH by the canvas's registration crosses
+     and by `.hero-marks`, which had drifted four values apart from it. */
+  --grid: #f0f0f0;   /* the field's survey lattice: lighter than --rule, because a whole page of
+                        --rule-weight lines reads as a table nobody filled in */
+  --ghost: #e2e2e2;  /* the origin ring at a fighter's entry size */
+  --mark: #d8d8d8;   /* registration crosses, on the field and on the hero */
+
+  /* Whatever sits ON `--ink`: an inverted button, the `live` badge, a side-coloured bar's label.
+     NOT `--paper`, which is what this used to be — on a coloured sheet that left white type reading as
+     a tint of the page. It is the INK'S PAIR, and it flips with it: a `light` theme (paper.ts) has
+     near-white ink and this becomes near-black, which keeps every one of those elements correct
+     without a single call site knowing which way the page is running.
+
+     `--chrome` is the exception, and the reason there is a separate token for it. The two fixed bars
+     are the instrument frame AROUND the sheet, not part of it, so they stay black-and-white on every
+     theme. They also have to, mechanically: half of the chrome's own marks are hardcoded
+     `rgba(255,255,255,…)` in shell.css, and an inverted `--ink` underneath them would leave every bar
+     white-on-white. Anything drawn on a chrome bar uses this pair and never `--ink`. */
+  --on-ink: #ffffff;
+  --chrome: #0b0b0b;
+  --on-chrome: #ffffff;
 
   /* --- the game (the only colour) -------------------------------------------------------
      SAMPLED FROM THE COINS' OWN LOGOS, not chosen. `web/src/ansem.jpg` and `web/src/uwu.jpg` were
@@ -40,7 +82,13 @@
        ACCENT #f7ce2b — the unicorn's coat, the single largest block of chroma in either logo.
 
      `--accent` is allowed on the BLACK chrome bars only (the wins ticker), where yellow reads
-     clearly and the original game used a gold for exactly this. It must never touch white. */
+     clearly and the original game used a gold for exactly this. It must never touch white — which is
+     also why it is the one reserved colour paper.ts leaves alone: it never meets `--paper`.
+
+     `--a`, `--b` and `--hot` are the values for a WHITE sheet, and on any other one paper.ts darkens
+     them — keeping the hue exactly, giving up only light — until each holds at least the contrast it
+     holds here. They say which side a fighter is on and whether a number is a loss, so a sheet that
+     swallowed one would have broken the page, not merely dulled it. */
   --a: #2b8c39;          /* side 0 — ANSEM */
   --b: #8f09bf;          /* side 1 — UWU */
   --accent: #f7ce2b;     /* UWU coat yellow — on --ink backgrounds only */
@@ -77,7 +125,7 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-::selection { background: var(--ink); color: var(--paper); }
+::selection { background: var(--ink); color: var(--on-ink); }
 
 /* Scrollbars: hairline, never a chrome-coloured slab on a white page. */
 *::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -158,7 +206,7 @@ body {
   font: 400 9px/1 var(--mono);
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--paper);
+  color: var(--on-ink);
   background: var(--ink-4);
   padding: 3px 4px;
   vertical-align: 2px;
@@ -168,7 +216,7 @@ body {
   font: 400 9px/1 var(--mono);
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--paper);
+  color: var(--on-ink);
   background: var(--ink);
   padding: 3px 4px;
   vertical-align: 2px;
@@ -188,8 +236,8 @@ a:hover { border-bottom-color: var(--ink); }
   left: 0;
   right: 0;
   height: var(--chrome-h);
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--chrome);
+  color: var(--on-chrome);
   display: flex;
   align-items: center;
   gap: 18px;
@@ -199,7 +247,7 @@ a:hover { border-bottom-color: var(--ink); }
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
-.chrome--top { top: 0; border-bottom: 1px solid var(--ink); }
+.chrome--top { top: 0; border-bottom: 1px solid var(--chrome); }
 .chrome--bottom { bottom: 0; }
 .chrome .u { color: rgba(255, 255, 255, 0.5); }
 .chrome-sep { color: rgba(255, 255, 255, 0.3); }
@@ -211,7 +259,11 @@ a:hover { border-bottom-color: var(--ink); }
   margin: 0 auto;
 }
 
-/* The faint "+" survey marks from the reference. Decorative only, never over the canvas. */
+/* The faint "+" survey marks from the reference. Decorative only, never over the canvas.
+   DRAWN AS A MASK, not as a coloured SVG: a `url()` cannot see a custom property, so the grey used to
+   be baked into the data URI — which on a coloured sheet is a white smear in the shape of a cross.
+   The SVG now supplies only the SHAPE (opaque black is pure alpha to a mask) and `--mark` supplies
+   the colour, which means this pattern retints with the page for free. */
 .marks {
   position: relative;
 }
@@ -220,10 +272,13 @@ a:hover { border-bottom-color: var(--ink); }
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='9' height='9'><path d='M4.5 0v9M0 4.5h9' stroke='%23d8d8d8' stroke-width='1'/></svg>");
-  background-repeat: repeat;
-  background-size: 175px 135px;
-  background-position: 0 0;
+  background-color: var(--mark);
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='9' height='9'><path d='M4.5 0v9M0 4.5h9' stroke='black' stroke-width='1'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='9' height='9'><path d='M4.5 0v9M0 4.5h9' stroke='black' stroke-width='1'/></svg>");
+  -webkit-mask-repeat: repeat;
+  mask-repeat: repeat;
+  -webkit-mask-size: 175px 135px;
+  mask-size: 175px 135px;
   opacity: 0.9;
   z-index: 0;
 }
@@ -318,7 +373,7 @@ a:hover { border-bottom-color: var(--ink); }
   align-items: center;
   font: 400 10px/1 var(--mono);
   letter-spacing: 0.1em;
-  color: var(--paper);
+  color: var(--on-ink);
   white-space: nowrap;
   overflow: hidden;
   transition: width var(--tick) linear;
@@ -341,13 +396,13 @@ a:hover { border-bottom-color: var(--ink); }
   cursor: pointer;
   transition: background var(--tick), color var(--tick), border-color var(--tick);
 }
-.btn:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
+.btn:hover:not(:disabled) { background: var(--ink); color: var(--on-ink); }
 .btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { color: var(--ink-4); border-color: var(--rule-2); cursor: not-allowed; }
-.btn--fill { background: var(--ink); color: var(--paper); }
+.btn--fill { background: var(--ink); color: var(--on-ink); }
 .btn--fill:hover:not(:disabled) { background: var(--paper); color: var(--ink); }
 .btn--ghost { border-color: var(--rule-2); color: var(--ink-2); }
-.btn--ghost:hover:not(:disabled) { border-color: var(--ink); background: var(--ink); color: var(--paper); }
+.btn--ghost:hover:not(:disabled) { border-color: var(--ink); background: var(--ink); color: var(--on-ink); }
 .btn--sm { padding: 6px 9px; font-size: 10px; }
 .btn--wide { width: 100%; }
 /* The two deploy buttons, and only these, carry a side colour — as a 2px underline, not a fill. */
@@ -372,7 +427,7 @@ a:hover { border-bottom-color: var(--ink); }
 .seg > button:last-child { border-right: 0; }
 .seg > button:hover { background: var(--wash); color: var(--ink); }
 .seg > button[aria-pressed="true"],
-.seg > button.on { background: var(--ink); color: var(--paper); }
+.seg > button.on { background: var(--ink); color: var(--on-ink); }
 .seg > button:disabled { color: var(--ink-4); cursor: not-allowed; background: var(--paper); }
 
 /* Tabs: no box at all — an underline is the whole affordance. */
@@ -450,13 +505,14 @@ input[type="checkbox"] { accent-color: var(--ink); }
    OVERLAYS
    ============================================================================================= */
 
-/* Full-bleed white takeover. No scrim colour games, no rounded sheet — the page simply becomes
-   the dialogue. */
+/* Full-bleed takeover. No scrim colour games, no rounded sheet — the page simply becomes the
+   dialogue. On `--paper-2` because it is the topmost plane in the stack, and on a coloured sheet the
+   takeover arriving one step lighter is the only cue left that something came forward. */
 .overlay {
   position: fixed;
   inset: 0;
   z-index: 120;
-  background: var(--paper);
+  background: var(--paper-2);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -478,7 +534,7 @@ input[type="checkbox"] { accent-color: var(--ink); }
   pointer-events: none;
 }
 .toast {
-  background: var(--paper);
+  background: var(--paper-2);
   border: 1px solid var(--ink);
   border-left-width: 3px;
   padding: 7px 10px;

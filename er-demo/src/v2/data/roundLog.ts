@@ -11,7 +11,7 @@
 // has to worry about fetching.
 
 import { PHASE_NAME } from "../../chain/constants.ts";
-import type { RawRoundAccount } from "../../chain/program.ts";
+import { bnOr0, type RawRoundAccount } from "../../chain/program.ts";
 import {
   nameFor,
   shortKey,
@@ -43,13 +43,29 @@ export function toSide(side: number): Side {
  *  or an extract. `stake` is already net of the arena fee — the chain stored it that way at `enter()`
  *  — so `pnl` is like-for-like and never double-counts the fee.
  *
- *  THE EXTRACT PENALTY NEEDS NO CORRECTION TO ANY PER-PLAYER FIGURE, and it is worth saying why
- *  rather than leaving the next reader to re-derive it. `extract()` splits what leaves the ring
- *  BEFORE anything reaches the bank (`f.banked += kept`), so `hp + banked` is already net of the
- *  house's cut: every `final`, every `pnl`, and every standing aggregated out of them is correct as
- *  written, and adding the penalty back anywhere would credit a player with money that left the
- *  round. What the penalty DOES break is the round-level identity `sum(final) === pot`, which is
- *  why `penaltiesCollected` is carried through — see `RoundSummary`'s own comment. */
+ *  NEITHER HALF OF THE HOUSE'S TAKE NEEDS A CORRECTION TO ANY PER-PLAYER FIGURE, and it is worth
+ *  saying why rather than leaving the next reader to re-derive it. `extract()` splits what leaves the
+ *  ring BEFORE anything reaches the bank (`f.banked += kept`), so `hp + banked` is already net of the
+ *  penalty; `enter()` takes the fee before the fighter is credited, so `stake` is already net of the
+ *  fee. Every `final`, every `pnl` and every standing aggregated out of them is correct as written,
+ *  and adding either back anywhere would credit a player with money they never held.
+ *
+ *  WHAT THEY DO CHANGE IS THE ROUND-LEVEL STORY, which is why both are carried through:
+ *
+ *      playersHold   = sum(final)                          still owed to fighters
+ *      houseTook     = penaltiesCollected + feesCollected   the house's take from this round
+ *      grossDeposits = pot + feesCollected                  what players were actually charged
+ *
+ *      playersHold + houseTook === grossDeposits
+ *
+ *  Be plain about what that statement is. It is the old identity — `sum(final) + penaltiesCollected
+ *  === pot` — with `feesCollected` added to both sides, because the fee never entered the ring and
+ *  therefore cancels. It is not a stronger check, and a reader who drops the fee from both sides
+ *  gets an equally true sentence. What it buys is that `pot` stops being mistakable for what players
+ *  paid, and that `houseTook` becomes a named quantity (see `contract.ts`) instead of a subtraction
+ *  every caller performs differently or not at all. The falsifiable half is the pair underneath it:
+ *  `sum(final) + penaltiesCollected === pot` conserves the ring against the NET pot, and
+ *  `pot + feesCollected === grossDeposits` is definitional. */
 export function summarizeRoundAccount(raw: RawRoundAccount, youPubkey: string): RoundSummary {
   const phase = PHASE_NAME[raw.phase] ?? "Lobby";
   // `fighters` is a fixed-size on-chain array; only the first `fighter_count` entries are real, the
@@ -80,7 +96,12 @@ export function summarizeRoundAccount(raw: RawRoundAccount, youPubkey: string): 
     pot: BigInt(raw.pot.toString()),
     fighterCount: raw.fighterCount,
     tickCount: BigInt(raw.tickCount.toString()),
-    penaltiesCollected: BigInt(raw.penaltiesCollected.toString()),
+    // `bnOr0`, not `raw.x.toString()`: History fetches EVERY round account an arena has ever had, so
+    // it is the surface most likely to meet a round written by a program revision older than this
+    // build's IDL — and there both of these decode as `undefined`. Zero is the true value on such a
+    // round, not a stand-in. See `bnOr0` in chain/program.ts.
+    penaltiesCollected: bnOr0(raw.penaltiesCollected),
+    feesCollected: bnOr0(raw.feesCollected),
     players,
   };
 }

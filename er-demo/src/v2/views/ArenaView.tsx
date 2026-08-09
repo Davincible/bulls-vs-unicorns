@@ -17,6 +17,7 @@ import {
   FIGHT_TIMEOUT_SECONDS,
   MAX_STEPS,
   MIN_STAKE_USD,
+  ONE_CENT_UNITS,
   SIDE_TOKEN,
   STAKE_CAP_USD,
   STAKE_PRESETS,
@@ -24,13 +25,11 @@ import {
   bpsPct,
   clock,
   entriesOpen,
-  entrySecondsLeft,
   nameFor,
   shortKey,
   sideTotals,
   stepsPerSecond,
   usd,
-  usdSigned,
   usdToUnits,
   worth,
   type ArenaMeta,
@@ -40,10 +39,13 @@ import {
   type Mode,
   type Side,
 } from "../contract.ts";
-import { useArena } from "../data/ArenaProvider.tsx";
+import { useArena } from "../data/useArena.ts";
 import { abandonText, simBankrollUsd, type AmountRule } from "../data/autoDeploy.ts";
 import { ArenaCanvas } from "../arena/ArenaCanvas.tsx";
 import { Bar, Dash, Empty, KV, KVs, Mark, Money, Section, Seg, Tag } from "../ui/primitives.tsx";
+import { RoundPhaseNote } from "../ui/RoundPhaseNote.tsx";
+import { useRoundPhase } from "../ui/useRoundPhase.ts";
+import { useSecondTick } from "../ui/useSecondTick.ts";
 import { TokenIcon } from "../ui/TokenIcon.tsx";
 import { useShell } from "../ui/shell.ts";
 import "./ArenaView.css";
@@ -59,11 +61,16 @@ const START_PENALTY = bpsPct(Number(EXTRACT_PENALTY_START_BPS));
  *  last stretch of every fight down there, because the rate is decaying toward zero exactly while
  *  the hp it applies to is being whittled down. An EXACTLY zero penalty is a different fact (the
  *  curve arriving at its end, or the program's integer division flooring a small remainder) and is
- *  the one case that must not wear a minus sign. */
+ *  the one case that must not wear a minus sign.
+ *
+ *  IT DOES NOT COMPACT, and neither does `keepText`. 00-3.1 is a LEDGER — what leaves your ring,
+ *  what you keep, what the house takes — and the three figures are meant to be added up by the
+ *  person reading them. `contract.ts`'s `usdCompact` would round `$13,215` to `$13.2k` and leave a
+ *  reader checking the split against a $50 hole that is an artefact of the formatter. The sub-cent
+ *  BOUND is shared with it (`ONE_CENT_UNITS`); the resolution above a cent is not. */
 function penaltyText(units: bigint): string {
   if (units === 0n) return usd(0n, 2);
-  const cent = usdToUnits(0.01);
-  return units < cent ? `−<${usd(cent, 2)}` : `−${usd(units, 2)}`;
+  return units < ONE_CENT_UNITS ? "−<$0.01" : `−${usd(units, 2)}`;
 }
 
 /** WHAT YOU KEEP, with the same floor problem and the same answer.
@@ -75,8 +82,7 @@ function penaltyText(units: bigint): string {
  *  — the callers that can hit that case render `—` instead anyway. */
 function keepText(units: bigint): string {
   if (units === 0n) return usd(0n, 2);
-  const cent = usdToUnits(0.01);
-  return units < cent ? `<${usd(cent, 2)}` : usd(units, 2);
+  return units < ONE_CENT_UNITS ? "<$0.01" : usd(units, 2);
 }
 
 /** Health as a percentage of what a fighter started with. Display-only; never fed back into a
@@ -111,10 +117,14 @@ function RoundTag() {
 }
 
 /** A P/L figure. Zero is real data — it prints as a plain, unsigned, quiet `$0.00`, because a
- *  column of `+$0.00` before a fight has started reads as nine tiny wins. */
+ *  column of `+$0.00` before a fight has started reads as nine tiny wins.
+ *
+ *  COMPACT, because every slot this renders into is a fixed-width one: the standings column, the
+ *  previous-rounds column, the position HUD on the canvas and the settled plate. `Money` carries the
+ *  exact figure through on a `title` wherever compacting actually changed the string. */
 function Pnl({ value }: { value: bigint }) {
   if (value === 0n) return <span className="num dim">{usd(0n)}</span>;
-  return <span className={`num${value > 0n ? " pos" : " neg"}`}>{usdSigned(value)}</span>;
+  return <Money units={value} signed compact />;
 }
 
 // =============================================================================================
@@ -155,6 +165,13 @@ function TheRound() {
       <div className="hero-marks">
         <div className="hero">
           <div>
+            {/* THE ONE FIGURE ON THIS SCREEN THAT DOES NOT COMPACT. It is the pot: the whole of what
+                is on the table, stated once, at 76px, as the answer to why anyone is here. Every
+                other money slot on the page is a cell in a grid competing with four more like it and
+                takes `usdCompact`; this one has a `1fr` track to itself and is the number a reader
+                is meant to READ rather than scan. `$13.5T` would be a headline that refuses to say
+                how much. The cell it sits in is `min-width: 0` so a long pot wraps inside its own
+                column instead of pushing the clock beside it off the page — see ArenaView.css. */}
             <h3 className="display display--mono">{live ? usd(live.pot, 2) : "—"}</h3>
             <p className="u" style={{ marginTop: 14 }}>
               Pot on the table · {fighters.length} fighters · {alive} still alive
@@ -176,15 +193,20 @@ function TheRound() {
       </div>
 
       <KVs>
+        {/* Compact: a `.kv` tile is one column of a five-across grid, and a side total is the LARGEST
+            figure on the screen — it is the sum of every fighter on that side. The tile with the
+            widest number would otherwise set the width of all five. `Money` puts the exact total on
+            the tile's own title; the sentence below it is appended so hovering still explains what
+            the figure IS as well as what it is exactly. */}
         <KV
-          value={<span className="num">{usd(aTot)}</span>}
+          value={<Money units={aTot} compact />}
           label={`${SIDE_TOKEN[0].name} · side 0`}
-          title="Total value this side is holding right now: hp still in the ring plus anything banked."
+          title={`${usd(aTot, 2)} — total value this side is holding right now: hp still in the ring plus anything banked.`}
         />
         <KV
-          value={<span className="num">{usd(bTot)}</span>}
+          value={<Money units={bTot} compact />}
           label={`${SIDE_TOKEN[1].name} · side 1`}
-          title="Total value this side is holding right now: hp still in the ring plus anything banked."
+          title={`${usd(bTot, 2)} — total value this side is holding right now: hp still in the ring plus anything banked.`}
         />
         <KV
           value={<span className="num">{live ? live.fighters.length : "—"}</span>}
@@ -229,18 +251,21 @@ function StrengthBar({ a, b }: { a: bigint; b: bigint }) {
         <div className="line" style={{ gap: 8 }}>
           <TokenIcon token={SIDE_TOKEN[0]} size="md" />
           <span className="u u--ink">{SIDE_TOKEN[0].name}</span>
-          <span className="num">{usd(a)}</span>
+          <Money units={a} compact />
         </div>
         <div className="line" style={{ gap: 8, justifyContent: "flex-end" }}>
-          <span className="num">{usd(b)}</span>
+          <Money units={b} compact />
           <span className="u u--ink">{SIDE_TOKEN[1].name}</span>
           <TokenIcon token={SIDE_TOKEN[1]} size="md" />
         </div>
       </div>
+      {/* The ARIA label keeps the full figures. Compacting is a width fix, and a screen reader has no
+          width to run out of — reading "thirteen point two k dollars" where the exact number is
+          available and free would be the one place this trade buys nothing and costs something. */}
       <div
         className="split"
         role="img"
-        aria-label={`${SIDE_TOKEN[0].name} holds ${usd(a)}, ${SIDE_TOKEN[1].name} holds ${usd(b)}`}
+        aria-label={`${SIDE_TOKEN[0].name} holds ${usd(a, 2)}, ${SIDE_TOKEN[1].name} holds ${usd(b, 2)}`}
       >
         <span className="split-a" style={{ width: `${aPct}%` }}>
           {aPct >= 18 ? `${aPct.toFixed(0)}%` : ""}
@@ -287,6 +312,8 @@ function ErWrites() {
 function TheArena() {
   const { live, hitEvents, arenaId, setArenaId, board, setBoard, mode, sideRecord } = useArena();
   const { setRail, inspectedWallet } = useShell();
+  // The pre-fight plate below says the same thing the dock and 00-3 say, from the same object.
+  const phaseCopy = useRoundPhase();
 
   const fighters = useMemo(() => live?.fighters ?? [], [live]);
   const [aTot, bTot] = sideTotals(fighters);
@@ -377,11 +404,14 @@ function TheArena() {
                 <Mark side={mine.side} dead={mine.dead} />
                 <span className="u u--ink">You · {SIDE_TOKEN[mine.side].name}</span>
               </div>
+              {/* The position HUD is a hairline box pinned to the frame's own corner, capped at
+                  `calc(100% - 24px)`. Three full-precision chain figures on one line would push it
+                  across the width of the field it is sitting on top of. */}
               <div className="ovl-line">
                 <span className="u">Ring</span>
-                <span className="num">{usd(mine.hp)}</span>
+                <Money units={mine.hp} compact />
                 <span className="u">Banked</span>
-                <span className="num">{mine.banked > 0n ? usd(mine.banked) : "—"}</span>
+                {mine.banked > 0n ? <Money units={mine.banked} compact /> : <span className="num">—</span>}
                 <Pnl value={pnlOf(mine)} />
               </div>
             </>
@@ -400,8 +430,13 @@ function TheArena() {
             <div className="h result-h">
               {SIDE_TOKEN[winner].name} takes the round
             </div>
+            {/* Compact on the plate, full in 00-1's hero. The plate is a centred box floating over
+                the field at `min(360px, 88%)` — and on a phone the frame is 4:3 and the plate is
+                capped at `calc(100% - 24px)`, so a twenty-character pot is the difference between a
+                result banner and a result banner with the number sticking out of both ends. The
+                exact pot is one section up, at 76px, and on this figure's own title. */}
             <div className="line" style={{ justifyContent: "center", marginTop: 12, gap: 18 }}>
-              <span className="num">{live ? usd(live.pot) : "—"}</span>
+              {live ? <Money units={live.pot} compact /> : <span className="num">—</span>}
               <span className="u">pot</span>
               {mine ? (
                 <>
@@ -419,21 +454,23 @@ function TheArena() {
         {phase === "Lobby" || phase === "Drawing" ? (
           <div className="result result--wait" role="status">
             <div className="u" style={{ marginBottom: 8 }}>
-              Round {live?.roundNo.toString() ?? "—"} · {phase === "Lobby" ? "open" : "drawing"}
+              Round {live?.roundNo.toString() ?? "—"}
             </div>
-            <div className="h result-h">
-              {phase === "Lobby" ? "Deposits open" : "Drawing the seed"}
-            </div>
+            {/* THE SAME WORDS AS THE DOCK, from the same object. This plate used to say "Deposits
+                open" for the whole of the Lobby phase, including the window past `lobby_closes_at`
+                in which the chain refuses them — so the field could read "deposits open" over a dock
+                reading "entries closed". One source, no contradiction. */}
+            <div className="h result-h">{phaseCopy.label}</div>
             <div className="line" style={{ justifyContent: "center", marginTop: 12, gap: 18 }}>
               <span className="num">{fighters.length}</span>
               <span className="u">entered</span>
-              <span className="num">{live ? usd(live.pot) : "—"}</span>
+              {live ? <Money units={live.pot} compact /> : <span className="num">—</span>}
               <span className="u">on the table</span>
             </div>
+            {/* What to do about it, in the same voice — a plate on an empty field is exactly where a
+                player asks "what now?", and "Deploy below" answered only half of it. */}
             <p className="u" style={{ marginTop: 12, lineHeight: 1.6 }}>
-              {phase === "Lobby"
-                ? "Deploy below. The seed is committed before this lobby closes"
-                : "The VRF callback reveals the seed, and the fight starts from it"}
+              {phaseCopy.action}
             </p>
           </div>
         ) : null}
@@ -623,17 +660,12 @@ function Deploy() {
    *  `live` only changes when a poll lands or, during Fight, on the 250ms clock — neither of which
    *  runs down the lobby. Without a tick of its own, this panel would keep offering deposits for as
    *  long as the phase said Lobby, which is exactly the window in which the chain refuses them (see
-   *  `LiveRound.lobbyClosesAtMs`). One second is the resolution the countdown is read at. */
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    if (phase !== "Lobby") return;
-    setNowMs(Date.now());
-    const id = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [phase]);
+   *  `LiveRound.lobbyClosesAtMs`). One second is the resolution the countdown is read at, and
+   *  `useSecondTick` is the same clock the phase note runs on — two intervals at one rate cannot
+   *  disagree about which second it is, which a 1s and a 250ms one could. */
+  const nowMs = useSecondTick(phase === "Lobby");
 
   const open = entriesOpen(live, nowMs) && !status.programError;
-  const secondsLeft = entrySecondsLeft(live, nowMs);
 
   const deploy = useCallback(
     async (side: Side, amountUsd: number) => {
@@ -682,35 +714,23 @@ function Deploy() {
       }
     >
       {!open ? (
-        <div className="line closed" style={{ borderTop: "1px solid var(--rule)", padding: "14px 2px" }}>
-          <span className="u u--ink">Entries closed</span>
-          <span className="lede">
-            {phase === null
-              ? "There is no round to enter."
-              : phase === "Lobby"
-                ? // THE CASE THIS PANEL USED TO GET WRONG, and the one that made an automated
-                  // deposit a coin toss. `enter` is refused from `lobby_closes_at`, but the phase
-                  // only leaves Lobby when an operator's `close_lobby_and_draw` lands — a separate
-                  // transaction, sent at a human's pace. Between the two, this panel offered a
-                  // button the chain would have rejected.
-                  "The lobby's deposit deadline has passed. The phase changes when the operator draws the seed; until then this round is closed to new deposits."
-                : phase === "Drawing"
-                  ? "The lobby has closed and the VRF seed is being drawn. Deposits reopen at the next lobby."
-                  : phase === "Fight"
-                    ? "The fight is running. Deposits reopen at the next lobby — extract is below."
-                    : "This round has settled. Deposits reopen at the next lobby."}
-          </span>
+        // THE FOUR PHASES ARE NOT SPELLED OUT HERE ANY MORE. They were, in a ladder of strings that
+        // was a hand-maintained copy of the dock's ladder — and one copy always rots. Both surfaces
+        // now render `ui/RoundPhaseNote.tsx`, whose words are a pure function with a test on it.
+        <div className="closed" style={{ borderTop: "1px solid var(--rule)", padding: "14px 2px" }}>
+          <RoundPhaseNote />
         </div>
       ) : (
         <div className="deploy">
           <div>
-            {/* The deadline, as a number. A lobby with an invisible clock is how a player ends up
-                pressing Deploy two seconds too late and being told the round refused them. */}
-            {secondsLeft !== null ? (
-              <p className="u" data-testid="entry-countdown" style={{ marginBottom: 12 }}>
-                Deposits close in {clock(secondsLeft)}
-              </p>
-            ) : null}
+            {/* The deadline, as a number — same component, same words, as the dock's. A lobby with
+                an invisible clock is how a player ends up pressing Deploy two seconds too late and
+                being told the round refused them. It renders a sentence rather than nothing when
+                the round carries no deadline (`lobbyClosesAtMs === null`), which is a real state on
+                a program revision without one and used to print as blank space. */}
+            <div data-testid="entry-countdown" style={{ marginBottom: 14 }}>
+              <RoundPhaseNote detail="timing" />
+            </div>
             <div className="line" style={{ marginBottom: 14 }}>
               <span className="u">Stake</span>
               <Seg<number>
@@ -1056,7 +1076,7 @@ function Roster({ side }: { side: Side }) {
       <div className="side-head">
         <TokenIcon token={SIDE_TOKEN[side]} size="md" />
         <span className="h h--sm">{SIDE_TOKEN[side].name}</span>
-        <span className="num push">{usd(total)}</span>
+        <Money units={total} compact className="push" />
         <span className="u">
           {alive}/{rows.length} alive
         </span>
@@ -1092,8 +1112,18 @@ function Roster({ side }: { side: Side }) {
             <span className="idx">{(i + 1).toString().padStart(2, "0")}</span>
             <Mark side={f.side} dead={f.dead} />
             <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
-            <span className="num r">{usd(f.hp)}</span>
-            <span className="num r col-opt">{f.banked > 0n ? usd(f.banked) : <Dash />}</span>
+            {/* THE COLUMNS MAX REPORTED. `.roster`'s money tracks are 70px fixed (66px on a phone),
+                and a chain figure printed in full is ~133px of right-aligned text — which does not
+                widen the track, it spills backwards over the name and the column before it. Compact
+                fits the track with room to spare; the exact figure is on each cell's title. */}
+            <Money units={f.hp} compact className="r" />
+            {f.banked > 0n ? (
+              <Money units={f.banked} compact className="r col-opt" />
+            ) : (
+              <span className="num r col-opt">
+                <Dash />
+              </span>
+            )}
             <span className="col-opt">
               <Bar value={f.hp} max={f.stake} side={f.side} />
             </span>
@@ -1188,10 +1218,18 @@ function RoundStandings() {
             <span className="idx">{(i + 1).toString().padStart(2, "0")}</span>
             <Mark side={f.side} dead={f.dead} />
             <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
-            <span className="num r col-opt">{usd(f.stake)}</span>
-            <span className="num r col-opt">{usd(f.hp)}</span>
-            <span className="num r col-opt">{f.banked > 0n ? usd(f.banked) : <Dash />}</span>
-            <span className="num r">{usd(worth(f))}</span>
+            {/* Five money columns across 76-88px tracks — the worst case on the page, and the other
+                half of Max's report. All five compact; all five carry the exact figure on a title. */}
+            <Money units={f.stake} compact className="r col-opt" />
+            <Money units={f.hp} compact className="r col-opt" />
+            {f.banked > 0n ? (
+              <Money units={f.banked} compact className="r col-opt" />
+            ) : (
+              <span className="num r col-opt">
+                <Dash />
+              </span>
+            )}
+            <Money units={worth(f)} compact className="r" />
             <span className="r">
               <Pnl value={pnlOf(f)} />
             </span>
@@ -1253,7 +1291,8 @@ function PreviousRounds() {
                   </>
                 )}
               </span>
-              <span className="num r">{usd(r.pot)}</span>
+              {/* Same 76px track as the standings above it, same reason. */}
+              <Money units={r.pot} compact className="r" />
               <span className="num r col-opt">{r.fighterCount}</span>
               <span className="num r col-opt">{r.tickCount.toString()}</span>
               <span className="r">{yours ? <Pnl value={yours.pnl} /> : <Dash />}</span>
@@ -1374,6 +1413,11 @@ function ProvablyFair() {
             />
           </KVs>
 
+          {/* THE COMPARISON TABLE STAYS FULL PRECISION, and its tracks are `1.2fr` rather than fixed
+              px precisely so it can. The entire claim of this section is that two independently
+              computed numbers are the SAME number; compacting both sides would round a genuine
+              one-unit divergence into two identical strings and turn the page's proof into a
+              coincidence. Width is the thing that yields here, not the figure. */}
           <div className="row row--head verifyrow" style={{ marginTop: 22 }}>
             <span>Fighter</span>
             <span>Side</span>

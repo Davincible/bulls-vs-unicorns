@@ -14,11 +14,13 @@
 // `aria-expanded` tells a screen reader what the arrow is about to do.
 
 import { useMemo, useState } from "react";
-import { useArena } from "../data/ArenaProvider.tsx";
+import { useArena } from "../data/useArena.ts";
 import { Empty, Mark, Money, Section, Tag } from "../ui/primitives.tsx";
 import {
   SIDE_TOKEN,
   usd,
+  usdCompact,
+  usdCompactSigned,
   usdSigned,
   type RoundPlayer,
   type RoundSummary,
@@ -95,8 +97,11 @@ export function HistoryView() {
         tools={
           mine.length ? (
             <span className="u">
+              {/* Header summary, not a grid cell — but a wallet with enough rounds logged can still
+                  carry a live-chain P/L past what a header line should spend width on, so this
+                  compacts too. */}
               {mine.length} rounds ·{" "}
-              <span className={totals.pnl >= 0n ? "pos" : "neg"}>{usdSigned(totals.pnl)}</span> net
+              <span className={totals.pnl >= 0n ? "pos" : "neg"}>{usdCompactSigned(totals.pnl)}</span> net
             </span>
           ) : undefined
         }
@@ -130,9 +135,9 @@ export function HistoryView() {
               <div className="u u--ink">Total</div>
               <div />
               <div className="u">{totals.won} of {mine.length}</div>
-              <div className="r sc-s num">{usd(totals.staked)}</div>
-              <div className="r sc-s num">{usd(totals.back)}</div>
-              <div className={`r num ${totals.pnl >= 0n ? "pos" : "neg"}`}>{usdSigned(totals.pnl)}</div>
+              <div className="r sc-s num">{usdCompact(totals.staked)}</div>
+              <div className="r sc-s num">{usdCompact(totals.back)}</div>
+              <div className={`r num ${totals.pnl >= 0n ? "pos" : "neg"}`}>{usdCompactSigned(totals.pnl)}</div>
               <div />
             </div>
           </div>
@@ -199,14 +204,19 @@ function MyRow({ entry }: { entry: MyEntry }) {
           <span className="u">{SIDE_TOKEN[me.side].name}</span>
         </span>
         <span className="u u--ink">{won ? "yes" : "no"}</span>
-        <span className="num r sc-s">{usd(me.stake)}</span>
-        <span className="num r sc-s">{usd(me.final)}</span>
-        <Money units={me.pnl} signed className="r" />
+        <Money units={me.stake} compact className="r sc-s" />
+        <Money units={me.final} compact className="r sc-s" />
+        <Money units={me.pnl} signed compact className="r" />
         <span className={`sc-chev${open ? " sc-chev--on" : ""}`} aria-hidden="true">
           ▸
         </span>
       </button>
       {open ? (
+        // FULL PRECISION THROUGHOUT THIS PANEL, DELIBERATELY. Unlike the row above it (a fixed-width
+        // grid cell you scan past), this is a workings panel a reader opens on purpose to check the
+        // round's arithmetic against their own figure — `usdCompact` rounding away cents here would
+        // undermine the exact reason the panel exists. Several `Fact`s below already ask for `dp={2}`
+        // for the same reason; `usd()`'s default is left alone everywhere else in it.
         <div className="sc-det">
           <div className="sc-g4">
             <div className="sc-grp">
@@ -314,7 +324,7 @@ function RoundRow({
           )}
         </span>
         <span className="num r dim sc-s">{round.fighterCount} played</span>
-        <span className="num r">{usd(round.pot)}</span>
+        <Money units={round.pot} compact className="r" />
         <span className="num r dim sc-s">{round.tickCount.toLocaleString("en-US")}</span>
         <span className={`sc-chev${open ? " sc-chev--on" : ""}`} aria-hidden="true">
           ▸
@@ -352,15 +362,15 @@ function RoundRow({
                   <span className="u">{SIDE_TOKEN[p.side].name}</span>
                 </div>
                 <div role="cell" className="num r sc-s">
-                  {usd(p.stake)}
+                  {usdCompact(p.stake)}
                 </div>
                 {/* $0.00, not `—`: this player was wiped out, which is a measured result. The
                     dash is reserved for figures the page has no data behind at all. */}
                 <div role="cell" className="num r sc-s">
-                  {usd(p.final)}
+                  {usdCompact(p.final)}
                 </div>
                 <div role="cell" className="r">
-                  <Money units={p.pnl} signed />
+                  <Money units={p.pnl} signed compact />
                 </div>
               </div>
             ))}

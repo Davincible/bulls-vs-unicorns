@@ -11,9 +11,16 @@
 //   `enter()` is only accepted in Lobby, and a Lobby is a small fraction of a round's life. A dock
 //   that permanently read "add more" would therefore be lying for most of the time it was on screen,
 //   and every press during a fight would come back as a rejected transaction. So the dock shows the
-//   move the chain would actually accept RIGHT NOW: Deploy in Lobby, Extract during Fight, and in
-//   Drawing/Settled a plain sentence saying why there is nothing to press. Nothing in here ever
-//   offers an action the program would refuse.
+//   move the chain would actually accept RIGHT NOW: Deploy while entries are open, Extract during
+//   Fight, and otherwise a sentence saying what is true, what can be done, and when it changes.
+//   Nothing in here ever offers an action the program would refuse.
+//
+//   WHICH ONE, AND THE WORDS THAT GO WITH IT, ARE NOT THIS FILE'S DECISION any more — both come from
+//   `ui/roundPhaseCopy.ts`, which 00-3 reads too. This dock used to pick its body off
+//   `phase === "Lobby"` (offering Deploy through the whole window in which the chain refuses it, see
+//   `LiveRound.lobbyClosesAtMs`) and carried its own copy of the phase sentences, one of which —
+//   "This round has settled. Deposits reopen at the next lobby." — told a player nothing they could
+//   act on. One module now answers both, and a test holds the words.
 //
 //   Handing the Fight phase to Extract is not a consolation prize. Extract is the single most
 //   time-critical control in the game — it has to land inside a running fight, before anyone settles
@@ -33,11 +40,14 @@ import {
   STAKE_PRESETS,
   bpsPct,
   usd,
+  usdCompact,
   usdToUnits,
   type Side,
 } from "../contract.ts";
-import { useArena } from "../data/ArenaProvider.tsx";
+import { useArena } from "../data/useArena.ts";
 import { Seg } from "./primitives.tsx";
+import { RoundPhaseNote } from "./RoundPhaseNote.tsx";
+import { useRoundPhase } from "./useRoundPhase.ts";
 import { useShell } from "./shell.ts";
 import { TokenIcon } from "./TokenIcon.tsx";
 
@@ -149,6 +159,11 @@ function DeployBody() {
 
   return (
     <>
+      {/* The deadline, first — a lobby with an invisible clock is how a player ends up pressing a
+          side button two seconds too late and being told the round refused them. The buttons below
+          answer "what can I do", so this rendering carries only the label and the countdown. */}
+      <RoundPhaseNote detail="timing" />
+
       <div className="dock-row">
         <span className="u">Stake</span>
         <Seg<number>
@@ -161,7 +176,10 @@ function DeployBody() {
 
       {/* The entry fee, stated on the surface that charges it. The full section says the same thing
           in a sentence; a dock that quietly dropped it would be showing a player one number and
-          sending another. */}
+          sending another. FULL PRECISION, not compact: unlike `keep` below, this is the player's OWN
+          stake, drawn off `STAKE_PRESETS`/`STAKE_CAP_USD` and never above $100 — cents are the whole
+          point of a fee line at this size, and there is no chain-scale figure here to protect a
+          column from. */}
       <p className="u dock-fee">
         {usd(stakeUnits, 2)} → <span className="num">{usd(stakeUnits - feeUnits, 2)}</span> in the
         ring · {(FEE_BPS / 100).toFixed(2)}% fee
@@ -187,10 +205,12 @@ function DeployBody() {
       </div>
 
       {/* `.lede`, not `.u`: a tracked-out uppercase sentence is the house voice for a LABEL, and
-          three lines of it is a wall. Sentences on this page are sentence case. */}
+          three lines of it is a wall. Sentences on this page are sentence case.
+          The `entering` case is the one moment these buttons are disabled, so it says why they are
+          and what ends it — "Sending…" said neither. */}
       <p className="lede dock-note">
         {actions.entering
-          ? "Sending…"
+          ? "Sending — the buttons come back when it lands or fails."
           : `Presets only, up to the $${STAKE_CAP_USD} per-side cap. Custom amounts, the slider and repeat-every-round are in 00-3.`}
       </p>
     </>
@@ -219,20 +239,24 @@ function ExtractBody() {
 
   return (
     <>
+      {/* The bell, as a number. Extract is racing a deadline it cannot see otherwise: the round
+          becomes settleable by anyone at `FIGHT_TIMEOUT_SECONDS`, or sooner if a side is wiped out,
+          and a button offering "leave whenever you like" was the half of that story this dock told. */}
+      <RoundPhaseNote detail="timing" />
+
       {/* THE HEADLINE IS WHAT YOU KEEP, never what is in the ring — the same rule 00-3.1 is built on.
           The penalty is quoted as a RATE and not a dollar figure: the rate is exact at this cursor,
-          whereas a sub-cent charge rendered by `usd()` at two places prints as `$0.00`, which in a
-          four-word line reads as "this is free" to a player about to be charged. */}
+          whereas a sub-cent charge used to render here as `usd(keep, 2)`'s `$0.00`, which in a
+          four-word line reads as "this is free" to a player about to be charged. `usdCompact` fixes
+          that on its own — its `<$0.01` floor (see `ONE_CENT_UNITS` in contract.ts) is exactly the
+          bound this dock needs, and it doubles as the fix for the dock being the narrowest money
+          surface on the page, where a live-chain `keep` can otherwise run to a dozen digits. */}
       <div className={`num num--xl dock-keep${eligible.keep === null ? " none" : ""}`}>
-        {eligible.keep === null ? "—" : usd(eligible.keep, 2)}
+        {eligible.keep === null ? "—" : usdCompact(eligible.keep)}
       </div>
       <p className="u dock-fee">
-        What you would bank now
-        {terms
-          ? terms.penaltyBps === 0
-            ? " · no penalty left"
-            : ` · house takes ${bpsPct(terms.penaltyBps)}`
-          : ""}
+        You keep this
+        {terms ? (terms.penaltyBps === 0 ? " · no fee" : ` · fee ${bpsPct(terms.penaltyBps)}`) : ""}
       </p>
 
       <button
@@ -243,16 +267,19 @@ function ExtractBody() {
       >
         <span>{actions.extracting ? "Extracting…" : "Extract"}</span>
         <span className="dock-xt-s">
-          {eligible.keep === null ? "unavailable" : `bank ${usd(eligible.keep, 2)} and leave`}
+          {eligible.keep === null ? "unavailable" : `bank ${usdCompact(eligible.keep)} and leave`}
         </span>
       </button>
 
+      {/* The two states this button spends most of its life in are both disabled ones, so both say
+          why and what would end them: a reason from `extractEligibility` (with the session hint,
+          which is the one a player can act on), or a transaction already in flight. */}
       <p className="lede dock-note">
-        {!eligible.ok && eligible.reason
-          ? `Unavailable — ${eligible.reason}.${
-              !session.active ? " A session key signs this without a wallet prompt (Wallet, bottom right)." : ""
-            }`
-          : "Your fighter leaves the fight immediately and stops being a target. Full terms in 00-3.1."}
+        {actions.extracting
+          ? "Sending…"
+          : !eligible.ok && eligible.reason
+            ? `${eligible.reason}.${!session.active ? " Tip: start a session key to skip wallet prompts." : ""}`
+            : "You leave the fight straight away."}
       </p>
     </>
   );
@@ -261,7 +288,6 @@ function ExtractBody() {
 // ---------------------------------------------------------------------------------------------
 
 export function StakeDock() {
-  const { live, status } = useArena();
   const { rail } = useShell();
   const [open, setOpen] = useState(readOpen);
   const narrow = useMatches(NARROW_Q);
@@ -271,24 +297,15 @@ export function StakeDock() {
   // now", not a standing preference.
   const toggle = useCallback((next: boolean) => setOpen(next), []);
 
-  const phase = live?.phase ?? null;
-  // A dead program is not a phase, but it is a reason nothing can be pressed — and it outranks the
-  // phase, because with no program there is no `enter()` and no `extract()` either.
-  const fatal = status.programError !== null;
-  const mode: "deploy" | "extract" | "closed" =
-    fatal ? "closed" : phase === "Lobby" ? "deploy" : phase === "Fight" ? "extract" : "closed";
-
-  const closedWhy = fatal
-    ? "No program — nothing on this page can reach the chain."
-    : phase === "Drawing"
-      ? "The lobby has closed and the VRF seed is being drawn. Deposits reopen at the next lobby."
-      : phase === "Settled"
-        ? "This round has settled. Deposits reopen at the next lobby."
-        : status.loading
-          ? "Reading the round…"
-          : "There is no round to enter.";
-
-  const title = mode === "deploy" ? "Deploy" : mode === "extract" ? "Extract" : "Closed";
+  // Which body to show, decided once and centrally: `entriesOpen()` rather than a phase check, and a
+  // dead program outranks every phase. The words for the "none" case come from the same object.
+  //
+  // WHEN THERE IS NO CONTROL, THE HEAD CARRIES THE STATE. With a body there is a move to name and
+  // the head names it; without one the head would otherwise read a flat "Closed" over a paragraph
+  // explaining a settled round, so the round's own label goes there instead and the note below drops
+  // it rather than printing it twice.
+  const { control, label } = useRoundPhase();
+  const title = control === "deploy" ? "Deploy" : control === "extract" ? "Extract" : label;
 
   // The rail is `min(420px, 100vw)` of fixed, opaque paper on the same edge. Wide enough and the
   // dock steps aside (`.dock--railed`); narrow, and the rail is the whole screen, so there is
@@ -309,7 +326,9 @@ export function StakeDock() {
         <span className="dock-handle-i" aria-hidden="true">
           +
         </span>
-        {title === "Closed" ? "Round" : title}
+        {/* The handle is a word wide. "Deploy"/"Extract" are the move it opens onto; every other
+            state is just the round, and the panel says which once it is open. */}
+        {control === "none" ? "Round" : title}
       </button>
     );
   }
@@ -343,12 +362,13 @@ export function StakeDock() {
         </button>
       </div>
 
-      {mode === "deploy" ? (
+      {control === "deploy" ? (
         <DeployBody />
-      ) : mode === "extract" ? (
+      ) : control === "extract" ? (
         <ExtractBody />
       ) : (
-        <p className="lede dock-note dock-note--only">{closedWhy}</p>
+        // The head above is already showing this state's label — see `title`.
+        <RoundPhaseNote showLabel={false} />
       )}
     </section>
   );

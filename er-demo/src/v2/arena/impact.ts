@@ -33,7 +33,7 @@
 // Dropping a mark affects NOTHING but the flourish: replay.ts advances fight state for every event
 // independently of this module. Hp, deaths and the settled outcome are untouched.
 
-import { usd } from "../contract.ts";
+import { usd, usdCompact } from "../contract.ts";
 import type { InkMap } from "./ink.ts";
 import { monoFont, monoWidth, type ArenaPalette } from "./palette.ts";
 
@@ -131,15 +131,27 @@ export interface ImpactController {
   readonly busy: boolean;
 }
 
-/** `usd()` rounds to 2dp below $1,000, which collapses every small raid to "$0.00" — the exact bug
- *  `web/index.html` called out and fixed with a third decimal. Raids here are a percentage of
- *  remaining hp, so late-fight hits are genuinely tiny: at UNITS_PER_USD = 1e6 a hit can be a single
- *  unit, i.e. $0.000001. Three decimals below a dollar, and an explicit "less than" below a tenth of
- *  a cent — because "$0.000" is the same lie one digit later. */
+/** THE FULL DYNAMIC RANGE OF A RAID, in at most eight characters, with no lie at either end.
+ *
+ *  Both ends are real and they are eleven orders of magnitude apart. `usd()` rounds to 2dp below
+ *  $1,000, which collapses every small raid to "$0.00" — the exact bug `web/index.html` called out
+ *  and fixed with a third decimal — because raids are a percentage of remaining hp and late-fight
+ *  hits are genuinely tiny: at UNITS_PER_USD = 1e6 a hit can be a single unit, i.e. $0.000001. The
+ *  other end is a chain-sized round, where a single raid off a $13T fighter printed in full is
+ *  nineteen characters flying across the field.
+ *
+ *  So: three decimals below a dollar, an explicit "less than" below a tenth of a cent (because
+ *  "$0.000" is the same lie one digit later), and `usdCompact` from a dollar up — which keeps cents
+ *  to $1,000 and scales after. Width matters here more than anywhere: `fire` clears a figure's whole
+ *  flight path against every label on the field using `monoWidth(text.length)`, so a long figure is
+ *  a figure that cannot find anywhere to fly and is dropped. */
 export function damageLabel(amount: bigint): string | null {
   if (amount <= 0n) return null;
   if (amount < 1_000n) return "−<$0.001";
-  return `−${usd(amount, amount < 1_000_000n ? 3 : 2)}`;
+  if (amount < 1_000_000n) return `−${usd(amount, 3)}`;
+  // Negated rather than prefixed, so the minus is the same glyph and the same rule as every other
+  // signed figure on the page rather than a second hand-written one.
+  return usdCompact(-amount);
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -228,6 +240,13 @@ export function createImpactController(): ImpactController {
         for (let shelf = 0; shelf < FIGURE_SHELVES && !placed; shelf++) {
           const baseY = head - shelf * FIGURE_SHELF_PX;
           const top = sweptTop(baseY);
+          // OFF THE TOP OF THE PAPER is the one obstacle that is not in the ink map and never can
+          // be. A figure is placed above its defender and then climbs another 34px, so a hit on a
+          // fighter near the ceiling — which at sixteen on a phone is most of them, the field is 270px
+          // tall — is born half outside the canvas and renders as a row of clipped digit tops.
+          // Screenshotted at 390x844: `−$0.244` with its baseline on the frame's edge. The shelf
+          // above is further out still, so this is a `break`, not a `continue`.
+          if (top < 0) break;
           for (let i = 0; i < FIGURE_FAN_PX.length; i++) {
             const cx = clamp(
               defender.x + FIGURE_FAN_PX[(start + i) % FIGURE_FAN_PX.length],

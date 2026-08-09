@@ -33,6 +33,11 @@ function mockRound(fighters: FighterState[], overrides: Partial<RoundState> = {}
     tickCount: 50n,
     pot: fighters.reduce((n, f) => n + f.stake, 0n),
     penaltiesCollected: 0n,
+    // Both default to the pre-fee state, which is a real state and not merely a convenient one: a
+    // round read from a program revision older than this build decodes both as absent, and
+    // `chain/program.ts#bnOr0` turns that into exactly these values.
+    feesCollected: 0n,
+    houseSwept: false,
     seedCommit: [],
     seed: Array.from({ length: 32 }, (_, i) => i),
     // The lobby deadline. Verification never reads it — a settled round is checked against its seed
@@ -124,16 +129,110 @@ describe("verifyRound — extraction-likely", () => {
     // The third term must not become a licence to explain away any shortfall: it is checked as an
     // exact identity, so a `penaltiesCollected` that doesn't account for the gap fails, in either
     // direction. Same fighters as above, with the house claiming 1 lamport more than it took.
+    //
+    // WITH A NON-ZERO FEE IN PLAY, deliberately. The fee sits on BOTH sides of the identity and
+    // cancels, so this same off-by-one must still be caught with a fee present — and it would NOT be
+    // if the identity were ever implemented with the fee added to one side only. That is not a
+    // theoretical slip: `houseTook` and `grossDeposits` are two separate expressions and a term
+    // dropped from either reads as a plausible line of code.
     const fighters: FighterState[] = [
       { wallet: pubkey("early"), side: 0, dead: true, stake: 998_000n, hp: 0n, banked: 798_400n },
       { wallet: pubkey("stayed"), side: 1, dead: false, stake: 748_500n, hp: 748_500n, banked: 0n },
     ];
     const result = verifyRound(mockRound(fighters, {
-      winner: 0, tickCount: 1400n, pot: 1_746_500n, penaltiesCollected: 199_601n,
+      winner: 0, tickCount: 1400n, pot: 1_746_500n, penaltiesCollected: 199_601n, feesCollected: 3_500n,
     }));
 
     expect(result.conservationHoldsOnChain).toBe(false);
     expect(result.verdict).toBe("mismatch");
+  });
+});
+
+// THE HOUSE'S BOOKS — both sources of the take, on one round, against arithmetic a reader can check.
+//
+// The fixture is the devnet round #8 lineup at its real gross prices. Those two net stakes are what a
+// 20 bps arena produces from 1,000,000 and 750,000: 1_000_000 - 2_000 = 998_000 and
+// 750_000 - 1_500 = 748_500. So `feesCollected` is 3_500 as a matter of the published rate, and
+// `grossDeposits` comes back as 1_750_000 — the two gross entries, added up, arrived at from the
+// opposite direction. That is the point of carrying the fee: the pot alone (1_746_500) is not what
+// anybody paid, and no amount of staring at it reveals the 3,500 that went to the house at the door.
+describe("verifyRound — the house's take", () => {
+  const fighters: FighterState[] = [
+    { wallet: pubkey("early"), side: 0, dead: true, stake: 998_000n, hp: 0n, banked: 798_400n },
+    { wallet: pubkey("stayed"), side: 1, dead: false, stake: 748_500n, hp: 748_500n, banked: 0n },
+  ];
+  const overrides = { winner: 0 as const, tickCount: 1400n, pot: 1_746_500n };
+
+  test("a round with both a fee and a penalty reports the full identity, and it balances", () => {
+    const result = verifyRound(mockRound(fighters, {
+      ...overrides, penaltiesCollected: 199_600n, feesCollected: 3_500n,
+    }));
+
+    expect(result.potOnChain).toBe(1_746_500n);          // net — what is being fought over
+    expect(result.grossDepositsOnChain).toBe(1_750_000n); // gross — 1,000,000 + 750,000, as charged
+    expect(result.feesCollectedOnChain).toBe(3_500n);
+    expect(result.penaltiesCollectedOnChain).toBe(199_600n);
+    expect(result.houseTookOnChain).toBe(203_100n);       // both sources, which neither alone is
+
+    // playersHold + houseTook === grossDeposits, spelled out rather than asserted via the flag, so a
+    // reader can see the three numbers meet.
+    expect(result.totalValueOnChain + result.houseTookOnChain).toBe(result.grossDepositsOnChain);
+    expect(result.conservationHoldsOnChain).toBe(true);
+    expect(result.verdict).toBe("extraction-likely");
+  });
+
+  // A ROUND FROM THE PROGRAM THAT IS ACTUALLY DEPLOYED, which is the case this panel spends most of
+  // its life in and the one a new term is most likely to break.
+  //
+  // The served IDL is a contract with the DEPLOYED program, and that program's `Round` has no
+  // `fees_collected` at all — Anchor hands back `undefined`, `chain/program.ts#bnOr0` turns it into
+  // `0n`, and the identity must degenerate cleanly to the two-term check today's rounds satisfy.
+  // A verifier that needed a fee to balance would paint "BROKEN" across every live round on the page
+  // — a panel whose entire job is looking trustworthy, accusing the chain of losing money because a
+  // field had not shipped yet. That is the failure this test exists to make impossible.
+  test("a round from a deployment with no fee field at all still verifies, with no false alarm", () => {
+    const noFeeYet = verifyRound(mockRound(fighters, {
+      ...overrides, penaltiesCollected: 199_600n, feesCollected: 0n,
+    }));
+
+    expect(noFeeYet.feesCollectedOnChain).toBe(0n);
+    expect(noFeeYet.grossDepositsOnChain).toBe(noFeeYet.potOnChain);   // no fee, so gross IS the pot
+    expect(noFeeYet.houseTookOnChain).toBe(noFeeYet.penaltiesCollectedOnChain);
+    expect(noFeeYet.conservationHoldsOnChain).toBe(true);
+    expect(noFeeYet.verdict).toBe("extraction-likely");   // never "mismatch"
+  });
+
+  test("a WRONG feesCollected still satisfies the identity — the limit, asserted so nobody mistakes it", () => {
+    // This is a characterisation test of something the verifier CANNOT do, and it earns its place by
+    // being the only thing standing between a future reader and the wrong conclusion.
+    //
+    // The fee cancels. It is added to `houseTook` and to `grossDeposits` alike, because it never
+    // entered the ring — it was taken at the door, and `pot` was already net of it. So a round
+    // claiming a fee ten times the truth balances exactly as well as an honest one, and the panel
+    // will say "holds". That is not a bug in the check; it is the arithmetic, and lib.rs's
+    // `Round.fees_collected` doc comment says the same thing about the same identity.
+    //
+    // WHERE THE FEE IS ACTUALLY PINNED, since it is not here: at the point of collection. lib.rs's
+    // `Entered` event publishes the gross and the fee for each entry, and
+    // `the_fee_is_recorded_rather_than_discarded` asserts `credit_entry` against a known gross stake.
+    // Neither is reachable from a settled round account, which is all this module is ever given.
+    //
+    // If someone later makes this test fail by finding a genuine round-level check on the fee, that
+    // is a good day — delete the test and keep the check. What must not happen is the check being
+    // BELIEVED to exist because the panel reports a fee beside a green "holds".
+    const honest = verifyRound(mockRound(fighters, {
+      ...overrides, penaltiesCollected: 199_600n, feesCollected: 3_500n,
+    }));
+    const nonsense = verifyRound(mockRound(fighters, {
+      ...overrides, penaltiesCollected: 199_600n, feesCollected: 35_000n,
+    }));
+
+    expect(honest.conservationHoldsOnChain).toBe(true);
+    expect(nonsense.conservationHoldsOnChain).toBe(true);
+    expect(nonsense.verdict).toBe(honest.verdict);
+    // The two rounds differ in exactly the two derived figures, and in nothing that is checked.
+    expect(nonsense.houseTookOnChain).toBe(234_600n);
+    expect(nonsense.grossDepositsOnChain).toBe(1_781_500n);
   });
 });
 

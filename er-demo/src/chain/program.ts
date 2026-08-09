@@ -37,6 +37,29 @@ export interface MethodsBuilder {
   transaction(): Promise<Transaction>;
 }
 
+/** A `BN` off a decoded account THAT MAY NOT BE THERE AT ALL, as a `bigint`.
+ *
+ *  Anchor decodes against whatever IDL this build shipped with, and that IDL can be a revision AHEAD
+ *  of the program actually deployed — the normal state of affairs for the minutes or days between a
+ *  program change and its deploy, and the permanent state for anyone pointing this app at an older
+ *  arena. Fields added in the newer revision come back `undefined`, and `undefined.toString()` throws
+ *  at the point of the read: one field the chain has not heard of yet, and the page can read no round
+ *  at all.
+ *
+ *  ZERO IS NOT A PLACEHOLDER, WHICH IS WHY THIS IS SAFE. A revision that has never heard of
+ *  `fees_collected` never collected any; a round with no `lobby_closes_at` has no deadline. In both
+ *  cases zero is the true value, so every conservation identity in this repo stays exact when read
+ *  through here — see `Round.fees_collected` in lib.rs.
+ *
+ *  It lives in THIS file, next to the shapes it defends, rather than beside either of its two callers
+ *  (chain/useRound.ts, v2/data/roundLog.ts). Both decode the same accounts against the same IDL and
+ *  face the same skew; the version that lived privately in one of them left the other reading new
+ *  fields bare, which is exactly how `penalties_collected` acquired a latent throw that survived
+ *  until `fees_collected` was added beside it. */
+export function bnOr0(value: { toString(): string } | undefined | null): bigint {
+  return value === undefined || value === null ? 0n : BigInt(value.toString());
+}
+
 export interface RawFighter {
   wallet: PublicKey;
   side: number;
@@ -59,6 +82,35 @@ export interface RawRoundAccount {
    *  so `sum(hp + banked)` no longer equals `pot` on its own — this is the term that closes the gap
    *  (see `Round.penalties_collected` in lib.rs, and `ui/verifyRound.ts`). */
   penaltiesCollected: BN;
+  /** The arena's entry fee, cumulative over every `enter` this round saw, top-ups included. The fee
+   *  was charged from the first day of the program and recorded nowhere until this revision — see
+   *  `Round.fees_collected` in lib.rs for why (a rollup transaction cannot write the base-layer
+   *  `Arena`, so the round was the only writable home for it).
+   *
+   *  It matters to a READER of this account because `pot` is the sum of NET stakes: `pot` alone is
+   *  not what players were charged. `pot + feesCollected` is.
+   *
+   *  OPTIONAL, AND THAT IS NOT DEFENSIVENESS — IT IS THE TRUTH ABOUT TODAY. `public/idl/bulls_arena
+   *  .json` is fetched at runtime and is a contract with the DEPLOYED program, not with lib.rs.
+   *  The deployed program's `Round` has fifteen fields; this one and `houseSwept` are the sixteenth
+   *  and seventeenth, and they arrive only once the matching program is deployed. Until then Anchor
+   *  decodes without them and hands back `undefined`.
+   *
+   *  Serving the seventeen-field IDL early is not a shortcut around that — it was tried, and borsh
+   *  walked nine bytes off the end of every real round account (`Invalid bool: 205`) and took the
+   *  live page down. The IDL must lag the source until the deploy lands.
+   *
+   *  So `undefined` is a state this app is IN, not one it might reach, and typing this as a plain
+   *  `BN` would be a lie the compiler would then help enforce. Read it through `bnOr0`, which is
+   *  where the optionality stops: everything downstream gets a plain `bigint`. */
+  feesCollected?: BN;
+  /** Has `sweep_house_take` already moved this round's fees and penalties onto the arena's
+   *  `Treasury`? The sweep leaves the totals in place for auditing, so this flag is the only thing
+   *  that distinguishes a swept round from an unswept one.
+   *
+   *  Optional for the same reason as `feesCollected` above, and read as `?? false` — a program that
+   *  has no sweep instruction has swept nothing, so `false` is the true value there. */
+  houseSwept?: boolean;
   seedCommit: number[];
   seed: number[];
   /** On-chain unix seconds: when `open_round` stamped the lobby, and when it stops taking entries.
@@ -101,6 +153,25 @@ export interface BullsArenaProgram {
      *  is on the account. See `abandon_round` in lib.rs. */
     abandonRound(): MethodsBuilder;
     closeRound(): MethodsBuilder;
+    /** THE THREE HOUSE-BOOKS INSTRUCTIONS. Declared here because `chain/round.ts` builds all three;
+     *  see that file for what each one is for.
+     *
+     *  THEY TYPE-CHECK BEFORE THEY WORK, and the gap is worth stating once rather than being
+     *  rediscovered from a runtime error. This interface is hand-written against lib.rs. Anchor
+     *  builds instructions from the IDL FETCHED AT RUNTIME, which is a contract with the deployed
+     *  program and currently predates all three — so `program.methods.sweepHouseTake` is `undefined`
+     *  at runtime today and calling it throws, with nothing the compiler can say about it.
+     *
+     *  That is the right way round, and deliberately not fixed by deleting these. The alternative is
+     *  serving an IDL ahead of the deploy, which breaks decoding for every account the program
+     *  already owns (see `feesCollected` above for the incident). A caller that must not fail on an
+     *  older deployment should check `arena.feeBps`-style evidence or guard on the presence of the
+     *  method, not on the type. */
+    setFeeBps(feeBps: number): MethodsBuilder;
+    initTreasury(): MethodsBuilder;
+    /** `roundNo` is a seeds argument — the program derives the round PDA from it and checks it
+     *  against the account passed in, so it is not redundant with `accounts({ round })`. */
+    sweepHouseTake(roundNo: BN): MethodsBuilder;
   };
   account: {
     arena: {

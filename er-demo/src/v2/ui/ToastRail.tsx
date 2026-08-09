@@ -3,7 +3,7 @@
 // these announce raids and confirmations, and a fight produces enough of them that an assertive
 // region would interrupt a screen reader continuously.
 
-import { useArena } from "../data/ArenaProvider.tsx";
+import { useArena } from "../data/useArena.ts";
 
 const KIND_CLASS: Record<string, string> = {
   error: " toast--err",

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ARENA — paper themes</title>
+<style>
+  :root { --pg:#0e0e0e; --fg:#f2f2f2; --dim:#8c8c8c; --line:#2a2a2a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--pg); color:var(--fg);
+         font:400 13px/1.5 "Helvetica Neue",Helvetica,Arial,sans-serif; letter-spacing:-0.005em; }
+  .mono { font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-variant-numeric:tabular-nums; }
+  .u { font:400 10px/1.2 "SF Mono",ui-monospace,Menlo,Consolas,monospace;
+       letter-spacing:.14em; text-transform:uppercase; color:var(--dim); }
+  header { position:sticky; top:0; z-index:5; background:var(--pg); border-bottom:1px solid var(--line);
+           padding:14px 22px; display:flex; align-items:baseline; gap:18px; flex-wrap:wrap; }
+  h1 { font-size:15px; font-weight:500; margin:0; text-transform:uppercase; letter-spacing:-.01em; }
+  .keys { margin-left:auto; }
+  .strip { display:flex; gap:6px; padding:12px 22px; flex-wrap:wrap; border-bottom:1px solid var(--line); }
+  .sw { width:96px; height:34px; border:1px solid #444; color:#0b0b0b; cursor:pointer; padding:0;
+        font:400 9.5px/1 "SF Mono",ui-monospace,Menlo,monospace; letter-spacing:.12em; text-transform:uppercase; }
+  .sw[aria-pressed="true"] { border:3px solid var(--fg); }
+  main { padding:22px; }
+  figure { margin:0 0 34px; }
+  figcaption { display:flex; gap:20px; align-items:baseline; flex-wrap:wrap; padding:0 0 10px; }
+  .rank { font:400 9.5px/1 "SF Mono",ui-monospace,Menlo,monospace; letter-spacing:.14em;
+          text-transform:uppercase; padding:4px 6px; border:1px solid currentColor; }
+  .rank-pick { color:#6fdc8c; } .rank-ok { color:#c7c7c7; } .rank-keep { color:#c7c7c7; }
+  .rank-watch { color:#e6c15a; } .rank-avoid { color:#ff6b5e; }
+  .nums { display:flex; gap:14px; flex-wrap:wrap; margin-left:auto; }
+  .nums span { display:flex; gap:5px; align-items:baseline; }
+  .bad { color:#ff6b5e; }
+  .note { color:#b9b9b9; max-width:88ch; margin:0 0 12px; font-size:12.5px; }
+  img { display:block; width:100%; height:auto; border:1px solid var(--line); }
+  .chip { width:11px; height:11px; display:inline-block; border:1px solid #555; vertical-align:-1px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Arena — paper themes</h1>
+  <span class="u">1440×900 · fixture round 17, ~11s into the fight · tint 70%</span>
+  <span class="u keys">← → theme · B board · showing <b id="boardName" style="color:var(--fg);font-weight:400">blank</b></span>
+</header>
+
+<div class="strip" id="strip"></div>
+
+<main id="sheets"></main>
+
+<script>
+const DATA = [{"id":"white","name":"White","hue":"#ffffff","paper":"#ffffff","panel":"#ffffff","a":"#2b8c39","b":"#8f09bf","ink":19.682627652657427,"label":3.4522201871078138,"ca":4.274345222823251,"cb":7.0962238771874375,"sides":1.6601896915804815,"rank":"keep","note":"The page that shipped. The bar everything else has to beat."},{"id":"lime","name":"Lime","hue":"#afff00","paper":"#c7ff4d","panel":"#d9ff86","a":"#267f33","b":"#8f09bf","ink":16.72047389035713,"label":3.4794564711032634,"ca":4.282221187331769,"cb":6.028271638955772,"sides":1.4077441064439642,"rank":"pick","note":"The most playful of the eight and the only one that stays loud without costing anything: the ANSEM green barely has to move, UWU violet does not move at all, and the two sides stay 1.41 apart. Green paper under a green fighter is the one thing to look at — the rim and the wedge carry it, but it is the closest call here."},{"id":"mint","name":"Mint","hue":"#27ff5d","paper":"#68ff8e","panel":"#98ffb2","a":"#247830","b":"#8f09bf","ink":15.261731435952095,"label":3.4710304046468923,"ca":4.280232142502772,"cb":5.502347803058871,"sides":1.2855255555932286,"rank":"ok","note":"Softer and friendlier than Lime and slightly worse at the same job — being a mid-green, it sits nearer the ANSEM discs, so the field reads a shade flatter. A good second choice if Lime is too aggressive."},{"id":"cyan","name":"Cyan","hue":"#00f3ff","paper":"#4df7ff","panel":"#86f9ff","a":"#23762f","b":"#8f09bf","ink":15.056143366131419,"label":3.506235849437175,"ca":4.337029791218008,"cb":5.428226654415926,"sides":1.2516000386733492,"rank":"pick","note":"The safest strong colour on the list. Its hue is far from both sides, so nothing on the field has to argue with the sheet — green stays green, violet stays untouched at full 7.1 contrast, and ink is at 15:1. If the goal is playful WITHOUT giving anything up, this is it."},{"id":"sky","name":"Sky","hue":"#00cfff","paper":"#4dddff","panel":"#86e8ff","a":"#1e6828","b":"#8d09bc","ink":12.280213203383644,"label":3.46847240244454,"ca":4.273406776126421,"cb":4.521428589449159,"sides":1.058038428428654,"rank":"watch","note":"Lovely at 70% and the point where the cost starts: the violet has begun to darken and the two sides are down to 1.05 apart in lightness. Below about 40% it behaves like Cyan; above that it is on the way to the pink family's problem."},{"id":"magenta","name":"Magenta","hue":"#ff00fb","paper":"#ff4dfc","panel":"#ff86fd","a":"#0f4117","b":"#590378","ink":7.234964530413549,"label":3.4703992426257835,"ca":4.315292005653681,"cb":4.516776966451232,"sides":1.0466909216186473,"rank":"avoid","note":"Both side colours have to be pushed to near-black to stay off the sheet, so ANSEM green and UWU violet end up at the same lightness (1.06 apart, against white's 1.66) and the only thing separating the two sides is hue at 7px. The field stops being readable at a glance, which is the one thing the field is for."},{"id":"pink","name":"Pink","hue":"#ff00a7","paper":"#ff4dc1","panel":"#ff86d5","a":"#0d3b14","b":"#50036c","ink":6.639233371077177,"label":3.459652246482092,"ca":4.285818372227471,"cb":4.509948023913917,"sides":1.0522956486301025,"rank":"avoid","note":"Same failure as Magenta and slightly worse: ink drops to 6.6:1 and both sides collapse onto one lightness. Genuinely pretty as a blush below 25%; not a sheet to run a two-colour game on."},{"id":"rose","name":"Rose","hue":"#ff0078","paper":"#ff4da1","panel":"#ff86bf","a":"#0c3812","b":"#4c0267","ink":6.399846393472092,"label":3.474929845693626,"ca":4.294362572063161,"cb":4.516485151042461,"sides":1.0517242257149666,"rank":"avoid","note":"The darkest of the eight — ink falls from 19.7:1 to 6.4:1, the whole page loses its snap, and the two sides sit 1.05 apart. The version worth trying is Rose at 20-25%, which is a warm blush that keeps the sides intact."},{"id":"sun","name":"Sun","hue":"#fff127","paper":"#fff568","panel":"#fff898","a":"#278234","b":"#8f09bf","ink":17.35150943005376,"label":3.457461461970952,"ca":4.276567072467522,"cb":6.25578036102137,"sides":1.462804220070812,"rank":"pick","note":"The quietest way to make the page playful, and the strongest performer on the numbers: ink at 17.4:1, violet untouched, sides 1.46 apart — second only to white. It reads as coloured paper rather than as a coloured screen, which is exactly the register this design is written in."}];
+let board = "blank";
+let idx = 0;
+
+const strip = document.getElementById("strip");
+const sheets = document.getElementById("sheets");
+
+DATA.forEach((d, i) => {
+  const b = document.createElement("button");
+  b.className = "sw"; b.style.background = d.paper; b.textContent = d.name;
+  b.setAttribute("aria-pressed", String(i === 0));
+  b.onclick = () => select(i);
+  strip.appendChild(b);
+
+  const fig = document.createElement("figure");
+  fig.id = "fig-" + i;
+  const bad = (v, bar) => v < bar ? ' class="mono bad"' : ' class="mono"';
+  fig.innerHTML =
+    '<figcaption>' +
+      '<span class="rank rank-' + d.rank + '">' + d.rank + '</span>' +
+      '<b style="font-weight:500">' + d.name + '</b>' +
+      '<span class="u mono"><span class="chip" style="background:' + d.paper + '"></span> page ' + d.paper +
+        ' <span class="chip" style="background:' + d.panel + '"></span> panel ' + d.panel + '</span>' +
+      '<span class="u mono"><span class="chip" style="background:' + d.a + '"></span> a ' + d.a +
+        ' <span class="chip" style="background:' + d.b + '"></span> b ' + d.b + '</span>' +
+      '<span class="nums u">' +
+        '<span>ink<b' + bad(d.ink, 4.5) + '>' + d.ink.toFixed(2) + '</b></span>' +
+        '<span>label<b' + bad(d.label, 3.4) + '>' + d.label.toFixed(2) + '</b></span>' +
+        '<span>a<b' + bad(d.ca, 4.2) + '>' + d.ca.toFixed(2) + '</b></span>' +
+        '<span>b<b' + bad(d.cb, 4.2) + '>' + d.cb.toFixed(2) + '</b></span>' +
+        '<span>a/b<b' + bad(d.sides, 1.2) + '>' + d.sides.toFixed(2) + '</b></span>' +
+      '</span>' +
+    '</figcaption>' +
+    '<p class="note">' + d.note + '</p>' +
+    '<img alt="' + d.name + '" data-theme="' + d.id + '" src="blank-' + d.id + '.png">';
+  sheets.appendChild(fig);
+});
+
+function select(i) {
+  idx = (i + DATA.length) % DATA.length;
+  [...strip.children].forEach((b, j) => b.setAttribute("aria-pressed", String(j === idx)));
+  document.getElementById("fig-" + idx).scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function setBoard(b) {
+  board = b;
+  document.getElementById("boardName").textContent = b;
+  sheets.querySelectorAll("img").forEach((img) => { img.src = b + "-" + img.dataset.theme + ".png"; });
+}
+addEventListener("keydown", (e) => {
+  if (e.key === "ArrowRight") select(idx + 1);
+  else if (e.key === "ArrowLeft") select(idx - 1);
+  else if (e.key.toLowerCase() === "b") setBoard(board === "blank" ? "survey" : "blank");
+});
+</script>
+</body>
+</html>

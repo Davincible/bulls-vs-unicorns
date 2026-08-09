@@ -54,6 +54,19 @@ export interface ERRound {
    *  `Round.penalties_collected`. Value no longer simply moves between fighters, so conservation is
    *  `totalValue(round) + penaltiesCollected === pot`; see `totalValue`. */
   penaltiesCollected: bigint;
+  /** The entry fee this round has charged, cumulative over every `enter` including top-ups — mirrors
+   *  `Round.fees_collected`.
+   *
+   *  IT IS RECORDED HERE, NOT SUPPLIED, because `enter` below computes it: this mirror takes GROSS
+   *  stakes and does the same `stake × feeBps / BPS` split the Rust does, so the fee is an output of
+   *  replaying the round, exactly as on chain. It carried the same bug too — the fee was computed,
+   *  subtracted, and dropped on the floor — and it is fixed here in the same shape as the fix in
+   *  `credit_entry`, because a mirror that quietly disagreed about where the money went would be
+   *  worse than no mirror.
+   *
+   *  It does NOT enter the ring, so it is not part of the pot and cancels out of conservation; see
+   *  `conservationHolds`. */
+  feesCollected: bigint;
   winner: 0 | 1 | null;
 }
 
@@ -154,6 +167,11 @@ export function enter(round: ERRound, wallet: string, side: 0 | 1, stake: bigint
     round.fighters.push({ wallet, side, dead: 0, stake: net, hp: net, banked: 0n });
   }
   round.pot += net;
+  // The house's cut, RECORDED rather than merely subtracted — mirrors the same line in
+  // `credit_entry`. Outside the find-or-insert on purpose: a top-up pays the fee too, and a counter
+  // bumped only on the `else` branch above would be right for every first entry and silently short
+  // for every round anyone added to.
+  round.feesCollected += fee;
 }
 
 /** Mirrors `tick`. Deterministic from (seed, tickCount) alone — no clock, no slot, no ordering.
@@ -237,7 +255,7 @@ export function settle(round: ERRound): 0 | 1 {
 }
 
 export function newRound(seed: Buffer): ERRound {
-  return { seed, fighters: [], tickCount: 0n, pot: 0n, penaltiesCollected: 0n, winner: null };
+  return { seed, fighters: [], tickCount: 0n, pot: 0n, penaltiesCollected: 0n, feesCollected: 0n, winner: null };
 }
 
 /** Total value still IN PLAY — held by fighters, in the ring or in the bank.
@@ -250,9 +268,34 @@ export function totalValue(round: ERRound): bigint {
   return round.fighters.reduce((n, f) => n + f.hp + f.banked, 0n);
 }
 
-/** THE invariant, with the leak accounted for: what fighters hold, plus what the house has taken, is
- *  exactly what was staked. Damage moves value, extraction moves value and skims it — neither
- *  creates nor destroys any. A break here is an economics bug, in one line. */
+/** The whole of the house's take from this round — mirrors the Rust's `house_took`. */
+export function houseTook(round: ERRound): bigint {
+  return round.penaltiesCollected + round.feesCollected;
+}
+
+/** What players were actually charged to be here — mirrors the Rust's `gross_deposits`. `pot` is the
+ *  sum of NET stakes, so it is what is being fought over, not what was paid. */
+export function grossDeposits(round: ERRound): bigint {
+  return round.pot + round.feesCollected;
+}
+
+/** THE invariant, with both leaks accounted for: what fighters hold, plus what the house has taken,
+ *  is exactly what players were charged. Damage moves value, extraction moves value and skims it —
+ *  neither creates nor destroys any. A break here is an economics bug, in one line.
+ *
+ *  ONE OF THE TWO TERMS IS LOAD-BEARING AND THE OTHER IS NOT, and conflating them would be a way of
+ *  claiming more than this function can deliver. `penaltiesCollected` is money that left the RING, so
+ *  it genuinely closes a gap: drop it and this returns false on every round anyone extracted from.
+ *  `feesCollected` never entered the ring — `enter` credits the fighter the net — so it appears on
+ *  both sides here and cancels; this function would return exactly the same booleans with the fee
+ *  term deleted from both `houseTook` and `grossDeposits`. It is stated in gross terms anyway because
+ *  the gross is the sentence that is true about what players paid, and because every verifier in the
+ *  repo now says it the same way.
+ *
+ *  So this does not test that the fee was recorded correctly and must not be relied on to. What does
+ *  is `enter` asserted against a known gross stake — see `engine/src/tests/er-sim.test.ts`, and
+ *  `the_fee_is_recorded_rather_than_discarded` in lib.rs, which makes the same point about the same
+ *  cancellation. */
 export function conservationHolds(round: ERRound): boolean {
-  return totalValue(round) + round.penaltiesCollected === round.pot;
+  return totalValue(round) + houseTook(round) === grossDeposits(round);
 }

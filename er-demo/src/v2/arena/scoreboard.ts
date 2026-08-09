@@ -79,7 +79,7 @@
 // mode. (`draw.ts`'s enemy wedge already takes the same `globalAlpha` exemption, for the same reason:
 // a tint of a colour is not a new colour.)
 
-import { SIDE_TOKEN, usd, type SideRecord } from "../contract.ts";
+import { SIDE_TOKEN, usdCompact, type SideRecord } from "../contract.ts";
 import { drawTracked } from "./draw.ts";
 import { LABEL_SPACE } from "./field.ts";
 import type { InkMap } from "./ink.ts";
@@ -145,6 +145,11 @@ const LIVE_HEIGHT_SHARE = 0.46;
  *  9-fighter frame), so until `field.ts`'s spread/centring is fixed the top strip is the more
  *  contested of the two. The clamp below keeps this band off the live one regardless. */
 const RECORD_TOP_SHARE = 0.05;
+/** How far the record band walks per probe when it has to get out from under the shell's HUD — see
+ *  the walk in `drawScoreboard`. Small enough that the band settles just clear of the chrome rather
+ *  than a whole caption below it, large enough that the whole walk is a couple of dozen rectangle
+ *  tests on the one frame size that ever needs it. */
+const RECORD_YIELD_STEP = 3;
 
 /** Every other size is a fraction of the figure, so the block keeps its proportions at any field size
  *  instead of having four independent clamps that cross over somewhere in the middle of the range.
@@ -312,7 +317,12 @@ export function drawScoreboard(
   score: ScoreboardInput,
 ): void {
   const { totals, record } = score;
-  const text: [string, string] = [usd(totals[0]), usd(totals[1])];
+  // Compact, and this is the figure with the most to gain from it on the whole page: a side total is
+  // the SUM of a side, drawn at `figure` size behind the fight, and it CLAIMS ITS ROW in `ink` — so
+  // its width is not just its own problem, it is the size of the hole every fighter label and damage
+  // figure has to route around for the rest of the frame. Nineteen characters of watermark across the
+  // middle of the field is how a crowded lineup ends up with half its labels dropped.
+  const text: [string, string] = [usdCompact(totals[0]), usdCompact(totals[1])];
   const total = totals[0] + totals[1];
 
   // Centred on the PLAYABLE area, not on `h`: the bottom `LABEL_SPACE` px are reserved for the
@@ -458,18 +468,49 @@ export function drawScoreboard(
     // Both are unreachable at any frame this page actually renders.
     const recordH = capSize * CAP_H + capSize * 0.85 + recordSize * CAP_H;
     const liveTop = cy - liveH / 2;
-    const highest = Math.min(playable * RECORD_TOP_SHARE, liveTop - capSize * 1.6 - recordH);
+    const lowest = liveTop - capSize * 1.6 - recordH;
+    const highest = Math.min(playable * RECORD_TOP_SHARE, lowest);
+
+    const caption = recordCaption(record.settled);
+    const captionW = monoWidth(caption.length, capSize, capSize * TRACKING);
+
+    // …AND THEN, ONLY FOR THE SHELL'S OWN CHROME, IT MOVES.
+    //
+    // Everything else in this file is nailed to the frame's geometry and is the thing other painters
+    // route around, which is the whole premise of ink.ts's priority order. There is exactly one
+    // writer above it, and this is where that shows up: the HUD overlays are DOM, drawn over this
+    // canvas by the shell, and in the default board style they are bare transparent text (chrome.ts).
+    // They own the frame's top CORNERS — and this band is anchored to the frame's TOP EDGE, so on a
+    // narrow field the two are competing for the same paper and the canvas is the one that can yield.
+    // Screenshotted at 390x844 with sixteen fighters: `ROUNDS WON · 16 SETTLED` and `FIGHT 0:20
+    // 640/4,000` in the same pixels, both illegible.
+    //
+    // A walk DOWN, one small step at a time, bounded by clamp 1 — a header printing through the money
+    // figures is a worse failure than one printing through the HUD, so if the band cannot clear the
+    // chrome before it reaches the live band it stays where it was and takes the overlap. On a desktop
+    // the caption is 175px in the middle of a 1,390px field and the corners are 350px away, so the
+    // first probe passes and this costs one `hits` call.
+    //
+    // Probed as ONE BOX at the caption's width for the band's full height: the caption is by far the
+    // wider of the two rows (`ROUNDS WON · 16 SETTLED` against `9 — 7`) and it is the top one, so the
+    // union is the caption's column. Conservative in the numerals' favour, which is the right
+    // direction — they are the score.
     cursor = Math.max(0, highest);
+    for (let y = cursor; y <= lowest; y += RECORD_YIELD_STEP) {
+      if (!ink.hits(w / 2 - captionW / 2, y, w / 2 + captionW / 2, y + recordH)) {
+        cursor = y;
+        break;
+      }
+    }
 
     const yRecordCaption = rowMiddle(capSize * CAP_H, 0);
     const yRecord = rowMiddle(recordSize * CAP_H, capSize * 0.85);
 
-    const caption = recordCaption(record.settled);
     ctx.fillStyle = palette.ink3;
     ctx.globalAlpha = CAPTION_ALPHA;
     ctx.font = monoFont(capSize);
     drawTracked(ctx, caption, w / 2, yRecordCaption, capSize * TRACKING);
-    claimRow(w / 2, yRecordCaption, monoWidth(caption.length, capSize, capSize * TRACKING), capSize);
+    claimRow(w / 2, yRecordCaption, captionW, capSize);
 
     // The same split line the share row is set on — see `drawSplitLine`. Weight stays at 400 for
     // both numerals: the advance is identical in this mono stack, but the leader cue in this band is

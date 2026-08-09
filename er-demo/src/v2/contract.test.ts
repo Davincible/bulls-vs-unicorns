@@ -13,7 +13,16 @@
 // invisible, which is the actual claim being made.
 
 import { describe, expect, it } from "vitest";
-import { UNITS_PER_USD, unitsToUsd, usd, usdSigned, usdToUnits } from "./contract.ts";
+import {
+  ONE_CENT_UNITS,
+  UNITS_PER_USD,
+  unitsToUsd,
+  usd,
+  usdCompact,
+  usdCompactSigned,
+  usdSigned,
+  usdToUnits,
+} from "./contract.ts";
 
 /** The implementation as it stood before the cache — the oracle. Do not "fix" this to call `usd`. */
 function usdReference(units: bigint, dp?: number): string {
@@ -118,6 +127,137 @@ describe("usdSigned", () => {
   it("uses a real minus sign for losses and a plus for gains", () => {
     expect(usdSigned(5_000_000n, 2)).toBe("+$5.00");
     expect(usdSigned(-5_000_000n, 2)).toBe("−$5.00");
+  });
+});
+
+// `usdCompact` gets a TABLE of expectations rather than an equivalence property, and deliberately so
+// — unlike `usd()` it replaces nothing, so there is no oracle to compare against. What it does have
+// is a contract with a layout: every output must fit an eight-character mono cell, and every
+// threshold is a place where a reader's understanding of a figure changes. Those are the cases.
+describe("usdCompact", () => {
+  const M = 1_000_000n; // units in one dollar, restated for readability in the table below
+
+  it("keeps two decimals below $1,000, where cents are load-bearing", () => {
+    // The per-side cap is $100 and real fighters sit at $8-$100, so this is the whole live range of
+    // an actual stake. A $12.40 fighter and a $12.90 one must never both read "$12".
+    expect(usdCompact(0n)).toBe("$0.00");
+    expect(usdCompact(2n * M)).toBe("$2.00");
+    expect(usdCompact(12_400_000n)).toBe("$12.40");
+    expect(usdCompact(980_500_000n)).toBe("$980.50");
+    expect(usdCompact(999_990_000n)).toBe("$999.99");
+    expect(usdCompact(20_000n)).toBe("$0.02");
+  });
+
+  it("switches to k once the two-decimal reading would carry to $1,000", () => {
+    expect(usdCompact(999_994_999n)).toBe("$999.99"); // rounds to 999.99 — still the exact path
+    // …and one unit later it rounds to 1,000.00, which as a full string is "$1,000.00": nine
+    // characters with a separator in it. The ladder takes it instead.
+    expect(usdCompact(999_995_000n)).toBe("$1k");
+    expect(usdCompact(1_000n * M)).toBe("$1k");
+    expect(usdCompact(1_000n * M + 1n)).toBe("$1k");
+  });
+
+  it("scales through k, M, B and T — a u64 tops out at $18.4T, so T is the last rung needed", () => {
+    expect(usdCompact(13_215n * M)).toBe("$13.2k");
+    expect(usdCompact(1_400_000n * M)).toBe("$1.4M");
+    expect(usdCompact(2_500_000_000n * M)).toBe("$2.5B");
+    expect(usdCompact(13_487_910_540_099n * M)).toBe("$13.5T");
+    // The largest figure the chain can hold at all: u64::MAX units.
+    expect(usdCompact(18_446_744_073_709_551_615n)).toBe("$18.4T");
+  });
+
+  it("strips a trailing .0 — `$13k`, never `$13.0k`", () => {
+    expect(usdCompact(13_000n * M)).toBe("$13k");
+    expect(usdCompact(5_000_000n * M)).toBe("$5M");
+    expect(usdCompact(13_050n * M)).toBe("$13.1k"); // .05 rounds up into a digit worth keeping
+  });
+
+  it("carries a rounded tier ceiling up a rung instead of printing $1000.0k", () => {
+    // The bug a naive divide-then-round has at the top of EVERY tier: 999,999 / 1,000 is 999.999,
+    // which renders "1000.0k". The tier is chosen from the rounded figure, so it steps up.
+    expect(usdCompact(999_999n * M)).toBe("$1M");
+    expect(usdCompact(999_999_999n * M)).toBe("$1B");
+    expect(usdCompact(999_950n * M)).toBe("$1M");
+    expect(usdCompact(999_940n * M)).toBe("$999.9k"); // just below the carry, stays in k
+  });
+
+  it("floors a real sub-cent amount at a bound, never at $0.00", () => {
+    // The bug caught on a live devnet round: a fighter whittled down to dust was still extractable
+    // and the button offered to bank "$0.00". A player being paid something must not be told they
+    // are being paid nothing.
+    expect(usdCompact(1n)).toBe("<$0.01");
+    expect(usdCompact(9_999n)).toBe("<$0.01");
+    expect(usdCompact(10_000n)).toBe("$0.01"); // exactly one cent is a cent
+    expect(usdCompact(-1n)).toBe("−<$0.01");
+  });
+
+  it("puts the minus outside the dollar sign, as every other figure on the page does", () => {
+    expect(usdCompact(-13_215n * M)).toBe("−$13.2k");
+    expect(usdCompact(-5n * M)).toBe("−$5.00");
+  });
+
+  it("never exceeds the eight characters the narrowest money column can hold", () => {
+    // The layout claim the thresholds exist to make good on. The narrowest money track on the page
+    // is 66px (`.roster` at <=560px) against ~7px per mono glyph at 12px.
+    for (const u of [
+      0n, 1n, 10_000n, 999_990_000n, 999_995_000n, 1_000n * M, 999_940n * M, 999_999n * M,
+      13_487_910_540_099n * M, 18_446_744_073_709_551_615n,
+    ]) {
+      expect(usdCompact(u).length, `usdCompact(${u}n)`).toBeLessThanOrEqual(8);
+      expect(usdCompact(-u).length, `usdCompact(${-u}n)`).toBeLessThanOrEqual(8);
+    }
+  });
+
+  it("holds the eight-character bound across a sweep of every magnitude", () => {
+    // The spot cases above are the ones a reader would think of. This is the one that would actually
+    // catch a regression: every tier boundary, every carry, every sign, walked densely. The stride
+    // is coprime with the powers of ten so it lands on and between rounding boundaries rather than
+    // marching in step with one.
+    for (let u = 1n; u < 10n ** 20n; u = (u * 13n) / 7n + 1n) {
+      for (const v of [u, -u]) {
+        const s = usdCompact(v);
+        if (s.length > 8 || s.includes(",")) {
+          // Assert inside the guard so a failure names the input instead of printing 200 passes.
+          expect(s, `usdCompact(${v}n)`).toBe("<= 8 chars, no separator");
+        }
+      }
+    }
+  });
+});
+
+describe("usdCompactSigned", () => {
+  it("gives exactly zero no sign, exactly as usdSigned does", () => {
+    expect(usdCompactSigned(0n)).toBe("$0.00");
+  });
+
+  it("signs both directions and agrees with usdCompact on the magnitude", () => {
+    expect(usdCompactSigned(13_215_000_000n)).toBe("+$13.2k");
+    expect(usdCompactSigned(-13_215_000_000n)).toBe("−$13.2k");
+    expect(usdCompactSigned(-13_215_000_000n)).toBe(usdCompact(-13_215_000_000n));
+  });
+
+  it("carries the sub-cent floor through the sign", () => {
+    expect(usdCompactSigned(1n)).toBe("+<$0.01");
+    expect(usdCompactSigned(-1n)).toBe("−<$0.01");
+  });
+
+  it("is the compact reading of the same value usdSigned prints in full", () => {
+    // Not a redundant assertion: it pins that the two formatters never disagree about SIGN, which is
+    // the one thing a reader compares between a table cell and the panel it links to.
+    for (const u of [0n, 1n, 5_000_000n, -5_000_000n, 13_215_000_000n, -999_999_000_000n]) {
+      const compact = usdCompactSigned(u);
+      const full = usdSigned(u, 2);
+      expect(compact.startsWith("+"), `${u}n`).toBe(full.startsWith("+"));
+      expect(compact.startsWith("−"), `${u}n`).toBe(full.startsWith("−"));
+    }
+  });
+});
+
+describe("ONE_CENT_UNITS", () => {
+  it("is exactly one cent, derived from the peg rather than typed twice", () => {
+    expect(ONE_CENT_UNITS).toBe(10_000n);
+    expect(ONE_CENT_UNITS).toBe(usdToUnits(0.01));
+    expect(unitsToUsd(ONE_CENT_UNITS)).toBe(0.01);
   });
 });
 

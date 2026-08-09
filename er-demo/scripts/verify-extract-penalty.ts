@@ -18,9 +18,13 @@
 //
 // WHAT ELSE IS CHECKED, because each of these would quietly hollow out the claim:
 //
-//   * the three-term conservation identity — sum(hp + banked) + penalties_collected == pot — at every
-//     checkpoint, on the ER and again on the base layer after undelegation. Value now LEAVES the
-//     round, and the only honest way to keep conservation provable is to record where it went;
+//   * the conservation identity — playersHold + houseTook == grossDeposits — at every checkpoint, on
+//     the ER and again on the base layer after undelegation. Value now LEAVES the round, and the only
+//     honest way to keep conservation provable is to record where it went;
+//   * that `fees_collected` is EXACTLY what the arena's published rate says it should be, which no
+//     other script in this set can claim. The stakes here are a known constant and the rate is on the
+//     `Arena` account, so the fee is checkable directly rather than merely reported — and it has to
+//     be checked directly, because the fee cancels out of the identity above (see `assertConserved`);
 //   * that the on-chain penalty equals what the independent TypeScript mirror derives from the same
 //     cursor, for BOTH extracts. The rate is a published curve, so "the house took something" is not
 //     the claim — "the house took exactly this" is;
@@ -115,7 +119,9 @@ interface Fighter {
   wallet: PublicKey; side: number; dead: number; stake: bigint; hp: bigint; banked: bigint;
 }
 interface Snapshot {
-  phase: number; tickCount: bigint; pot: bigint; penaltiesCollected: bigint; fighters: Fighter[];
+  phase: number; tickCount: bigint; pot: bigint;
+  penaltiesCollected: bigint; feesCollected: bigint;
+  fighters: Fighter[];
 }
 
 function snapshot(raw: RawRoundAccount): Snapshot {
@@ -124,6 +130,7 @@ function snapshot(raw: RawRoundAccount): Snapshot {
     tickCount: BigInt(raw.tickCount.toString()),
     pot: BigInt(raw.pot.toString()),
     penaltiesCollected: BigInt(raw.penaltiesCollected.toString()),
+    feesCollected: BigInt(raw.feesCollected.toString()),
     fighters: raw.fighters.slice(0, raw.fighterCount).map((f) => ({
       wallet: f.wallet, side: f.side, dead: f.dead,
       stake: BigInt(f.stake.toString()), hp: BigInt(f.hp.toString()), banked: BigInt(f.banked.toString()),
@@ -131,14 +138,36 @@ function snapshot(raw: RawRoundAccount): Snapshot {
   };
 }
 
-/** The identity, with the leak named: what the table still holds, plus what the house has taken, is
- *  exactly what was staked. An exact equality rather than an inequality on purpose — `>=` would pass
- *  just as happily if the house took twice what the curve says. */
+/** The identity, with BOTH house takes named: what the table still holds, plus everything the house
+ *  took, is exactly what players were charged.
+ *
+ *      playersHold   = sum(hp + banked)                       still owed to fighters
+ *      houseTook     = penaltiesCollected + feesCollected     the house's take from this round
+ *      grossDeposits = pot + feesCollected                    what players were actually charged
+ *
+ *  An exact equality rather than an inequality on purpose — `>=` would pass just as happily if the
+ *  house took twice what the curve says.
+ *
+ *  SAY PLAINLY WHAT THE FEE TERM IS. Algebraically this is the old identity
+ *  (`playersHold + penaltiesCollected === pot`) with `feesCollected` added to BOTH sides, because the
+ *  fee never entered the ring — it was taken at the door — so it cancels. It is therefore NOT a
+ *  stronger check, and cannot be: a verifier that dropped the term from both sides would pass and fail
+ *  on exactly the same rounds this one does. What it buys is that `pot` stops being mistakable for
+ *  what players paid (it is the sum of NET stakes), and that `houseTook` becomes a named quantity
+ *  every verifier computes the same way instead of a subtraction each one does differently or not at
+ *  all. The load-bearing half remains `playersHold + penaltiesCollected === pot`.
+ *
+ *  So this is not where the fee is pinned, and step 3 is — against the arena's own published rate,
+ *  which is the only reason this script can make a claim about `feesCollected` at all. */
 function assertConserved(s: Snapshot, where: string): void {
-  const held = s.fighters.reduce((n, f) => n + f.hp + f.banked, 0n);
-  if (held + s.penaltiesCollected !== s.pot) {
+  const playersHold = s.fighters.reduce((n, f) => n + f.hp + f.banked, 0n);
+  const houseTook = s.penaltiesCollected + s.feesCollected;
+  const grossDeposits = s.pot + s.feesCollected;
+  if (playersHold + houseTook !== grossDeposits) {
     throw new Error(
-      `value not conserved ${where}: sum(hp+banked)=${held} + penalties=${s.penaltiesCollected} vs pot=${s.pot}`,
+      `value not conserved ${where}: playersHold=${playersHold} + houseTook=${houseTook} ` +
+      `(penalties=${s.penaltiesCollected} + fees=${s.feesCollected}) != grossDeposits=${grossDeposits} ` +
+      `(pot=${s.pot} + fees=${s.feesCollected})`,
     );
   }
 }
@@ -277,6 +306,38 @@ interface ExtractOutcome {
        `penalty horizon ${horizon} steps (${(horizon / stepsPerSecond(fighterCount)).toFixed(0)}s)`);
     assertConserved(s, "at fight start");
     if (s.penaltiesCollected !== 0n) throw new Error(`a fresh round must start with no penalties, got ${s.penaltiesCollected}`);
+
+    // THE FEE, PINNED — the one claim in this set of scripts that the conservation identity cannot
+    // make, and the reason it is worth the twenty lines. `feesCollected` cancels out of
+    // `assertConserved` (see its comment), so a round whose fee was flatly wrong — or, as the program
+    // shipped for its whole life until this revision, never recorded at all — satisfies the identity
+    // at every checkpoint above and below. Nothing here would notice.
+    //
+    // This script is the only one that can notice, because it is the only one that knows the GROSS it
+    // charged: `STAKE` is a constant it chose, the rate is published on the `Arena` account, and
+    // `split_entry` is `stake * fee_bps / BPS` truncating. So the expected total is a fact, not an
+    // estimate — the same shape as lib.rs's `the_fee_is_recorded_rather_than_discarded`, which asserts
+    // `credit_entry` against a known gross for exactly this reason, and which is the test that fails
+    // if you delete the `fees_collected` line from the program.
+    //
+    // BigInt arithmetic rather than Number, and truncating division rather than `Math.floor`, so this
+    // is the on-chain expression rather than a floating-point approximation of it. Note there is no
+    // rounding argument to make here anyway: none of these entries is a top-up, and at any legal rate
+    // 1_000_000 lamports divides exactly.
+    //
+    // The rate is read from the arena fetched in step 1, before any entry landed. `set_fee_bps` can
+    // move it (see lib.rs), so a raise landing mid-run would surface HERE as a mismatch — which is the
+    // correct outcome and not something to paper over with a re-fetch: a re-fetch would report the new
+    // rate and quietly agree with a round that had been charged the old one.
+    const expectedFeePerEntry = BigInt(STAKE) * BigInt(arena.feeBps) / 10_000n;
+    const expectedFees = expectedFeePerEntry * BigInt(players.length);
+    if (s.feesCollected !== expectedFees) {
+      throw new Error(`the round recorded ${s.feesCollected} in entry fees, but ${players.length} entries of ` +
+        `${STAKE} at the arena's published ${arena.feeBps} bps come to ${expectedFeePerEntry} each = ${expectedFees}. ` +
+        `The conservation identity cannot catch this — the fee cancels out of it — so this is the check that does.`);
+    }
+    ok(`entry fee is exactly the published rate: ${players.length} x ${STAKE} at ${arena.feeBps} bps = ` +
+       `${c.b}${expectedFees} to the house at the door${c.x} (pot ${s.pot} is NET of it; players were charged ${s.pot + s.feesCollected})`);
 
     // The mirror walks the same fight the chain does: ticked to each extract's cursor, extracted in
     // the same order. Every number this script reports about a payout comes from here, and every one
@@ -434,7 +495,11 @@ interface ExtractOutcome {
       throw new Error(`the round records ${afterBoth.penaltiesCollected} in penalties, but the two extracts ` +
         `took ${early.penalty} + ${late.penalty} = ${early.penalty + late.penalty}`);
     }
-    ok(`the round records exactly what the house took: ${afterBoth.penaltiesCollected} of a ${afterBoth.pot} pot`);
+    // "penalties", not "what the house took" — the house also took `feesCollected` at the door, and
+    // now that both halves have names, using the general one for one of them is the sloppiness this
+    // whole change exists to end.
+    ok(`the round records exactly what the extracts cost: ${afterBoth.penaltiesCollected} in penalties ` +
+       `of a ${afterBoth.pot} pot, on top of ${afterBoth.feesCollected} already taken in entry fees`);
 
     heading("7. resolve + close_round — and the identity again, on the base layer");
     for (let attempt = 1; attempt <= 6; attempt++) {
@@ -477,9 +542,14 @@ interface ExtractOutcome {
     for (const f of final.fighters) {
       console.log(`  ${f.wallet.toBase58().slice(0, 8)}…  side ${f.side}  stake ${f.stake}  hp ${f.hp}  banked ${f.banked}  dead ${f.dead}`);
     }
-    const held = final.fighters.reduce((n, f) => n + f.hp + f.banked, 0n);
+    const playersHold = final.fighters.reduce((n, f) => n + f.hp + f.banked, 0n);
+    const houseTook = final.penaltiesCollected + final.feesCollected;
     console.log(`  pot ${final.pot}  cursor ${final.tickCount}`);
-    console.log(`  ${held} held + ${final.penaltiesCollected} penalties = ${held + final.penaltiesCollected}`);
+    // The pot on its own understates what this round cost its players by exactly `feesCollected`,
+    // which is why the line below ends at the gross rather than at the pot.
+    console.log(`  playersHold ${playersHold} + houseTook ${houseTook} ` +
+                `(${final.penaltiesCollected} penalties + ${final.feesCollected} fees) ` +
+                `= grossDeposits ${playersHold + houseTook}`);
 
     console.log(`\n${c.g}${c.b}PASS${c.x} — the extract penalty decays, and the round proves where the value went.`);
     console.log(JSON.stringify({ roundPda: roundPda.toBase58(), ...signatures }, null, 2));

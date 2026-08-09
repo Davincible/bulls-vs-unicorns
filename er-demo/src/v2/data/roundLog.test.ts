@@ -7,7 +7,7 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 import { describe, expect, it } from "vitest";
 import type { RawFighter, RawRoundAccount } from "../../chain/program.ts";
 import { Phase } from "../../chain/constants.ts";
-import type { RoundSummary, Side } from "../contract.ts";
+import { grossDeposits, houseTook, type RoundSummary, type Side } from "../contract.ts";
 import {
   deriveBigWins,
   deriveHall,
@@ -47,6 +47,11 @@ function rawRound(over: Partial<RawRoundAccount> = {}): RawRoundAccount {
     // The extract penalty, added to the program after this fixture was written: `pot` is now
     // `sum(hp + banked) + penaltiesCollected`, so a round's books only balance with this in them.
     penaltiesCollected: new BN(0),
+    // The entry fee, added later still. Zero here because these fighters' stakes are round numbers
+    // chosen before the fee existed — see the dedicated fixture below, which prices a lineup at a
+    // real rate so `pot` and `grossDeposits` are genuinely different numbers.
+    feesCollected: new BN(0),
+    houseSwept: false,
     seedCommit: Array.from({ length: 32 }, () => 1),
     seed: Array.from({ length: 32 }, () => 2),
     // The lobby deadline, added to the program after this fixture was written. A summary derives
@@ -113,6 +118,59 @@ describe("summarizeRoundAccount", () => {
     expect(summary.players[0].pnl).toBe(-20n);
   });
 
+  // THE HOUSE'S OTHER TAKE. `Round.fees_collected` is the entry fee, charged at `enter` and — unlike
+  // the penalty — never inside the ring at all. So it breaks no identity and corrects no per-player
+  // figure; what it does is make `pot` legible. This lineup is priced at the arena's real 20 bps so
+  // every number is a consequence of the rate rather than a chosen one: 100,000 gross pays 200 and
+  // nets 99,800; 200,000 gross pays 400 and nets 199,600.
+  it("carries the entry fee, so the pot stops being mistakable for what players paid", () => {
+    const priced = rawRound({
+      pot: new BN(299_400),                 // NET: 99,800 + 199,600
+      feesCollected: new BN(600),           // 200 + 400, at 20 bps
+      penaltiesCollected: new BN(19_960),   // Alice extracted her 99,800 at the opening 20%
+      fighters: [
+        fighter(ALICE, 0, 99_800, 0, 79_840),
+        fighter(BOB, 1, 199_600, 199_600, 0),
+        EMPTY_SLOT,
+        EMPTY_SLOT,
+      ],
+    });
+    const summary = summarizeRoundAccount(priced, ALICE.toBase58());
+    const playersHold = summary.players.reduce((sum, p) => sum + p.final, 0n);
+
+    expect(summary.feesCollected).toBe(600n);
+    // The ring still conserves against the NET pot — the load-bearing half of the identity, and the
+    // only half a round account can falsify.
+    expect(playersHold + summary.penaltiesCollected).toBe(summary.pot);
+    // And the gross is the number nobody can reach from `pot` alone: 100,000 + 200,000, as charged.
+    expect(grossDeposits(summary)).toBe(300_000n);
+    expect(houseTook(summary)).toBe(20_560n);
+    expect(playersHold + houseTook(summary)).toBe(grossDeposits(summary));
+    // The fee is not double-counted against the player who paid it: `stake` is already net, so
+    // Alice's loss is the penalty she paid to leave and nothing more.
+    expect(summary.players[0].pnl).toBe(-19_960n);
+  });
+
+  // A ROUND WRITTEN BY AN OLDER PROGRAM, which is not a hypothetical: History fetches every round
+  // account an arena has ever had, and Anchor decodes each of them against THIS build's IDL. Fields
+  // the deployed program never had come back `undefined`, and the bare `BigInt(raw.x.toString())`
+  // this function used to do threw on the first such round — taking the whole page down over a field
+  // whose true value is zero. The penalty spent its entire life one deploy away from that.
+  it("survives a round from a program revision that had neither counter", () => {
+    const legacy = rawRound() as Partial<RawRoundAccount> as RawRoundAccount;
+    delete (legacy as Partial<RawRoundAccount>).penaltiesCollected;
+    delete (legacy as Partial<RawRoundAccount>).feesCollected;
+
+    const summary = summarizeRoundAccount(legacy, ALICE.toBase58());
+
+    expect(summary.penaltiesCollected).toBe(0n);
+    expect(summary.feesCollected).toBe(0n);
+    // Zero is the TRUE value on such a round, not a stand-in: a program that cannot record a fee
+    // never collected one. So the identity is exact here, not merely non-throwing.
+    const playersHold = summary.players.reduce((sum, p) => sum + p.final, 0n);
+    expect(playersHold + houseTook(summary)).toBe(grossDeposits(summary));
+  });
+
   it("refuses to name a winner before the round settles", () => {
     // `winner` is a u8 that is simply 0 until `resolve()` writes it — read early, every open lobby on
     // the page would claim side 0 had won.
@@ -136,8 +194,11 @@ function summary(roundNo: number, winner: Side | null, players: [string, Side, n
     // Nobody extracted in these hand-built rounds, so the house took nothing. The aggregations
     // under test never read this field — that is the point of `summarizeRoundAccount`'s note: the
     // penalty is already out of every `final`, so a standing derived from finals is correct with or
-    // without it, and the test below proves that rather than assuming it.
+    // without it, and the test below proves that rather than assuming it. The fee is zero for the
+    // same reason and one more: it is charged before a fighter exists, so nothing derived per-player
+    // could read it even if it were set.
     penaltiesCollected: 0n,
+    feesCollected: 0n,
     players: players.map(([wallet, side, stake, final]) => ({
       wallet,
       short: wallet,

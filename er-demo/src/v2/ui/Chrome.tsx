@@ -2,8 +2,8 @@
 // never scrolled away — so it carries exactly the facts a player must not have to hunt for while
 // they're reading a table: what the round is doing, and whether their key can sign.
 
-import { MAX_STEPS, SIDE_TOKEN, clock, usd, type ViewId } from "../contract.ts";
-import { useArena } from "../data/ArenaProvider.tsx";
+import { MAX_STEPS, SIDE_TOKEN, clock, usdCompactSigned, type ViewId } from "../contract.ts";
+import { useArena } from "../data/useArena.ts";
 import { useShell } from "./shell.ts";
 import { TokenIcon } from "./TokenIcon.tsx";
 import { SCREEN_KEYS } from "./useKeyboardNav.ts";
@@ -43,7 +43,13 @@ function WinsTicker() {
       {items.map((w, i) => (
         <span key={`${dup ? "d" : "o"}-${i}`}>
           <TokenIcon token={SIDE_TOKEN[w.side]} /> {w.name}{" "}
-          <span className="tick-amt">+{usd(w.amount)}</span> R{w.roundNo.toString()}
+          {/* The marquee is a one-line strip repeated 24-wide and looping — the widest surface on
+              the page for this kind of overflow risk, and the one furthest from any table where a
+              reader could ask for the exact figure anyway. `usdCompactSigned` also retires the
+              hardcoded `+`: `BigWin.amount` is always > 0 (bigWins is filtered upstream, per the
+              comment above), so the sign it prints is identical to the old literal and no longer a
+              second place that has to agree with the filter. */}
+          <span className="tick-amt">{usdCompactSigned(w.amount)}</span> R{w.roundNo.toString()}
         </span>
       ))}
     </div>

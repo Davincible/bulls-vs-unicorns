@@ -71,6 +71,19 @@ export function programIdentityPda(programId: PublicKey = PROGRAM_ID): PublicKey
   return PublicKey.findProgramAddressSync([textEncoder.encode("identity")], programId)[0];
 }
 
+/** The arena's house books — `Treasury`, one per arena, written only by `sweepHouseTake`.
+ *
+ *  Derived here rather than resolved from the IDL, like every other PDA in this file. That is not
+ *  only consistency: `delegate_round.buffer_round_pda` spent a whole deployment cycle with its
+ *  `pda.program` pinned to a previous program id in the committed IDL, and the reason nothing broke
+ *  is precisely that this file derives PDAs itself instead of letting anchor's resolver do it. */
+export function treasuryPda(arena: PublicKey = arenaPda(), programId: PublicKey = PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [textEncoder.encode("treasury"), arena.toBuffer()],
+    programId,
+  )[0];
+}
+
 // ---- init_arena -----------------------------------------------------------------------------
 export function initArena(
   program: BullsArenaProgram,
@@ -297,5 +310,71 @@ export function closeRound(program: BullsArenaProgram, params: { payer: PublicKe
       round: params.round,
       magicProgram: MAGIC_PROGRAM_ID,
       magicContext: MAGIC_CONTEXT_ID,
+    });
+}
+
+// ---- set_fee_bps — re-price entry ---------------------------------------------------------------
+//
+// Authority only, and bounded at 1,000 bps (10%) by the program — `MAX_FEE_BPS` in lib.rs, the same
+// ceiling `initArena` is held to. Before this existed the rate was welded to the arena's creation, so
+// moving 20 bps to 100 bps meant standing up a whole new arena and stranding every round of history
+// behind the old one.
+//
+// It takes effect on the NEXT `enter`, including entries into a lobby that is already open — the
+// program reads `arena.fee_bps` live. Re-price between rounds, not during one. See `set_fee_bps` in
+// lib.rs for why the rate is not frozen onto the round today and where it should be when `enter`
+// moves to the base layer.
+export function setFeeBps(
+  program: BullsArenaProgram,
+  params: { arena: PublicKey; authority: PublicKey; feeBps: number },
+) {
+  return program.methods
+    .setFeeBps(params.feeBps)
+    .accounts({ arena: params.arena, authority: params.authority });
+}
+
+// ---- init_treasury — open the arena's house books, once -----------------------------------------
+//
+// Authority only. Separate from `initArena` on purpose so an arena that predates the treasury gains
+// one in a single transaction instead of having to be recreated; the cost of the split is that it can
+// be forgotten, and `sweepHouseTake` then fails on a missing account until someone runs it.
+export function initTreasury(
+  program: BullsArenaProgram,
+  params: { arena: PublicKey; treasury: PublicKey; authority: PublicKey },
+) {
+  return program.methods
+    .initTreasury()
+    .accounts({
+      arena: params.arena,
+      treasury: params.treasury,
+      authority: params.authority,
+      systemProgram: SystemProgram.programId,
+    });
+}
+
+// ---- sweep_house_take — move a finished round's take onto the arena's books ----------------------
+//
+// THE INSTRUCTION THAT TURNS PER-ROUND HOUSE REVENUE INTO A NUMBER. Both house takes — the entry fee
+// (`fees_collected`) and early-exit penalties (`penalties_collected`) — are recorded on the ROUND,
+// because that is the only account a rollup transaction can write. This adds one finished round's
+// pair onto the arena's `Treasury`.
+//
+// CALLABLE ONLY AFTER `closeRound` (or `abandonRound`) HAS UNDELEGATED THE ROUND. While the round is
+// delegated its base-layer account is owned by the Delegation Program, so the program cannot even
+// deserialise it — the failure is an account-owner mismatch, not a phase error. Sequence a keeper as
+// resolve -> closeRound -> (undelegation confirms) -> sweepHouseTake.
+//
+// Permissionless, and once only: the destination is derived from seeds rather than supplied, and
+// `Round.house_swept` makes a second sweep fail with `AlreadySwept` rather than silently double-count.
+export function sweepHouseTake(
+  program: BullsArenaProgram,
+  params: { arena: PublicKey; round: PublicKey; treasury: PublicKey; roundNo: bigint | number },
+) {
+  return program.methods
+    .sweepHouseTake(new BN(params.roundNo.toString()))
+    .accounts({
+      arena: params.arena,
+      round: params.round,
+      treasury: params.treasury,
     });
 }

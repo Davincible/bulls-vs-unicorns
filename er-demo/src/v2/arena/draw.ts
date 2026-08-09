@@ -33,7 +33,7 @@
 // drifting across another's name never eats it; the readout above FX so a shockwave never obscures
 // the thing you are pointing at.
 
-import { SIDE_TOKEN, usd } from "../contract.ts";
+import { SIDE_TOKEN, usdCompact } from "../contract.ts";
 import { faceFor } from "./faces.ts";
 import { LABEL_SPACE, type ArenaBody, type ArenaField } from "./field.ts";
 import type { InkMap } from "./ink.ts";
@@ -120,7 +120,7 @@ export function drawLattice(ctx: CanvasRenderingContext2D, w: number, h: number,
   ctx.stroke();
 
   const arm = 3.5;
-  ctx.strokeStyle = palette.tick;
+  ctx.strokeStyle = palette.mark;
   ctx.beginPath();
   for (let i = iMin; i <= iMax; i++) {
     if (i % 3 !== 0) continue;
@@ -276,35 +276,30 @@ export function drawBodies(
   ctx.font = monoFont(NAME_SIZE);
   for (const b of bodies) {
     if (b.isYou) continue;
-    const top = slots.get(b.id);
-    if (top === undefined) continue;
+    const slot = slots.get(b.id);
+    if (slot === undefined) continue;
     ctx.fillStyle = b.dead ? palette.ink4 : palette.ink;
-    casedText(ctx, b.name, labelX(b.x, b.name.length, NAME_SIZE, field.w), top);
+    casedText(ctx, b.name, labelX(b.x, b.name.length, NAME_SIZE, field.w), slot.top);
   }
   ctx.font = monoFont(NAME_SIZE, 600);
   for (const b of bodies) {
     if (!b.isYou) continue;
-    const top = slots.get(b.id);
-    if (top === undefined) continue;
+    const slot = slots.get(b.id);
+    if (slot === undefined) continue;
     ctx.fillStyle = b.dead ? palette.ink4 : palette.ink;
-    casedText(ctx, b.name, labelX(b.x, b.name.length, NAME_SIZE, field.w), top);
+    casedText(ctx, b.name, labelX(b.x, b.name.length, NAME_SIZE, field.w), slot.top);
   }
 
+  // The figure, for whoever got a slot wide and tall enough to carry one — `layoutLabels` decides
+  // that, and it composes the string there so the box it reserved and the text drawn into it are
+  // measured from the same characters. A `null` here is a crowded field, not a missing value: the
+  // disc's own area is still saying it (`radiusFor`), and the hover readout still has the digits.
   ctx.font = monoFont(VALUE_SIZE);
   for (const b of bodies) {
-    // WORTH, not `hp` — the same quantity the circle's size means (field.ts's `radiusFor`). A label
-    // that disagreed with the shape it sits under would make both of them useless.
-    //
-    // The dead keep their figure, with the status in front of it. Dropping the number for a bare
-    // "OUT" was the first attempt and it threw away real information: a fighter whose hp reached
-    // zero still HOLDS everything it raided, that value still counts toward its side's total (see
-    // `contract.ts`'s `sideTotals`), and an extracted player's whole point is the figure they left
-    // with. "OUT" alone made a $48 corpse and a $0 one look identical.
-    const top = slots.get(b.id);
-    if (top === undefined) continue;
-    const text = b.dead ? `OUT · ${usd(b.worth)}` : usd(b.worth);
+    const slot = slots.get(b.id);
+    if (slot === undefined || slot.value === null) continue;
     ctx.fillStyle = b.dead ? palette.ink4 : palette.ink2;
-    casedText(ctx, text, labelX(b.x, text.length, VALUE_SIZE, field.w), top + NAME_SIZE + 3);
+    casedText(ctx, slot.value, labelX(b.x, slot.value.length, VALUE_SIZE, field.w), slot.top + NAME_SIZE + 3);
   }
   ctx.restore();
 }
@@ -432,10 +427,6 @@ function drawRim(ctx: CanvasRenderingContext2D, b: ArenaBody, palette: ArenaPale
   ctx.stroke();
 }
 
-/** Paper casing, then ink. The caller sets the font, the fill and the stroke once for a whole pass;
- *  this is only the two draw calls, in the order that puts the halo underneath. */
-/** The height of a name+value label block. */
-const LABEL_H = NAME_SIZE + 3 + VALUE_SIZE;
 /** How far a label may be pushed from the band it wants before it is dropped instead.
  *
  *  There was no leash in the first version and it did not matter, because the only thing a label had
@@ -447,6 +438,48 @@ const LABEL_H = NAME_SIZE + 3 + VALUE_SIZE;
  *  other label, short enough that the label is still visibly ATTACHED to its disc. Past that, drop —
  *  the same trade the no-room case has always made. */
 const LABEL_REACH = 92;
+
+/** THE TWO TIERS A LABEL CAN PRINT AT, and the deliberate answer to "should the type shrink as the
+ *  field fills?"
+ *
+ *  It should not. The field's own geometry is 1/√n all the way down — `computeBaseRadius` and
+ *  `computeSpacing` both come off `roomPerFighter`, so discs and gaps halve together and total disc
+ *  ink is invariant — and the tempting move is to put the type on the same curve. Run the numbers
+ *  and it does not pay: at sixteen fighters on a 360px phone field the room per fighter is ~78px and
+ *  a ten-character name at 9.5px is already 57px wide. Scaling by 1/√n from a nine-fighter baseline
+ *  buys 25% of the linear dimension and costs the floor of readability — this mono stops resolving
+ *  at 1x somewhere around 8px, and a phone is the exact device where the crowding is worst AND where
+ *  the reader is furthest from the glyphs. Type that is too small to read is not a smaller label, it
+ *  is a smudge that still occupies the space.
+ *
+ *  What actually does not fit at sixteen is not the type size, it is the SECOND LINE. So the label
+ *  sheds content instead of resolution: the full block if it fits, the name alone if it does not,
+ *  and nothing if even that does not. A name-only block is 9.5px tall against the full block's 21.5,
+ *  so the fallback needs under half the clear paper — and the figure it gives up is the one thing on
+ *  the label the field already says another way, as the disc's AREA (`radiusFor`: SIZE IS VALUE).
+ *  The exact number is still a hover away and still in the roster table below the frame; the NAME is
+ *  the thing that has no second home on this screen.
+ *
+ *  It also falls out in the right order for free. `layoutLabels` resolves you first, then the living,
+ *  then the largest — so on a crowded field the fighters that keep their figures are the big ones,
+ *  which is the same hierarchy the discs themselves are drawing. A reader is not being shown a
+ *  random subset; they are being shown the top of the table in full and the rest by name.
+ *
+ *  Monotone by construction, which is what keeps it stable: a slot free for the full block is always
+ *  free for the name alone, so the tiers can never fight each other frame to frame. */
+const LABEL_H = NAME_SIZE + 3 + VALUE_SIZE;
+const NAME_ONLY_H = NAME_SIZE;
+
+/** Where a label is allowed to go and what it prints when it gets there. `value` is `null` when the
+ *  crowd left room for the name and not for the figure — see LABEL_H's note on the tiers. Carrying
+ *  the string rather than a flag means the box that was RESERVED and the text that is DRAWN are
+ *  measured from the same characters; they used to be derived twice, from a char-count guess in the
+ *  layout and from the real string in the painter, and a guess that ran short reserved a box the
+ *  figure then overflowed. */
+interface LabelSlot {
+  top: number;
+  value: string | null;
+}
 
 /** WHERE EACH FIGHTER'S LABEL GOES, so that no label is ever drawn on top of another one, or on top
  *  of the scoreboard watermark underneath them both.
@@ -462,19 +495,40 @@ const LABEL_REACH = 92;
  *  orphaned — one missing figure is a smaller lie than two overprinted ones, and the fighter is still
  *  identifiable by its disc, its face and its rim.
  *
- *  WHAT IT IS DODGING is whatever `ink.ts`'s map already holds, which by the time this runs is the
- *  scoreboard watermark, plus every label already placed on this pass. The watermark is in there
- *  because its captions and its record numerals are set at very nearly a label's own size: a disc
- *  crossing them is the fight happening in front of its scoreboard, but a 9.5px name crossing a 15px
- *  caption is two strings in one place and neither of them survives it (`ROUNDS WON · 16 SETTLED`,
- *  screenshotted with a name through it).
+ *  WHAT IT IS DODGING, part one, is whatever `ink.ts`'s map already holds: the shell's HUD (chrome.ts
+ *  claims it before anything canvas-side draws), the scoreboard watermark, and every label already
+ *  placed on this pass. The watermark is in there because its captions and its record numerals are
+ *  set at very nearly a label's own size: a disc crossing them is the fight happening in front of its
+ *  scoreboard, but a 9.5px name crossing a 15px caption is two strings in one place and neither of
+ *  them survives it (`ROUNDS WON · 16 SETTLED`, screenshotted with a name through it).
+ *
+ *  WHAT IT IS DODGING, part two, is THE OTHER FIGHTERS' DISCS — and that is new, because the trade
+ *  ink.ts made was right at nine and inverts at sixteen. A cased name over bare paper or over the
+ *  lattice is fine and always was; a cased name over a photographic coin face is a smudge with a
+ *  white outline. At nine fighters it happened twice a frame and was survivable. At sixteen a load
+ *  test put label ink at 2.5x the total area of the discs it annotates on a phone, which is not a
+ *  crowded field, it is a field of names with circles behind them: `SUMI_86 $76.57` across
+ *  CINDER_24, `IVORY_02` across the disc to its right, `INDIGO_82` across its neighbour.
+ *
+ *  So the discs are a second predicate here rather than a third claimant in the map — see ink.ts. A
+ *  fighter's OWN disc is exempt: the search starts below its rim and walks away from it, so the only
+ *  way to hit yourself is a clamp against a wall, and a name touching the circle it names is the one
+ *  overlap on this field that cannot be misread.
+ *
+ *  COST. The x-range is fixed for a whole search, so the bodies that could possibly matter are
+ *  filtered once per tier (a column test, ≤16 of them) and only that handful is re-tested per
+ *  candidate band. The circle/box test itself is the nearest-corner one: no `sqrt`, and the common
+ *  case exits on the first two subtractions. Worst case — every band blocked, both tiers, both
+ *  directions, sixteen labels — is a few thousand of those, tens of microseconds, against a 16ms
+ *  frame. The nested loop is quadratic in fighters and the program's cap is sixteen.
  *
  *  ORDER DECIDES WHO WINS A CONTESTED SLOT, and it is deliberate rather than array order: you first
  *  (you must always be able to find yourself), then the living, then the largest — and `id` last as
  *  the tiebreak, because it is stable for the life of the round. That stability is the point: the
  *  same fighter resolves to the same slot on every frame, so labels never flicker between two
- *  positions as bodies drift past each other, which reads worse than an overlap. */
-function layoutLabels(bodies: ArenaBody[], field: ArenaField, ink: InkMap): Map<number, number> {
+ *  positions as bodies drift past each other, which reads worse than an overlap. It is also what
+ *  makes the tier fallback read as a hierarchy instead of as a lottery — see LABEL_H. */
+function layoutLabels(bodies: ArenaBody[], field: ArenaField, ink: InkMap): Map<number, LabelSlot> {
   const order = [...bodies].sort((p, q) => {
     if (p.isYou !== q.isYou) return p.isYou ? -1 : 1;
     if (p.dead !== q.dead) return p.dead ? 1 : -1;
@@ -482,38 +536,79 @@ function layoutLabels(bodies: ArenaBody[], field: ArenaField, ink: InkMap): Map<
     return p.id - q.id;
   });
 
-  const out = new Map<number, number>();
+  const out = new Map<number, LabelSlot>();
   const STEP = 4;
+  // `field.h - LABEL_SPACE` and not `field.h`: the bottom strip is a margin the field does not draw
+  // into, and the shell's fixed bottom nav is sitting on it. See field.ts's LABEL_SPACE.
+  const floor = field.h - LABEL_SPACE;
+
+  // The bodies whose disc could reach the column the current search is walking down. Rebuilt per
+  // tier, reused across every candidate band in it — one array for the whole frame.
+  const column: ArenaBody[] = [];
+  const free = (x0: number, y0: number, x1: number, y1: number): boolean => {
+    if (ink.hits(x0, y0, x1, y1)) return false;
+    for (const o of column) {
+      // Squared distance from the disc's centre to the nearest point of the box; zero on both axes
+      // means the centre is inside it.
+      const dx = o.x < x0 ? x0 - o.x : o.x > x1 ? o.x - x1 : 0;
+      const dy = o.y < y0 ? y0 - o.y : o.y > y1 ? o.y - y1 : 0;
+      if (dx * dx + dy * dy < o.r * o.r) return false;
+    }
+    return true;
+  };
 
   for (const b of order) {
-    // The band is as wide as the WIDER of the two lines, since they share a centre.
-    const chars = Math.max(b.name.length, (b.dead ? 12 : 0) + 7);
-    const half = monoWidth(chars, NAME_SIZE) / 2;
-    // The SAME clamp the painter applies (`labelX`). Reserving `b.x ± half` while drawing at the
-    // clamped centre means a fighter pinned to a wall claims one rectangle and fills another, and the
-    // fighters pinned to a wall are exactly the ones with a neighbour close enough to care.
-    const cx = clamp(b.x, half + 2, field.w - half - 2);
-    const x0 = cx - half;
-    const x1 = cx + half;
+    // WORTH, not `hp` — the same quantity the circle's size means (field.ts's `radiusFor`). A label
+    // that disagreed with the shape it sits under would make both of them useless.
+    //
+    // The dead keep their figure, with the status in front of it. Dropping the number for a bare
+    // "OUT" was the first attempt and it threw away real information: a fighter whose hp reached
+    // zero still HOLDS everything it raided, that value still counts toward its side's total (see
+    // `contract.ts`'s `sideTotals`), and an extracted player's whole point is the figure they left
+    // with. "OUT" alone made a $48 corpse and a $0 one look identical.
+    const value = b.dead ? `OUT · ${usdCompact(b.worth)}` : usdCompact(b.worth);
+    // Two lines at two sizes sharing one centre, so the block is as wide as the wider of them.
+    const nameHalf = monoWidth(b.name.length, NAME_SIZE) / 2;
+    const fullHalf = Math.max(nameHalf, monoWidth(value.length, VALUE_SIZE) / 2);
 
-    let top: number | null = null;
-    const below = b.y + b.r + LABEL_GAP;
-    // `field.h - LABEL_SPACE` and not `field.h`: the bottom strip is a margin the field does not draw
-    // into, and the shell's fixed bottom nav is sitting on it. See field.ts's LABEL_SPACE.
-    const floor = field.h - LABEL_SPACE;
-    for (let y = below; y <= below + LABEL_REACH && y + LABEL_H <= floor; y += STEP) {
-      if (!ink.hits(x0, y, x1, y + LABEL_H)) { top = y; break; }
-    }
-    if (top === null) {
-      // Nothing below — try above the disc, walking up from just over its rim.
-      const above = b.y - b.r - LABEL_GAP - LABEL_H;
-      for (let y = above; y >= above - LABEL_REACH && y >= 0; y -= STEP) {
-        if (!ink.hits(x0, y, x1, y + LABEL_H)) { top = y; break; }
+    let slot: LabelSlot | null = null;
+    for (let tier = 0; tier < 2 && slot === null; tier++) {
+      const half = tier === 0 ? fullHalf : nameHalf;
+      const h = tier === 0 ? LABEL_H : NAME_ONLY_H;
+      // The SAME clamp the painter applies (`labelX`). Reserving `b.x ± half` while drawing at the
+      // clamped centre means a fighter pinned to a wall claims one rectangle and fills another, and
+      // the fighters pinned to a wall are exactly the ones with a neighbour close enough to care.
+      // (The name line clamps against its own narrower half and so always lands INSIDE the block's
+      // box, which is what makes one claim cover both lines.)
+      const cx = clamp(b.x, half + 2, field.w - half - 2);
+      const x0 = cx - half;
+      const x1 = cx + half;
+
+      column.length = 0;
+      for (const o of bodies) {
+        if (o !== b && o.x + o.r > x0 && o.x - o.r < x1) column.push(o);
       }
+
+      let top: number | null = null;
+      const below = b.y + b.r + LABEL_GAP;
+      for (let y = below; y <= below + LABEL_REACH && y + h <= floor; y += STEP) {
+        if (free(x0, y, x1, y + h)) { top = y; break; }
+      }
+      if (top === null) {
+        // Nothing below — try above the disc, walking up from just over its rim.
+        const above = b.y - b.r - LABEL_GAP - h;
+        for (let y = above; y >= above - LABEL_REACH && y >= 0; y -= STEP) {
+          if (free(x0, y, x1, y + h)) { top = y; break; }
+        }
+      }
+      if (top === null) continue;   // this tier does not fit; try the shorter one
+      ink.claim(x0, top, x1, top + h);
+      slot = { top, value: tier === 0 ? value : null };
     }
-    if (top === null) continue;   // genuinely no room — drop it rather than stack it
-    ink.claim(x0, top, x1, top + LABEL_H);
-    out.set(b.id, top);
+    // Both tiers failed: genuinely no room, so drop it rather than stack it. The fighter is still
+    // identifiable by its disc, its face and its rim, and one missing name is a smaller lie than two
+    // overprinted ones.
+    if (slot !== null) out.set(b.id, slot);
   }
   return out;
 }
@@ -606,11 +701,16 @@ export function drawReadout(
   // WORTH first because it is what the circle's size says; RING and BANKED break it into the part
   // still exposed and the part already safe — the split the disc only hints at with its at-risk
   // hairline, and the exact numbers a player weighing an `extract()` is after.
+  // Compact for the same reason as the field labels, plus one of its own: this box sizes itself to
+  // its widest row (`width` below) and is only flipped away from the edges, never clamped — so a
+  // full-precision figure does not overflow the readout, it INFLATES it, and three of them make a
+  // panel wider than the field it is floating over. The exact figures are two sections down in the
+  // roster, which is where a player goes to compare rather than to glance.
   const rows: [string, string][] = [
     ["SIDE", SIDE_TOKEN[b.side].name],
-    ["WORTH", usd(b.worth)],
-    ["RING", b.dead ? "—" : usd(b.hp)],
-    ["BANKED", usd(b.banked)],
+    ["WORTH", usdCompact(b.worth)],
+    ["RING", b.dead ? "—" : usdCompact(b.hp)],
+    ["BANKED", usdCompact(b.banked)],
   ];
   const title = b.dead ? `${b.name}  OUT` : b.name;
 

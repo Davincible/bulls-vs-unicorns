@@ -188,7 +188,13 @@
 /* Subordinate to the screen word above it, but still the biggest FIGURE on the page. They don't
    compete: one is a word in the sans, the other is money in the mono. */
 .scr .sc-hero { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; padding: 2px 0 26px; }
-.scr .sc-hero-fig { font-size: clamp(30px, 4.4vw, 54px); }
+/* The dashboard's headline pot is the one figure on this screen that does NOT compact — same call as
+   the arena's 00-1 hero, for the same reason (see ArenaView.tsx), so it needs the same guard. A flex
+   item's default `min-width: auto` refuses to shrink below its content and `$104,417,705,602,747.00`
+   has no break opportunity in it — a comma between digits is not one — so at chain scale it pushed
+   the whole page 8px wider than the viewport at 390px. Caught by measurement, not by eye: an 8px
+   horizontal scroll is invisible in a screenshot and unmistakable under a thumb. */
+.scr .sc-hero-fig { font-size: clamp(30px, 4.4vw, 54px); min-width: 0; overflow-wrap: anywhere; }
 .scr .sc-hero-sub { font-size: 13px; color: var(--ink-2); max-width: 46ch; }
 
 /* Groups of facts, separated by hairlines. NOT tiles: no fill, no border box, no radius. */
@@ -261,11 +267,19 @@
   padding: 10px 12px;
   font: 400 12px/1.35 var(--mono);
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   display: flex;
   align-items: center;
 }
+/* The link renders as two spans, not one text node, so the boring boilerplate half of the url can
+   shrink and ellipsize while the referral code half never does — see the comment in
+   ReferralsView.tsx for why. `sc-linkhead` is the one that gives ground: it is the only child with
+   `min-width: 0`, so flexbox lets it shrink below its own text's width instead of pushing
+   `sc-linktail` (or the row) wider than the box. `sc-linktail` is `flex: 0 0 auto` — fixed at its
+   content width — so the pubkey is either shown whole or, on a viewport too narrow for even that
+   (untested down here; 390px already clears it with room to spare), clipped by `sc-linkbox`'s own
+   `overflow: hidden` rather than by a second ellipsis that would imply more text follows it. */
+.scr .sc-linkhead { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto; }
+.scr .sc-linktail { flex: 0 0 auto; white-space: nowrap; }
 /* The share control is a link, not a button — it opens a new tab, and that must be true in the
    status bar as well as in the handler. It just wears the button's clothes. */
 .scr a.btn { border-bottom: 0; display: inline-flex; align-items: center; }

@@ -65,8 +65,10 @@
   min-width: 0;
 }
 
-/* base.css's focus ring is ink — invisible against the black bars. */
-.chrome :focus-visible { outline: 1px solid var(--paper); outline-offset: 1px; }
+/* base.css's focus ring is ink — invisible against the black bars. `--on-chrome`, not `--paper` and
+   not `--on-ink`: the bars stay black-and-white on every theme, including the ones whose ink is light
+   and whose `--on-ink` is therefore near-black (see base.css). */
+.chrome :focus-visible { outline: 1px solid var(--on-chrome); outline-offset: 1px; }
 
 /* A run of small blocks, the reference's signal-strength motif. Here it carries real information:
    how much of the fight's step budget has been spent. */
@@ -90,7 +92,7 @@
   transition: color var(--tick), background var(--tick);
 }
 .nav > button:hover { color: #fff; }
-.nav > button.on { background: var(--paper); color: var(--ink); }
+.nav > button.on { background: var(--on-chrome); color: var(--chrome); }
 .nav-i { color: rgba(255, 255, 255, 0.32); margin-right: 7px; }
 .nav > button.on .nav-i { color: var(--ink-4); }
 
@@ -107,8 +109,8 @@
   white-space: nowrap;
   transition: background var(--tick), color var(--tick), border-color var(--tick);
 }
-.cbtn:hover { background: var(--paper); color: var(--ink); border-color: var(--paper); }
-.cbtn.on { background: var(--paper); color: var(--ink); border-color: var(--paper); }
+.cbtn:hover { background: var(--on-chrome); color: var(--chrome); border-color: var(--on-chrome); }
+.cbtn.on { background: var(--on-chrome); color: var(--chrome); border-color: var(--on-chrome); }
 
 /* --- the right-hand rail ------------------------------------------------------------------- */
 
@@ -125,7 +127,7 @@
   right: 0;
   width: min(420px, 100vw);
   z-index: 90;
-  background: var(--paper);
+  background: var(--paper-2);
   border-left: 1px solid var(--ink);
   overflow-y: auto;
   padding: 16px 20px 32px;
@@ -147,7 +149,9 @@
   margin-bottom: 16px;
   position: sticky;
   top: -16px;
-  background: var(--paper);
+  /* Matches the rail it is pinned inside, not the page behind it — a sticky head that occludes rows
+     has to be the same plane as the panel or it reads as a band lying across it. */
+  background: var(--paper-2);
   padding-top: 16px;
   margin-top: -16px;
   z-index: 1;
@@ -216,7 +220,12 @@
    and being fixed it would cover them. `vh` so it adapts to the window (a short laptop reaches the
    rosters sooner than a tall monitor does), capped in px so a very tall screen doesn't spend most of
    a scroll with no readout at all. Read by StickyStatus.tsx's anchor, and nothing else. */
-:root { --sbar-reveal: min(78vh, 640px); }
+/* HOW FAR YOU SCROLL BEFORE THE STRIP APPEARS.
+   Was `min(78vh, 640px)` — most of a screen, which meant it arrived only after the arena frame had
+   already left, and by then a reader had spent the whole journey with no score. Max: "it activates
+   too late, needs to activate much sooner." A fifth of the viewport is roughly the moment the hero
+   figure starts leaving, which is the first instant the strip has anything to add. */
+:root { --sbar-reveal: min(20vh, 150px); }
 
 /* The anchor: a box that extends `--sbar-reveal` down the page and then takes its own height back
    out of the flow, so it displaces nothing and is invisible. Its bottom edge crossing the top of the
@@ -239,7 +248,7 @@
   left: 0;
   right: 0;
   z-index: 75;
-  background: var(--paper);
+  background: var(--paper-2);
   border-bottom: 1px solid var(--ink);
   transform: translateY(-101%);
   visibility: hidden;
@@ -301,7 +310,7 @@
   right: var(--gut);
   bottom: calc(var(--chrome-h) + 14px + var(--dock-lift, 0px));
   z-index: 88;
-  background: var(--paper);
+  background: var(--paper-2);
   border: 1px solid var(--ink);
   transition: right var(--tick) linear, bottom var(--tick) linear;
 }
@@ -345,7 +354,7 @@
   align-items: center;
   gap: 8px;
 }
-.dock-handle:hover { background: var(--ink); color: var(--paper); }
+.dock-handle:hover { background: var(--ink); color: var(--on-ink); }
 .dock-handle-i { font-size: 13px; line-height: 1; }
 
 .dock-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -353,7 +362,6 @@
 .dock-fee .num { color: var(--ink); }
 .dock-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .dock-note { margin: 10px 0 0; font-size: 11.5px; line-height: 1.5; }
-.dock-note--only { margin: 0; }
 
 .dock-keep {
   font-size: 30px;
@@ -375,6 +383,25 @@
   text-transform: uppercase;
   opacity: 0.72;
 }
+
+/* --- the round-phase note ------------------------------------------------------------------- */
+
+/* `ui/RoundPhaseNote.tsx` — the state label over its sentence. A label and a paragraph, separated by
+   space and nothing else: no box, no fill, no rule of its own, because it is dropped into surfaces
+   that already own their edges (the dock's border, 00-3's top rule). */
+.phase-note { display: grid; gap: 7px; }
+.phase-note-b { margin: 0; }
+.phase-note .num { font-size: 0.95em; }
+
+/* The `detail="timing"` rendering: the label and the deadline only, above whatever control answers
+   the rest. Still stacked rather than set side by side — the dock is 320px wide and a label column
+   there would squeeze the sentence to four characters a line. */
+.phase-note--tight { gap: 5px; }
+
+/* In the dock the note is the small print of a 320px panel, not a section lede. */
+.dock .phase-note { gap: 5px; }
+.dock .phase-note-b { font-size: 11.5px; line-height: 1.5; }
+.dock .phase-note--tight { margin-bottom: 13px; }
 
 /* --- takeover (intro) ---------------------------------------------------------------------- */
 

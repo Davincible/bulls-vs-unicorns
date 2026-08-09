@@ -24,6 +24,7 @@
 // loop or reallocates the world.
 
 import { useEffect, useRef } from "react";
+import { subscribePaper } from "../styles/paper.ts";
 import { createArenaLoop, type ArenaLoop } from "./arenaLoop.ts";
 import type { ArenaCanvasProps, PointerState } from "./types.ts";
 import "./ArenaCanvas.css";
@@ -74,12 +75,22 @@ export function ArenaCanvas(props: ArenaCanvasProps): JSX.Element {
       if (box) loop.resize(box.width, box.height);
     });
     observer.observe(parent);
+
+    // The third thing outside React that the field has to follow, alongside the parent's size and the
+    // motion preference: the colour of the sheet. `styles/paper.ts` writes the tokens onto `:root`
+    // and then calls back, and the loop re-reads them off this element's computed style — so the
+    // field retints on the next frame without the component re-rendering, the world being rebuilt, or
+    // a fight in progress losing its playhead. Subscribed rather than remounted on a `key` for exactly
+    // that last reason: a remount would restart the fight to change a colour.
+    const unsubscribePaper = subscribePaper(() => loop.retint());
+
     const initial = parent.getBoundingClientRect();
     loop.resize(initial.width, initial.height);
     loop.start();
 
     return () => {
       observer.disconnect();
+      unsubscribePaper();
       motionQuery?.removeEventListener("change", onMotionChange);
       loop.stop();
       loopRef.current = null;

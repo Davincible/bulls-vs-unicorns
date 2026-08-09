@@ -19,7 +19,7 @@
 
 import { useMemo } from "react";
 import type { ReactNode } from "react";
-import { useArena } from "../data/ArenaProvider.tsx";
+import { useArena } from "../data/useArena.ts";
 import { Dash, Empty, Mark, Section, Tag } from "../ui/primitives.tsx";
 import {
   EXTRACT_PENALTY_START_BPS,
@@ -29,7 +29,8 @@ import {
   bpsPct,
   clock,
   usd,
-  usdSigned,
+  usdCompact,
+  usdCompactSigned,
   usdToUnits,
   worth,
   type RoundSummary,
@@ -160,6 +161,11 @@ export function DashboardView() {
         lede="The live round, straight off its own account, and the one before it."
       >
         <div className="sc-hero">
+          {/* THE ONE FULL-PRECISION FIGURE ON THIS SCREEN. This is the dashboard's own hero, the
+              same role `usd()`'s doc comment carves out for the arena's 00-1 pot — a single big
+              headline, not a grid cell fighting a fixed track, so there is no column for a compact
+              figure to protect. Everywhere else on this screen the same `live.pot` is shown again
+              inside a 1fr-grid tile below, and THAT copy compacts. */}
           <span className="display display--mono sc-hero-fig">
             {live ? usd(live.pot, 2) : <Dash />}
           </span>
@@ -174,7 +180,9 @@ export function DashboardView() {
 
         <div className="sc-g4">
           <Group title="This round" tag={chain}>
-            <Fx n="Pot · USD" v={live ? usd(live.pot, 2) : <Dash />} />
+            {/* Every `Fx` value below lives in a 1fr grid column, not a headline — compact, unlike
+                the hero above it that repeats this same pot. */}
+            <Fx n="Pot · USD" v={live ? usdCompact(live.pot) : <Dash />} />
             <Fx n="Fighters" v={live ? `${fighters}` : <Dash />} />
             <Fx n="Phase" v={live ? live.phase.toUpperCase() : <Dash />} />
             <Fx
@@ -205,22 +213,25 @@ export function DashboardView() {
                 )
               }
             />
-            <Fx n="Pot · USD" v={last ? usd(last.pot, 2) : <Dash />} />
+            <Fx n="Pot · USD" v={last ? usdCompact(last.pot) : <Dash />} />
             <Fx n="Fighters" v={last ? `${last.fighterCount}` : <Dash />} />
           </Group>
 
+          {/* House float grows from top-ups with no ceiling — a browser that has hit "+ $100" a
+              few hundred times is not hypothetical, it's the fastest way to test the referral band
+              below. Compact. */}
           <Group title="House float" tag="sim">
             <Fx
               n={`${tokA.name} · USD`}
-              v={sim.ledger.balances.ansem > 0 ? usd(usdToUnits(sim.ledger.balances.ansem)) : <Dash />}
+              v={sim.ledger.balances.ansem > 0 ? usdCompact(usdToUnits(sim.ledger.balances.ansem)) : <Dash />}
             />
             <Fx
               n={`${tokB.name} · USD`}
-              v={sim.ledger.balances.uwu > 0 ? usd(usdToUnits(sim.ledger.balances.uwu)) : <Dash />}
+              v={sim.ledger.balances.uwu > 0 ? usdCompact(usdToUnits(sim.ledger.balances.uwu)) : <Dash />}
             />
             <Fx
               n="Deposited all-time · USD"
-              v={sim.ledger.deposited > 0 ? usd(usdToUnits(sim.ledger.deposited)) : <Dash />}
+              v={sim.ledger.deposited > 0 ? usdCompact(usdToUnits(sim.ledger.deposited)) : <Dash />}
             />
             <Fx n="Custodied on chain" v={<Dash />} note="the program holds no tokens" />
           </Group>
@@ -247,6 +258,9 @@ export function DashboardView() {
         lede={`Every all-time figure below is the ${you.name} row of the all-time leaderboard, not a second calculation — the two can never disagree.`}
         tools={<span className="u">{you.short}</span>}
       >
+        {/* The whole of 02-2 is `Fx` tiles in a 1fr grid, same as 02-1 — every money figure below
+            compacts, including the all-time ones: a wallet's lifetime staked/returned on the
+            live chain path has no cap the way a single round's stake does. */}
         {mine === null && inRing === null ? (
           <Empty>
             {history.loading
@@ -260,7 +274,7 @@ export function DashboardView() {
                 n="Net P/L · USD"
                 v={
                   mine ? (
-                    <span className={mine.pnl >= 0n ? "pos" : "neg"}>{usdSigned(mine.pnl)}</span>
+                    <span className={mine.pnl >= 0n ? "pos" : "neg"}>{usdCompactSigned(mine.pnl)}</span>
                   ) : (
                     <Dash />
                   )
@@ -280,8 +294,8 @@ export function DashboardView() {
             </Group>
 
             <Group title="Flow" tag={chain}>
-              <Fx n="Staked all-time · USD" v={mine ? usd(mine.staked) : <Dash />} />
-              <Fx n="Returned all-time · USD" v={mine ? usd(mine.returned) : <Dash />} />
+              <Fx n="Staked all-time · USD" v={mine ? usdCompact(mine.staked) : <Dash />} />
+              <Fx n="Returned all-time · USD" v={mine ? usdCompact(mine.returned) : <Dash />} />
               <Fx
                 n="Return"
                 v={
@@ -295,7 +309,7 @@ export function DashboardView() {
               />
               <Fx
                 n="Best round · USD"
-                v={mine && mine.best > 0n ? <span className="pos">{usdSigned(mine.best)}</span> : <Dash />}
+                v={mine && mine.best > 0n ? <span className="pos">{usdCompactSigned(mine.best)}</span> : <Dash />}
               />
             </Group>
 
@@ -313,18 +327,18 @@ export function DashboardView() {
                   )
                 }
               />
-              <Fx n="Deployed this round · USD" v={inRing ? usd(inRing.stake, 2) : <Dash />} />
-              <Fx n="Still fighting · USD" v={inRing ? usd(inRing.hp, 2) : <Dash />} />
+              <Fx n="Deployed this round · USD" v={inRing ? usdCompact(inRing.stake) : <Dash />} />
+              <Fx n="Still fighting · USD" v={inRing ? usdCompact(inRing.hp) : <Dash />} />
               <Fx
                 n="Raided this round · USD"
-                v={inRing && inRing.banked > 0n ? usd(inRing.banked, 2) : <Dash />}
+                v={inRing && inRing.banked > 0n ? usdCompact(inRing.banked) : <Dash />}
               />
             </Group>
 
             <Group title="This round's P/L" tag={chain}>
               <Fx
                 n="Worth now · USD"
-                v={inRing ? usd(inRing.hp + inRing.banked, 2) : <Dash />}
+                v={inRing ? usdCompact(inRing.hp + inRing.banked) : <Dash />}
                 note="what is still fighting plus what has been raided"
               />
               <Fx
@@ -350,9 +364,12 @@ export function DashboardView() {
       >
         <div className="two" style={{ alignItems: "start" }}>
           <div>
+            {/* All-time sums over the whole round log — the one figure on this half of the screen
+                with no per-round cap to bound it. Compact throughout, including the legend under
+                the split bar. */}
             <div className="line" style={{ paddingBottom: 8 }}>
               <span className="u u--ink">Deployed all-time · by side</span>
-              <span className="push u">{usd(deployTotal)} total</span>
+              <span className="push u">{usdCompact(deployTotal)} total</span>
             </div>
             {deployTotal > 0n ? (
               <>
@@ -366,10 +383,10 @@ export function DashboardView() {
                 </div>
                 <div className="sc-splitleg">
                   <span className="u">
-                    <span className="u--ink">{usd(log.stakedA)}</span> · {pctA.toFixed(0)}%
+                    <span className="u--ink">{usdCompact(log.stakedA)}</span> · {pctA.toFixed(0)}%
                   </span>
                   <span className="u">
-                    <span className="u--ink">{usd(log.stakedB)}</span> · {(100 - pctA).toFixed(0)}%
+                    <span className="u--ink">{usdCompact(log.stakedB)}</span> · {(100 - pctA).toFixed(0)}%
                   </span>
                 </div>
               </>
@@ -379,13 +396,13 @@ export function DashboardView() {
 
             <div className="sc-g2" style={{ marginTop: 26 }}>
               <Group title={`Taken by ${tokA.name}`} tag={chain}>
-                <Fx n="All-time · USD" v={log.takenA > 0n ? usd(log.takenA) : <Dash />} />
+                <Fx n="All-time · USD" v={log.takenA > 0n ? usdCompact(log.takenA) : <Dash />} />
                 {/* With nothing settled there is no win record to report — "0 of 0" would be a
                     claim about a season that has not started. */}
                 <Fx n="Rounds won" v={log.settled > 0 ? `${log.winsA} of ${log.settled}` : <Dash />} />
               </Group>
               <Group title={`Taken by ${tokB.name}`} tag={chain}>
-                <Fx n="All-time · USD" v={log.takenB > 0n ? usd(log.takenB) : <Dash />} />
+                <Fx n="All-time · USD" v={log.takenB > 0n ? usdCompact(log.takenB) : <Dash />} />
                 <Fx n="Rounds won" v={log.settled > 0 ? `${log.winsB} of ${log.settled}` : <Dash />} />
               </Group>
             </div>
@@ -406,7 +423,7 @@ export function DashboardView() {
               <Group title="Early-exit take" tag={chain}>
                 <Fx
                   n="All-time · USD"
-                  v={penaltyTake > 0n ? usd(penaltyTake) : <Dash />}
+                  v={penaltyTake > 0n ? usdCompact(penaltyTake) : <Dash />}
                   note="what the house took from mid-fight extracts, across every logged round"
                 />
                 <Fx n="At the opening bell" v={bpsPct(Number(EXTRACT_PENALTY_START_BPS))} />
@@ -416,19 +433,22 @@ export function DashboardView() {
                   note="decays to nothing as a fight runs, so a late exit pays nothing"
                 />
               </Group>
+              {/* Treasury accrues at FEE_BPS on every simulated deploy with no reset besides the
+                  ledger's own — same unbounded-growth shape as the house float above, so it
+                  compacts for the same reason. */}
               <Group title="Treasury" tag="sim">
                 <Fx
                   n={`${tokA.name} · USD`}
-                  v={sim.ledger.treasury.ansem > 0 ? usd(usdToUnits(sim.ledger.treasury.ansem)) : <Dash />}
+                  v={sim.ledger.treasury.ansem > 0 ? usdCompact(usdToUnits(sim.ledger.treasury.ansem)) : <Dash />}
                 />
                 <Fx
                   n={`${tokB.name} · USD`}
-                  v={sim.ledger.treasury.uwu > 0 ? usd(usdToUnits(sim.ledger.treasury.uwu)) : <Dash />}
+                  v={sim.ledger.treasury.uwu > 0 ? usdCompact(usdToUnits(sim.ledger.treasury.uwu)) : <Dash />}
                 />
                 <Fx n="Fee taken on deploy" v={`${(FEE_BPS / 100).toFixed(2)}%`} />
                 <Fx
                   n="Total taken · USD"
-                  v={treasury > 0 ? usd(usdToUnits(treasury)) : <Dash />}
+                  v={treasury > 0 ? usdCompact(usdToUnits(treasury)) : <Dash />}
                   note="simulated ledger, this browser only"
                 />
               </Group>
@@ -445,12 +465,12 @@ export function DashboardView() {
             </div>
             <div className="sc-g2" style={{ marginTop: 26 }}>
               <Group title="Volume" tag={chain}>
-                <Fx n="Pot, all rounds · USD" v={log.potAll > 0n ? usd(log.potAll) : <Dash />} />
+                <Fx n="Pot, all rounds · USD" v={log.potAll > 0n ? usdCompact(log.potAll) : <Dash />} />
                 <Fx
                   n="Average pot · USD"
                   v={
                     history.rounds.length > 0 ? (
-                      usd(log.potAll / BigInt(history.rounds.length))
+                      usdCompact(log.potAll / BigInt(history.rounds.length))
                     ) : (
                       <Dash />
                     )
@@ -458,12 +478,12 @@ export function DashboardView() {
                 />
               </Group>
               <Group title="On the table now" tag={chain}>
-                <Fx n="Pot · USD" v={live ? usd(live.pot, 2) : <Dash />} />
+                <Fx n="Pot · USD" v={live ? usdCompact(live.pot) : <Dash />} />
                 <Fx
                   n="Value in play · USD"
                   v={
                     live && live.fighters.length
-                      ? usd(live.fighters.reduce((s, f) => s + worth(f), 0n), 2)
+                      ? usdCompact(live.fighters.reduce((s, f) => s + worth(f), 0n))
                       : <Dash />
                   }
                   note="stakes plus everything raided so far"
@@ -504,10 +524,11 @@ function Group({
 }
 
 /** A signed change. Exactly zero gets neither a sign nor a colour: "+$0.00" in green reads as a
- *  gain, and nothing has happened yet. */
+ *  gain, and nothing has happened yet — that rule is kept exactly, only the formatter under it is
+ *  now the compact one, since every caller of `Delta` sits inside a 1fr `Fx` grid tile. */
 function Delta({ units }: { units: bigint }) {
-  if (units === 0n) return <span className="dim">{usd(0n, 2)}</span>;
-  return <span className={units > 0n ? "pos" : "neg"}>{usdSigned(units, 2)}</span>;
+  if (units === 0n) return <span className="dim">{usdCompact(0n)}</span>;
+  return <span className={units > 0n ? "pos" : "neg"}>{usdCompactSigned(units)}</span>;
 }
 
 function Fx({ n, v, note }: { n: string; v: ReactNode; note?: string }) {

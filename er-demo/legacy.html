@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Paints the browser chrome and the pre-hydration canvas the page's own near-black, so a
+         reload doesn't flash a white document before React mounts. `color-scheme` here (as well as
+         in index.css) is what stops the UA drawing a white background for that first frame. -->
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0a0b0f" />
+    <title>bulls-arena (legacy) — Ephemeral Rollup demo (devnet)</title>
+  </head>
+  <body>
+    <!-- THE ORIGINAL APP, MOVED ASIDE — this file was `index.html` until v2 took `/`.
+         Not deleted, and deliberately so: it is still the app `src/App.tsx`, `src/App.css`,
+         `src/index.css` and `src/ui/**` build, it still exercises every chain path, and it is being
+         worked on in parallel. Retiring it is a separate decision from moving the front door, and
+         doing both at once would have meant deleting somebody's open work to change a URL.
+         The v2 page is at `/` (and `/arena.html`, kept as an alias for links already shared). -->
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

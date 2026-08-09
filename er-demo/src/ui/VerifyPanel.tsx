@@ -278,6 +278,20 @@ export function VerifyPanel({ round }: VerifyPanelProps) {
             {result.totalValueOnChain.toString()} held + {result.penaltiesCollectedOnChain.toString()}{" "}
             penalties = pot {result.potOnChain.toString()}
           </div>
+          {/* The fee, on its own line and only when there is one.
+              NOT folded into the line above, deliberately. That line is the identity being CHECKED,
+              and the fee is not part of it — it never entered the ring, so it cancels (see
+              verifyRound.ts's header). Adding it there would put an unchecked number inside a
+              sentence a viewer reads as verified, which is the one thing this panel must not do.
+              It is worth its own line because `pot` is the sum of NET stakes: without it, the number
+              labelled "pot" is quietly less than what players were charged, and the house's take
+              looks like the penalty alone when the penalty is only half of it. */}
+          {result.feesCollectedOnChain > 0n ? (
+            <div className="stat__sub">
+              + {result.feesCollectedOnChain.toString()} entry fee (not in the pot) = gross{" "}
+              {result.grossDepositsOnChain.toString()}, house took {result.houseTookOnChain.toString()}
+            </div>
+          ) : null}
         </div>
       </div>
 

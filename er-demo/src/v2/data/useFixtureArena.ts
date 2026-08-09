@@ -125,6 +125,13 @@ export function useFixtureArena({ active, push, recordDeploy }: FixtureArenaPara
       // identity `sum(hp + banked) === pot` still closes. Inventing a house take to make the panel
       // look busier would be fabricating the one figure this section exists to let a reader check.
       penaltiesCollectedOnChain: 0n,
+      // Likewise zero, and likewise truthfully: the fixture's stakes are handed to the roster
+      // directly, so no `enter()` has charged a fee and these stakes are already the gross. That
+      // makes `grossDeposits` equal to `pot` and the house's take equal to nothing, which is the
+      // honest state of a round nobody paid to be in — not a placeholder waiting to be filled.
+      feesCollectedOnChain: 0n,
+      houseTookOnChain: 0n,
+      grossDepositsOnChain: live.pot,
       conservationHoldsOnChain: true,
     });
   }, [live, push]);

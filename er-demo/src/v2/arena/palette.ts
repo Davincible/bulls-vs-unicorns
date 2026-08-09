@@ -18,16 +18,18 @@ export interface ArenaPalette {
   ink4: string;
   /** Indexed by `Side` — `--a` / `--b`, the only colour on the page. */
   side: readonly [string, string];
-  /** The survey lattice. Deliberately LIGHTER than `--rule` (#e4e4e4): a rule is a divider drawn a
+  /** `--grid` — the survey lattice. Deliberately LIGHTER than `--rule`: a rule is a divider drawn a
    *  handful of times per screen, this is a full-field grid, and at --rule's weight a whole page of
    *  it reads as a table someone forgot to fill in rather than as graph paper under the instrument. */
   grid: string;
-  /** The registration crosses sitting on every third lattice intersection. Darker than the grid so
-   *  they read as marks ON it, not as more of it — and the exact grey base.css's own `.marks`
-   *  pattern uses, so the field's survey marks and the page's are the same mark. */
-  tick: string;
-  /** The hairline "origin ring" at a fighter's starting stake — the ghost of the size they entered
-   *  at, so a shrunken fighter reads as *diminished* rather than merely small. */
+  /** `--mark` — the registration crosses on every third lattice intersection. Darker than the grid so
+   *  they read as marks ON it, not as more of it; the same token `.hero-marks` draws the page's own
+   *  survey crosses with, so the field's marks and the page's are literally the same mark.
+   *
+   *  Named `mark` and not `tick` because base.css's `--tick` is already the 120ms motion duration. */
+  mark: string;
+  /** `--ghost` — the hairline "origin ring" at a fighter's starting stake, the ghost of the size they
+   *  entered at, so a shrunken fighter reads as *diminished* rather than merely small. */
   ghost: string;
 }
 
@@ -41,7 +43,7 @@ const FALLBACK: ArenaPalette = {
   // note there). These literals are only ever used when the stylesheet genuinely hasn't applied.
   side: ["#2b8c39", "#8f09bf"],
   grid: "#f0f0f0",
-  tick: "#d8d8d8",
+  mark: "#d8d8d8",
   ghost: "#e2e2e2",
 };
 
@@ -61,11 +63,14 @@ export function readPalette(el: Element): ArenaPalette {
     ink3: readVar(style, "--ink-3", FALLBACK.ink3),
     ink4: readVar(style, "--ink-4", FALLBACK.ink4),
     side: [readVar(style, "--a", FALLBACK.side[0]), readVar(style, "--b", FALLBACK.side[1])],
-    // Not tokens in base.css — they exist only inside the field, and adding three near-white values
-    // to the global palette for one consumer would be worse than keeping them here with a reason.
-    grid: FALLBACK.grid,
-    tick: FALLBACK.tick,
-    ghost: FALLBACK.ghost,
+    // These three USED to be literals here, on the argument that three near-white values with one
+    // consumer did not earn a place in the global palette. That argument held exactly as long as the
+    // page was always white. The sheet is a variable now (`styles/paper.ts`), and a field drawing a
+    // white-derived #f0f0f0 lattice across a lime page is not a faint grid — it is a white smear.
+    // They are `--grid`/`--mark`/`--ghost` in base.css and read like everything else above.
+    grid: readVar(style, "--grid", FALLBACK.grid),
+    mark: readVar(style, "--mark", FALLBACK.mark),
+    ghost: readVar(style, "--ghost", FALLBACK.ghost),
   };
 }
 
