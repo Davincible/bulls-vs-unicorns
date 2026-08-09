@@ -28,23 +28,28 @@ import { MAX_STEPS } from "./render/gameLoop.ts";
 import { runFullFight, type HitEvent, type HitEventEntry } from "./sim/hitEvents.ts";
 import "./App.css";
 
-// The round `scripts/admin-open-round.mjs` most recently opened and delegated on devnet (checked
-// against the live `arena.roundCounter` during this integration pass — round #9 is PERMANENTLY STUCK
-// (Phase 5's own finding: it sat in Fight past the intended window and its resolve() now blows the CU
-// ceiling every time), so round #10 is the current default. A judge/tester overrides this per-session
-// with `?round=<n>` rather than needing to rebuild; the presenter's admin script is the source of
-// truth for what's currently open (assumption #2 in snug-floating-mitten.md — round lifecycle stays
-// out of player-facing UI).
-const DEFAULT_ROUND_NO = 10n;
+// The round `scripts/admin-open-round.mjs` most recently opened and delegated, on the CURRENT (v2)
+// program. Round numbering restarted at 1 with the v2 id — it has its own Arena PDA and its own
+// counter — so any round number from the v1 deployment (#9, #10 and friends) simply does not exist
+// here and polling one fails with "Account does not exist". That is exactly what a stale default
+// looks like from the UI, and it's why this constant has to move with the program.
+//
+// A tester overrides it per-session with `?round=<n>` rather than rebuilding; the admin script is the
+// source of truth for what's currently open (assumption #2 in snug-floating-mitten.md — round
+// lifecycle stays out of player-facing UI).
+const DEFAULT_ROUND_NO = 7n;
 
-function parseRoundNoFromUrl(): bigint {
+/** An explicit `?round=<n>` always wins — pinning a specific round (a settled one to inspect, a
+ *  stuck one to look at) is a deliberate act and must not be second-guessed. Returns null when none
+ *  is given, which is the signal to auto-discover instead. */
+function parseRoundNoFromUrl(): bigint | null {
   const raw = new URLSearchParams(window.location.search).get("round");
-  if (!raw) return DEFAULT_ROUND_NO;
+  if (!raw) return null;
   try {
     const n = BigInt(raw);
-    return n > 0n ? n : DEFAULT_ROUND_NO;
+    return n > 0n ? n : null;
   } catch {
-    return DEFAULT_ROUND_NO;
+    return null;
   }
 }
 
@@ -66,7 +71,6 @@ function App() {
   const session = useAppSessionManager(anchorWallet, baseConnection, "devnet", PROGRAM_ID);
 
   const arena = useMemo(() => arenaPda(), []);
-  const roundPda = useMemo(() => roundPdaForRoundNo(parseRoundNoFromUrl(), arena), [arena]);
 
   // `createProgram` is async (it fetches the IDL) and `wallet` from `useSigner()` is referentially
   // stable across re-renders (see useSigner.ts's own `useMemo`), so this effect fires once per
@@ -80,6 +84,33 @@ function App() {
       .catch((e: unknown) => { if (!cancelled) setProgramError(e instanceof Error ? e : new Error(String(e))); });
     return () => { cancelled = true; };
   }, [router, wallet]);
+
+  // Which round to show. A hardcoded default goes stale the moment anyone opens a new one — and it
+  // fails in a genuinely confusing way ("Account does not exist"), because a round PDA for a number
+  // that was never opened is a perfectly valid address with nothing at it. So: read the arena's own
+  // `round_counter` and follow it. The constant is only the pre-load placeholder and the fallback for
+  // when the arena itself can't be read.
+  const pinnedRoundNo = useMemo(() => parseRoundNoFromUrl(), []);
+  const [latestRoundNo, setLatestRoundNo] = useState<bigint | null>(null);
+  useEffect(() => {
+    if (pinnedRoundNo !== null || !program) return;   // an explicit ?round= wins; don't override it
+    let cancelled = false;
+    const read = async () => {
+      try {
+        const a = await program.account.arena.fetch(arena);
+        const n = BigInt(a.roundCounter.toString());
+        if (!cancelled && n > 0n) setLatestRoundNo(n);
+      } catch { /* leave the fallback in place — the round poll surfaces any real problem */ }
+    };
+    void read();
+    // Re-check periodically so a presenter opening the next round between demos is picked up without
+    // anyone reloading the page.
+    const id = setInterval(() => void read(), 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [program, arena, pinnedRoundNo]);
+
+  const roundNo = pinnedRoundNo ?? latestRoundNo ?? DEFAULT_ROUND_NO;
+  const roundPda = useMemo(() => roundPdaForRoundNo(roundNo, arena), [roundNo, arena]);
 
   const { round, error: roundError, loading: roundLoading } = useRound(program, roundPda);
 
