@@ -96,8 +96,9 @@ export function ExtractButton({ program, router, keypair, round, roundPda, onExt
       </p>
       {fighterHp !== null && eligible && (
         <p>
-          extracting now banks <strong>{fighterHp.toString()}</strong> hp and takes you out of the
-          fight.
+          extracting now banks <strong>{fighterHp.toString()}</strong> hp. You stop being a target
+          for the rest of this fight — you're still in the round, your banked value still counts
+          when it settles, you just stop risking more of it.
         </p>
       )}
       <button type="button" disabled={!canClick} onClick={() => void handleClick()}>

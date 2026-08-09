@@ -1,4 +1,4 @@
-# Bulls ⚔ Unicorns — the fight you can leave
+# Bulls ⚔ Unicorns — the fight where you decide when to lock it in
 
 A real-money PvP memecoin arena on Solana, with the round itself living inside a MagicBlock
 Ephemeral Rollup.
@@ -15,10 +15,14 @@ examples had done before.
 
 **What it bought us.** We benchmarked the fight on devnet before designing around it: 187 CU/step,
 ~7,300 steps in one transaction — meaning a whole 40-second fight fits in a single tx and the rollup
-was *optional*. So we changed the game instead of the integration. `extract()` lets a player bank
-their holdings and walk out of the ring **while the fight is still running**, so the outcome depends
-on when a human presses a button, not only on the seed. At 400ms slots, "extract now" is a promise
-the chain can't keep. At 10ms it's a real decision. Remove the ER and the mechanic doesn't exist.
+was *optional*. So we changed the game instead of the integration. Once you've deployed into a round
+you're committed — no refund, no cancelling, the round resolves regardless. `extract()` is a
+mid-fight risk decision inside that commitment: bank whatever value your fighter is currently
+holding, and in exchange stop being a target for the rest of the fight. You don't leave the round —
+your locked-in value still counts toward your side when it settles — you just stop pressing your
+luck against more hash-paired exchanges. That only matters as a REAL decision if it happens live: at
+400ms slots, "extract now" is a promise the chain can't keep. At 10ms it's real. Remove the ER and
+the mechanic doesn't exist.
 
 **What was achieved.** The full lifecycle runs on real devnet, proven twice with signatures: open →
 delegate → enter ×2 (two signing wallets) → VRF draw → mid-fight extract → resolve → close_round →
