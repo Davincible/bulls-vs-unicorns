@@ -34,8 +34,9 @@ have hit them at runtime instead.
    attack to whoever holds authority, which is exactly the actor "provably fair" is supposed to not
    require trusting. **Fixed:** `steps` is no longer an argument. It's derived from real elapsed
    on-chain time since `Phase::Fight` began (new `Round.fight_started_at`, stamped in
-   `callback_seed`), capped at `MAX_STEPS` (7,000, under ER-030's measured ~7,293-step ceiling) with
-   a `MIN_FIGHT_SECONDS` floor (5s) so `extract()` always gets a real window before anyone can force
+   `callback_seed`), capped at `MAX_STEPS` (originally 7,000, under ER-030's measured ~7,293-step
+   ceiling — **that number turned out wrong in practice, see task #15 below**) with a
+   `MIN_FIGHT_SECONDS` floor (5s) so `extract()` always gets a real window before anyone can force
    early settlement. `resolve` stays permissionless — there's nothing left to choose.
 4. **`devnet-guard.ts` only trimmed string ENDS.** An embedded tab/CR/LF (`api.mai\tnnet-beta...`)
    defeated the `MAINNET` regex literal match while still passing `SAFE`, yet the real URL parser
@@ -55,6 +56,56 @@ CU-measurement probe doesn't ship in the deployed binary by default; stale `BadS
 `NDV9uRtu8cC5mMCoF26FAjiwuFYFprnraQ5afkhTgWcV4od2JGZ9gYmcMqRRRD7rjiw57NGdCjC7LntevGjLznS`. The IDL
 (`programs/bulls-arena/idl/`) was regenerated to match — `resolve` and `close_round` now take no
 arguments, `delegate_round`'s signer account is named `authority` not `payer`.
+
+---
+
+### Task #15 · `MAX_STEPS=7,000` had zero real margin — found by Phase 5, fixed and reverified (2026-08-09)
+
+Phase 5's verification work left a round open past the ~40s design window; `resolve()` at
+steps=7,000 failed with "1,399,850 of 1,399,850 CUs consumed, exceeded CUs meter" (devnet round #9,
+now permanently stuck — left as-is, historical evidence). Root cause: ER-030's 187.4 CU/step was
+measured against an OLDER `resolve`, and `bench_fight` (the measurement tool itself) had quietly
+drifted from `run_fight` by the time this session's security fixes landed — one cheap check standing
+in for three real ones, missing a 32-byte Pubkey compare `run_fight` always pays. Worse: since
+`STEPS_PER_SECOND(175) × 40s = 7,000 = MAX_STEPS` exactly, this wasn't an edge case — *any* round
+resolved at or after its normal ~40s design duration already called `resolve` at steps=7,000, so the
+bug was latent in the common path, not just a "left it open too long" outlier.
+
+**Fix:** `bench_fight` now calls `run_fight` directly (same function `resolve` calls — cannot drift
+again). Re-measured on a local `solana-test-validator` (CU accounting is deterministic on bytecode +
+inputs, not cluster-specific, so this is as real as devnet without spending devnet SOL): the loop
+alone crosses 1.4M CU between 6,800 steps (1,389,142 CU) and 6,900 (over) — confirming the reported
+failure was real. New `MAX_STEPS = 4,000` (864,996 CU for the loop alone, 61.8% of the ceiling,
+535,004 CU / 38.2% headroom for `resolve`'s uncounted overhead — account exit/serialise, guards,
+event, commit CPI — none of which is precisely measured; see the constant's own comment in `lib.rs`
+for the full reasoning). Cap now reached at ~22.9s instead of 40s; does not shrink `extract()`'s real
+window, which is bounded by when `resolve` is actually called, not by `MAX_STEPS`.
+
+**Redeployed** (same program ID, upgrade): slot 482314306, sig
+`2cEJ5TzFhYdiYHK4eqhAKW42cFCTFZLaMMAXRtbPnMswJCBbJBnspnsyyRKsqwGKD1UYAzJB8RjEdU8jg8QTeyAP`.
+
+**Infra finding, worth knowing for any future redeploy:** the default ER validator this project's
+scripts land on (`devnet-as.magicblock.app`) was still running the PRE-fix bytecode ~3 minutes after
+the upgrade landed and confirmed on the base layer — resolve() there reproduced the *exact* original
+failure ("1,399,850 of 1,399,850") despite the new `MAX_STEPS`. MagicBlock's ephemeral validators
+clone a program's executable bytecode into their own local `LoaderV4`-owned account on first use and
+don't appear to re-clone it on a base-layer upgrade — plausibly because a `BPFLoaderUpgradeable`
+program's own `Program` account never changes on upgrade (only its separate `ProgramData` account
+does), so a naive subscription on the invoked program id would never observe the change. Confirmed by
+reading `unitsConsumed`/logs directly from a `simulateTransaction` against the ER endpoint.
+**Workaround that worked:** `delegate_round`'s `DelegateConfig.validator` (passed via
+`remaining_accounts[0]`) can pin a *specific* ER validator instead of taking the router's default —
+pinning `devnet-us.magicblock.app` (identity `MUS3hc9TCw4cGC12vHNoYcCGzJG1txjgQLZWVoeNHNd`) on a fresh
+round got a clean clone of the current bytecode. **Regression-verified for real** this way: round
+#13, waited 93.7s past `Fight` start (past both the old 40s and new ~23s cutoff), `resolve` succeeded
+with `tick_count=4000` (steps correctly saturated at the new cap) — sig
+`2BqJg5RvEBeVc4pmyVh3J5TFWvydTdDYB5Av72fkQhG4TXNm36voubemxNLbnEHkgjLmD6jcBca6ewUyQUZPnUaZ`. Round
+settled correctly (winner side 0, pot conserved). If a future session redeploys again, expect the
+*default* router-chosen validator to serve stale bytecode until its own cache turns over — pin a
+specific validator (or a fresh one) to verify a fix against the real ER, the same as here.
+
+`cargo +1.89 test` still green (`run_fight_matches_the_typescript_mirror_exactly`, `test_id`) —
+`MAX_STEPS` isn't exercised by that fixture, confirmed rather than assumed.
 
 ---
 
