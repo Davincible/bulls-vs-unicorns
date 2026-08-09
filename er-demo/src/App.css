@@ -15,6 +15,9 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 16px 20px;
+  /* VerifyPanel's table is 9 columns wide — this keeps an unusually wide table scrolling within its
+     own section rather than forcing the whole page wider than the fixed layout above accounts for. */
+  overflow-x: auto;
 }
 
 .app table {
@@ -42,7 +45,12 @@
 
 /* Integration pass — canvas prominent/large on the left, the plain-text panels (RoundPanel, Enter,
    Extract, Verify) as a narrower sidebar to the right. Fixed desktop layout only, per the plan's 80/20
-   cut ("mobile responsiveness" is explicitly not in scope) — a judge's laptop, not a phone. */
+   cut ("mobile responsiveness" is explicitly not in scope) — a judge's laptop, not a phone. Total
+   layout width is deterministic (32 + 960 + 24 + 480 + 32 = 1528px) rather than left to flex-grow, so
+   it renders identically rather than depending on exactly how wide the window happens to be — matches
+   index.css's own `#root { width: 1560px }` (also updated this pass — it was the actual ancestor
+   constraining this layout, not anything in this file; see that file's comment). Verified against a
+   real 1600x1000 browser viewport during this integration pass, with no page-level clipping. */
 .app-layout {
   display: flex;
   flex-direction: row;
@@ -65,14 +73,31 @@
   color: var(--muted, #888);
   text-align: center;
   padding: 0 48px;
+  box-sizing: border-box;
 }
 
 .app-sidebar {
-  flex: 1 1 360px;
-  min-width: 340px;
+  /* 480px comfortably fits RoundPanel's 6-column table without its own horizontal scroll (458px
+     measured in a real browser); VerifyPanel's denser 9-column comparison table still scrolls within
+     its own section at this width, which is the right outcome for that one, wider table, not a flaw —
+     see this file's `overflow-x: auto` rule above. */
+  flex: 0 0 480px;
+  width: 480px;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+.app-sidebar section,
+.app-sidebar form {
+  box-sizing: border-box;
+  /* Flex items default to `min-width: auto`, which lets intrinsic content (VerifyPanel's 9-column
+     table, in particular) push them wider than the sidebar's fixed 440px rather than respecting it —
+     found by an actual screenshot at a real 1600px viewport still showing clipped content even after
+     the fixed-width sidebar fix above, not by reading the CSS. This is what makes `overflow-x: auto`
+     above actually take effect as a contained scrollbar instead of the whole section just growing. */
+  min-width: 0;
 }
 
 /* ExtractButton.tsx / VerifyPanel.tsx (Phase 5) — additive only, doesn't touch anything above.
