@@ -261,20 +261,68 @@ round) — see Tier 6 below. Round-level VRF is what's shipped.
 
 ---
 
-## Tier 4 — Client · **PENDING — not started**
+## Tier 4 — Client · **ER-040 core lifecycle DONE (2026-08-09) · ER-041 (live engine wiring) still open**
 
-### ER-040 · Engine as ER client · **PENDING**
-`@magicblock-labs/ephemeral-rollups-sdk@0.16.2`, router `https://devnet-router.magicblock.app`.
-Routing follows account ownership, not configuration. Confirmed not started: no reference to the
-router or the SDK anywhere in `engine/src/server.ts` as of this doc.
-**Accept:** the engine drives a round through the ER instead of mutating JS objects.
-**Note:** given ER-031's architecture change, what the engine actually needs to drive is `enter` +
-real-time `extract` handling + a single `resolve` call timed to end the round — not a tick loop.
-Scope this against the current program, not the original tick-based plan.
+### ER-040 · Client through the Magic Router · **DONE — proven twice on real devnet**
+`engine/scripts/er-client-canary.mjs`. The full lifecycle — init_arena → open_round →
+delegate_round → enter ×2 (two real signing wallets) → close_lobby_and_draw → **VRF Drawing→Fight**
+→ extract (mid-fight) → resolve → close_round → verified back on the base layer — run twice for
+real, both clean. This is the first successful exercise of the VRF round-trip end to end; ER-060's
+own changelog notes it had never completed before the accounts_metas fix earlier this session.
 
-### ER-041 · Settlement reads the committed account · **PENDING**
-**Accept:** the ledger credits from committed on-chain state; `GetCommitmentSignature` replaces
-`markAnchored`.
+Run 1 (round #5): `open_round` `66aih9Y…kWjZCa9` · `delegate_round` `2c5wjSX…gCaLdqjU` · `enter` A
+`3Lz1T9a…SMgqicn` · `enter` B `2xeTXdM…9od9ZSHg9` · `close_lobby_and_draw` `3Btk4t7…raFv3jv` ·
+`extract` A `3E8Tho1…fsPxwhf` · `resolve` `u6vpUNA…VMLFuE` · `close_round` `54GJ8WQ…U33vTz6YZ`.
+Final: `phase=Settled, winner=side 0, pot=1,746,500, tick_count=1225`. Player A (extracted before any
+hits landed, since hits only compute inside `resolve()`): `hp=0 banked=998,000 dead=1` — exactly net
+stake, zero gain/loss, matching the "extracting locks in current value" design. Player B (untouched,
+since A's `dead=1` skipped every one of the 1,225 iterations with only 2 fighters in the round):
+`hp=748,500 banked=0 dead=0`. `998,000 + 748,500 = 1,746,500 = pot` — conserved exactly. Run 2
+(round #6) reproduced identically in shape.
+
+**Five real findings from actually running this, not from reading docs:**
+1. **Anchor camelCases the IDL at load time.** `new Program(idl, provider)` runs the raw snake_case
+   IDL through `convertIdlToCamelCase` before building the client — every instruction, account key,
+   and decoded field comes back camelCase (`open_round`→`openRound`, `fight_started_at`→
+   `fightStartedAt`). Not documented anywhere in the IDL JSON itself.
+2. **`AnchorProvider.rpc()`/`.sendAndConfirm()` don't route through `ConnectionMagicRouter` at all**
+   — they fetch a blockhash via the connection's plain `getLatestBlockhash`, bypassing the router's
+   overridden account-aware `sendTransaction`/`getLatestBlockhashForTransaction`. Every `.rpc()` call
+   against the router failed with "Blockhash not found." Fix: build with `.transaction()`, drive the
+   send path manually.
+3. **The generic router refuses `close_lobby_and_draw` outright** — its writable accounts mix `round`
+   (ER-delegated) with `oracle_queue` (the VRF singleton, whose delegation record names the System
+   Program as authority), which the router can't reconcile and rejects as "accounts delegated to
+   different ER nodes." Fix: resolve the round's specific validator via
+   `router.getDelegationStatus(round).fqdn` and send that one instruction straight there, bypassing
+   the generic router.
+4. **`resolve()` needs an explicit compute budget.** Up to 7,000 steps at ~187 CU/step plus
+   settlement and the commit CPI comfortably exceeds Solana's ~200,000 CU default. Needs
+   `ComputeBudgetProgram.setComputeUnitLimit({units: 1_400_000})` as a preInstruction — the 1.4M
+   figure the program's own comments already assume, but nothing requests automatically.
+5. **Public devnet RPC read-after-write lag** (~1-2s) between the node that processed a transaction
+   and the node a later read hits. Poll account state after writes rather than trusting a single read
+   immediately after confirmation.
+
+Program itself needed ZERO changes — every result above matches `lib.rs`'s specified behavior
+exactly. 364/364 engine tests green before and after (one pre-existing property-test flake in
+isolation, confirmed unrelated on retry).
+
+**Accept:** the engine drives a round through the ER instead of mutating JS objects. ✅ — proven via
+a standalone script; wiring this into `server.ts`'s live round runner (replacing the in-memory
+lobby/battle loop with real on-chain calls, for real players) is ER-041, still open.
+
+### ER-041 · Wire the live engine to the ER (not just a proof script) · **PENDING**
+`er-client-canary.mjs` proves the mechanics work; nothing in `engine/src/server.ts`/`round.ts` calls
+any of this yet. Turning the canary's sequence into the actual round runner means: replacing
+`roundN.ts`'s in-memory phase machine with calls through this same client, deciding who calls
+`resolve()` and when (the canary waits a fixed buffer past `MIN_FIGHT_SECONDS`; the live engine needs
+a real policy — likely "resolve at the same ~40s the off-chain game already uses"), wiring
+`extract`'s player-signed transaction into the browser (a NEW client capability — today `web/
+index.html` sends websocket messages, not signed on-chain transactions, for the deploy action), and
+crediting the off-chain ledger from the committed `Round` account rather than in-memory state.
+**Accept:** a live round, played by a real connected wallet (not the canary's throwaway keypairs),
+settles through the ER with the ledger crediting from committed on-chain state.
 
 ---
 
@@ -364,8 +412,8 @@ Not attempted this session; parked with this research so a future pass starts gr
 
 | ID | Blocked on | Needs |
 |---|---|---|
-| ER-040/041 | Not started | engine integration work, scoped against the current `enter`+`extract`+`resolve` shape, not the original tick-based plan |
-| Per-exchange VRF, eATA | Design decisions, not blockers | explicit sign-off before implementation |
+| ER-041 | Not started | wire the proven client sequence (`er-client-canary.mjs`) into `server.ts`'s live round runner and the browser's signing flow |
+| Per-exchange VRF, eATA, Session Keys | Design decisions, not blockers | explicit sign-off before implementation — see Tier 6 |
 
 Nothing else is blocked as of 2026-08-09 — the toolchain, the compile, the payer funding, and the
 redeploy all resolved this session.
