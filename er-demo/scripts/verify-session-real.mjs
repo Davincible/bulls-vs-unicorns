@@ -173,6 +173,15 @@ const warn = (s) => console.log(`  ${c.y}!${c.x} ${s}`);
 const heading = (s) => console.log(`\n${c.b}${s}${c.x}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/// The program's own log lines, as one string. Every error-identity check in this file goes through
+/// here rather than through `instanceof anchor.AnchorError`: `sendTx` uses a plain web3.js
+/// `Connection`, so Anchor's `translateError` never runs and the errors are always
+/// `SendTransactionError`. The logs are the only place the error's NAME survives.
+const logsOf = (e) => {
+  const logs = e?.logs ?? e?.transactionLogs ?? [];
+  return Array.isArray(logs) ? logs.join("\n") : String(logs);
+};
+
 function describeError(e) {
   if (e instanceof anchor.AnchorError) {
     return `${e.error.errorCode.code} (${e.error.errorCode.number}): ${e.error.errorMessage}`;
@@ -238,10 +247,7 @@ async function expectInvalidToken(sendAttempt, label) {
   try {
     await sendAttempt();
   } catch (e) {
-    const logs = e?.logs ?? e?.transactionLogs ?? [];
-    const logText = Array.isArray(logs) ? logs.join("\n") : String(logs);
-    const anchorName = e instanceof anchor.AnchorError ? e.error.errorCode.code : null;
-    const proof = /Error Code: InvalidToken\b/.test(logText) || anchorName === "InvalidToken";
+    const proof = /Error Code: InvalidToken\b/.test(logsOf(e));
     const desc = describeError(e);
     if (proof) {
       ok(`${label} — REJECTED by the session check (Error Code: InvalidToken, 6001):\n      ${desc}`);
