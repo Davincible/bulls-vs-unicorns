@@ -10,6 +10,84 @@ documentation or capability), **[BUG]**, or **[FEATURE REQUEST]**.
 
 ---
 
+## 2026-08-10 — A delegated account reads as VALID and WRONG from the base layer, with no error
+
+**[BUG, or at minimum the sharpest undocumented edge we have hit]** While an account is delegated to
+an ER, the base-layer copy still decodes cleanly under the owning program's own IDL and returns
+**stale field values**. Not an error, not a rejection, not a discriminator mismatch — a successful
+`fetch()` returning numbers that are simply not true.
+
+Measured just now against our live arena, round #29, delegated and open on devnet:
+
+```
+                 owner                                          anchor fetch      pot
+BASE LAYER       DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh   DECODED OK        0
+ROUTER / ER      EpRY6fkv4RcazjYSJyk8rppeVTVMcWhCcVtTVrKkTLT4   DECODED OK        28,710,000
+```
+
+Both are 1,102 bytes. Both decode. `program.account.round.fetch(pda)` — the single most ordinary
+read in Anchor — succeeds on both and disagrees about the money by the entire pot.
+
+**Why this is not merely "you queried the wrong endpoint".** The base-layer account's owner IS the
+Delegation Program, so the information needed to reject the read is right there, and Anchor does not
+use it: it matches the discriminator, decodes, and returns. So the guard a developer would expect to
+protect them — Anchor's account-type checking — does not fire. The failure is silent by construction
+and there is nothing in the returned value that looks wrong. `pot: 0` on an open lobby is a
+completely plausible number.
+
+**What it would cost someone who did not catch it.** Any dashboard, indexer, analytics job, Solscan
+glance, or settlement check that reads through a normal RPC during a fight reports a pot of zero and
+a fighter count of zero. We only found it because we were auditing who was in a round and the house
+wallets we *knew* were seated did not appear in the base-layer bytes; reading the same PDA through
+the router showed them immediately. Anyone reconciling balances off base-layer reads would silently
+book wrong figures for the entire duration of every delegation — which for us, under hold-open, is
+essentially always.
+
+**Suggested fix, cheapest first.** (1) Document it prominently — "while delegated, base-layer reads
+are stale; route account reads through the router" belongs in the delegation quickstart, not in
+tribal knowledge. (2) Better: have the Delegation Program zero or poison the discriminator on
+delegation so a naive decode *fails loudly* instead of succeeding wrongly; a thrown error is a far
+better outcome than a plausible lie. (3) Best: a documented helper on `ConnectionMagicRouter` —
+`getAccountInfoAuthoritative(pubkey)` — that routes per-account the way transactions already do, so
+the correct thing is also the easy thing.
+
+Reproduces in ~15 lines: fetch any delegated PDA through `api.devnet.solana.com` and through
+`devnet-router.magicblock.app` with the same `anchor.Program`, and compare.
+
+---
+
+## 2026-08-10 — How long may an account stay delegated? Nothing says, and we are now betting on it
+
+**[GAP]** We could not find any statement of the maximum — or expected safe — duration for which an
+account may remain continuously delegated to an ER, nor what happens if a validator restarts,
+evicts, or is drained while holding one.
+
+This is not academic for us. Our arena burns ~0.0098 SOL per idle round cycle, ~95% of it
+unreclaimable round-PDA rent, so cycling an empty lobby on a timer is the dominant cost of running
+the thing. The fix is to open ONE lobby and hold it — delegated — until a real player arrives. That
+took idle burn from ~0.32 SOL/hour to ~0.0098 SOL/hour, a ~33x reduction, and it is only sound if a
+long-lived delegation is safe.
+
+Having no documented answer, we measured one: **3,600 seconds of continuous delegation, 24 clean
+probes, no drift or eviction observed.** We then set the backstop to the chain maximum our own
+program allows — **7 days** — which is now running in production, on the strength of an extrapolation
+from a one-hour experiment. That is not a comfortable place to be, and it is entirely because the
+question is unanswered rather than because the answer is bad.
+
+**Why it matters beyond our cost model:** an account cannot be closed while the Delegation Program
+owns it, so rent is unreclaimable for the whole delegation. If a validator dies mid-delegation, the
+undelegation path is unavailable and that account's rent is stranded until something re-establishes
+or force-undelegates it. A stated guarantee ("an account may remain delegated indefinitely; on
+validator restart, delegations are recovered by X") or a stated limit ("delegations are evicted
+after N") would let integrators size this deliberately. Right now the only honest way to choose is to
+run the experiment yourself, and the experiment takes as long as the duration you want to trust.
+
+**[FEATURE REQUEST]** Document the delegation lifetime guarantee and the validator-restart
+behaviour, and expose a way to enumerate or query the delegations a validator currently holds so an
+operator can detect a stranded one without inferring it from their own bookkeeping.
+
+---
+
 ## 2026-08-10 — Making sessions the DEFAULT signing path: four things `useSessionKeyManager` will not tell you
 
 Context for all four: we stopped treating a session key as a feature a player opts into and made it
