@@ -273,10 +273,18 @@ fn no_instruction_can_exceed_the_transaction_budget() {
     let budget = MAX_STEPS_PER_CALL as u32;
     let bell = T0 + FIGHT_TIMEOUT_SECONDS;
 
+    // ASKS FOR MORE THAN THE BUDGET ON PURPOSE. The work is the same either way — the call is clamped
+    // — but requesting exactly the budget would leave the clamp itself unexercised, and this
+    // assertion is also what tells a stale binary from a current one (see `tests/common/mod.rs`): a
+    // build carrying the old flat `MAX_STEPS` lands on a different cursor.
     let mut h = Harness::new(&fight_round(n, 0), bell);
-    let ix = h.tick(budget);
+    let ix = h.tick(budget * 2);
     let ticked = h.run(ix).unwrap_or_else(|(cu, e)| panic!("tick failed after {} CU: {}", cu, e));
-    assert_eq!(h.state().tick_count, MAX_STEPS_PER_CALL, "the tick must have run its whole budget");
+    assert_eq!(
+        h.state().tick_count, MAX_STEPS_PER_CALL,
+        "a tick asking for {} steps must be clamped to the {}-step budget and land exactly on it",
+        budget * 2, MAX_STEPS_PER_CALL,
+    );
 
     // Nothing has been ticked and the bell has rung: `resolve` runs its full budget and is still
     // short of the cursor, so it reports progress and returns.
