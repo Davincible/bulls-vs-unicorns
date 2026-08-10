@@ -16,8 +16,22 @@ export interface ArenaPalette {
   ink3: string;
   /** Dead/extracted: outline, greyed label, `OUT`. */
   ink4: string;
-  /** Indexed by `Side` — `--a` / `--b`, the only colour on the page. */
+  /** Indexed by `Side` — `--a` / `--b`, the two colours that say whose. Read this together with
+   *  `hot` below: those three are base.css's whole reserved palette and this object holds all of
+   *  them. It used to say "the only colour on the page", which was true when it was written and
+   *  stopped being true the moment `--hot` was added here. */
   side: readonly [string, string];
+  /** `--hot` — base.css's one word for loss, death and danger, and the colour `.neg` sets every
+   *  negative figure on the page in. The field spends it on exactly one mark: the damage figure of a
+   *  blow that took a fighter to zero (see `impact.ts`). Nothing else on this canvas is red.
+   *
+   *  READ, NOT HARDCODED, for precisely the reason `--a`/`--b` are. `styles/paper.ts` holds all three
+   *  in its `RESERVED` set — the values that say which side a fighter is on and whether a number is a
+   *  loss — and on a coloured sheet it deepens each one, keeping the hue exactly and giving up only
+   *  light, until it still clears the contrast it cleared on white. A literal here would be the one
+   *  value on the field a themed sheet could swallow, and the mark it would swallow is the one that
+   *  says somebody just died. */
+  hot: string;
   /** `--grid` — the survey lattice. Deliberately LIGHTER than `--rule`: a rule is a divider drawn a
    *  handful of times per screen, this is a full-field grid, and at --rule's weight a whole page of
    *  it reads as a table someone forgot to fill in rather than as graph paper under the instrument. */
@@ -39,11 +53,14 @@ const FALLBACK: ArenaPalette = {
   ink2: "#4d4d4d",
   ink3: "#767676",
   ink4: "#b5b5b5",
-  // Kept in step with base.css's `--a`/`--b`, which are the coins' own logo hues one step down — far
-  // enough for each to hold AA as text on white, since the same two tokens set `.pos`'s figures and
-  // the split bar's labels. See the note in base.css.
+  // Kept in step with base.css's `--a`/`--b`/`--hot`. The two side colours are the coins' own logo
+  // hues one step down — far enough for each to hold AA as text on white, since the same two tokens
+  // set `.pos`'s figures and the split bar's labels; `--hot` is `.neg`'s red and clears the same bar
+  // (4.51:1, 7.10:1 and 5.71:1 respectively). See the note in base.css. All three are set as TEXT on
+  // this canvas now — the damage figure — so the AA argument is load-bearing here and not inherited.
   // These literals are only ever used when the stylesheet genuinely hasn't applied.
   side: ["#278834", "#8f09bf"],
+  hot: "#c4291a",
   grid: "#f0f0f0",
   mark: "#d8d8d8",
   ghost: "#e2e2e2",
@@ -65,6 +82,7 @@ export function readPalette(el: Element): ArenaPalette {
     ink3: readVar(style, "--ink-3", FALLBACK.ink3),
     ink4: readVar(style, "--ink-4", FALLBACK.ink4),
     side: [readVar(style, "--a", FALLBACK.side[0]), readVar(style, "--b", FALLBACK.side[1])],
+    hot: readVar(style, "--hot", FALLBACK.hot),
     // These three USED to be literals here, on the argument that three near-white values with one
     // consumer did not earn a place in the global palette. That argument held exactly as long as the
     // page was always white. The sheet is a variable now (`styles/paper.ts`), and a field drawing a

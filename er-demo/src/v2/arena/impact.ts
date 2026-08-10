@@ -1,4 +1,4 @@
-// What a hit looks like. Four marks, all black, all short:
+// What a hit looks like. Four marks, three of them black, all of them short:
 //
 //   RING   a hard expanding circle at the point of impact. No glow, no bloom, no fill — an impact
 //          reads as a shockwave leaving the thing it happened to, and a filled flash would simply
@@ -12,14 +12,73 @@
 //          took the money. Drawn edge to edge, not centre to centre, so it never strikes through
 //          either circle, and it RETRACTS into the defender over its life so the force reads as
 //          arriving rather than as a wire that appeared.
-//   FIGURE the damage in mono black, rising and fading. This is a trading terminal that happens to
-//          be a game; the number IS the event.
+//   FIGURE the damage, mono, rising and fading — and set in the ATTACKER'S SIDE COLOUR, or in
+//          `--hot` when the blow finished the defender. The one coloured mark on this field, cased
+//          in paper so it survives whatever it flies over. This is a trading terminal that happens
+//          to be a game; the number IS the event.
 //
-// Nothing here is coloured and nothing here is soft. The dark-theme original spent a GlowFilter, an
-// additive blend and a fourteen-particle burst per hit; on white, at this scale, all three would be
-// noise laid over the one thing worth reading. Extremity here is bought in SPEED, WEIGHT and
-// CONTRAST — a hard ring that crosses three radii in 120ms and is gone is more violent than
-// anything that lingers.
+// Nothing here is soft, and exactly one thing here is coloured. The dark-theme original spent a
+// GlowFilter, an additive blend and a fourteen-particle burst per hit; on white, at this scale, all
+// three would be noise laid over the one thing worth reading. Extremity here is bought in SPEED,
+// WEIGHT, CONTRAST and — for one mark, once — HUE: a hard ring that crosses three radii in 120ms and
+// is gone is more violent than anything that lingers.
+//
+// THE ONE COLOURED MARK, AND THE TWO WRITTEN RULES IT BENDS. Every mark in this file used to draw in
+// `palette.ink`, and two documents said it should:
+//
+//     base.css's header — "THE ONLY COLOUR ON THE PAGE IS THE GAME: the two side colours appear on
+//     fighters, health bars and side markers, and nowhere else."
+//     SPEC.md — "impact reads as a hard black ring and a mono damage figure that fades."
+//
+// The figure is coloured now. The argument, in full, because a rule bent without one is a rule gone:
+//
+//   THE DAMAGE FIGURE IS THE GAME. base.css's sentence is not a permit list, it is an INVENTORY, and
+//   it was written before this mark existed — a damage figure is not excluded from it, it is MISSING
+//   from it. Read it for the rule it states rather than the enumeration it happens to be and the rule
+//   is: COLOUR SAYS WHO. A fighter's fill says whose fighter that is. A health bar says whose money
+//   is on the table. A side marker says which half of the round a row belongs to. A damage figure
+//   says WHO JUST TOOK MONEY OFF WHOM. It is the only number this canvas publishes that describes an
+//   EVENT rather than a state — every other figure on the field, the fighters' value lines and the
+//   scoreboard's totals, says what something is currently worth; this one says what just happened,
+//   and it exists only because one side took it off the other. That is the same category of statement
+//   as the three already on the list, not a decoration hung on one of them. Rule 5 is then read in
+//   its own words: "`--a`/`--b` for the two sides, `--hot` for loss/danger" is exactly, and only,
+//   what this file now spends.
+//
+//   AND THE FIELD ALREADY SPEAKS THIS WAY, which is the part that makes it a reading of the rule
+//   rather than an exception to it. `draw.ts`'s `drawEnemyWedge` fills a wedge of a fighter's own disc
+//   in the OPPOSITE side's colour, to show the money that fighter has taken off the enemy — colour on
+//   a fighter, saying whose money it was, not whose fighter it is. A damage figure in the attacker's
+//   colour is the same sentence one frame earlier: the wedge is the settled version of what the figure
+//   announces. If the wedge is legal, this is.
+//
+//   SPEC.md IS NOW HALF TRUE AND NEEDS THE MATCHING EDIT, from whoever owns it — not from here. The
+//   RING is still a hard black ring; the FIGURE is no longer black. Nothing else in that sentence
+//   moved: it is still mono, and it still fades. Leaving the half-truth unflagged is how a spec stops
+//   being read at all.
+//
+//   RESTRAINT IS THE OTHER HALF OF THE DECISION, and it is a mechanism rather than an aesthetic.
+//   EXACTLY ONE MARK GAINS COLOUR: the ring, its echo, the spall fan and the connector all stay
+//   `palette.ink`, and that is not an oversight for a later pass to tidy up. A figure that is the only
+//   coloured thing in a field of black marks is found by the eye before it is read; a field where the
+//   ring is red, the fan is green and the connector is the attacker's colour has no emphasis left in
+//   it anywhere. If everything shouts, nothing does. The figure is loud precisely because nothing
+//   around it is, and anything added here that reaches for `palette.side` or `palette.hot` is spending
+//   the thing that makes the figure work.
+//
+//   LEGIBILITY IS NOT WHAT THIS COSTS, which is the first place a reviewer will look. All three
+//   colours this file can now set clear WCAG AA (4.5:1) as TEXT on white, and the page already sets
+//   small type in every one of them: `--a` #278834 at 4.51:1 (`.pos`'s 12px P/L figures — base.css
+//   states that ratio and records that the hue was deepened one step to reach it), `--b` #8f09bf at
+//   7.10:1, and `--hot` #c4291a at 5.71:1 (`.neg`, i.e. every negative number on the page). base.css
+//   spells out the first two; `--hot`'s was measured for this pass, because base.css asserts only
+//   that paper.ts holds it at "at least the contrast it holds here" without saying what that is, and
+//   an unstated number is not evidence. They are READ off the custom properties by `palette.ts` and
+//   never written down
+//   here, so on a coloured sheet `styles/paper.ts` has already deepened each until it clears that bar
+//   against THAT sheet. And the figure is cased in paper on top of all of it — see the figure pass in
+//   `draw` — so the case a contrast ratio does not cover, coloured type at 10px over a fighter's own
+//   disc, is covered too.
 //
 // TWO SIGNALS, AND EVERY MARK HERE IS SIZED OFF ONE OF THEM. Until this pass every hit drew the
 // identical ring, the identical line and the identical figure, and the chain hands us two
@@ -62,7 +121,7 @@
 // Dropping a mark affects NOTHING but the flourish: replay.ts advances fight state for every event
 // independently of this module. Hp, deaths and the settled outcome are untouched.
 
-import { usd, usdCompact } from "../contract.ts";
+import { usd, usdCompact, type Side } from "../contract.ts";
 import type { InkMap } from "./ink.ts";
 import { monoFont, monoWidth, type ArenaPalette } from "./palette.ts";
 
@@ -140,10 +199,66 @@ const LINE_RETRACT = 0.92;
 
 // --- the figure ----------------------------------------------------------------------------------
 /** Type size and lifetime, by TOLL. A flat 10.5px/900ms gave a hit that moved a hundredth of a cent
- *  exactly as much of the page, for exactly as long, as one that took a fifth of a fighter. */
-const FIGURE_SIZE = [9, 15] as const;
+ *  exactly as much of the page, for exactly as long, as one that took a fifth of a fighter.
+ *
+ *  THE SIZE RANGE WAS [9, 15] AND THAT WAS TOO POLITE AT BOTH ENDS.
+ *
+ *  THE FLOOR IS THE PAGE'S OWN SMALLEST TYPE. base.css sets `.u` at 10px — the tracked micro-label
+ *  that carries every column header, field name and status word in the product — and 10px is the
+ *  smallest `font-size` anywhere in the stylesheet. A damage figure has no business being SMALLER
+ *  than the page's smallest label: 9px was below the page's own minimum, and it was carrying digits,
+ *  which are the one thing a reader has to get exactly right. It has no business claiming a floor
+ *  ABOVE it either — 11px was tried here first and measured, and it cost the small fields real range
+ *  for nothing the page could point at. 10px is the one value on that scale with a reason behind it,
+ *  and the reason is not this file's. It is also where the paper casing starts to matter, since the
+ *  figure now carries HUE as well, which costs a little acuity at small sizes and buys it back there.
+ *
+ *  THE CEILING IS 26 ON A FULL-SIZE FIELD AND LESS ON A SMALL ONE — see `figureTop`. 15px, the old
+ *  ceiling, was three pixels over a body-text line for a blow that took a SEVENTH of a fighter's
+ *  entire worth (`TOLL_FULL` = 0.15) — the largest single event this game can produce short of a
+ *  death, printed at roughly the size of a table cell. 26px is the size at which that hit stops the
+ *  eye, which is the whole job of the top of a range. It is not reached everywhere, because this
+ *  range was the last quantity in the file still measured in absolute pixels on a canvas where
+ *  everything else is measured in `unit`.
+ *
+ *  THE FLOOR IS ABSOLUTE AND THE CEILING IS NOT, and that asymmetry is the whole design — see
+ *  `figureTop` for the argument. The curve between them is unchanged and still linear in toll, so
+ *  nothing moved except the ends; and because the fixture's tolls collapse hard after t≈3s (see the
+ *  header), the great majority of a fight's figures still sit near the floor. The big type is rare on
+ *  purpose — a range whose top end fires often is not a range, it is a size. */
+const FIGURE_SIZE = [10, 26] as const;
+/** THE SMALLEST CEILING A FIELD MAY BE GIVEN — the point below which `figureTop`'s scaling stops.
+ *
+ *  Not a taste value and not `FIGURE_SIZE[0] + something`: it is 15 because 15 is the ceiling this
+ *  file shipped with before the range was widened, and a phone measured at that ceiling delivers its
+ *  damage figures at HEAD's rate. It is the largest top end the smallest field this product runs on
+ *  is known to fit, which is a stronger claim than any number picked to look reasonable.
+ *
+ *  It also keeps the range from collapsing. 15 against a floor of 10 is a ratio of 1.5 — comfortably
+ *  past the ~1.2 at which two sizes of the same type stop reading as two sizes — so even the smallest
+ *  field still says "this blow was bigger than that one" with the size, which is the whole reason the
+ *  size is a range and not a constant. */
+const FIGURE_SIZE_TOP_FLOOR = 15;
 const FIGURE_MS = [520, 950] as const;
-const FIGURE_RISE = [22, 40] as const;
+/** HOW FAR A FIGURE CLIMBS. The bottom of the range is absolute, exactly as the size floor is; the
+ *  top is DERIVED from the field's ceiling — see `figureRise`. */
+const FIGURE_RISE_LOW = 22;
+/** HOW FAR THE LARGEST FIGURE CLIMBS, IN MULTIPLES OF ITS OWN CAP HEIGHT — and this number is a
+ *  PRESERVED RATIO, not a tuning knob. Nobody should round it to 3.5 because 3.56 looks unfinished.
+ *
+ *  It is what this file's top-end figure did before the size range was widened: at the old `[9, 15]`
+ *  the largest figure rose 40px on an 11.25px cap, i.e. 3.56 of its own height. Widening the ceiling
+ *  to 26 while leaving the rise at a flat 40 quietly took that to 2.05, which inverted the
+ *  relationship — the big numbers travelled LESS of themselves than the small ones and read as static
+ *  where they were supposed to read as loudest. Deriving the rise from the ceiling instead of writing
+ *  it down restores 3.56 at BOTH ends and on EVERY field: a phone's 15px ceiling gets 40px of climb,
+ *  which is exactly what it had, and a desktop's 26px ceiling gets 69.4px, which is what it should
+ *  always have had.
+ *
+ *  This is the reason the rise is a function and not a constant, and it is the same reason
+ *  `figureShelf` is: the moment the ceiling stopped being one number, everything derived from the
+ *  ceiling had to stop being one number too, or it would be correct on exactly one field. */
+const FIGURE_RISE_CAP_HEIGHTS = 3.56;
 /** Past this the figure is set in the page's 600 weight — the same weight `draw.ts` reserves for
  *  YOUR name, and for the same reason: it is the thing on the frame you must not miss. */
 const FIGURE_BOLD_TOLL = 0.5;
@@ -213,14 +328,33 @@ const FIGURE_FAN_PX = [0, -26, 26, -13, 13];
  *  is neither. One shelf's height clears the whole of another figure's climb, so a number on the far
  *  shelf can never rise into one on the near shelf.
  *
- *  Measured against the LARGEST figure this file can now set, not against the one being placed: the
- *  shelves have to clear each other for every pairing of sizes, and a shelf sized for a 9px figure
- *  would let a 15px one rise straight into the row above it.
+ *  DERIVED, NOT WRITTEN DOWN — see `figureShelf`, which is where it now lives. It used to be a
+ *  module constant, and it stopped being able to be one the moment the ceiling started depending on
+ *  the field: a constant folded at import time would have been right on a desktop and 8px too tall on
+ *  a phone, which is a shelf reserving height nothing will ever occupy on the one field that has no
+ *  height to spare. That is the exact class of drift the derivation was written to prevent, so it
+ *  followed the ceiling out of module scope rather than being pinned to the ceiling's largest value.
  *
- *  Two shelves and no more. A third would stand 130px over a fighter's head, and a damage figure that
- *  far from the disc it belongs to has stopped saying whose damage it is. */
-const FIGURE_SHELF_PX = FIGURE_RISE[1] + FIGURE_SIZE[1] * FIGURE_CAP_SHARE + 4;
+ *  Two shelves and no more. A third would stand 186px over a fighter's head on a full-size field, and
+ *  a damage figure that far from the disc it belongs to has stopped saying whose damage it is. */
 const FIGURE_SHELVES = 2;
+/** The clearance a shelf leaves above the highest ink the shelf below it can reach — see
+ *  `figureShelf`.
+ *
+ *  It predates the paper casing and survives it with room to spare, which is worth writing down
+ *  rather than rediscovering: the casing puts `FIGURE_CASE_PX / 2` of stroke past each glyph edge, so
+ *  two figures facing each other across this gap spend 2px of it on ink that no measured box in this
+ *  file accounts for. The remaining 2px is the actual separation, and 2px is what `ink.ts` independently
+ *  settled on as the least that keeps two legal marks from reading as one crowded one. */
+const FIGURE_SHELF_GAP_PX = 4;
+/** The paper casing's stroke width — see the figure pass in `draw`, and `draw.ts`'s label pass for
+ *  why it is 2 and not 3.
+ *
+ *  ONE CONSTANT FOR TWO JOBS, and that is the point of naming it. It is what `draw` strokes, and it is
+ *  therefore also how far a figure's ink extends past the glyph box every measurement in this file
+ *  works in. `hitsFigures` pads by it for exactly that reason. Written down twice, the painted halo
+ *  and the reserved space would drift, and the failure is invisible until two numbers touch. */
+const FIGURE_CASE_PX = 2;
 
 // --- the camera ----------------------------------------------------------------------------------
 /** SCREEN SHAKE, scaled to the toll and gone almost before it registers.
@@ -228,16 +362,33 @@ const FIGURE_SHELVES = 2;
  *  `web/index.html` had one (`w.shake = 14`, decayed 0.86 a frame) and it is the one thing from the
  *  original this page had dropped that it should not have: a jolt is how a viewer's eye is told
  *  something happened somewhere they were not looking, and a field of sixteen circles is exactly the
- *  case where they were not looking. It is a THIRD of the original's amplitude because that one was
- *  tuned for a dark canvas full of particles and this is a technical drawing on paper — 3.6px is a
- *  flinch, 14 would be a page fault.
+ *  case where they were not looking.
+ *
+ *  THESE WERE 3.6 AND 6.5, AND THE COMMENT HERE CALLED THEM "A THIRD OF THE ORIGINAL'S AMPLITUDE".
+ *  They are not a third any more and the honest figures are ~40% and ~70% of it: 5.5 and 10 against
+ *  `w.shake = 14`. The reason for discounting the original at all still stands exactly as written —
+ *  it was tuned for a dark canvas full of particles, where a jolt competes with a screenful of motion,
+ *  and this is a technical drawing on paper where the whole field is otherwise still. A third was a
+ *  first estimate of that discount made before anyone watched a full round on the new field; watching
+ *  one, a hit read as a flinch and a DEATH read as slightly more of a flinch, which is the wrong
+ *  ordering for the loudest event in the game. 5.5px is a hit you feel, 10px is a fighter going out,
+ *  and 14 would still be a page fault.
  *
  *  Decays at 15/s, i.e. half gone in 46ms, so it is a hit rather than a wobble; and it is floored to
- *  zero rather than allowed to trail, because a permanent sub-pixel tremor is a blurry page.
+ *  zero rather than allowed to trail, because a permanent sub-pixel tremor is a blurry page. Both of
+ *  those, and the MAX-not-sum accumulation in `kickShake`, are untouched and they matter MORE at this
+ *  amplitude, not less: they are the entire reason the opening barrage — sixteen fighters, ~16 hits a
+ *  second, every one of them at full toll — is a series of jolts rather than a page that never stops
+ *  moving. Raising the amplitude without them would have been the change that broke this.
  *
- *  Never sampled under `prefers-reduced-motion` — the loop does not call `shake()` at all there. */
-const SHAKE_HIT_PX = 3.6;
-const SHAKE_DEATH_PX = 6.5;
+ *  Multiplied by the field's `unit` at sample time, which is `clamp(min(w, h) / 560, 0.55, 2.4)` —
+ *  so a phone gets 3.0px/5.5px of it and a large desktop panel proportionally more, and the jolt is
+ *  the same fraction of the arena everywhere rather than the same number of pixels.
+ *
+ *  Never sampled under `prefers-reduced-motion` — the loop does not call `shake()` at all there, and
+ *  that is a hard requirement rather than a nicety now that the amplitude is half again what it was. */
+const SHAKE_HIT_PX = 5.5;
+const SHAKE_DEATH_PX = 10;
 const SHAKE_DECAY = 15;
 const SHAKE_FLOOR = 0.15;
 
@@ -274,6 +425,12 @@ const DEATH_FAN_REACH = 2.7;
 export interface ImpactAnchor {
   readonly x: number;
   readonly y: number;
+  /** WHOSE MARK THIS IS. Read for one thing only — the damage figure's colour, see `fire` — and it
+   *  costs the call site nothing to supply: every anchor handed to this module is an `ArenaBody`, and
+   *  `field.ts` has given those a `side` since the day it built the first one. Widening the anchor
+   *  rather than adding an `attackerSide` field to `fire`'s input keeps the fact attached to the
+   *  fighter it is a fact about, which is also where it stays true when the field is rebuilt. */
+  readonly side: Side;
 }
 
 interface Ring {
@@ -309,6 +466,33 @@ interface Line {
   width: number;
 }
 
+/** WHICH COLOUR A FIGURE IS SET IN — see this file's header for why a figure is coloured at all.
+ *
+ *  Three of the four are `styles/paper.ts`'s RESERVED tokens, the ones a themed sheet may dim but
+ *  never swallow. The fourth is plain ink, and it is the absence of a claim rather than a colour.
+ *
+ *    a `Side`  the ATTACKER's, for an ordinary blow. Not the defender's: the number is a statement
+ *              about who took the money, and putting it in the colour of the fighter it is floating
+ *              over would make it read as that fighter's own figure — which is the one thing it
+ *              isn't. (When the pairing is same-side the figure and the disc under it do end up the
+ *              same hue. That is what the paper casing is for.)
+ *    "hot"     the blow finished the defender. A kill is the loudest thing this game does and
+ *              `--hot` is the page's one word for it, so it overrides the side colour rather than
+ *              sitting alongside it — a death is not a fact about which side you were on.
+ *    "ink"     nobody to attribute it to. The event stream named an attacker this field does not
+ *              hold, so the money moved and the figure says how much without claiming who took it.
+ *              Black is the honest answer, not a guess at a side.
+ */
+type FigureTone = Side | "hot" | "ink";
+
+/** One property read and at most two string compares, called at most `MAX_FIGURES` times a frame.
+ *  The DECISION is made once at birth (`fire`); this only spends it. */
+function figureColour(tone: FigureTone, palette: ArenaPalette): string {
+  if (tone === "hot") return palette.hot;
+  if (tone === "ink") return palette.ink;
+  return palette.side[tone];
+}
+
 interface Figure {
   x: number;
   y: number;
@@ -326,6 +510,18 @@ interface Figure {
    *  that never changes. draw.ts makes the same point about the label passes and restructures around
    *  it; this is the cheaper version of the same fix. */
   font: string;
+  /** Which colour this figure is set in, DECIDED at birth and never re-decided — same argument as
+   *  `font` above, and the decision is the part that costs anything: it reads `kill`, tests whether
+   *  there is an attacker at all, and takes that fighter's side, none of which can change once the
+   *  mark exists.
+   *
+   *  The decision and not the colour STRING, and that is deliberate rather than a half-measure.
+   *  `fire` runs from the replay's event callback and has no palette — `draw` is the only method
+   *  handed one, because the sheet is a variable (`styles/paper.ts`) and a retint mid-flight must
+   *  reach a figure that is already in the air. Freezing the literal here would need the palette
+   *  smuggled into `fire` through module state and would still leave a 950ms figure painting the old
+   *  sheet's red. `figureColour` turns this into a string for one property read a frame instead. */
+  tone: FigureTone;
 }
 
 /** Where the camera is this frame, in CSS px. One of these exists per loop and is written in place —
@@ -344,6 +540,11 @@ export interface ImpactController {
     force: number;
     /** The share of the defender's worth that moved, normalised — `hitToll`. */
     toll: number;
+    /** Did this blow take the defender to zero. Read off the replay shadow AFTER the event was
+     *  applied, so it is the settled fact and not an inference from the size of the number — the
+     *  biggest hit of a round usually kills nobody, and a fighter on their last dust goes out to an
+     *  amount that rounds to nothing. It buys the figure `--hot`; see `FigureTone`. */
+    kill: boolean;
     attacker: (ImpactAnchor & { r: number }) | undefined;
     /** Held for the life of every ring and spall fan it produces — see `ImpactAnchor`. */
     defender: (ImpactAnchor & { r: number }) | undefined;
@@ -403,8 +604,82 @@ function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
+function lerpTo(lo: number, hi: number, t: number): number {
+  return lo + (hi - lo) * t;
+}
+
+/** The tuple form, for the constants that are written as ranges. Expressed in terms of `lerpTo` so
+ *  the arithmetic exists once — the figure's size range is the one whose top end is computed rather
+ *  than written down, and it needs the two-argument form. */
 function lerp(range: readonly [number, number], t: number): number {
-  return range[0] + (range[1] - range[0]) * t;
+  return lerpTo(range[0], range[1], t);
+}
+
+/** THE LARGEST FIGURE THIS FIELD MAY SET, which is not the largest figure the file may set.
+ *
+ *  `FIGURE_SIZE` was the last quantity in this module quoted in absolute pixels. Every other mark
+ *  here is already sized in `unit` — the ring's travel cap, the spall's throw, the camera's jolt —
+ *  because a mark that is a fixed number of pixels is a different fraction of the arena on every
+ *  panel, and the whole file is otherwise written to be the same drawing at any size. A 26px ceiling
+ *  is a fourteenth of a 358px phone field and a fiftieth of a 1392px desktop one, and it showed:
+ *  measured over the fixture at sixteen fighters on 358x270, a 26px figure NEVER ONCE reached the
+ *  screen — the placement search dropped 100% of the top quintile for want of headroom, so the widened
+ *  range cost the phone a fifth of its damage figures and returned nothing at all for them.
+ *
+ *  So the ceiling scales and the FLOOR DOES NOT, and that asymmetry is the substance of this function.
+ *  A ring or a fan is a shape, and a shape may be any size; this mark is TEXT, and text has a minimum
+ *  at which it stops being a number and becomes a texture. That minimum is a property of reading, not
+ *  of the panel, so `FIGURE_SIZE[0]` is 10px on every field there is. The ceiling is the opposite: how
+ *  big the loudest blow is ALLOWED to be is a question about how much room the arena has, and the
+ *  arena answers it in `unit`.
+ *
+ *  Three clauses, each doing one job:
+ *    `* unit`  ties the ceiling to the field. `unit` is `clamp(min(w, h) / 560, 0.55, 2.4)`, so a
+ *              560px field is the neutral one and everything is a share of that.
+ *    `min`     26 is a ceiling and not a target. A wall-sized panel does not want a 62px damage
+ *              figure; it wants the same figure it always had, with more paper around it. Growth past
+ *              the point where the mark is already unmissable buys nothing and costs the restraint
+ *              the rest of the page is built on.
+ *    `max`     the range may not collapse — see `FIGURE_SIZE_TOP_FLOOR`.
+ *
+ *  Resolved per hit rather than per frame: `unit` only moves on a resize, and `fire` runs at most
+ *  ~16 times a second where `draw` runs 60. A figure already in flight keeps the ceiling it was born
+ *  under, which is the same thing every other resolved-at-birth value here does, and which a resize
+ *  ends within one figure's lifetime anyway. */
+function figureTop(unit: number): number {
+  return Math.min(FIGURE_SIZE[1], Math.max(FIGURE_SIZE_TOP_FLOOR, FIGURE_SIZE[1] * unit));
+}
+
+/** HOW FAR THE LARGEST FIGURE ON THIS FIELD CLIMBS — a fixed multiple of its own cap height, so the
+ *  motion reads the same at every size. See `FIGURE_RISE_CAP_HEIGHTS` for why the multiple is 3.56.
+ *
+ *  The bottom of the rise range stays absolute (`FIGURE_RISE_LOW`), matching the size floor, which is
+ *  also absolute. The two ends of this file's figure are anchored to different things ON PURPOSE: the
+ *  small end to what a person can read, the large end to how much arena there is. The range can never
+ *  invert — the smallest ceiling a field may have is 15px, which yields 40.05px of climb, comfortably
+ *  above the 22px floor. */
+function figureRise(top: number): number {
+  return top * FIGURE_CAP_SHARE * FIGURE_RISE_CAP_HEIGHTS;
+}
+
+/** HOW FAR APART THE TWO SHELVES SIT, given the largest figure THIS field can set.
+ *
+ *  A near-shelf figure's ink ends at `y - figureRise(top) - top * FIGURE_CAP_SHARE` — the top of its
+ *  climb plus its own cap — and the far shelf's baseline sits `FIGURE_SHELF_GAP_PX` beyond that. Both
+ *  terms use the range MAXIMA rather than the figure being placed, so the clearance is that same gap
+ *  for every pairing of sizes: the worst case is a maximal figure on the near shelf under any figure
+ *  at all on the far one, and a shelf sized for a 10px figure would let a 26px one rise straight into
+ *  the row above it.
+ *
+ *  BOTH TERMS NOW MOVE WITH THE FIELD, which is what stopped this being a module constant. Pinning it
+ *  to the largest ceiling would reserve a desktop's 92.9px of shelf on a phone that can only ever set
+ *  a 15px figure and therefore only needs 55.3 — 37px of height held empty on the one field with none
+ *  to spare, which is the difference between the second shelf existing and not. And pinning the RISE
+ *  term while the ceiling moved would be the same bug one level down: the rise enters `sweptTop`
+ *  directly, so a shelf that did not follow it would simply relocate the drops from collision to
+ *  headroom rather than prevent them — measured, not assumed. */
+function figureShelf(top: number): number {
+  return figureRise(top) + top * FIGURE_CAP_SHARE + FIGURE_SHELF_GAP_PX;
 }
 
 /** HOW HARD THE CHAIN SWUNG, recovered from the numbers it published.
@@ -444,16 +719,50 @@ export function hitToll(amount: bigint, worthBefore: bigint): number {
  *
  *  The SWEPT box rather than the box it has right now, because a figure is placed once and then
  *  animates: testing only the birth position would put a number in clear paper that walks into a name
- *  three hundred milliseconds later, which is the collision this whole pass exists to prevent. */
+ *  three hundred milliseconds later, which is the collision this whole pass exists to prevent.
+ *
+ *  THREE DIFFERENT BOXES ASK THREE DIFFERENT QUESTIONS, and they are not inconsistent:
+ *    - a CANDIDATE being placed reserves its whole future — this top down to its birth baseline,
+ *      because all of it is still ahead of it (`fire`).
+ *    - a LIVE figure being tested against blocks only what is still ahead of IT — this top down to
+ *      its current baseline, because the rest is paper it has already left (`hitsFigures`).
+ *    - a figure being PAINTED occupies only where it is on this frame, one cap above its current
+ *      baseline, because that is the only ink actually on the glass (`draw`'s per-frame ink test). */
 function sweptTop(y: number, rise: number, cap: number): number {
   return y - rise - cap;
 }
 
 /** Does this box overlap a figure already in flight? Figures are not in the ink map — they must never
- *  displace a label — so they check each other directly. */
-function hitsFigures(figures: Figure[], x0: number, y0: number, x1: number, y1: number): boolean {
+ *  displace a label — so they check each other directly.
+ *
+ *  AGAINST WHAT IS LEFT OF EACH FIGURE'S CLIMB, NOT AGAINST ALL OF IT. This used to test the full
+ *  birth-to-death swept box of every live figure, which reserved paper that could be PROVEN empty: a
+ *  figure only ever moves up, so everything below its current baseline is ground it has already left
+ *  and can never return to. A figure four fifths of the way through its life was still blocking four
+ *  fifths of a column it had entirely vacated, and on a crowded frame that is the difference between a
+ *  candidate slot and a dropped number. The top of the box is unchanged — that is where the figure is
+ *  still going, and reserving it is the whole reason the test is swept rather than instantaneous.
+ *
+ *  Nothing about what is DRAWN changes; this only stops claiming space nothing occupies.
+ *
+ *  THIS IS HERE FOR CORRECTNESS, NOT FOR THE NUMBER IT BOUGHT. Measured over the fixture it recovers
+ *  around 4% of otherwise-dropped figures at best and never costs any, which is a small enough return
+ *  that somebody will eventually find this loop and wonder whether the extra `t` is worth it. It is
+ *  not an optimisation to be weighed: a candidate was being rejected because of ink that was not
+ *  there, and a test that answers a question about the present using a box from the past is simply
+ *  wrong. It was wrong before it was slow. The 4% is a consequence, not the justification.
+ *
+ *  Padded downward by the casing, because the freed edge is the one place two figures can now come to
+ *  rest against each other: the candidate's cap top would otherwise sit exactly on the departing
+ *  figure's baseline, and both marks carry `FIGURE_CASE_PX` of paper stroke that no measured box in
+ *  this file includes. `ink.ts` pads its own boxes for the same reason and says so. */
+function hitsFigures(figures: Figure[], nowMs: number, x0: number, y0: number, x1: number, y1: number): boolean {
   for (const f of figures) {
-    if (x0 < f.x + f.halfW && x1 > f.x - f.halfW && y0 < f.y && y1 > sweptTop(f.y, f.rise, f.cap)) return true;
+    if (x0 >= f.x + f.halfW || x1 <= f.x - f.halfW) continue;
+    // Clamped because `fire` runs before the frame's `update`, so a figure one tick past its end can
+    // still be in the list; at t = 1 what remains is the cap alone, sitting at the top of the climb.
+    const t = clamp((nowMs - f.bornMs) / f.ms, 0, 1);
+    if (y0 < f.y - t * f.rise + FIGURE_CASE_PX && y1 > sweptTop(f.y, f.rise, f.cap)) return true;
   }
   return false;
 }
@@ -508,7 +817,7 @@ export function createImpactController(): ImpactController {
   }
 
   return {
-    fire({ nowMs, amount, force, toll, attacker, defender, unit, maxLineDist, fieldW, ink }) {
+    fire({ nowMs, amount, force, toll, kill, attacker, defender, unit, maxLineDist, fieldW, ink }) {
       // An out-of-range id from a caller-supplied stream: skip the flourish, don't throw. The hit
       // itself has already been applied by replay.ts either way.
       if (!defender) return;
@@ -583,9 +892,14 @@ export function createImpactController(): ImpactController {
         // of both the field's text and the figures already in the air. If all ten are taken it is
         // DROPPED — a hit that draws no number is a much smaller loss than a number nobody can read,
         // and the ring and the connector still say the hit happened.
-        const size = lerp(FIGURE_SIZE, toll);
+        // How big this field lets the loudest blow be, and therefore how far apart its shelves sit.
+        // Both are read once, here, so the size a figure is set at and the height reserved for it are
+        // the same field's answer — see `figureTop`.
+        const topSize = figureTop(unit);
+        const shelfPx = figureShelf(topSize);
+        const size = lerpTo(FIGURE_SIZE[0], topSize, toll);
         const cap = size * FIGURE_CAP_SHARE;
-        const rise = lerp(FIGURE_RISE, toll);
+        const rise = lerpTo(FIGURE_RISE_LOW, figureRise(topSize), toll);
         const halfW = monoWidth(text.length, size) / 2;
         const head = defender.y - defender.r - 6;
         const start = fanIndex++;
@@ -593,7 +907,7 @@ export function createImpactController(): ImpactController {
         let y = 0;
         let placed = false;
         for (let shelf = 0; shelf < FIGURE_SHELVES && !placed; shelf++) {
-          const baseY = head - shelf * FIGURE_SHELF_PX;
+          const baseY = head - shelf * shelfPx;
           const top = sweptTop(baseY, rise, cap);
           // OFF THE TOP OF THE PAPER is the one obstacle that is not in the ink map and never can
           // be. A figure is placed above its defender and then climbs, so a hit on a fighter near the
@@ -609,7 +923,7 @@ export function createImpactController(): ImpactController {
               fieldW - halfW - 2,
             );
             if (ink.hits(cx - halfW, top, cx + halfW, baseY)) continue;
-            if (hitsFigures(figures, cx - halfW, top, cx + halfW, baseY)) continue;
+            if (hitsFigures(figures, nowMs, cx - halfW, top, cx + halfW, baseY)) continue;
             x = cx;
             y = baseY;
             placed = true;
@@ -631,6 +945,11 @@ export function createImpactController(): ImpactController {
             cap,
             rise,
             font: monoFont(size, toll >= FIGURE_BOLD_TOLL ? 600 : 400),
+            // `attacker`, not `atk`. `atk` is additionally null for a SELF-hit, which the marks below
+            // it care about because they need a contact normal and a self-hit has none — but a
+            // self-hit still has a side, and it is the same side either way. The only case with
+            // nobody to name is an attacker id this field does not hold.
+            tone: kill ? "hot" : attacker ? attacker.side : "ink",
           }, MAX_FIGURES);
         }
       }
@@ -745,7 +1064,37 @@ export function createImpactController(): ImpactController {
         ctx.stroke();
       }
 
-      ctx.fillStyle = palette.ink;
+      // THE FIGURES, and they are the only coloured mark on this field — see this file's header for
+      // the rule that bends and the argument for bending it.
+      //
+      // CASED IN PAPER, stroked under the fill, which is the trick `draw.ts` uses on every fighter
+      // label and describes there as what a map does with a place name over a contour line. The
+      // figures did not do it while they were black; coloured type needs it more, and needs it in
+      // three places black type got away with. Over the lattice, where a hue at 10px has less
+      // luminance separation from `--grid` than ink does. Over a fighter's own disc, which on a
+      // same-side pairing is now the SAME hue as the figure and would swallow it whole. And over
+      // another figure — the placement search clears a figure's whole flight path at birth, but it
+      // clears it against the frame that existed then, and two of these can still cross when the
+      // fighters under them move.
+      //
+      // `FIGURE_CASE_PX` is 2, not 3, and `draw.ts` explains why on its own label pass: at 3 the halo
+      // stops reading as a casing and starts reading as a white chip drawn behind the text, i.e. a
+      // filled label, which is precisely what base.css rule 3 forbids. It is a named constant because
+      // `hitsFigures` has to reserve the same 2px — see there. Round joins so the corner of a `$`
+      // does not throw
+      // a spike. `miterLimit` is dead while the join is round and is set anyway, because these four
+      // lines are then character-for-character `draw.ts`'s casing setup — two passes that case text
+      // the same way should be diffable, and the alternative is a lone missing line that reads as an
+      // oversight rather than as a decision.
+      //
+      // SET ONCE FOR THE WHOLE PASS. Everything here is constant across figures — only `font` and
+      // `fillStyle` vary, and those already had to. Hoisting the rest out of the loop keeps this at
+      // two context writes per figure rather than six, on up to `MAX_FIGURES` of them sixty times a
+      // second.
+      ctx.strokeStyle = palette.paper;
+      ctx.lineWidth = FIGURE_CASE_PX;
+      ctx.lineJoin = "round";
+      ctx.miterLimit = 2;
       ctx.textAlign = "center";
       ctx.textBaseline = "alphabetic";
       for (const f of figures) {
@@ -763,9 +1112,18 @@ export function createImpactController(): ImpactController {
         // damage floater looks like anyway.
         if (ink.hits(f.x - f.halfW, baseY - f.cap, f.x + f.halfW, baseY)) continue;
         // Hold full opacity for the first third, then fade: a number that starts disappearing the
-        // instant it appears is a number nobody reads.
+        // instant it appears is a number nobody reads. ONE alpha for the casing and the fill both —
+        // `globalAlpha` multiplies whatever is painted — so the paper stroke dies on exactly the
+        // frame the number does. A casing on its own ramp would outlive the digits it was protecting
+        // and leave a white ghost of a figure hanging over the fighter.
         ctx.globalAlpha = t < 0.34 ? 1 : 1 - (t - 0.34) / 0.66;
         ctx.font = f.font;
+        ctx.fillStyle = figureColour(f.tone, palette);
+        // Stroke then fill, per figure, exactly as `draw.ts`'s `casedText` does it — not all the
+        // strokes and then all the fills. Two figures that cross should read as a near one over a far
+        // one, and painting every casing first would put the near figure's halo UNDER the far
+        // figure's digits and erase the depth the casing exists to create.
+        ctx.strokeText(f.text, f.x, baseY);
         ctx.fillText(f.text, f.x, baseY);
       }
 

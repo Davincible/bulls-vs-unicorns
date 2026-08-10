@@ -168,6 +168,17 @@ black hairline detail, fighters in `--a`/`--b`. No glow, no bloom, no particles-
 reads as a hard black ring and a mono damage figure that fades. This is a technical instrument that
 happens to be a game.
 
+**The damage figure is the one exception to "black", and it is deliberate.** It is set in the
+ATTACKING side's colour, and in `--hot` for a blow that finishes a fighter. Everything else a hit
+draws — the ring, the echo, the spall fan, the connector — stays ink, which is what lets the figure
+be the loud thing. The argument is that a damage figure is not decoration applied to the field, it is
+the fight's only published number and it says whose money just moved; `draw.ts`'s `drawEnemyWedge`
+already fills part of a disc in the OPPOSITE side's colour to say the same thing about money already
+taken, so this is a reading of the existing vocabulary rather than a new licence. `base.css` rule 5's
+list of where colour may appear predates the figure and should be read as including it. All three
+values clear WCAG AA as text on white (`--a` 4.51:1, `--b` 7.10:1, `--hot` 5.71:1) and the figure is
+cased in `--paper` the way `draw.ts` cases every label. See `arena/impact.ts`'s header.
+
 **Board style.** `board` is a LOOK, and the two halves of it live on either side of this boundary:
 the canvas skips `drawLattice()` under `"blank"`, and the arena view drops the frame's border and the
 overlays' box for the same word. Nothing else changes — not the physics, not a figure, not a state.

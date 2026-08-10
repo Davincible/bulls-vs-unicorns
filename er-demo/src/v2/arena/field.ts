@@ -93,6 +93,31 @@ export interface ArenaField {
    *  fighter; a linear scan would make that O(n²) for no reason, and the ids are dense array
    *  indices by contract anyway. Sparse only if a caller ever violates that contract. */
   byId: (ArenaBody | undefined)[];
+  /** THE FERVOUR RAMP — `k = 1 + FERVOUR_GAIN · fervour`, the multiplier the fight's own progress puts
+   *  on every acceleration and every speed cap in the steering. `FERVOUR_GAIN` carries the argument
+   *  for what it scales and, far more importantly, for what it must not.
+   *
+   *  ITS NEUTRAL VALUE IS 1, NOT 0. A zero here multiplies every acceleration in the file by nothing
+   *  and the field stands still, so every path that produces an `ArenaField` has to leave a usable
+   *  number in it. `createField` is the only such path — `resizeField` mutates an existing field in
+   *  place and cannot invalidate this — and it sets 1, which is also the right value for the settling
+   *  passes it runs before it returns: laying out spawn overlaps is not a moment in a fight.
+   *
+   *  WHY IT IS STATE ON THE STRUCT RATHER THAN AN ARGUMENT. `stepField` receives `fervour` and could
+   *  hand the ramp down, but three of the four things that need it are not on that call path.
+   *  `spread()` and `recentre()` are module functions taking `(field, …)`, and `recoil()` is called
+   *  from `arenaLoop` off the EVENT STREAM — its subject is a hit that just landed, not the passage
+   *  of time, and it has no step in scope to have been given anything by. Threading a parameter
+   *  through four signatures to carry one number that is constant for the whole frame buys nothing
+   *  over the mechanism the field already uses for exactly this: `unit`, `spacing` and `baseRadius`
+   *  are all once-per-frame derived scalars read straight off the struct, and this is one more.
+   *
+   *  `recoil()` therefore reads the value the PREVIOUS frame's `stepField` stored, because arenaLoop
+   *  crosses its events before it steps. The ramp moves by `FERVOUR_GAIN · (frame / fight length)`,
+   *  which is a quarter of one percent per frame even over a ten-second duel, so a blow is scaled by
+   *  a temperature one frame stale. That is well inside the noise and not worth a second assignment
+   *  to keep in step. */
+  fervourRamp: number;
 }
 
 /** Radius of a fighter holding exactly `refStake`, as a share of `sqrt(area / fighters)` — the side
@@ -196,6 +221,105 @@ const MAX_SCALE = 2.4;
 const MIN_RADIUS = 4;
 
 // Motion, all in px/s (or px/s²) per `unit`.
+
+/** THE ROUND HAS TO BUILD, and this is the one thing `web/index.html` had that this field did not.
+ *
+ *  The reference's physics step (line 947) opens with
+ *
+ *  ```js
+ *  const ramp = 1 + 1.6 * (w.roundT / BATTLE_MS);
+ *  ```
+ *
+ *  and then multiplies BOTH `COMBAT.accel` and the max-speed cap by it, for every fighter, on every
+ *  frame — 1.0 at the bell, 2.6 at the end of the round. Everything ELSE that made that field feel
+ *  violent, this one already has and has better: active pursuit, mass-weighted elastic collision, a
+ *  contact knock, anticipation and lunge, a recoil scaled by the chain's own dice. What it did not
+ *  have was a TEMPERATURE THAT CHANGES. It opened at the pace it closed at, and a fight that never
+ *  accelerates has no last round.
+ *
+ *  1.6 is the reference's own figure, kept rather than re-derived, because the quantity it is a gain
+ *  on is the same quantity: a share of the round, running 0 to 1. `stepField`'s caller computes that
+ *  share as the playhead over the LAST EVENT'S step — the exact analogue of `roundT / BATTLE_MS` on
+ *  the axis this canvas actually has, which is the chain's, not a wall clock's. See arenaLoop.
+ *
+ *  WHAT `k = 1 + FERVOUR_GAIN * fervour` SCALES, and the split IS the design:
+ *
+ *    SCALED — every ACCELERATION and every SPEED CAP in the steering. `SEEK_ACCEL`, `MAX_SPEED`,
+ *      `APPROACH_SPEED`, `WINDUP_ACCEL`, `LUNGE_ACCEL`, `LUNGE_SPEED`, `CONTACT_KNOCK`,
+ *      `SPREAD_ACCEL`, `RECENTRE_MAX_ACCEL`, and `HIT_RECOIL` in `recoil()`.
+ *    NOT SCALED — every RATE or FREQUENCY: `SPEED_BLEED`, `WANDER_LERP`, `REST_DECAY`,
+ *      `RECENTRE_GAIN`, `RECENTRE_DAMP`, `RADIUS_STIFFNESS`, `RADIUS_DAMPING`, `FLINCH_SPEED`,
+ *      `STANDOFF_DRIFT`. And every GEOMETRIC one: `STANDOFF_GAP`, `APPROACH_RADIUS`,
+ *      `PERSONAL_SPACE`, `SPACING_SHARE`, `SPACING_MAX_SHARE`, the radii, the walls, `LABEL_SPACE`.
+ *      A ramp on a distance would move the field's furniture as the fight went on; a ramp on a
+ *      frequency would change how the field BEHAVES rather than how fast it travels.
+ *    LEFT ALONE — `WANDER_SPEED` and `CALM_SPEED`, the idle and lobby drift. Those are not part of a
+ *      fight at all, and the lobby is documented above as deliberately almost still.
+ *
+ *  WHY THAT EXACT SPLIT IS SAFE TO DO TO A COMPOSITION THAT WAS TUNED BY MEASUREMENT. Because this
+ *  file's two most carefully argued invariants are RATIOS rather than absolutes, and a common factor
+ *  leaves a ratio alone.
+ *
+ *    - `SPREAD_ACCEL`'s note is that it has to WIN against `SEEK_ACCEL` or the whole table collapses
+ *      into one vibrating knot. It says in as many words that it "is a RATIO and not an absolute",
+ *      and records being raised 250 → 395 in lockstep when the seek went 190 → 300. Scaling both by
+ *      the same `k` holds 395/300 exactly at every value of `fervour` — and the equilibrium spacing,
+ *      the separation at which the linear falloff `SPREAD_ACCEL·(range−d)/range` balances
+ *      `SEEK_ACCEL`, depends on that ratio and on nothing else. It is therefore unchanged at every
+ *      temperature, and the knot provably cannot come back.
+ *    - `RECENTRE_*` is a PD controller carrying a measured table (centroid sd 4.3% of the field
+ *      width, never once more than 15% off centre) and the standing requirement that "a controller
+ *      has to be able to out-run the thing it is correcting". Its GAIN and DAMP are frequency terms —
+ *      between them they set the loop's `ωn = √GAIN` and `ζ = DAMP / (2·√GAIN)` — so scaling those
+ *      would change the loop's character and retire that table. Its CAP is something else entirely:
+ *      an authority limit, against a disturbance whose velocity is now `k` times larger. So the cap,
+ *      and only the cap, scales with `k`. ωn and ζ are identical at every fervour, the recovery has
+ *      the same shape and the same duration it was measured to have, and it keeps the authority to
+ *      apply it to a crowd moving 2.6x faster.
+ *    - And the field's AGILITY IN SECONDS does not move either: time to reach a cap is `cap / accel`,
+ *      and both ends of that scale by `k`. Nothing takes longer to turn, to close, or to settle.
+ *      Everything simply travels faster, which is the only thing being asked for.
+ *
+ *  WHAT IT ACTUALLY MEASURES AS, driven end to end — the fixture lineup, a real seeded `runFullFight`
+ *  stream, the real `createTargetTracker`, a recoil on every crossed event, at 60fps for the whole
+ *  fight — because none of the above is worth anything asserted. EIGHT SEEDS PER ROW, averaged; the
+ *  first version of this table was one seed and it published a badly wrong figure for two fighters
+ *  (see the caveat below), which is a mistake worth leaving the evidence of rather than quietly
+ *  correcting. Left column is HEAD, right is this file, so it carries `RECOIL_REACH` and the confined
+ *  aim point as well — neither of which moves the speed column by a measurable amount:
+ *
+ *  ```text
+ *  lineup / panel     mean speed px/s   centroid sd (% of width)   frames >15% off centre
+ *   9 @ 1390x781        210 →  358          3.7% → 4.4%                  3% →  5%
+ *  16 @ 1390x781        217 →  358          2.1% → 3.5%                  0% →  3%
+ *   2 @ 1390x781        216 →  425          9.4% → 9.9%                 66% → 58%
+ *  16 @  360x270         81 →  135          3.1% → 3.7%                  1% →  3%
+ *  ```
+ *
+ *  The mean of `k` across a fight is 1.8, and the measured speed ratios are 1.70 / 1.65 / 1.97 / 1.67
+ *  — the ramp is doing precisely and only what it says on the tin. No run at any size produced a NaN,
+ *  a body outside the walls, or a body pinned to a wall with its velocity still pointing into it.
+ *
+ *  TWO FIGHTERS IS A DIFFERENT MEASUREMENT AND THE COLUMN SHOULD NOT BE READ ACROSS THAT ROW. At a
+ *  full table the centroid is an average over nine or sixteen bodies and the individual duels cancel;
+ *  at two, THE CENTROID IS THE DUELLING PAIR, so `recentre` is measuring the very thing it is trying
+ *  to move and has no crowd to average against. The pair therefore fights wherever it happens to
+ *  meet — two thirds of the fight more than 15% off centre, at HEAD and here alike — and the seed
+ *  decides which. That is not a controller failure and must not be retuned as one: at nine and
+ *  sixteen the same controller holds 4.4% and 3.5%, and the n=2 figure actually IMPROVES here
+ *  (66% → 58%). It is a two-body system being reported with a statistic built for a crowd.
+ *
+ *  AND THE HONEST COST, since the centroid column is not free: the crowd runs LOOSER at temperature.
+ *  Mean separation between non-duelling pairs goes from 1.34 to 1.74 spacings between fervour 0 and 1,
+ *  and the PD controller spends slightly more of the fight recovering. That is the safe direction of
+ *  error — the failure this file has actually been burned by is the knot, the crowd collapsing into
+ *  one vibrating mass, and more energy at a fixed spread/seek ratio can only push away from it. The
+ *  cause is that the approach brake's authority is a RATE (`SPEED_BLEED`) while the distance overshot
+ *  before it takes hold is a speed over that rate: the brake holds its 150ms and the overshoot grows
+ *  with `k`. That is the correct trade — scaling the bleed would repeal the recoil's follow-through,
+ *  which is the one thing this whole change exists to put on screen. */
+const FERVOUR_GAIN = 1.6;
+
 /** RAISED FROM 190 / 135. The old pair produced a field of circles CONVERGING — a smooth glide toward
  *  a standoff point, at a speed that never changed. Nothing about it read as two fighters closing on
  *  each other, because closing is an acceleration and this was a drift. The reference this design is
@@ -238,7 +362,30 @@ const CALM_SPEED = 8;
 const WANDER_LERP = 2.6;
 /** Settled, and dead bodies at any time: exponential decay to a standstill. */
 const REST_DECAY = 3.2;
-const WALL_RESTITUTION = 0.9;
+/** THE WALL IS NOT A BRAKE. It was 0.9, and 0.9 was a second, undocumented governor sitting in the
+ *  same path as the documented one.
+ *
+ *  Speed in this field is decided deliberately and in exactly one place: the soft cap in `stepField`,
+ *  which BLEEDS excess velocity off at `SPEED_BLEED` rather than clipping it, precisely so that a
+ *  `recoil()` above cruising speed plays out over ~150ms instead of being deleted on the next frame.
+ *  A restitution of 0.9 takes a tenth of a fighter's speed at every bounce, and the velocity it takes
+ *  it off is exactly the thrown-fighter velocity the soft cap exists to preserve — so a hit that
+ *  launched somebody into a wall lost its follow-through at the one moment it was most visible. At 1
+ *  the wall reflects and the soft cap alone says how fast anyone is travelling a moment later: one
+ *  mechanism instead of two disagreeing about the same number.
+ *
+ *  It is also what the reference did — `web/index.html` line 954 is `p.vx = Math.abs(p.vx)`,
+ *  restitution exactly 1 — and that ricochet is part of why its field never settled.
+ *
+ *  1 CANNOT TRAP A BODY, and that is a property of `clampToWalls`'s SHAPE rather than of this value:
+ *  the position is hard-pinned to the contact point BEFORE the velocity is touched, and the velocity
+ *  is then rebuilt as `±Math.abs(...)` — a sign forced to point off the wall. Restitution scales a
+ *  magnitude and can never restore a sign, so the next integration can only carry the body inward.
+ *  The same holds in the repeat case, a disc whose radius spring GROWS it into a wall it is already
+ *  pinned against: the clamp fires again, re-pins, and re-reflects an outward velocity, which at 1 is
+ *  a no-op — where at 0.9 it was a fighter being braked once per frame for the crime of getting
+ *  richer. */
+const WALL_RESTITUTION = 1;
 /** Extra push applied along the contact normal when two live circles touch, so a crowd keeps
  *  breathing instead of packing into a solid mass. `web/index.html`'s `COMBAT.knock`, and it has to
  *  be a real fraction of `MAX_SPEED` to do anything against a seek force pulling twelve fighters at
@@ -260,6 +407,67 @@ const HIT_RECOIL = 300;
  *  the chain has always published and this canvas has never drawn. Floored well above zero: even the
  *  weakest roll is a fighter being hit and has to move them. */
 const RECOIL_FORCE = [0.4, 1.5] as const;
+/** HOW FAR APART A PAIR MAY BE, over and above their two radii, AND STILL BE THROWN BY A HIT — and
+ *  the fact that it is derived from `STANDOFF_GAP` rather than picked is the entire point of it.
+ *
+ *  IT WAS A LITERAL `6`, AND THAT LITERAL WAS A BUG that had quietly disabled most of the violence in
+ *  this file. `HIT_RECOIL`'s note above claims the kick "lands often enough to keep a melee from
+ *  settling into a static huddle", at the chain's pace of ~n hits a second. It did not. Measured over
+ *  the fixture's own seeded stream at nine and at sixteen fighters, `recoil` fired on ONE TO TWO PER
+ *  CENT of hits — about one throw every fifteen seconds of a hundred-second fight — and the rate was
+ *  identical before and after the fervour ramp, so this was never a consequence of the new speeds.
+ *
+ *  The cause is two constants that have to agree and never did. The steering parks a pair at
+ *  `STANDOFF_GAP * unit` edge to edge — that is what `STANDOFF_GAP` IS, the distance a duel is held
+ *  at, 22 units — and then the recoil refused to fire beyond 6. A pair sitting exactly where the
+ *  steering had put it was three and a half times outside the window that would let a hit move it, so
+ *  the throw could only land in the fraction of a second a lunge or a collision had closed the gap.
+ *  `flinch()` has no such guard and fires on every hit, which is why the game still read as landing
+ *  blows at all: the disc compressed, the ring drew, the figure rose, and the two fighters stood
+ *  perfectly still while it happened.
+ *
+ *  1.5 x `STANDOFF_GAP` admits a pair anywhere up to half again past its parking distance, which
+ *  covers both the orbit — `STANDOFF_DRIFT` rotates the aim point, so a fighter circles its station
+ *  rather than sitting on it — and the radius spring's overshoot on a fighter that has just been paid.
+ *  It cannot start throwing fighters who merely happen to be near each other: `spread()` holds
+ *  non-duelling bodies at `SPACING_SHARE * sqrt(area / n)`, which at sixteen fighters on a desktop
+ *  panel is 221px against this window's 46px. (Those two have to be compared in the SAME quantity —
+ *  `spacing` is already pixels, while this constant is in `unit`s and is multiplied by `field.unit`
+ *  at the call site, so the margin is 4.8x rather than the 6.7x that comparing 221 to 33 suggests.
+ *  Measured non-duelling separation runs 1.9 to 2.3 spacings, so the margin in practice is about ten
+ *  times.) The pairs this reaches are the pairs the steering deliberately brought together, which is
+ *  exactly the set `HIT_RECOIL` was written for.
+ *
+ *  AND NOW THE PART THAT MATTERS, because the bug this fixes was created by a comment asserting a
+ *  frequency nobody had measured, and this note is not going to repeat that. What the change bought,
+ *  on the same seeded fixture runs, is FOUR TO SIX TIMES THE RATE AND NOT A CURE:
+ *
+ *  ```text
+ *  reach          9 fighters   16 fighters   2 fighters
+ *   6 units (was)     1.8%          1.0%         5.9%
+ *  33 units (this)    9.8%          5.5%        22.2%
+ *  66 units           19.0%        12.6%        48.4%
+ *  ```
+ *
+ *  `RECOIL_REACH` is a SHALLOW LEVER, because the gap was only half the diagnosis: THE PAIR USUALLY
+ *  HAS NOT ARRIVED YET. 73% of hits at nine fighters and 61% at sixteen land on a pair the tracker
+ *  has genuinely committed to each other — the steering is chasing the right people — but the median
+ *  gap between those committed fighters at the instant their blow lands is 169 units at nine and 203
+ *  at sixteen, against a parking distance of 22. They are still crossing the field when the chain
+ *  resolves them. `DWELL_MS` is 1.6s and a commitment expires and re-picks before the crossing
+ *  finishes, so most blows are struck between two fighters who really are nowhere near each other,
+ *  and no window short of "always" would catch them: 50% would take ~200 units of reach, which is a
+ *  seventh of the arena's width and would repeal this guard's entire purpose — precisely the failure
+ *  `recoil()`'s own note warns about, two fighters at opposite ends leaping apart for a reason
+ *  nothing on screen explains.
+ *
+ *  So this is the honest half of the fix. It is worth having and it is safe — across six reach values
+ *  at four lineup/panel combinations, no arm produced a NaN, a body outside the walls, or a body held
+ *  against one, and speed, centroid and separation are unmoved at 1.5x. The other four fifths are not
+ *  in this file: they are `targeting.ts`'s dwell and lookahead, i.e. how long a fighter is given to
+ *  arrive. Do not chase it by raising `HIT_RECOIL` instead — that constant was tuned to be visible
+ *  when it fires, and it is about to fire five times as often for the first time. */
+const RECOIL_REACH = STANDOFF_GAP * 1.5;
 /** PERSONAL SPACE. Every fighter is attracted to some other fighter and nothing pushes the field
  *  apart at range, so a table converges on one tight knot in the middle and leaves two thirds of the
  *  arena white — verified in a browser at three different points of a fight before this existed.
@@ -590,6 +798,11 @@ export function createField(
     baseRadius,
     bodies,
     byId,
+    // 1 IS THE NEUTRAL, AND IT IS NOT CARRIED FROM `prev`. The first `stepField` of the frame
+    // overwrites it with the true ramp before anything in a fight reads it; the only consumer in
+    // between is the settle loop below, and settling a spawn layout should run at the opening pace
+    // however hot the round it is being rebuilt into happens to be. See `ArenaField.fervourRamp`.
+    fervourRamp: 1,
   };
   // Deterministic spawn means deterministic overlaps. Settle them before the first paint so a lobby
   // never opens with two fighters fused together — 16 passes of the same solver the loop uses.
@@ -697,7 +910,12 @@ export function flinch(field: ArenaField, attackerId: number, defenderId: number
 
 /** One frame of motion. `targets[id]` is who to steer toward (see targeting.ts); `nowMs` drives the
  *  idle sinusoid. Never called under `prefers-reduced-motion` — positions simply stay where
- *  `createField` put them. */
+ *  `createField` put them.
+ *
+ *  `fervour` is HOW FAR THROUGH THE FIGHT WE ARE, 0 at the bell and 1 at its last event, and the
+ *  caller owns that range: it is clamped where it is computed (arenaLoop) and deliberately not
+ *  clamped again here, so one place is answerable for it rather than two. Everything it does happens
+ *  through `field.fervourRamp` — see `FERVOUR_GAIN`. */
 export function stepField(
   field: ArenaField,
   targets: (number | null)[],
@@ -705,6 +923,7 @@ export function stepField(
   mode: MotionMode,
   dtMs: number,
   nowMs: number,
+  fervour: number,
 ): void {
   // Clamped rather than raw: a backgrounded tab hands back one enormous delta, and integrating it
   // would teleport every fighter through a wall. The physics decides nothing, so losing a little
@@ -713,6 +932,12 @@ export function stepField(
   if (dt <= 0) return;
   const u = field.unit;
   const t = nowMs / 1000;
+  // THE ONE ASSIGNMENT, and it is before every reader: `spread` and `recentre` below, the steering in
+  // the body loop, `separate` at the end of the frame, and `recoil` from the loop on the next one.
+  // Deliberately after the `dt <= 0` return — a frame that does not step the field should not move
+  // the temperature it steps at either.
+  const ramp = 1 + FERVOUR_GAIN * fervour;
+  field.fervourRamp = ramp;
 
   stepRadii(field, dt);
 
@@ -739,11 +964,81 @@ export function stepField(
     if (target && !target.dead) {
       const angle = b.id * 2.399963 + t * STANDOFF_DRIFT;
       const standoff = b.r + target.r + STANDOFF_GAP * u;
-      const dx = target.x + Math.cos(angle) * standoff - b.x;
-      const dy = target.y + Math.sin(angle) * standoff - b.y;
+      // …AND THE AIM POINT IS CONFINED TO THE PLAYABLE AREA, which it was not, and the omission glued
+      // fighters to walls.
+      //
+      // The standoff point is a target's position plus a rotating offset, and nothing was stopping
+      // that sum from landing outside the arena. When it did, the fighter accelerated at a coordinate
+      // it could never occupy: `clampToWalls` pinned it to the boundary, the seek pushed it out again
+      // on the very next frame, and it sat there pressing outward and sliding along the wall for as
+      // long as the angle kept pointing that way. Traced at sixteen fighters — a fighter held against
+      // the top wall at 191px/s for 1.4 SECONDS in the middle of a duel, which reads as broken rather
+      // than as fast.
+      //
+      // NOTHING ELSE COULD HAVE RESCUED IT, which is why it had to be fixed at the source. `recentre`
+      // applies the IDENTICAL acceleration to every body by construction — that uniformity is the
+      // whole argument for why it cannot compress the melee — so it has no per-body authority to peel
+      // one fighter off a wall. `spread()` exempts the duelling pair from each other, and the rest of
+      // the crowd is pushing that pair further out, not pulling it back. And the wall bounce cannot
+      // help either: the velocity into a wall while sliding along it is almost entirely tangential, so
+      // reflecting its small normal component just hands the seek something to overcome again.
+      //
+      // It was rare while mutual pairs were rare. targeting.ts's appointment book made them the norm
+      // (reciprocity 31% → 81%), so a latent case became one a viewer would actually see — which is
+      // the ordinary way a good change surfaces an old bug rather than causing one.
+      //
+      // WHAT CONFINING IT IS AND IS NOT WORTH, over eight seeds at each of four configurations,
+      // counting EPISODES — consecutive time one live body spends against a wall — because the share
+      // of frames in contact is the wrong statistic. Contact went UP across this whole body of work
+      // (0.38% → 0.56% of live body-frames at nine fighters) for the simple reason that the field is
+      // now 1.7x faster and reaches the walls more often, and a fast bounce off a wall at
+      // `WALL_RESTITUTION` 1 is a ricochet, which is wanted. What reads as broken is a body PRESSED
+      // there, and that is what episodes measure:
+      //
+      //   episodes >= 1s, 8 seeds        HEAD    unconfined aim    confined aim
+      //     9 @ 1390x781                   1            1                1
+      //    16 @ 1390x781                   5            1                0     longest 2.1 -> 0.2s
+      //    16 @  360x270                  16            1                2
+      //     2 @ 1390x781                   0            0                0
+      //
+      // So: HEAD's 22 long episodes across the four are down to 3, and most of that was won by the
+      // fervour ramp giving a stuck fighter the authority to leave (HEAD's episodes are overwhelmingly
+      // ones where the fighter was WINDING UP — 5 of 5 at sixteen, 11 of 16 on the phone — pushing
+      // away from its target and into a wall at speeds that took a second to undo). Confining the aim
+      // point clears the worst remaining desktop case outright and is a wash on the other three.
+      //
+      // IT IS STILL RIGHT TO DO INDEPENDENTLY OF THAT LEDGER, which is why it is here despite two of
+      // the four rows not moving: steering at a coordinate the body is structurally forbidden from
+      // occupying is indefensible on its own terms. The seek was spending force every frame on a
+      // request the clamp was always going to refuse, and no amount of downstream correction makes
+      // that a sensible thing to ask for. It costs nothing — mean speed 358 either way, centroid and
+      // separation unmoved, zero NaN and zero escapes over all 64 runs.
+      //
+      // AND THE RESIDUAL IS `spread()`, MEASURED, so nobody has to guess next time. Zeroing
+      // `SPREAD_ACCEL` on top of this takes the remaining long episodes to 0 at every configuration;
+      // zeroing `WINDUP_ACCEL` does much less; and zeroing `CONTACT_KNOCK` makes it far WORSE (the
+      // phone goes 2 → 5 episodes and 1.7s → 4.9s), which is the knock doing exactly the job its own
+      // note claims — breaking up a pile. Personal space is a pairwise repulsion with no knowledge of
+      // walls, and it should not have any: it is equal and opposite by construction, and suppressing
+      // one side of a pair at a boundary would inject net momentum into the crowd. When sixteen
+      // fighters want two spacings apiece in a 360x240 box that cannot supply it, somebody is against
+      // a wall because the field is FULL, and that is a true statement about the fight rather than a
+      // defect to be engineered away.
+      //
+      // THE INSET IS `b.r`, NOT `target.r`: this point is where THIS fighter is asking to put its own
+      // centre, and `[b.r, extent - b.r]` is exactly the interval `clampToWalls` will pin that centre
+      // to. And the vertical extent is `field.h - LABEL_SPACE`, the same floor the position clamp and
+      // `recentre` both use — taking `field.h` here would have fixed three walls out of four and left
+      // the one with furniture in front of it.
+      const aimX = confineAxis(target.x + Math.cos(angle) * standoff, b.r, field.w);
+      const aimY = confineAxis(target.y + Math.sin(angle) * standoff, b.r, field.h - LABEL_SPACE);
+      const dx = aimX - b.x;
+      const dy = aimY - b.y;
       const dist = Math.hypot(dx, dy) || 1;
-      b.vx += (dx / dist) * SEEK_ACCEL * u * dt;
-      b.vy += (dy / dist) * SEEK_ACCEL * u * dt;
+      // `STANDOFF_GAP` above is geometry and holds still; the CHARGE at it is what builds. See
+      // `FERVOUR_GAIN`.
+      b.vx += (dx / dist) * SEEK_ACCEL * u * ramp * dt;
+      b.vy += (dy / dist) * SEEK_ACCEL * u * ramp * dt;
 
       // ANTICIPATION AND FOLLOW-THROUGH — see WINDUP_MS. Steered at the target's CENTRE and not at
       // the standoff point: a lunge is a fighter going for another fighter, and aiming it at the
@@ -756,7 +1051,7 @@ export function stepField(
         const td = Math.hypot(tx, ty) || 1;
         lunging = lead <= LUNGE_MS;
         // Away on the wind-up, at it on the lunge, and the sign is the entire mechanism.
-        const accel = (lunging ? LUNGE_ACCEL : -WINDUP_ACCEL) * u * dt;
+        const accel = (lunging ? LUNGE_ACCEL : -WINDUP_ACCEL) * u * ramp * dt;
         b.vx += (tx / td) * accel;
         b.vy += (ty / td) * accel;
       }
@@ -764,7 +1059,12 @@ export function stepField(
       // Ease off as they close, so the pair meets and stays together across the moment the hit lands
       // rather than sailing past each other at full tilt. The lunge is exempt: it is the one moment
       // the fighter is supposed to sail.
-      const cap = (lunging ? LUNGE_SPEED : dist < APPROACH_RADIUS * u ? APPROACH_SPEED : MAX_SPEED) * u;
+      // All three caps ramp and the RADIUS that chooses between them does not: which brake applies is
+      // a question about where the fighter is, and a late round should not move the point at which a
+      // charge becomes an arrival. Because the caps ramp with the accelerations that fill them, the
+      // time taken to reach any of them is unchanged — see `FERVOUR_GAIN`.
+      const cap =
+        (lunging ? LUNGE_SPEED : dist < APPROACH_RADIUS * u ? APPROACH_SPEED : MAX_SPEED) * u * ramp;
       const speed = Math.hypot(b.vx, b.vy);
       if (speed > cap) {
         // A SOFT cap, and this is the bug that made the old recoil invisible. `recoil()` hands a
@@ -851,7 +1151,11 @@ function massOf(b: ArenaBody): number {
  *  is all a crowd of at most sixteen circles needs. */
 function spread(field: ArenaField, targets: (number | null)[], dt: number): void {
   const bodies = field.bodies;
-  const accel = SPREAD_ACCEL * field.unit * dt;
+  // RAMPED WITH THE SEEK IT IS HOLDING OFF, which is the point of ramping it at all: this accel's own
+  // note is that it is a RATIO against `SEEK_ACCEL`, so a common factor changes nothing about where
+  // the two balance and the equilibrium spacing is identical at every fervour. `PERSONAL_SPACE` and
+  // `field.spacing` set the range and are geometry — they do not move. See `FERVOUR_GAIN`.
+  const accel = SPREAD_ACCEL * field.unit * field.fervourRamp * dt;
   for (let i = 0; i < bodies.length; i++) {
     const a = bodies[i];
     if (a.dead) continue;
@@ -900,7 +1204,12 @@ function recentre(field: ArenaField, dt: number): void {
   }
   if (live === 0) return;
 
-  const cap = RECENTRE_MAX_ACCEL * field.unit;
+  // THE CAP RAMPS AND THE GAINS DO NOT, and the asymmetry is deliberate: the cap is this controller's
+  // AUTHORITY, against a crowd that now drifts off centre `fervourRamp` times faster, while GAIN and
+  // DAMP are the frequency terms that set its ωn and ζ. Scaling those would retire the measured table
+  // over `RECENTRE_GAIN`; scaling only the cap keeps the loop's shape exactly and lets it out-run the
+  // faster disturbance, which is the requirement that note states. See `FERVOUR_GAIN`.
+  const cap = RECENTRE_MAX_ACCEL * field.unit * field.fervourRamp;
   // Position error, less the crowd's own drift — see RECENTRE_DAMP.
   const ax =
     clamp((field.w / 2 - sumX / live) * RECENTRE_GAIN - (sumVx / live) * RECENTRE_DAMP, -cap, cap) * dt;
@@ -933,15 +1242,22 @@ export function recoil(field: ArenaField, attackerId: number, defenderId: number
   const dx = d.x - a.x;
   const dy = d.y - a.y;
   const dist = Math.hypot(dx, dy);
-  if (dist <= 0 || dist > a.r + d.r + 6 * field.unit) return;
+  if (dist <= 0 || dist > a.r + d.r + RECOIL_REACH * field.unit) return;
 
   const ma = massOf(a);
   const md = massOf(d);
   const total = ma + md;
   if (total <= 0) return;
   const scale = RECOIL_FORCE[0] + (RECOIL_FORCE[1] - RECOIL_FORCE[0]) * force;
+  // …AND BY THE HOUR OF THE FIGHT. A late blow throws harder than an opening one, which is the ramp's
+  // most visible single effect: the impulse is the only place in the file where a fighter's speed is
+  // set by an EVENT rather than by steering, and the soft cap now bleeds it back to a cruising speed
+  // that is itself `fervourRamp` times higher, so the follow-through survives longer as well as
+  // starting faster. Read off the field because this is called from the event stream and not from a
+  // step — see `ArenaField.fervourRamp` for why that is a frame stale and why that is fine.
+  //
   // Per unit of distance, so the two components below need no second normalisation.
-  const j = (HIT_RECOIL * field.unit * scale) / dist;
+  const j = (HIT_RECOIL * field.unit * scale * field.fervourRamp) / dist;
   // Each party takes the share of the impulse the OTHER party's mass earns it — the standard split,
   // and the reason a heavy attacker throws a light defender rather than both moving equally.
   a.vx -= dx * j * (md / total);
@@ -970,7 +1286,12 @@ export function recoil(field: ArenaField, attackerId: number, defenderId: number
  *  size, so nothing about the feel this file set out to preserve is lost. */
 function separate(field: ArenaField): void {
   const bodies = field.bodies;
-  const knock = CONTACT_KNOCK * field.unit;
+  // Ramped: the knock is documented as having to be a real fraction of `MAX_SPEED` to do anything
+  // against the seek, and both of those now ramp — so it stays that same fraction all round rather
+  // than fading into a field that has got 2.6x faster around it. The positional half of this function
+  // is untouched by the ramp, because an overlap is a distance and resolving it is not a force. See
+  // `FERVOUR_GAIN`.
+  const knock = CONTACT_KNOCK * field.unit * field.fervourRamp;
   for (let i = 0; i < bodies.length; i++) {
     const a = bodies[i];
     for (let j = i + 1; j < bodies.length; j++) {
@@ -1044,7 +1365,28 @@ function separate(field: ArenaField): void {
  *  own height, which is what is actually sitting over the canvas here. */
 export const LABEL_SPACE = 30;
 
+/** WHERE A BODY'S CENTRE IS ALLOWED TO BE, on one axis — the interval `[r, extent - r]`, and the
+ *  degenerate answer when the body is wider than the axis it is being confined to.
+ *
+ *  It exists because that interval is now asserted in TWO places and they must not be allowed to
+ *  drift apart. `clampToWalls` enforces it on a POSITION after the fact; `stepField` applies it to
+ *  the standoff AIM POINT before the fact, so that the steering never asks for a coordinate the
+ *  clamp is going to refuse. Two statements of one rectangle that can disagree is the exact shape of
+ *  the bug this file has already been bitten by once — `RECOIL_REACH`'s note is the post-mortem — so
+ *  the interval gets a name.
+ *
+ *  `extent / 2` when the body does not fit: the same rule, and the same reasoning, as the "wider than
+ *  the field" branch in `clampToWalls`. A `clamp(v, r, extent - r)` with the bounds crossed returns
+ *  whichever bound it tests first, which is an arbitrary edge rather than an answer; the middle is at
+ *  least the honest one, it matches what the position clamp will do a few lines later, and it cannot
+ *  produce a NaN for any finite input. */
+function confineAxis(v: number, r: number, extent: number): number {
+  return extent <= r * 2 ? extent / 2 : clamp(v, r, extent - r);
+}
+
 function clampToWalls(field: ArenaField): void {
+  // The same rectangle `confineAxis` describes, enforced on a position rather than on a request, and
+  // additionally reflecting the velocity — which is why this is written out rather than delegated.
   const floor = field.h - LABEL_SPACE;
   for (const b of field.bodies) {
     // A fighter wider than the field would oscillate forever between two impossible clamps; pin it

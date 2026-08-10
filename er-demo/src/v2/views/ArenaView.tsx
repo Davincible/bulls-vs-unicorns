@@ -382,8 +382,137 @@ function ErWrites() {
   );
 }
 
+/** THE ROUND'S TOP FIVE, ON THE FIELD.
+ *
+ *  WHY THIS IS NOT A SECOND STANDINGS TABLE. 00-5 already ranks every fighter in the round across
+ *  eight columns, and it is good — but it is four sections below the frame, so for the whole of a
+ *  fight the reader watching the field cannot see who is winning it. This is the same fact at a
+ *  glance, in the corner of the thing it is about, and it deliberately stops at five rows: a sixteen
+ *  row list over the field would be a table with a fight behind it.
+ *
+ *  IT IS PART OF THE TOP-LEFT OVERLAY, NOT THE EMPTY BOTTOM-LEFT ONE, and that is not where it
+ *  started. `.ovl--bl` is the slot the design left for it, and the slot is not available: the
+ *  shell's toast rail is `position: fixed; left: var(--gut); bottom: calc(var(--chrome-h) + 14px)`
+ *  at `z-index: 110` (base.css), which is the same corner of the same screen whenever the field is
+ *  the thing being watched, and it outranks any overlay inside the frame. Measured at 1440x1000
+ *  mid-fight: the rail occupied x 24-323, y 888-956 against a leaderboard at x 24-269, y 837-970 —
+ *  four of the five rows behind "You took $19.92 · 10 hits from 6 fighters". Raising this above the
+ *  toasts would be the wrong trade in the other direction: a message telling a player they just lost
+ *  money outranks a standings table. So the list moved to the one edge of the field that nothing
+ *  else is pinned to, and the left column now answers the three questions in order — which round,
+ *  how long is left, who is ahead.
+ *
+ *  RANKED BY `worth` (hp + banked), WHICH IS NOT WHAT 00-5 SORTS BY, AND THE DISAGREEMENT IS THE
+ *  POINT. `worth` is what the discs on the canvas are sized by and what decides the round — so this
+ *  list is a reading of the picture beside it, and a row moving up here is a disc that just got
+ *  bigger. 00-5 sorts by P/L, which answers a different question (who is UP on what they put in) and
+ *  is the right key for a ledger you scroll to on purpose. Two orderings of one set of fighters is
+ *  only acceptable while each says which one it is, which is what the caption is for.
+ *
+ *  ONE SOURCE, SLIGHTLY BEHIND. Every figure here comes off `live.fighters` — the same array the
+ *  rosters and 00-5 read — and never off `hitEvents` or the canvas's replay shadow, which run ahead
+ *  of the poll by up to a sub-second of interpolation. `arena/replay.ts`'s header names the class of
+ *  bug that would be: "two implementations of 'what does one hit do' is how the DUST-floor bug got
+ *  in". A leaderboard a quarter-second behind the disc it describes is right; one that computes its
+ *  own damage is a second opinion about the same fight, and eventually the two disagree in front of
+ *  somebody's money.
+ *
+ *  DEAD AND EXTRACTED FIGHTERS STAY IN THE LIST. A fighter who extracted early and banked well is
+ *  genuinely one of this round's leaders — that is the whole proposition of Extraction mode — and
+ *  dropping them would report a leaderboard of "who is still on the field", which is a different
+ *  claim under the same heading. They wear `.row--dead`'s quieter ink, the same tone the roster and
+ *  00-5 give them, and their square goes neutral through `Mark`'s own `dead` — which is the page's
+ *  established vocabulary and costs the side colour on those rows. That cost is real and worth
+ *  stating: late in a round most of the top five may be out, and the list can end up with more grey
+ *  squares than coloured ones. It is still the right trade, because a green square on a fighter who
+ *  is no longer fighting would be the more misleading of the two, and the side survives for a screen
+ *  reader in the mark's own label.
+ *
+ *  NOT INTERACTIVE, AND THAT IS A DECISION RATHER THAN AN OMISSION. Every row in 00-4 and 00-5 is a
+ *  `role="button"` tab stop that opens the fighter in the rail, and copying that here would put five
+ *  more stops on the path to the Deploy buttons and the Extract control — the two things on this
+ *  screen a keyboard reader is most likely to be racing a clock to reach. The fighters in it are
+ *  reachable as buttons in three places downstream, and the canvas behind it already opens any
+ *  fighter on click. So it is a readout, not a control, and it costs the keyboard nothing.
+ *
+ *  It stays in the accessibility tree rather than being `aria-hidden` as a duplicate of 00-5: the
+ *  caption immediately above it says what it is, and quietly deleting a surface for readers who
+ *  cannot see the field is how a screen reader ends up on a different page from everyone else. */
+function FieldLeaders({ fighters }: { fighters: FighterView[] }) {
+  // A LEADERBOARD OF ONE IS NOT A RANKING — it is the only disc on the field, restated. Two is the
+  // smallest lineup that expresses an order, and it is also the smallest a fight can have at all
+  // (`abandon_round` ends a lobby that reaches its deadline with fewer), so the list appears exactly
+  // when there is a contest and never as a caption with nothing under it. Returning `null` rather
+  // than an empty list matters now that this block shares the clock's box: an empty one would still
+  // print its own heading and still grow the rect `arena/chrome.ts` evicts the fight from.
+  // `live === null` arrives here as an empty array from `TheArena` and is caught by the same line.
+  if (fighters.length < 2) return null;
+
+  // Stable by construction: `Array.prototype.sort` has been required to be stable since ES2019, so
+  // fighters of equal worth — every fighter in a lobby where everyone staked the same, which is the
+  // common case — hold their on-chain order rather than shuffling on every poll.
+  const top = [...fighters]
+    .sort((x, y) => {
+      const d = worth(y) - worth(x);
+      return d > 0n ? 1 : d < 0n ? -1 : 0;
+    })
+    .slice(0, 5);
+
+  return (
+    // NOT AN `.ovl` OF ITS OWN — a block inside the clock's box, separated by whitespace. Two
+    // absolutely-positioned overlays cannot be stacked without hardcoding the height of the first,
+    // and the first is a `clamp()` that resolves differently at every width; that hardcoded number
+    // is precisely `arena/field.ts`'s `LABEL_SPACE` cautionary tale, told again. One box is also one
+    // border in `survey`, one rect for `chrome.ts` to claim, and no seam between two claims for a
+    // fighter's label to try to thread. The separator is whitespace rather than a hairline for a
+    // mechanical reason as well as a stylistic one: a rule that existed in `survey` and not in
+    // `blank` would change this box's height with the board style, which would move the ink claim
+    // and shift every label on the field on a toggle that is documented to change nothing but the
+    // look (see `.frame--blank` in ArenaView.css).
+    <div className="ovl-lead">
+      {/* AN UNLABELLED LIST OF FIVE NAMES IS A GUESS. The caption names the key in the page's own
+          words — `worth` is `hp + banked` everywhere in `contract.ts` — and the title carries the
+          part that will not fit: what it ranks, and why it is not the order 00-5 puts the same
+          fighters in. */}
+      <div
+        className="u"
+        style={{ marginBottom: 6 }}
+        title="The five fighters holding the most value right now — hp still in the ring plus anything banked, which is what the discs on the field are sized by and what decides the round. Extracted and dead fighters keep their place: what they banked is still theirs. The full table in 00-5 ranks the same fighters by profit and loss instead, so the two orders differ on purpose."
+      >
+        Leaders · hp + banked
+      </div>
+      {top.map((f, i) => (
+        <div key={f.wallet} className={`lead${f.isYou ? " row--you" : ""}${f.dead ? " row--dead" : ""}`}>
+          <span className="idx">{(i + 1).toString().padStart(2, "0")}</span>
+          {/* LABELLED, exactly as in 00-5 and for the same reason: this list mixes both sides, so
+              the 7px square is the only thing on the row saying which one. The dead state is folded
+              into the same label rather than given a column of its own — there is no room on the
+              field for an `OUT` cell, and base.css's note on `.mk--dead` is explicit that the
+              neutral square is only legal while something else still says it in words. Here that
+              something is this string and the row's own tone. */}
+          <Mark
+            side={f.side}
+            dead={f.dead}
+            label={`${SIDE_TOKEN[f.side].name}${f.dead ? " · out" : ""}`}
+          />
+          {/* Same cell shape as the roster and the standings — the name truncates, the disclosure
+              does not. `FighterView.house`'s own comment asks every surface that lists fighters to
+              say which of them are ours, and this one lists five of them over the fight itself. */}
+          <span className="line" style={{ gap: 6, minWidth: 0 }}>
+            <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
+            {f.house ? <HouseTag /> : null}
+          </span>
+          {/* Compact, like every other money figure in a fixed track on this page: 58px does not
+              hold a chain figure in full, and `Money` puts the exact one on the cell's title. */}
+          <Money units={worth(f)} compact className="r" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TheArena() {
-  const { live, hitEvents, arenaId, setArenaId, board, setBoard, mode, sideRecord } = useArena();
+  const { live, hitEvents, arenaId, setArenaId, board, setBoard, mode, sideRecord, status } = useArena();
   const { setRail, inspectedWallet, commentary, setCommentary } = useShell();
   // The pre-fight plate below says the same thing the dock and 00-3 say, from the same object.
   const phaseCopy = useRoundPhase();
@@ -510,17 +639,47 @@ function TheArena() {
           />
         </div>
 
+        {/* A COLUMN, NOT A LINE, AND THE SECOND ROW OF IT IS THE POINT. This was `LOBBY 0:00 0/4,000`
+            on a single line in 12px mono — the phase, the clock and the step gauge given equal
+            weight, which meant the round's clock was the same size as the label beside it and Max's
+            report was that it is "very hidden". A player watching a fight wants one figure off this
+            frame and it is how much of the round is left; everything else here is the metadata that
+            says what the figure is a clock OF, and who is winning by it. See `.ovl-clock` in
+            ArenaView.css for the sizing and what each bound of the clamp is holding off. */}
         <div className="ovl ovl--tl">
+          {/* WHICH ROUND, ON THE FIELD ITSELF. It was in 00-1's section tools and inside the centred
+              plate — and the plate is gone the instant the fight starts, which is exactly when
+              somebody screenshots the field or joins a stream mid-round and has nothing on it saying
+              which round they are looking at. `status.roundNo` rather than `live.roundNo` because
+              that is the field the provider publishes for this question: it is the round on screen
+              when there is one and the arena's own counter when there is not (ArenaProvider), so it
+              never goes blank between rounds. `—` and never `0` — a round number is chain data and
+              a missing one is not round zero. */}
           <div className="ovl-line">
             <span className="u u--ink">{phase}</span>
-            {/* The third of the three — see `RoundClockSlot`. This strip sits on the field itself,
-                where an empty white canvas is already the thing a visitor is trying to interpret;
-                `LOBBY 0:00 0/4,000` over it read as an arena that had stopped. */}
-            <RoundClockSlot className="num" />
+            <span className="u">
+              Round {status.roundNo === null ? <Dash /> : status.roundNo.toString()}
+            </span>
+          </div>
+          {/* STILL EXACTLY ONE SLOT — see `RoundClockSlot`, and `e2e/clock.e2e.ts`, which asserts
+              that this screen carries three of them and no more. What changed here is the class and
+              nothing else: the component is what stops a held-open lobby printing `0:00`, and at
+              this size it prints `OPEN` across the field instead, which is the best reading that
+              state has ever had on this page. */}
+          <RoundClockSlot className="num ovl-clock" />
+          <div className="ovl-line">
             <span className="u">
               {(live?.stepsNow ?? 0).toLocaleString("en-US")}/{MAX_STEPS.toLocaleString("en-US")}
             </span>
           </div>
+          {/* WHO IS AHEAD, UNDER HOW LONG IS LEFT. The left edge of the field is one column and it
+              reads top to bottom as one sentence: which round this is, how much of it is left, how
+              far the fight has run, and who is winning it. It is hidden below 1100px — the centred
+              plate reaches this column on a narrow field and the field cannot spare 13% of itself to
+              five rows; both measurements are in ArenaView.css, and 00-5 downstairs carries every
+              fighter in eight columns. See `FieldLeaders` for why it is not in the bottom-left
+              corner the design left empty for it. */}
+          <FieldLeaders fighters={fighters} />
         </div>
 
         <div className="ovl ovl--tr">

@@ -268,6 +268,17 @@ export function createArenaLoop(deps: ArenaLoopDeps): ArenaLoop {
     // browser, not by reading the code; the conversion is cheap and the bug is silent.
     const nowEpochMs = performance.timeOrigin + rafMs;
     const playhead = playheadStep(p.fightStartedAtMs, p.fighters.length, nowEpochMs);
+    // HOW FAR THROUGH THE FIGHT WE ARE, on the chain's own axis — see field.ts's `FERVOUR_GAIN`, the
+    // one thing `web/index.html` had that made a round build rather than idle at one temperature.
+    //
+    // Its ramp was `roundT / BATTLE_MS`, a share of the round's own length. The exact analogue here is
+    // the playhead's share of the LAST EVENT'S STEP, because that is where THIS fight stops — not
+    // where the program's cap would. Dividing by `MAX_STEPS` instead would be wrong by however short
+    // the fight is, which at the low end is nearly all of it: `stepsPerSecond(2)` is 4, so a duel that
+    // settles by step 300 would live its entire life inside the first 8% of the ramp and never once
+    // leave a walk. An empty or not-yet-started stream is 0, which is exactly the opening pace.
+    const lastStep = p.hitEvents.length > 0 ? Number(p.hitEvents[p.hitEvents.length - 1].step) : 0;
+    const fervour = lastStep > 0 ? Math.min(1, playhead / lastStep) : 0;
     const { field: f, replay: r, fresh } = ensureWorld(p, playhead);
 
     const still = reducedMotion.current;
@@ -305,6 +316,11 @@ export function createArenaLoop(deps: ArenaLoopDeps): ArenaLoop {
         amount: event.amount,
         force,
         toll,
+        // DID THIS BLOW FINISH THEM. Read off the shadow `advanceReplay` has already advanced, so it
+        // is the settled fact rather than a guess from the size of the number — a fighter on their
+        // last dust goes out to a tiny amount, and the biggest hit in the round often kills nobody.
+        // impact.ts sets the figure in `--hot` for it; nothing else in the canvas is that colour.
+        kill: shadowD !== undefined && shadowD.hp === 0n,
         // The BODIES, not snapshots of them — rings and spall hold these and follow the fighter.
         // See impact.ts's `ImpactAnchor`.
         attacker: f.byId[event.attackerId],
@@ -354,7 +370,15 @@ export function createArenaLoop(deps: ArenaLoopDeps): ArenaLoop {
         rafMs,
         (id) => f.byId[id]?.dead ?? true,
       );
-      stepField(f, targets, tracker.leadMs, motionModeFor(p.phase, p.fightStartedAtMs), dtMs, rafMs);
+      stepField(
+        f,
+        targets,
+        tracker.leadMs,
+        motionModeFor(p.phase, p.fightStartedAtMs),
+        dtMs,
+        rafMs,
+        fervour,
+      );
       impact.shake(rafMs, f.unit, shake);
     } else {
       shake.x = 0;
