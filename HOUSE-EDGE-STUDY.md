@@ -12,6 +12,16 @@ below is reproducible: see `sandbox/house-edge/README.md` for the exact commands
 > mirrors, and the sandbox rig moved with them. Still not deployed — see §10, which is the
 > before/after record. Everything from §1 to §9 is left exactly as measured against v5, because a
 > study rewritten to agree with its own recommendation is no longer evidence for it.
+>
+> **It shipped, and the rate moved.** v7 (`EpRY6fkv4RcazjYSJyk8rppeVTVMcWhCcVtTVrKkTLT4`) is live on
+> devnet and serving real players at <https://bullsvsunicorns.fun>. Every "20 bps" in this document —
+> §2's blend table, §233's revenue statement, and each figure derived from them — is the rate the
+> measurements were TAKEN AT, and stays correct as a record of that. It is no longer the rate the
+> arena charges: `set_fee_bps` moved it to **100 bps (1.00%)**, confirmed by the treasury taking
+> exactly 680,000 units on round #27's gross of 68,000,000. Multiply any house-revenue figure below
+> by five before quoting it as current, or better, re-run the rig at 100 — `fee_bps` is a live
+> account field now, not a constant, so the study's own assumption that it is fixed is the thing that
+> aged, not its arithmetic.
 
 ---
 
