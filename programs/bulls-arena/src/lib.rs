@@ -1290,6 +1290,69 @@ fn credit_entry(r: &mut Round, who: Pubkey, side: u8, stake: u64, fee_bps: u64) 
     Ok((net, fee))
 }
 
+/// GIVE BACK THE ENTRY FEE OF A ROUND THAT NEVER HAPPENED. Returns what was refunded.
+///
+/// THE DEFECT THIS CLOSES, stated as the two sentences that could not both be true. `abandon_round`
+/// has always promised, in its own doc comment, that "NOTHING IS REFUNDED, BECAUSE NOTHING WAS
+/// TAKEN … Any single fighter who entered is recorded in `fighters` exactly as they were, for the
+/// off-chain ledger to settle to zero against." But something *had* been taken: `credit_entry`
+/// booked `stake × fee_bps / BPS` into `fees_collected`, `apply_sweep` accepts `Phase::Abandoned`,
+/// and `sweep_house_take` is permissionless — so the lone entrant of a lobby that never reached two
+/// fighters had their fee swept into `Treasury.fees_accrued` for a fight that did not occur. If the
+/// off-chain ledger then settled them to zero, the treasury had booked revenue nobody earned; if it
+/// settled them net, they paid 1% for nothing and had no on-chain refund path. HOUSE-STRATEGY.md §8
+/// carries the reproduction.
+///
+/// IT WAS HARMLESS AND IT WAS NOT AN OVERSIGHT — two tests asserted it as intended behaviour
+/// (`an_unfinished_round_cannot_be_swept`, `the_sweep_cannot_be_double_claimed`), on the reasoning
+/// that a fee is a fee. That reasoning holds only while `fees_collected` is a counter. Custody makes
+/// it a token transfer, and a token transfer out of a round that never ran is a charge for a service
+/// not rendered. The behaviour is changing because its premise is, and both tests change with it.
+///
+/// WHY IT REFUNDS RATHER THAN TEACHING `apply_sweep` TO SKIP AN ABANDONED ROUND. Skipping would
+/// leave `fees_collected` sitting non-zero and unsweepable forever — a number on the account that
+/// means "owed to nobody", which is exactly the sort of state a later reader gets wrong. Refunding
+/// makes `fees_collected == 0` a POST-CONDITION of reaching `Phase::Abandoned`, so `apply_sweep`
+/// needs no special case at all: it can go on adding `fees_collected` to the treasury unconditionally
+/// and the amount is arithmetically zero. The illegal state stops being guarded against and starts
+/// being unrepresentable, which is the only kind of fix worth making to a money path.
+///
+/// THE PRECONDITION IS CHECKED HERE RATHER THAN INHERITED. `lobby_is_dead` — `abandon_round`'s only
+/// gate — requires `!enough_to_fight`, so at most ONE fighter exists. That is what makes this exact:
+/// with one fighter, the whole of `fees_collected` is unambiguously that fighter's, whatever
+/// `set_fee_bps` did mid-lobby. With two it would NOT be, because a mid-lobby re-price charges two
+/// rates inside one round and the round does not record which entry paid which (a known defect, see
+/// `fee_bps`). A function whose correctness depends on a guard ten lines away in a different
+/// function is a function that becomes wrong the day it gains a second caller.
+///
+/// The refund goes to `stake` and `hp` together, and to `pot`, because those three are what
+/// `credit_entry` moved: undoing an entry's fee means the fighter is left holding their GROSS
+/// deposit and the pot is the gross too. `conserves()` still holds — the fee comes off one side of
+/// `sum(hp + banked) + penalties == pot` and onto the other.
+fn refund_abandoned_entry(r: &mut Round) -> Result<u64> {
+    require!(!enough_to_fight(r.fighter_count), ArenaError::LobbyNotAbandonable);
+
+    let fee = r.fees_collected;
+    if fee == 0 {
+        // An empty lobby, or an arena running at `fee_bps == 0`. Nothing was taken, so the original
+        // doc comment's promise is already true and there is nothing to undo.
+        return Ok(0);
+    }
+
+    // A non-zero fee means an entry was charged, and the guard above means there was exactly one of
+    // them. If those two facts ever disagree the round is not one this program could have produced,
+    // and crediting slot 0 regardless would put value where `players_hold()` — which sums only the
+    // live prefix — cannot see it, breaking conservation silently. Refuse instead.
+    require!(r.fighter_count == 1, ArenaError::ConservationBroken);
+
+    let f = &mut r.fighters[0];
+    f.stake = f.stake.checked_add(fee).ok_or(ArenaError::MathOverflow)?;
+    f.hp = f.hp.checked_add(fee).ok_or(ArenaError::MathOverflow)?;
+    r.pot = r.pot.checked_add(fee).ok_or(ArenaError::MathOverflow)?;
+    r.fees_collected = 0;
+    Ok(fee)
+}
+
 /// EVERYTHING `sweep_house_take` WRITES — the guards that make a permissionless sweep safe, the flag
 /// that makes it once-only, and the two additions. Returns what this round contributed.
 ///
@@ -1307,6 +1370,46 @@ fn apply_sweep(r: &mut Round, t: &mut Treasury) -> Result<(u64, u64)> {
         ArenaError::RoundNotTerminal
     );
     require!(!r.is_swept(), ArenaError::AlreadySwept);
+
+    // THE ROUND'S BOOKS MUST BALANCE BEFORE THE HOUSE TAKES ANYTHING OUT OF THEM.
+    //
+    // This is the only place in the program where a round that came back from the rollup is read on
+    // the BASE LAYER by an instruction that acts on its numbers, which makes it the only place the
+    // check can be made. `sweep_house_take` requires an undelegated round precisely because a
+    // delegated one is not owned by this program; by the time control reaches here the ER has
+    // committed, undelegated, and can no longer touch the account. So `conserves()` here is a
+    // verdict on a final state rather than a snapshot of a moving one.
+    //
+    // WHAT IT BUYS AND WHAT IT DOES NOT, because overclaiming here would be worse than not checking.
+    // It does NOT make the rollup trustworthy: ARCHITECTURE-N-TEAM.md §4.4 is explicit that a
+    // validator can rewrite a round's final state, and this check cannot tell a redistribution
+    // between that round's own fighters from an honest fight. What it stops is INFLATION — a
+    // committed state whose totals exceed what players actually put in. That is the half that
+    // becomes solvency the moment a token escrow stands behind `pot`, and §4.4(b) names this exact
+    // check as the base-layer defence.
+    //
+    // TODAY IT GUARDS A COUNTER; ITS REAL JOB STARTS WITH CUSTODY, and it is here now for the
+    // reason `credit_entry` learned the hard way: arithmetic that is only reachable through a
+    // `Context` is arithmetic nobody executes until a validator does. Wired now, against a round
+    // holding nothing, it is proven before it is load-bearing.
+    //
+    // REFUSING STRANDS THE ROUND, PERMANENTLY, AND THAT IS STILL THE RIGHT TRADE TODAY.
+    // `close_round_account` requires `house_swept`, so a round that fails this can never be closed
+    // and its ~0.0235 SOL of rent is locked with no instruction in this program that can release it.
+    // That is a real cost and it is accepted deliberately: the alternative is a treasury that books
+    // revenue from a round whose own numbers say it could not have happened, and a wrong running
+    // total is not recoverable at all once it has been reported and spent against. Losing rent to
+    // learn the rollup lied is a good trade. Booking the lie is not.
+    //
+    // THE TRADE INVERTS THE DAY CUSTODY LANDS, AND THAT IS A PREREQUISITE, NOT A FOLLOW-UP. Under
+    // ARCHITECTURE-N-TEAM.md §4 a round holds player escrow, so a round that cannot leave this
+    // check is frozen PLAYER FUNDS rather than frozen rent — and §4.5's rule that "funds must never
+    // depend on the operator showing up" then makes an unreachable terminal state a solvency bug.
+    // Custody therefore needs a rescue path this program does not have: a way to take a
+    // non-conserving round to a terminal state that pays out at most `gross_deposits` and never
+    // more. It belongs with custody rather than here, because today there is nothing to rescue.
+    require!(r.conserves(), ArenaError::ConservationBroken);
+
     r.house_swept = 1;
 
     let (fees, penalties) = (r.fees_collected, r.penalties_collected);
@@ -2065,11 +2168,20 @@ pub mod bulls_arena {
     /// fight, no winner, nothing custodied. A late callback then fails harmlessly on its own
     /// `Phase::Drawing` guard.
     ///
-    /// NOTHING IS REFUNDED, BECAUSE NOTHING WAS TAKEN. This program custodies no balances at all (see
-    /// the file header) — `enter` records a stake, it does not move one — so an abandoned round owes
-    /// nobody anything on-chain. Any single fighter who entered is recorded in `fighters` exactly as
-    /// they were, for the off-chain ledger to settle to zero against, and their `stake`/`hp` are
-    /// untouched so the round still reads as what it was.
+    /// THE ENTRY FEE IS GIVEN BACK, BECAUSE IT WAS THE ONE THING THAT *WAS* TAKEN. This paragraph
+    /// used to say "NOTHING IS REFUNDED, BECAUSE NOTHING WAS TAKEN", and it was wrong in a way that
+    /// only mattered later: no *stake* moves (this program custodies no balances — see the file
+    /// header), but `credit_entry` did book the lone entrant's fee into `fees_collected`, and
+    /// `apply_sweep` accepts `Phase::Abandoned`, so a permissionless `sweep_house_take` moved that
+    /// fee onto the `Treasury` for a fight that never ran. `refund_abandoned_entry` now returns it
+    /// to the fighter's `stake` and `hp` and zeroes `fees_collected` before the phase changes, so
+    /// the entrant is left holding their GROSS deposit and the sentence above is true of the numbers
+    /// and not only of the prose. See that function for why one fighter is what makes it exact, and
+    /// HOUSE-STRATEGY.md §8 for the reproduction of the defect.
+    ///
+    /// Nothing else about the entrant is disturbed: they are still recorded in `fighters` exactly as
+    /// they entered, so the round still reads as what it was — and the ledger settling them to zero
+    /// against it is now settling against a round that took nothing at all.
     ///
     /// ONE INSTRUCTION WHERE SETTLEMENT TAKES TWO (`resolve` then `close_round`). That split exists so
     /// a settled round's result is committed to the base layer while players are still watching it in
@@ -2085,7 +2197,16 @@ pub mod bulls_arena {
                 lobby_is_dead(r.fighter_count, r.lobby_closes_at, now),
                 ArenaError::LobbyNotAbandonable
             );
+            // Before the phase changes, not after: `Phase::Abandoned` is the state whose invariant
+            // is `fees_collected == 0`, so the round must never be observable in that phase still
+            // holding one. Nothing can interleave inside an instruction, but the ordering is the
+            // cheaper thing to get right than the argument for why it would not have mattered.
+            refund_abandoned_entry(r)?;
             r.phase = Phase::Abandoned as u8;
+            // The refund is deliberately NOT a new event field. Every entry already published its
+            // own gross and fee in `Entered`, and the account now carries `fees_collected == 0` with
+            // the fighter's `stake` back at gross — so the amount is derivable twice over, and a
+            // third publication of the same number is a wider IDL for no new information.
             emit!(RoundAbandoned { round_no: r.round_no, fighter_count: r.fighter_count });
         }
 
@@ -2611,6 +2732,82 @@ impl Round {
     /// Has this round's house take already been swept? See `house_swept` for why the field is a
     /// `u8` and this is a method.
     pub fn is_swept(&self) -> bool { self.house_swept != 0 }
+
+    // ---------------------------------------------------------------------------------------
+    // THE ROUND'S BOOKS, AS THE PROGRAM'S OWN ARITHMETIC.
+    //
+    // These four functions are the three quantities `fees_collected`'s doc comment defines and the
+    // identity that ties them together. Until now their only executable form was a
+    // `#[cfg(test)]` helper called `books` in `house_tests` — which is to say the shipped program
+    // could state the identity in prose but could not evaluate it.
+    //
+    // THAT WAS FINE WHILE CONSERVATION WAS A PROPERTY OF A LEDGER NOBODY SETTLED AGAINST, AND IT
+    // STOPS BEING FINE THE MOMENT A TOKEN ESCROW HAS TO HOLD EXACTLY THESE NUMBERS.
+    // ARCHITECTURE-N-TEAM.md §4.4(b) makes a base-layer conservation check the thing that stops a
+    // dishonest rollup commit from INFLATING a round (it cannot stop redistribution — see §4.4(a)),
+    // and a custody program that re-derived the identity for itself would be a second
+    // implementation of a solvency check. Two implementations of a solvency check is how solvency
+    // checks come to disagree, and the disagreement is discovered by a player who cannot withdraw.
+    // One definition, here, called by the tests, by `apply_sweep`, and by whatever eventually holds
+    // the tokens.
+    //
+    // EVERY ONE RETURNS `Option`, AND THAT IS NOT DEFENSIVE STYLE. The fighters these read came
+    // back from an ephemeral rollup over a commit this program did not compute, which is the entire
+    // reason to check conservation in the first place. `fighter_count` is a `u16` in that committed
+    // buffer and nothing on the base layer has ever constrained it to `<= MAX_FIGHTERS`. A verifier
+    // that panics on the malicious input it exists to reject is not a verifier — it is a denial of
+    // service with the round's rent inside it.
+    // ---------------------------------------------------------------------------------------
+
+    /// What this round's fighters are still owed: `sum(hp + banked)` over the live prefix.
+    ///
+    /// `None` if `fighter_count` is past the array (a corrupt or hostile commit) or if the sum
+    /// overflows — both of which mean "do not trust this round", which is what the caller does with
+    /// it.
+    pub fn players_hold(&self) -> Option<u64> {
+        let n = self.fighter_count as usize;
+        if n > MAX_FIGHTERS {
+            return None;
+        }
+        self.fighters[..n]
+            .iter()
+            .try_fold(0u64, |acc, f| acc.checked_add(f.hp)?.checked_add(f.banked))
+    }
+
+    /// The house's take from this round: the entry fee at the door plus the extract penalties from
+    /// the ring. This is the figure `sweep_house_take` moves onto the `Treasury`.
+    pub fn house_took(&self) -> Option<u64> {
+        self.penalties_collected.checked_add(self.fees_collected)
+    }
+
+    /// What players were actually charged to be in this round — `pot + fees_collected`.
+    ///
+    /// NAMED, BECAUSE `pot` IS ROUTINELY MISTAKEN FOR IT. `pot` is the sum of NET stakes; the fee
+    /// never entered the ring. Under ARCHITECTURE-N-TEAM.md §4.2 this is precisely the quantity a
+    /// round's escrow receives, so it is the left-hand side of the token-side solvency check that
+    /// does not exist yet: `escrow_balance == gross_deposits` for a round whose fee has not yet been
+    /// swept to the treasury ATA, and `escrow_balance == pot` once it has.
+    pub fn gross_deposits(&self) -> Option<u64> {
+        self.pot.checked_add(self.fees_collected)
+    }
+
+    /// `sum(hp + banked) + penalties_collected == pot` — conservation, from the account alone.
+    ///
+    /// THE RING FORM, NOT THE GROSS FORM, AND DELIBERATELY. The gross identity
+    /// `players_hold + house_took == gross_deposits` is algebraically this one with
+    /// `fees_collected` added to both sides (see `fees_collected`'s doc comment, which says so at
+    /// length), so checking it would be checking the same thing while looking like more. The fee is
+    /// pinned by `the_fee_is_recorded_rather_than_discarded` and by the `Entered` event, not by an
+    /// identity it cancels out of.
+    ///
+    /// A `false` here means one of two things and neither is survivable: the rollup committed a
+    /// state this program's own fight loop could not have produced, or this program has a bug. Both
+    /// answer "stop", which is why the caller is `apply_sweep`.
+    pub fn conserves(&self) -> bool {
+        let Some(held) = self.players_hold() else { return false };
+        let Some(ring) = held.checked_add(self.penalties_collected) else { return false };
+        ring == self.pot
+    }
 }
 
 /// THE HOUSE'S BOOKS FOR ONE ARENA — where a finished round's take goes to be added up.
@@ -3081,6 +3278,11 @@ pub enum ArenaError {
     #[msg("this round is inside the retention window and may not be closed yet")] RoundTooRecent,
     // Appended, same rule as above — a client already matching on the codes above keeps its meanings.
     #[msg("the fight has not been advanced to the present — tick it first, then extract")] FightBehind,
+    // Appended, same rule as above — the base-layer conservation gate on `apply_sweep`, and the
+    // one-fighter precondition on `refund_abandoned_entry`. Both mean "this round's own numbers say
+    // it could not have happened", so they share an error rather than inventing a distinction a
+    // caller could not act on differently.
+    #[msg("this round's books do not balance — its take cannot be swept")] ConservationBroken,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -4371,14 +4573,33 @@ mod house_tests {
         Treasury { arena: Pubkey::default(), fees_accrued: 0, penalties_accrued: 0, rounds_swept: 0, bump: 255 }
     }
 
-    /// The three quantities `Round.fees_collected`'s doc comment defines, computed the way every
-    /// verifier in the repo now computes them.
+    /// The three quantities `Round.fees_collected`'s doc comment defines.
+    ///
+    /// THIS USED TO BE THE ONLY EXECUTABLE DEFINITION OF THEM, and that was the problem. It computed
+    /// the identity a second time, in a test module, where a custody program could never call it —
+    /// so the shipped program could state conservation in prose and not evaluate it. The arithmetic
+    /// now lives on `Round` itself (see `Round::conserves` and its neighbours) and this is a thin
+    /// adapter, so every assertion below is testing the program rather than testing a copy of it.
     fn books(r: &Round) -> (u64, u64, u64) {
-        let n = r.fighter_count as usize;
-        let players_hold: u64 = r.fighters[..n].iter().map(|f| f.hp + f.banked).sum();
-        let house_took = r.penalties_collected + r.fees_collected;
-        let gross_deposits = r.pot + r.fees_collected;
-        (players_hold, house_took, gross_deposits)
+        (
+            r.players_hold().expect("players_hold"),
+            r.house_took().expect("house_took"),
+            r.gross_deposits().expect("gross_deposits"),
+        )
+    }
+
+    /// The anchor error code a refusal actually carried, for any helper that returns `Result`.
+    ///
+    /// Panics if the call SUCCEEDED, and asserts on the specific code rather than on `is_err()`,
+    /// for the reason spelled out above `refusal` further down this module: several guards refusing
+    /// into one `Result` means a test that only checks "it failed" keeps passing after the guard it
+    /// was written for is deleted, because a different one fires instead.
+    fn refusal_code<T: core::fmt::Debug>(r: Result<T>) -> u32 {
+        match r {
+            Ok(v) => panic!("expected a refusal, got {v:?}"),
+            Err(anchor_lang::error::Error::AnchorError(e)) => e.error_code_number,
+            Err(other) => panic!("unexpected error shape: {other:?}"),
+        }
     }
 
     /// THE BUG, AS AN ASSERTION. Four entries and a top-up, against a rate whose arithmetic is exact
@@ -4623,12 +4844,18 @@ mod house_tests {
         assert_eq!(players_hold + house_took, gross_deposits, "a swept round still balances");
 
         // A SECOND ROUND ACCUMULATES ON TOP rather than replacing — the whole point of the account.
+        //
+        // The second round is a SETTLED one, and it used to be an abandoned one. That change is the
+        // point: an abandoned round now refunds its fee (see `refund_abandoned_entry`), so using one
+        // here would have added zero and made "accumulates on top" unfalsifiable — the assertion
+        // would pass against a `t.fees_accrued +=` that had been deleted.
         let mut r2 = fresh_round();
         r2.round_no = 2;
         credit_entry(&mut r2, pk(3), 0, 5_000_000, FEE_BPS).unwrap();
-        r2.phase = Phase::Abandoned as u8;   // an under-subscribed lobby still charged its one entry
+        credit_entry(&mut r2, pk(4), 1, 5_000_000, FEE_BPS).unwrap();
+        r2.phase = Phase::Settled as u8;
         apply_sweep(&mut r2, &mut t).unwrap();
-        assert_eq!((t.fees_accrued, t.penalties_accrued, t.rounds_swept), (14_000, 199_600, 2));
+        assert_eq!((t.fees_accrued, t.penalties_accrued, t.rounds_swept), (24_000, 199_600, 2));
     }
 
     /// THE PHASE GUARD, AND IT IS THE ONE THAT MAKES PERMISSIONLESSNESS SAFE. `open_round` runs
@@ -4650,15 +4877,174 @@ mod house_tests {
             assert_eq!((t.fees_accrued, t.rounds_swept), (0, 0));
         }
 
-        // Both terminal phases ARE sweepable — an abandoned lobby can hold a fee from the one entry
-        // it took before it died, and that fee is owed to the house exactly like any other.
+        // BOTH TERMINAL PHASES ARE STILL SWEEPABLE, AND THEY NO LONGER SWEEP THE SAME AMOUNT.
+        //
+        // This assertion used to read `(2_000, 0)` for both, on the reasoning that "an abandoned
+        // lobby can hold a fee from the one entry it took before it died, and that fee is owed to
+        // the house exactly like any other". That was the defect in HOUSE-STRATEGY.md §8 stated as a
+        // test. An abandoned round now arrives at `apply_sweep` with `fees_collected == 0` because
+        // `abandon_round` gave it back, so the phase stays sweepable — which keeps `house_swept`
+        // meaning "this round has been accounted for", and keeps `close_round_account` reachable so
+        // the rent comes back — and it sweeps nothing.
         for phase in [Phase::Settled, Phase::Abandoned] {
             let mut r = fresh_round();
             credit_entry(&mut r, pk(1), 0, 1_000_000, FEE_BPS).unwrap();
+            if phase as u8 == Phase::Abandoned as u8 {
+                assert_eq!(refund_abandoned_entry(&mut r).unwrap(), 2_000);
+            }
             r.phase = phase as u8;
             let mut t = fresh_treasury();
-            assert_eq!(apply_sweep(&mut r, &mut t).unwrap(), (2_000, 0));
+            let expected = if phase as u8 == Phase::Abandoned as u8 { (0, 0) } else { (2_000, 0) };
+            assert_eq!(apply_sweep(&mut r, &mut t).unwrap(), expected, "phase {}", phase as u8);
         }
+    }
+
+    /// THE ROUND THAT NEVER HAPPENED CHARGES NOTHING FOR IT — HOUSE-STRATEGY.md §8, closed.
+    ///
+    /// Asserted end to end rather than on `refund_abandoned_entry` alone, because the defect was
+    /// never in one function: it was the seam between `credit_entry` booking a fee, `abandon_round`
+    /// promising in prose that nothing had been taken, and a permissionless `apply_sweep` accepting
+    /// `Phase::Abandoned` and moving it anyway. A test on the refund in isolation would pass against
+    /// a version where `abandon_round` forgot to call it.
+    #[test]
+    fn an_abandoned_lobby_refunds_its_only_entry_and_sweeps_nothing() {
+        const GROSS: u64 = 3_000_000;
+        const FEE: u64 = GROSS * FEE_BPS / BPS;   // 6_000, exact at 20 bps
+        assert_eq!(FEE, 6_000, "the fixture's arithmetic must be exact, not rounded");
+
+        let mut r = fresh_round();
+        credit_entry(&mut r, pk(7), 0, GROSS, FEE_BPS).unwrap();
+        assert_eq!((r.fees_collected, r.pot), (FEE, GROSS - FEE), "the fee was taken at the door");
+        assert_eq!(r.fighters[0].stake, GROSS - FEE, "and the fighter was credited net of it");
+
+        // THE REFUND. The entrant ends up holding what they actually paid, and the house's counter
+        // for this round is not merely unswept — it is gone.
+        assert_eq!(refund_abandoned_entry(&mut r).unwrap(), FEE);
+        assert_eq!(r.fees_collected, 0, "an abandoned round must hold no fee at all");
+        assert_eq!(r.fighters[0].stake, GROSS, "the entrant is made whole in GROSS terms");
+        assert_eq!(r.fighters[0].hp, GROSS, "and the value is in the ring, not stranded on `stake`");
+        assert_eq!(r.pot, GROSS, "the pot follows, or conservation breaks");
+        assert!(r.conserves(), "the refund must not disturb the identity");
+
+        // THE SWEEP, WHICH IS WHERE THE MONEY USED TO LEAVE. Permissionless, still permitted, and
+        // now worth nothing to whoever calls it.
+        r.phase = Phase::Abandoned as u8;
+        let mut t = fresh_treasury();
+        assert_eq!(apply_sweep(&mut r, &mut t).unwrap(), (0, 0));
+        assert_eq!((t.fees_accrued, t.penalties_accrued), (0, 0), "the house earned nothing");
+        assert_eq!(t.rounds_swept, 1, "the round is still ACCOUNTED for — close_round_account needs this");
+
+        // AND THE BOOKS STILL BALANCE IN GROSS TERMS. `gross_deposits` is what the entrant paid;
+        // `players_hold` is what they are owed back. For a round that did not happen those are the
+        // same number, and that is the whole claim.
+        let (players_hold, house_took, gross_deposits) = books(&r);
+        assert_eq!((players_hold, house_took, gross_deposits), (GROSS, 0, GROSS));
+    }
+
+    /// THE EMPTY LOBBY, WHICH IS THE OTHER HALF OF `fighter_count < 2` AND HAS NO FEE TO GIVE BACK.
+    ///
+    /// Worth its own test rather than a branch in the one above: `refund_abandoned_entry`'s early
+    /// return is the path that runs on almost every abandoned round in production (a lobby nobody
+    /// joined), and it must not touch `fighters[0]` — a zeroed slot outside the live prefix, which
+    /// `players_hold` cannot see and where credited value would vanish from the identity.
+    #[test]
+    fn an_empty_abandoned_lobby_refunds_nothing_and_touches_no_fighter() {
+        let mut r = fresh_round();
+        assert_eq!(refund_abandoned_entry(&mut r).unwrap(), 0);
+        assert_eq!((r.fighter_count, r.pot, r.fees_collected), (0, 0, 0));
+        assert_eq!(r.fighters[0], Fighter::default(), "slot 0 must be untouched");
+        assert!(r.conserves());
+
+        // A LOBBY THAT COULD STILL FIGHT MAY NOT BE REFUNDED, and the guard is this function's own
+        // rather than one it inherits from `abandon_round`. Two fighters means `fees_collected` is
+        // no longer attributable to one of them — see the doc comment.
+        let mut live = fresh_round();
+        credit_entry(&mut live, pk(1), 0, 1_000_000, FEE_BPS).unwrap();
+        credit_entry(&mut live, pk(2), 1, 1_000_000, FEE_BPS).unwrap();
+        assert!(refund_abandoned_entry(&mut live).is_err(), "a fightable lobby must refuse");
+        assert_eq!(live.fees_collected, 4_000, "and must be left exactly as it was");
+    }
+
+    /// A ROUND WHOSE OWN NUMBERS ARE IMPOSSIBLE PAYS THE HOUSE NOTHING.
+    ///
+    /// ARCHITECTURE-N-TEAM.md §4.4 is explicit that the ER validator can rewrite a round's final
+    /// state. `sweep_house_take` is the only base-layer instruction that acts on the numbers that
+    /// come back, so it is the only place the base layer gets a vote. This is that vote, executed:
+    /// three states a correct fight cannot produce, each refused, with the treasury asserted
+    /// afterwards because "an error was returned" is not the property that matters — "the treasury
+    /// did not grow" is.
+    #[test]
+    fn a_round_whose_books_do_not_balance_cannot_be_swept() {
+        let inflated = |mutate: fn(&mut Round)| {
+            let mut r = fresh_round();
+            credit_entry(&mut r, pk(1), 0, 1_000_000, FEE_BPS).unwrap();
+            credit_entry(&mut r, pk(2), 1, 1_000_000, FEE_BPS).unwrap();
+            r.phase = Phase::Settled as u8;
+            assert!(r.conserves(), "the fixture must start honest, or it proves nothing");
+            mutate(&mut r);
+            r
+        };
+
+        // (a) A fighter came back holding more than the pot can account for — the shape a commit
+        //     that paid someone out of thin air would take.
+        // (b) `penalties_collected` inflated without any `hp` having been given up for it.
+        // (c) `fighter_count` past the end of the array, which is not merely wrong arithmetic but
+        //     the input that makes a naive `fighters[..n]` panic instead of refusing.
+        let cases: [(&str, fn(&mut Round)); 3] = [
+            ("a fighter holding value the pot never took", |r| r.fighters[0].banked += 1),
+            ("a penalty nobody paid",                      |r| r.penalties_collected += 1),
+            ("a fighter count past the array",             |r| r.fighter_count = MAX_FIGHTERS as u16 + 1),
+        ];
+
+        for (name, mutate) in cases {
+            let mut r = inflated(mutate);
+            assert!(!r.conserves(), "{name}: the fixture must actually be broken");
+
+            let mut t = fresh_treasury();
+            assert_eq!(
+                refusal_code(apply_sweep(&mut r, &mut t)),
+                code(ArenaError::ConservationBroken),
+                "{name}: must refuse with the conservation error specifically",
+            );
+            assert!(!r.is_swept(), "{name}: a refused sweep must not set the one-way flag");
+            assert_eq!((t.fees_accrued, t.penalties_accrued, t.rounds_swept), (0, 0, 0), "{name}");
+        }
+    }
+
+    /// THE BOOKS ARE TOTAL FUNCTIONS ON HOSTILE INPUT — the property that lets `apply_sweep` call
+    /// them on a buffer an ephemeral validator wrote.
+    ///
+    /// A verifier that panics on the input it exists to reject is a denial of service with the
+    /// round's rent inside it: `close_round_account` requires `house_swept`, so a round whose sweep
+    /// aborts the transaction can never be closed. Each accessor is therefore asserted to RETURN
+    /// `None` rather than to be safe by inspection.
+    #[test]
+    fn the_books_refuse_impossible_rounds_rather_than_panicking() {
+        let mut r = fresh_round();
+        credit_entry(&mut r, pk(1), 0, 1_000_000, FEE_BPS).unwrap();
+        assert_eq!(r.players_hold(), Some(998_000));
+
+        // Out of bounds by one, and at the u16 ceiling — the two ways a corrupt count arrives.
+        for bad in [MAX_FIGHTERS as u16 + 1, u16::MAX] {
+            r.fighter_count = bad;
+            assert_eq!(r.players_hold(), None, "fighter_count {bad}");
+            assert!(!r.conserves(), "fighter_count {bad}");
+        }
+
+        // Overflow in the sum itself, from two fighters each holding most of the u64 range.
+        let mut o = fresh_round();
+        o.fighter_count = 2;
+        o.fighters[0].hp = u64::MAX - 1;
+        o.fighters[1].banked = 2;
+        assert_eq!(o.players_hold(), None, "the sum must refuse rather than wrap");
+
+        // And the two derived figures overflow-check independently of the fighter sum.
+        let mut d = fresh_round();
+        d.pot = u64::MAX;
+        d.fees_collected = 1;
+        assert_eq!(d.gross_deposits(), None, "pot + fees must refuse rather than wrap");
+        d.penalties_collected = u64::MAX;
+        assert_eq!(d.house_took(), None, "penalties + fees must refuse rather than wrap");
     }
 
     // -----------------------------------------------------------------------------------------

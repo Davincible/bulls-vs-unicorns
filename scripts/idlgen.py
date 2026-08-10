@@ -865,6 +865,23 @@ def patch(idl):
         if name not in have:
             idl["errors"].append({"code": code, "name": name, "msg": msg})
 
+    # ---- 11. THE SWEEP GAINED A REFUSAL ----------------------------------------------------------
+    #
+    # `apply_sweep` now checks `Round::conserves()` before the house takes anything, and
+    # `refund_abandoned_entry` shares the code for its one-fighter precondition. Both mean "this
+    # round's own numbers say it could not have happened", which is a thing a client should surface
+    # verbatim rather than retry — so it needs a name in the IDL, not a bare 6023.
+    #
+    # Appended, same rule as sections 9 and 10: every code above keeps the meaning a deployed client
+    # may already be matching on. `have` re-derived, same reason.
+    have = {e["name"] for e in idl["errors"]}
+    for code, name, msg in (
+        (6023, "ConservationBroken",
+         "this round's books do not balance — its take cannot be swept"),
+    ):
+        if name not in have:
+            idl["errors"].append({"code": code, "name": name, "msg": msg})
+
     # anchor emits each list sorted by name
     idl["instructions"].sort(key=lambda x: x["name"])
     idl["events"].sort(key=lambda x: x["name"])

@@ -45,7 +45,8 @@ use common::program_binary;
 use anchor_lang::{Discriminator, InstructionData};
 use bytemuck::Zeroable;
 use bulls_arena::{
-    final_cursor, Fighter, Phase, Round, FIGHT_TIMEOUT_SECONDS, MAX_FIGHTERS, MAX_STEPS_PER_CALL,
+    final_cursor, Arena, Fighter, Phase, Round, Treasury, ARENA_SEED, FIGHT_TIMEOUT_SECONDS,
+    MAX_FIGHTERS, MAX_STEPS_PER_CALL, ROUND_SEED, TREASURY_SEED,
 };
 use litesvm::LiteSVM;
 use solana_account::Account;
@@ -140,10 +141,21 @@ struct Harness {
 impl Harness {
     /// A rollup at `now`, holding `round` exactly as the program would have left it.
     fn new(round: &Round, now: i64) -> Self {
-        Self::with_payer(round, now, Keypair::new())
+        Self::at(round, now, Keypair::new(), Pubkey::new_unique())
     }
 
     fn with_payer(round: &Round, now: i64, payer: Keypair) -> Self {
+        Self::at(round, now, payer, Pubkey::new_unique())
+    }
+
+    /// As `with_payer`, but the round is placed at a CHOSEN address.
+    ///
+    /// Every instruction measured above takes the round as a bare `AccountLoader` and is happy
+    /// anywhere, so a unique key was enough. `sweep_house_take` is the first one whose context
+    /// constrains the round to its real PDA (`seeds = [ROUND_SEED, arena, round_no]`), because it is
+    /// the first that runs on the BASE LAYER, where a passer-by could otherwise present a look-alike
+    /// account. So the address becomes a parameter rather than an implementation detail.
+    fn at(round: &Round, now: i64, payer: Keypair, round_key: Pubkey) -> Self {
         let mut svm = LiteSVM::new();
         svm.add_program(bulls_arena::ID, &program_binary()).expect("load the program");
 
@@ -156,7 +168,6 @@ impl Harness {
 
         svm.airdrop(&payer.pubkey(), 100_000_000_000).expect("airdrop");
 
-        let round_key = Pubkey::new_unique();
         svm.set_account(
             round_key,
             Account {
@@ -218,6 +229,39 @@ impl Harness {
             program_id: bulls_arena::ID,
             accounts: vec![AccountMeta::new(self.round, false)],
             data: bulls_arena::instruction::Tick { steps }.data(),
+        }
+    }
+
+    /// Write an owned-by-this-program account holding `discriminator ‖ borsh(value)`.
+    fn put<T: anchor_lang::AnchorSerialize + Discriminator>(&mut self, key: Pubkey, value: &T) {
+        let mut data = T::DISCRIMINATOR.to_vec();
+        value.serialize(&mut data).expect("borsh");
+        self.svm
+            .set_account(
+                key,
+                Account {
+                    lamports: 10_000_000,
+                    data,
+                    owner: bulls_arena::ID,
+                    executable: false,
+                    rent_epoch: 0,
+                },
+            )
+            .expect("set account");
+    }
+
+    fn sweep(&mut self, arena: Pubkey, treasury: Pubkey, round_no: u64) -> Instruction {
+        Instruction {
+            program_id: bulls_arena::ID,
+            accounts: vec![
+                AccountMeta::new_readonly(arena, false),
+                AccountMeta::new(self.round, false),
+                AccountMeta::new(treasury, false),
+            ],
+            // `_round_no` with the underscore: the handler never reads the argument, because the
+            // `#[instruction(round_no: u64)]` attribute has already spent it deriving the round's
+            // PDA seeds. The arg is the address constraint, not an input.
+            data: bulls_arena::instruction::SweepHouseTake { _round_no: round_no }.data(),
         }
     }
 
@@ -414,6 +458,90 @@ fn the_tick_then_extract_bundle_fits_but_only_just() {
          bundle are now broken; `extract`'s doc already prescribes two transactions, so the fix is to \
          make sure every client has stopped bundling — not to raise anything here.",
         cu, CU_CEILING,
+    );
+}
+
+/// THE SWEEP READS EVERY FIGHTER NOW, AND IT STILL FITS THE DEFAULT BASE-LAYER BUDGET.
+///
+/// WHY THIS TEST EXISTS AT ALL. `apply_sweep` gained `Round::conserves()` — a fold over the whole
+/// live lineup with two checked adds per fighter — so `sweep_house_take` went from O(1) to O(n) in a
+/// program whose fighter cap is 48. Nothing in this file measured it before, because until now every
+/// instruction here ran inside the rollup and the sweep is the one that does not. An unmeasured
+/// instruction that just grew a loop is exactly the shape of the two permanently stuck rounds this
+/// repo already paid for.
+///
+/// THE BUDGET IT IS HELD TO IS 200,000, NOT THE 1.4M CEILING THE OTHERS USE. A rollup transaction is
+/// sent by this project's own keeper, which sets its own limit; `sweep_house_take` is PERMISSIONLESS
+/// on the base layer, so the caller may well be a wallet sending a bare transaction with Solana's
+/// default per-instruction budget and no `SetComputeUnitLimit` at all. The bound that matters is the
+/// one an ordinary caller gets for free, and asserting against 1.4M here would be measuring a
+/// generosity nobody is obliged to extend.
+///
+/// It is measured at MAX_FIGHTERS with every seat filled and a real extract behind it, so the fold
+/// runs its longest and `penalties_collected` is non-zero — a conservation check over an all-zero
+/// round would pass while doing almost none of the work.
+///
+/// MEASURED: 13,142 CU at 48 fighters — 6.6% of the 200,000 an ordinary caller gets. Recorded rather
+/// than only bounded, so the next person to add work here can see how much room they are spending
+/// rather than only whether they have run out.
+#[test]
+fn the_permissionless_sweep_fits_an_ordinary_callers_budget() {
+    const DEFAULT_IX_BUDGET: u64 = 200_000;
+    const ROUND_NO: u64 = 7;
+
+    let (arena_key, arena_bump) = Pubkey::find_program_address(&[ARENA_SEED], &bulls_arena::ID);
+    let (treasury_key, treasury_bump) =
+        Pubkey::find_program_address(&[TREASURY_SEED, arena_key.as_ref()], &bulls_arena::ID);
+    let (round_key, round_bump) = Pubkey::find_program_address(
+        &[ROUND_SEED, arena_key.as_ref(), &ROUND_NO.to_le_bytes()],
+        &bulls_arena::ID,
+    );
+
+    // A finished round: fought to the bell, one fighter having extracted, so both house takes are
+    // non-zero and the identity has real terms on both sides.
+    let mut r = fight_round(MAX_FIGHTERS, final_cursor(MAX_FIGHTERS));
+    r.arena = arena_key;
+    r.round_no = ROUND_NO;
+    r.bump = round_bump;
+    r.phase = Phase::Settled as u8;
+    r.fees_collected = 12_345;
+    let taken = r.fighters[0].hp;
+    r.fighters[0].banked += taken / 2;
+    r.fighters[0].hp = 0;
+    r.fighters[0].dead = 1;
+    r.penalties_collected = taken - taken / 2;
+    assert!(r.conserves(), "the fixture must be a round the program could actually have produced");
+
+    let mut h = Harness::at(&r, T0 + FIGHT_TIMEOUT_SECONDS, Keypair::new(), round_key);
+    h.put(arena_key, &Arena {
+        authority: Pubkey::new_unique(),
+        token_a: Pubkey::new_unique(),
+        token_b: Pubkey::new_unique(),
+        round_counter: ROUND_NO,
+        fee_bps: 100,
+        bump: arena_bump,
+    });
+    h.put(treasury_key, &Treasury {
+        arena: arena_key,
+        fees_accrued: 0,
+        penalties_accrued: 0,
+        rounds_swept: 0,
+        bump: treasury_bump,
+    });
+
+    let ix = h.sweep(arena_key, treasury_key, ROUND_NO);
+    let cu = h.run(ix).unwrap_or_else(|(cu, e)| panic!("the sweep failed after {cu} CU: {e}"));
+
+    // THE STATE IT LEFT BEHIND, not only the units — the same discipline the case above argues for.
+    // A sweep that bounced off a guard is cheap and proves nothing.
+    let after = h.state();
+    assert!(after.is_swept(), "the measured call must actually have swept, not refused");
+
+    assert!(
+        cu < DEFAULT_IX_BUDGET,
+        "sweep_house_take burned {cu} CU at {MAX_FIGHTERS} fighters — an ordinary caller gets \
+         {DEFAULT_IX_BUDGET} by default, and a permissionless instruction that needs a compute \
+         budget instruction to succeed is not permissionless in practice",
     );
 }
 

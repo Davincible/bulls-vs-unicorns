@@ -1895,6 +1895,11 @@ export type BullsArena = {
       "code": 6022,
       "name": "fightBehind",
       "msg": "the fight has not been advanced to the present — tick it first, then extract"
+    },
+    {
+      "code": 6023,
+      "name": "conservationBroken",
+      "msg": "this round's books do not balance — its take cannot be swept"
     }
   ],
   "types": [
