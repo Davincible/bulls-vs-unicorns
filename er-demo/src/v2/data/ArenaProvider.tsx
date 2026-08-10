@@ -54,6 +54,8 @@ import { burnerIdentity, newTickerPlaceholder, walletIdentity, type ChainIdentit
 import { playBlock, type PlayBlock } from "./playGate.ts";
 import { NO_COMBAT, combatFeed } from "./combatFeed.ts";
 import { houseDisclosureOf, withHouseMarks } from "./houseFighters.ts";
+import { withLinks } from "./linkFighters.ts";
+import { LinksContext, useLinkFeed } from "./useLinks.ts";
 import { useHouseRoster } from "./keeperFeed.ts";
 import { MOCK_FEE_BPS } from "./mockData.ts";
 import { useTreasury } from "./useTreasury.ts";
@@ -256,9 +258,25 @@ function FixtureArenaProvider({ children }: { children: ReactNode }) {
   });
   noteDeployRef.current = autoDeploy.noteDeploy;
 
+  // X IDENTITIES ON THE FIXTURE — this is the path design review actually runs (`?fixture=1`), so
+  // `?links=mock` has to work here or the mock has nowhere to be looked at. `mockLinks.ts` assigns
+  // its cast to whatever wallets are on screen, which is exactly what the fixture supplies.
+  //
+  // The house list is the fixture's own (`mockData.ts` builds one), reached through the same context
+  // shape the chain path uses; `?links=off` — the default — makes all of this a no-op.
+  const fixtureLinkWallets = useMemo(
+    () => (fixture.live === null ? [] : [...new Set([...fixture.live.fighters.map((f) => f.wallet), fixture.you.pubkey])]),
+    [fixture.live, fixture.you.pubkey],
+  );
+  const fixtureLinks = useLinkFeed(fixtureLinkWallets, fixture.you.pubkey, []);
+  const fixtureLive = useMemo(() => withLinks(fixture.live, fixtureLinks.map), [fixture.live, fixtureLinks.map]);
+
   const value: ArenaContextValue = {
     source: "fixture",
     ...fixture,
+    // AFTER the spread: `fixture.live` is the unstamped round, and this is the one with any linked
+    // fighter's avatar path on it. Same substitution the chain provider makes, for the same reason.
+    live: fixtureLive,
     fee,
     autoDeploy,
     status: {
@@ -278,7 +296,11 @@ function FixtureArenaProvider({ children }: { children: ReactNode }) {
     ...shellValue(shell, fixture.you.pubkey),
   };
 
-  return <ArenaContext.Provider value={value}>{children}</ArenaContext.Provider>;
+  return (
+    <ArenaContext.Provider value={value}>
+      <LinksContext.Provider value={fixtureLinks}>{children}</LinksContext.Provider>
+    </ArenaContext.Provider>
+  );
 }
 
 /** A local toggle. There is no wallet to authorize a session key against in fixture mode, and a
@@ -415,11 +437,34 @@ function ChainArena({
   // Substituted for `live` from here down, so nothing below can accidentally read the unmarked
   // rosters: `markHouseFighters` hands back the very same object when no marks changed (the common
   // case — no keeper, or a lobby with no house in it), so the memo graph underneath is untouched.
-  const live = useMemo(() => withHouseMarks(liveRaw, roster), [liveRaw, roster]);
+  const liveHoused = useMemo(() => withHouseMarks(liveRaw, roster), [liveRaw, roster]);
   const houseDisclosure = useMemo(
-    () => houseDisclosureOf(live?.fighters ?? [], roster),
-    [live, roster],
+    () => houseDisclosureOf(liveHoused?.fighters ?? [], roster),
+    [liveHoused, roster],
   );
+
+  // X IDENTITIES — fetched here rather than from a provider mounted below, and the reason is a cycle.
+  // The feed needs the round's roster to ask about, and the canvas needs the answer stamped back onto
+  // the fighters it draws; a child provider could do the first but could never feed the second back
+  // up. So it lives at the top of the data layer beside `useHouseRoster`, which is the same shape of
+  // problem with the same answer.
+  //
+  // OFF UNLESS ASKED FOR. `data/linkSource.ts` defaults to `off`, in which case this never fetches
+  // and `withLinks` finds an empty map and hands back the very same object it was given — so the memo
+  // graph below is untouched and every player renders exactly as they did before this existed.
+  const linkWallets = useMemo(() => {
+    const inRound = liveHoused === null ? [] : liveHoused.fighters.map((f) => f.wallet);
+    // The connected player is asked about even when they are not in this round: the wallet panel
+    // shows their own identity whether or not they have entered.
+    // `youPubkey` is the EMPTY STRING when nobody is connected, not null — see its definition above.
+    return youPubkey === "" ? inRound : [...new Set([...inRound, youPubkey])];
+  }, [liveHoused, youPubkey]);
+  const links = useLinkFeed(linkWallets, youPubkey === "" ? null : youPubkey, roster?.house.wallets ?? []);
+  // Substituted for `live` from here down, exactly as the house marks are and for the same reason:
+  // `markLinkedFighters` returns the very same array when nothing changed — the overwhelmingly common
+  // case, since most players never link — so nothing below re-renders for a poll that found nothing.
+  // MUST come after `withHouseMarks`: it reads `FighterView.house` to keep a face off a house wallet.
+  const live = useMemo(() => withLinks(liveHoused, links.map), [liveHoused, links.map]);
 
   // THE FIGHT, IN EVENTS. Cut from the same memoised stream the canvas replays, at the same cursor —
   // see `combatFeed.ts` for why this cannot be a scan and how it stays cheap at `stepsPerSecond(16)`.
@@ -713,7 +758,14 @@ function ChainArena({
         ...shellValue(shell, youPubkey),
       };
 
-  return <ArenaContext.Provider value={value}>{children}</ArenaContext.Provider>;
+  return (
+    <ArenaContext.Provider value={value}>
+      {/* The verified identities, for the DOM surfaces that render a handle. The CANVAS does not read
+          this — it gets one validated path per fighter on `FighterView.avatarSrc` above, because
+          `SPEC.md` says the arena never touches data. */}
+      <LinksContext.Provider value={links}>{children}</LinksContext.Provider>
+    </ArenaContext.Provider>
+  );
 }
 
 // ---------------------------------------------------------------------------------------------

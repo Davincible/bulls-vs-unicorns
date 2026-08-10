@@ -22,7 +22,7 @@ import type { HoldReason } from "../data/autoDeploy.ts";
 import type { ToastKind } from "../data/types.ts";
 import { ASSUMED_SESSION_MINUTES, type SessionLife } from "../data/sessionExpiry.ts";
 import { CombatLog } from "./CombatLog.tsx";
-import { ConnectPanel } from "./ConnectPanel.tsx";
+import { ConnectPanel, XLinkPanel } from "./ConnectPanel.tsx";
 import { PaperTheme } from "./PaperTheme.tsx";
 import { Bar, Dash, HouseTag, Mark, Seg, Tag } from "./primitives.tsx";
 import { feeNote } from "../views/feeCopy.ts";
@@ -598,6 +598,11 @@ function WalletTenant() {
             <p className="key" style={{ margin: "0 0 10px" }}>
               {wallet.pubkey}
             </p>
+            {/* WHO THIS KEY IS, TO EVERYONE ELSE — directly under the key itself, because the link is
+                about THIS wallet and a player asking what this site knows about them is looking at
+                exactly this string. `SOCIAL.md` §4.0. It renders nothing at all unless `?links=` was
+                asked for, so the deployed page is unchanged; see `XLinkPanel`. */}
+            <XLinkPanel />
             <Fact name="SOL (devnet)">
               {wallet.solBalance === null ? <Dash /> : wallet.solBalance.toFixed(4)} <Tag kind="live" />
             </Fact>

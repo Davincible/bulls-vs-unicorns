@@ -7,7 +7,8 @@
 // this is the same artwork, on the canvas, for the same reason.
 //
 // EVERY face resolves through `faceFor()`. One function, so "what picture is this fighter" is one
-// answer in one place — see the note on it about avatars, which is the part this build cannot do.
+// answer in one place — the coin, or the player's own avatar where they have proved one. See the
+// note on it for that branch and for the two things it still refuses.
 //
 // THE LOADING RULES, which are what most of this file is:
 //
@@ -25,8 +26,10 @@
 //   - The desaturated variant is rendered ONCE into an offscreen canvas. Per-frame `filter` or
 //     `getImageData` would be the same mistake at 60fps.
 //
-// SAME-ORIGIN ONLY, and that is a rule rather than an accident: these are files in `public/`, served
-// by this app. Nothing here may reach a third party. See `faceFor()`.
+// SAME-ORIGIN ONLY, and that is a rule rather than an accident: these are files in `public/` and
+// paths on this app's own origin (`/api/avatar/…`, where our own server holds the bytes). Nothing
+// here may reach a third party — not even now that a fighter's face can be someone's X avatar. See
+// `faceFor()`.
 
 import { SIDE_TOKEN } from "../contract.ts";
 import type { ArenaBody } from "./field.ts";
@@ -104,33 +107,55 @@ function lookup(src: string): Entry {
   return entry;
 }
 
-/** THE ONE PLACE a fighter's picture is decided.
+/** THE ONE PLACE a fighter's picture is decided: the player's own avatar where they have proved one,
+ *  the coin their side is playing where they have not.
  *
- *  Today it is always the coin its side is playing, because that is the only image this build has
- *  any honest claim to. `web/index.html` put the player's connected X avatar here instead when there
- *  was one — `if (p.avatar && window.avatarImg) { … art = av; }` — and that is the shape this
- *  function keeps, so restoring it is one branch rather than a rewrite of the painter.
+ *  `web/index.html` had exactly this branch — `if (p.avatar && window.avatarImg) { … art = av; }` —
+ *  and this function kept its shape through the whole time the seam was empty, which is why filling
+ *  it is the one line below rather than a rewrite of the painter.
  *
- *  WHY THERE IS NO AVATAR TODAY, plainly: this build has no identity system. There is no X connect,
- *  no profile, and nothing the program stores on chain carries an avatar — a `Fighter` is a wallet,
- *  a side, a stake and its hp. A per-wallet picture would have to come from somewhere, and the two
- *  available "somewheres" are both refused on purpose:
+ *  THE CANVAS STILL TOUCHES NO DATA, which is the constraint that decided the shape. `b.avatarSrc`
+ *  is a plain string that `field.ts` copied off the `FighterView`; nothing in this file fetches an
+ *  identity, looks one up, imports a profile, or knows that X exists. An avatar is just another src
+ *  through the same cache, obeying the same four loading rules in this file's header, and the whole
+ *  of `SOCIAL.md` §6.3 is that sentence.
  *
- *    - a third-party avatar service (gravatar/unavatar and friends) would send this player's WALLET
- *      ADDRESS to a host they never agreed to talk to, on every fighter, every round. The field must
- *      make no off-origin request. It makes none.
- *    - a generated identicon would be a picture of nothing, dressed up as a person's face. The rest
- *      of this page refuses to invent data it doesn't have (`TokenIcon` draws a letter rather than a
- *      logo for SOL, for exactly this reason); a fabricated profile picture is the loudest possible
- *      version of that lie.
+ *  THE TWO REFUSALS THIS FUNCTION HAS ALWAYS RECORDED ARE STILL LIVE. Both are honoured by the new
+ *  branch rather than overridden by it:
  *
- *  So the seam exists, is documented, and is empty. When an identity source lands — a signed handle
- *  in the round log, a profile the shell already has — resolve it here and return its Face.
+ *    - NO THIRD-PARTY AVATAR SERVICE. The field still makes no off-origin request, and that is the
+ *      point of the path's shape. `/api/avatar/<xId>/<hash>.webp` is OUR origin proxying bytes we
+ *      hold — which is an ANSWER to the objection, not an exemption from it. Hotlinking would send
+ *      every player's IP and `Referer` to a third-party CDN for every fighter, every round,
+ *      including the players who never linked (`TWITTER-CONNECT.md` §7.1); the proxy is what stops
+ *      that, and `data/xLink.ts`'s `verifyAttestation` is what stops a path being anything else —
+ *      it rejects any avatar path that is not exactly that anchored shape, so a leaked signing key
+ *      still cannot point this at another host.
+ *    - NO GENERATED IDENTICON. An absent avatar is still `null` and still draws the flat
+ *      side-coloured disc. A procedural picture of nothing, dressed up as a person's face, is the
+ *      loudest version of the lie this page refuses everywhere else — `TokenIcon` draws a letter
+ *      rather than a logo for SOL for the same reason.
  *
- *  Returns `null` while the artwork is still decoding, when it failed, and for a token that has no
- *  artwork in the repo at all (SOL). The painter treats all three the same way: flat side colour. */
+ *  UNLINKED IS THE MAIN PATH, not a degraded one. Most players never link; the coin face plus a
+ *  `nameFor()` pseudonym is a complete rendering of a player, and it is the rendering this field
+ *  shipped with. Every rung of `TWITTER-CONNECT.md` §7.3's ladder — bytes in flight, upstream 404,
+ *  operator-suppressed, never linked — lands on the same disc, and none of them is distinguishable
+ *  to the painter. That indistinguishability is a feature: the absence of the identity service must
+ *  look exactly like a player who chose not to link.
+ *
+ *  ONCE A BODY HAS AN `avatarSrc`, ITS FACE IS THAT AVATAR OR NOTHING. `??` reads the src, not the
+ *  readiness — a linked fighter whose bytes are still coming draws the flat disc and never flashes
+ *  the coin on the way to its avatar. Two different pictures inside one round would read as the
+ *  fighter changing sides.
+ *
+ *  `crossOrigin` STAYS UNSET (see `lookup`): these paths are genuinely same-origin, so setting it
+ *  would ask for a CORS handshake this server does not offer and break the proxy for no gain.
+ *
+ *  Returns `null` while the artwork is still decoding, when it failed, and for a side whose token
+ *  has no artwork in the repo at all (SOL). The painter treats all of them the same way: flat side
+ *  colour. */
 export function faceFor(b: ArenaBody): Face | null {
-  const src = SIDE_TOKEN[b.side].icon;
+  const src = b.avatarSrc ?? SIDE_TOKEN[b.side].icon;
   if (src === null) return null;
   return lookup(src).face;
 }
@@ -139,7 +164,12 @@ export function faceFor(b: ArenaBody): Face | null {
  *
  *  Without this, the first fighter to appear in a lobby is drawn as a flat disc for however long the
  *  fetch and decode take, then pops into artwork. Priming at loop start moves that whole window into
- *  the empty pre-entry field, where there is nothing to pop. Idempotent — `lookup` is a cache. */
+ *  the empty pre-entry field, where there is nothing to pop. Idempotent — `lookup` is a cache.
+ *
+ *  THE TWO COINS ONLY, deliberately, now that a face can also be an avatar. The coins are two known
+ *  paths that every round needs; avatars are up to sixteen per-player fetches that this function has
+ *  no lineup to know about and would be guessing at. They prime on first paint instead, and the coin
+ *  is the correct rendering until they land rather than a placeholder for them. */
 export function primeFaces(): void {
   for (const token of SIDE_TOKEN) {
     if (token.icon !== null) lookup(token.icon);

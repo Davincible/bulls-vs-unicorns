@@ -87,3 +87,33 @@
   font-size: 10px;
   margin-top: 10px;
 }
+
+/* --- the X identity block (`XLinkPanel`) ------------------------------------------------------
+   Sits directly under the wallet address inside the rail's `Account` block, so it owns the gap
+   ABOVE it — the address paragraph has no bottom margin of its own to spare — and nothing else.
+   No box, no fill, no rule: this is three or four lines of the same account, not a second panel. */
+
+.xl {
+  margin: 12px 0 14px;
+}
+
+/* The linked row: when it happened on the left, the way out on the right. `.line` and `.push` do the
+   layout; this only sets the distance from the identity above it. */
+.xl-line {
+  margin-top: 10px;
+}
+
+/* TWO CLASSES DEEP, for the reason `.cx .cx-net` above is: `.lede` sets `margin: 0` and lives in
+   base.css, which Vite emits last, so a single-class rule here loses the tie and every paragraph in
+   this block collapsed onto the one above it. `.xl .xl-note` outranks it outright — the fix rather
+   than an `!important` or an import order the next module would undo. */
+.xl .xl-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+}
+
+/* The control leads in the unlinked state, so the invitation under it needs a little more air than
+   a paragraph following a paragraph does. */
+.xl > .btn + .xl-note {
+  margin-top: 12px;
+}

@@ -28,6 +28,7 @@ function fighterAt(id: number): FighterView {
     house: false,
     dead: false,
     isYou: wallet === YOU,
+    avatarSrc: null,
   };
 }
 

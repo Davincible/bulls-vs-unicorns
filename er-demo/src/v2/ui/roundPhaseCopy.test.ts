@@ -44,6 +44,7 @@ function fighter(over: Partial<FighterView> = {}): FighterView {
     banked: 0n,
     dead: false,
     isYou: false,
+    avatarSrc: null,
     ...over,
   };
 }

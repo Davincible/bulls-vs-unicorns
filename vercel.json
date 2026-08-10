@@ -1,11 +1,16 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
-  "installCommand": "cd er-demo && bun install --frozen-lockfile",
+  "installCommand": "npm ci --no-audit --no-fund && cd er-demo && bun install --frozen-lockfile",
   "buildCommand": "cd er-demo && bun run build",
   "outputDirectory": "er-demo/dist",
   "cleanUrls": true,
   "trailingSlash": false,
+  "functions": {
+    "api/**/*.ts": {
+      "maxDuration": 10
+    }
+  },
   "headers": [
     {
       "source": "/assets/(.*)",
@@ -25,7 +30,11 @@
         { "key": "X-Content-Type-Options", "value": "nosniff" },
         { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
         { "key": "X-Frame-Options", "value": "DENY" },
-        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=(), payment=()" }
+        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=(), payment=()" },
+        {
+          "key": "Content-Security-Policy-Report-Only",
+          "value": "default-src 'self'; img-src 'self' data:; connect-src 'self' https://api.devnet.solana.com wss://api.devnet.solana.com https://devnet.helius-rpc.com wss://devnet.helius-rpc.com https://*.magicblock.app wss://*.magicblock.app https://bulls-arena-keeper-devnet.fly.dev; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://x.com; object-src 'none'"
+        }
       ]
     }
   ]

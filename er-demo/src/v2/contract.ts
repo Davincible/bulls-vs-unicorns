@@ -108,6 +108,31 @@ export interface FighterView {
    *  fighter a name; a column of base58 is unreadable at a glance. */
   name: string;
   side: Side;
+  /** THIS FIGHTER'S OWN FACE, as a SAME-ORIGIN PATH — `/api/avatar/<xId>/<hash>.webp` — or null.
+   *
+   *  NEVER A URL, and that is enforced rather than merely intended: `data/xLink.ts`'s
+   *  `verifyAttestation` refuses any attestation whose `avatarPath` is not exactly that anchored
+   *  shape, so nothing can reach this field pointing at another host — not even a correctly-signed
+   *  record, because a signing key that leaked would otherwise become a way to make every player's
+   *  browser beacon to an attacker. `arena/faces.ts` carries the standing rule this serves
+   *  ("SAME-ORIGIN ONLY… Nothing here may reach a third party"), and the fact that our own origin
+   *  proxies the bytes is what lets an X avatar satisfy it instead of breaking it.
+   *
+   *  NULL IS THE ORDINARY STATE, NOT A FAILURE. Most players never link, and the unlinked path is
+   *  the MAIN path: the side's coin face plus a `nameFor()` pseudonym is a complete and good
+   *  rendering of a player, so an avatar REPLACES something rather than filling a hole. The same
+   *  null also covers "linked, bytes still in flight" and "suppressed by the operator" — every rung
+   *  of that ladder renders identically, and none of them is an error state or shows a gap.
+   *
+   *  A BARE STRING RATHER THAN A PROFILE OBJECT, deliberately. `SOCIAL.md` §6.1 proposed
+   *  `profile: Profile | null` here; this is a narrowing of it, and the reason is `SPEC.md`'s rule
+   *  that THE ARENA CANVAS NEVER TOUCHES DATA. This field's whole job is to cross that boundary
+   *  (`arena/field.ts` copies it onto `ArenaBody`, `arena/faces.ts` resolves it through the image
+   *  cache), and one string is the narrowest thing that does that job. Handing the canvas a profile
+   *  would invite it to render a handle, which is a DOM concern; DOM surfaces get the identity from
+   *  the link map keyed by wallet instead, where the `@handle` and the X logo can be rendered with
+   *  the obligations that come with them. */
+  avatarSrc: string | null;
   /** Net-of-fee stake, i.e. starting hp. */
   stake: bigint;
   /** Value still in the ring, from the latest poll. */

@@ -94,6 +94,9 @@ export const MOCK_FIGHTER_SEEDS = ENTRIES.map((e, id) => ({
   side: e.side,
   stake: e.stake,
   isYou: e.wallet === MOCK_YOU,
+  // The fixture links nobody. Unlinked is the majority case on a live arena too, so a fixture of
+  // coin-faced fighters is the representative lineup rather than a stripped-down one.
+  avatarSrc: null,
   // Resolved from the list above, not hardcoded false as it was: `FighterView.house` is a disclosure
   // obligation, and a fixture that renders every fighter as a person is the same misrepresentation
   // the live page was making, in the one place design review would have caught it.

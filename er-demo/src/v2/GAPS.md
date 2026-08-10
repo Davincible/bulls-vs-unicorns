@@ -95,9 +95,32 @@ custodied. The `sim` cashier is the honest maximum.
 **Round anchoring / memos.** Every round *is* its own account; a memo anchoring a fact already on
 chain is ceremony.
 
-**X/Twitter identity as the fighter's face.** No account in the program has a string field, so this
-could only be off-chain — and this page's own rule would then require a `sim` marker on a fighter's
-face, which is the one place a marker cannot go. `nameFor(wallet)` covers readability.
+**~~X/Twitter identity as the fighter's face.~~ NOW BEING BUILT — see `SOCIAL.md` and
+`TWITTER-CONNECT.md`.** The original entry read: *"No account in the program has a string field, so
+this could only be off-chain — and this page's own rule would then require a `sim` marker on a
+fighter's face, which is the one place a marker cannot go. `nameFor(wallet)` covers readability."*
+
+Both halves of that were right, and neither turned out to be the blocker:
+
+- **Off-chain, yes, and deliberately so.** `TWITTER-CONNECT.md` §3.5 considered an on-chain PDA
+  register and rejected it *with regret*, on irreversibility rather than on space: a link is a fact
+  settled until Tuesday, and the chain is for facts settled forever. The mapping lives behind
+  `/api/links`, and every record is delivered with a detached ed25519 signature the browser verifies
+  (`data/xLink.ts`), so the API is trusted for **availability** rather than for correctness. It can
+  withhold a link. It cannot invent one.
+- **The marker problem dissolved rather than being overruled.** This entry was correct that a `SIM`
+  marker cannot go on a face. The resolution (`SOCIAL.md` §2.6) is that an identity is not a
+  money-shaped figure, so the honest question is not "is this chain-derived" but "who verified it" —
+  and that is answered by a sentence rather than a badge.
+- **`nameFor(wallet)` still covers readability, and remains the main path.** Most players never link;
+  unlinked renders as the side's coin face plus a pseudonym, which is a complete rendering and never
+  an error state. An avatar *replaces* something rather than filling a hole.
+
+The one thing the original entry did not anticipate is the reason the feature was worth the care it
+got: the previous build already had X Connect, with real OAuth — and a `prompt("Your X handle")`
+fallback beside it that wrote an indistinguishable record, so typing a handle put that person's real
+name and photograph on your fighter. The new design's job was never to add a proof; it was to make
+the **absence** of one unrepresentable.
 
 **Draggable floating panels.** Replaced by the fixed, phase-aware dock and the side rail, which are
 keyboard-reachable by construction and do not cover the field.

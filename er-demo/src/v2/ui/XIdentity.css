@@ -1,0 +1,57 @@
+/* The face, the handle and the X mark, as one run of type. See XIdentity.tsx for the rules; this is
+   only the setting of them. Nothing here introduces a colour, a radius, a shadow or a fill. */
+
+.xid {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  /* So the whole run can be shrunk by the cell it sits in — without it a flex item refuses to go
+     below its content width and the name column stops ellipsising. */
+  min-width: 0;
+}
+
+/* THE HANDLE IS WHAT GIVES WAY. It is the only thing here allowed to be clipped: a shortened handle
+   is still an identity and the row's `title` carries the wallet, whereas a clipped X mark is a
+   display obligation dropped by a media query. */
+.xid-h {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* THE NEGATIVE MARGIN IS THE FLEX SPELLING OF `.tico`'s `vertical-align: -0.15em`, and it is doing
+   exactly that job. A replaced element's baseline is its bottom margin edge, so under
+   `align-items: baseline` an untouched 16px picture sits with its bottom ON the text baseline and
+   towers over a 12px line. Pulling the margin edge down drops the box onto the type's own optical
+   centre — the same correction TokenIcon makes in inline flow, in the units flex leaves available.
+   It also keeps `.xid`'s OWN baseline (which the leaderboard's `.sc-who` aligns against) on the
+   handle's text baseline, so `you`, `house` and the wallet key beside it stay on one line. */
+.xid--16 .xav { margin-bottom: -3px; }
+.xid--24 .xav { margin-bottom: -5px; }
+
+/* The provenance mark. Sized to the type rather than to the face — it is a footnote on the handle,
+   not a second picture — and set in the same ink as the wallet key it shares a row with. */
+.xid-x {
+  flex: none;
+  color: var(--ink-3);
+  width: 9px;
+  height: 9px;
+}
+.xid--24 .xid-x { width: 11px; height: 11px; }
+
+/* The wallet panel's setting: one identity, read once, at the size the panel's own type is set in
+   rather than a table's 12px. */
+.xid--24 {
+  gap: 8px;
+}
+.xid--24 .xid-h {
+  font-size: 14px;
+}
+
+/* On the black chrome bars the hairline would disappear — the same correction TokenIcon.css makes.
+   Present for completeness rather than because anything renders here today: `SOCIAL.md` §4.1 and §7
+   both forbid avatars in the chrome outright ("a 20px black instrument bar is not somewhere a raster
+   face belongs"), and handles ride the wins ticker as plain text. */
+.chrome .xav { border-color: rgba(255, 255, 255, 0.28); background: transparent; }
+.chrome .xid-x { color: rgba(255, 255, 255, 0.6); }

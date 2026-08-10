@@ -1,0 +1,31 @@
+/* A linked player's face at text scale. See XAvatar.tsx for why it is square and hairlined rather
+   than a rounded avatar — the page has no radius anywhere and this must not be the exception.
+
+   Deliberately the same shape of stylesheet as TokenIcon.css, because these two are the same object
+   on the page: a photographic marker set into a line of type. */
+
+.xav {
+  display: inline-block;
+  flex: none;
+  border: 1px solid var(--rule);
+  object-fit: cover;
+  /* Photographs are arbitrary artwork on a light page; a hairline keeps a pale edge from bleeding
+     into the paper without putting a box around anything. Same reasoning as `.tico`. */
+  background: var(--paper);
+}
+
+.xav--16 { width: 16px; height: 16px; }
+.xav--24 { width: 24px; height: 24px; }
+
+/* NO PICTURE — `avatarPath` is null, or the bytes failed to load. `TokenIcon`'s own no-artwork mark,
+   at the same footprint, so the row is identical whether or not a face arrived. `--ink-3` rather than
+   a side colour: this carries no membership, and rule 5 reserves colour for the two sides. */
+.xav--letter {
+  font: 400 9px/1 var(--mono);
+  letter-spacing: 0;
+  text-align: center;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.xav--letter.xav--16 { font-size: 10px; line-height: 14px; }
+.xav--letter.xav--24 { font-size: 14px; line-height: 22px; }

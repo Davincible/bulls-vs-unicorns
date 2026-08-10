@@ -1,0 +1,21 @@
+{
+  "name": "bulls-arena-functions",
+  "private": true,
+  "type": "module",
+  "description": "Dependencies and Node runtime pin for the Vercel Functions in /api, plus the wallet<->X operator commands in scripts/. NOT the front end \u2014 that is er-demo/package.json and it installs and builds independently. See er-demo/api/README.md for the whole arrangement and why it is this way.",
+  "engines": {
+    "node": "24.x"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
+    "@noble/curves": "^1.9.7",
+    "@solana/web3.js": "^1.98.4",
+    "sharp": "^0.35.3"
+  },
+  "scripts": {
+    "xlink:keygen": "bun run scripts/xlink-keygen.ts",
+    "xlink:seed": "bun run scripts/xlink-seed.ts",
+    "xlink:ingest": "bun run scripts/xlink-ingest.ts",
+    "xlink:suppress": "bun run scripts/xlink-suppress.ts"
+  }
+}

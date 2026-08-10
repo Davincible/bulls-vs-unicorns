@@ -27,6 +27,24 @@ export interface ArenaBody {
   readonly side: Side;
   readonly name: string;
   readonly isYou: boolean;
+  /** `FighterView.avatarSrc` — a same-origin path, or null for the (majority) unlinked fighter.
+   *
+   *  Carried onto the body so `faces.ts` can resolve a face without the canvas ever touching data,
+   *  which is the boundary `SOCIAL.md` §6.3 exists to hold.
+   *
+   *  THE ONE MUTABLE FIELD IN THIS BLOCK, and the exception is the point rather than an oversight.
+   *  Everything above it is immutable identity: a wallet, a side, a pseudonym and a stake are all
+   *  decided before the body exists and cannot change while it does. An avatar is not identity in
+   *  that sense — it is a LATE-ARRIVING NETWORK RESOURCE about an identity, and the link feed
+   *  resolves its fetch after the round is already on screen essentially every time. So this field
+   *  belongs with `hp`/`banked`/`dead` below, which are likewise mirrored in from outside on the
+   *  frames they move, and it is written by `syncAvatars` for exactly their reason: the alternative
+   *  is rebuilding the field to deliver one string, which throws away live physics state.
+   *
+   *  It is declared HERE rather than beside them because a reader asking "what is this fighter"
+   *  should find it with the wallet and the name. Grouping is for the reader; `readonly` is for the
+   *  compiler; they disagree in this one case and this comment is the reconciliation. */
+  avatarSrc: string | null;
   /** Starting hp, i.e. net-of-fee stake — fixed for the life of the round. */
   readonly stake: bigint;
 
@@ -762,6 +780,7 @@ export function createField(
       side: f.side,
       name: f.name,
       isYou: f.isYou,
+      avatarSrc: f.avatarSrc,
       stake: f.stake,
       x: 0,
       y: 0,
@@ -825,6 +844,57 @@ export function createField(
   for (let i = 0; i < SPAWN_SETTLE_PASSES; i++) separate(field);
   clampToWalls(field);
   return field;
+}
+
+/** DELIVER A LATE-ARRIVING AVATAR WITHOUT REBUILDING THE WORLD.
+ *
+ *  THE DEFECT THIS EXISTS TO FIX, because it is not obvious from either side alone. `createField` is
+ *  the only thing that copies `avatarSrc` onto a body, and `arenaLoop`'s `ensureWorld` only calls it
+ *  when `lineupChanged` says the CAST changed — same length, same ids, same wallets, same stakes,
+ *  same `fightStartedAtMs` means the field stands. An avatar arriving changes none of those. So a
+ *  link that resolves after the round is on screen reached the `FighterView`, reached the roster,
+ *  reached every DOM surface, and never reached the canvas: the bodies kept the `null` they were
+ *  built with and `faceFor` returned the side's coin forever. Both halves were individually correct
+ *  and the feature did not work, which is the shape of every defect the e2e suite exists for.
+ *
+ *  AND IT IS THE NORMAL CASE, not an edge one. `useLinks` fetches, verifies and signs on a promise;
+ *  the round is rendering long before that lands. "Link arrives mid-round" is not a scenario a
+ *  player has to arrange, it is what happens on every page load.
+ *
+ *  WHY MUTATION, WHEN THE REST OF THIS FILE'S IDENTITY IS IMMUTABLE. The alternative is to widen
+ *  `lineupChanged` so an avatar counts as a new cast, and that is much worse than it looks: the same
+ *  branch also rebuilds the replay, resets `streamMark`, clears the impact FX still expanding from
+ *  the last blow, and raises `fresh` — which suppresses the frame's death announcements. A fighter
+ *  acquiring a face would drop a shockwave and swallow a death. The field itself would survive
+ *  (`createField` carries position and the spring forward), but its siblings would not.
+ *
+ *  FREE ON THE FRAMES WHERE NOTHING CHANGED, which is all but a handful of them in the round's life.
+ *  No allocation, no Map, no array: an id lookup and a string compare per fighter, and the compare
+ *  is almost always between two references to the same value — `markLinkedFighters` returns its
+ *  INPUT array untouched when nothing moved, so the `FighterView`s are the same objects too. The
+ *  write only happens on the frame the link actually lands. Same discipline as `houseFighters.ts`
+ *  and `linkFighters.ts`: do nothing at all in the common case.
+ *
+ *  REVOCATION TRAVELS THIS PATH TOO, and needs no branch of its own — an unlinked, suppressed or
+ *  deleted account arrives as `avatarSrc: null`, the compare notices, and the fighter is back to its
+ *  coin on the next frame. Every rung of `TWITTER-CONNECT.md` §7.3's ladder is one assignment.
+ *
+ *  BY `byId`, NOT BY POSITION. `ensureWorld` only calls this when `lineupChanged` is false, which
+ *  does guarantee the two arrays line up — but leaning on that would make this function silently
+ *  wrong if it were ever called anywhere else, and `byId` is the index the whole file already treats
+ *  as the canonical id -> body map. A fighter with no body is skipped rather than assumed.
+ *
+ *  NOT A DUPLICATE OF `syncBodies`, though the names are deliberately siblings. That one pulls FIGHT
+ *  STATE off the replay's shadow every frame and re-derives radii from it; this one pulls one
+ *  IDENTITY field off the `FighterView`s on the frames where the world was not rebuilt. Different
+ *  source, different cadence, different reason to exist — and merging them would put a
+ *  `FighterView[]` parameter into the function whose whole doc is "the one place fight state enters
+ *  the field". */
+export function syncAvatars(field: ArenaField, fighters: readonly FighterView[]): void {
+  for (const f of fighters) {
+    const b = field.byId[f.id];
+    if (b !== undefined && b.avatarSrc !== f.avatarSrc) b.avatarSrc = f.avatarSrc;
+  }
 }
 
 /** Resize keeps the fight running: positions move proportionally and radii re-derive at the new

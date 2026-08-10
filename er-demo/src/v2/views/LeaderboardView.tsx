@@ -28,7 +28,11 @@
 
 import { useId, useMemo, useState } from "react";
 import { useArena } from "../data/useArena.ts";
+import { useLinks } from "../data/useLinks.ts";
+import { linkFor } from "../data/linkFighters.ts";
+import type { LinkRecord } from "../data/xLink.ts";
 import { Bar, Empty, Mark, Money, Section, TabPanel, Tabs, Tag } from "../ui/primitives.tsx";
+import { XIdentity } from "../ui/XIdentity.tsx";
 import { ScrollBox } from "./ScrollBox.tsx";
 import { coverageFigure, coverageNote, coveragePhrase } from "./coverage.ts";
 import {
@@ -103,6 +107,30 @@ function peak(values: bigint[]): bigint {
     if (a > m) m = a;
   }
   return m;
+}
+
+/* ---------------------------------------------------------------------------------------------
+   THE NAME, WITH OR WITHOUT A FACE — one definition, used by all three boards.
+   ---------------------------------------------------------------------------------------------
+   `SOCIAL.md` §2.5's rule, and it is the whole design: AN AVATAR REPLACES SOMETHING RATHER THAN
+   FILLING A HOLE. A linked player's `@handle` and face stand in for the wallet-derived pseudonym;
+   an unlinked player renders EXACTLY what they rendered before this feature existed — the same
+   `.sc-who-n` span, the same string, no reserved column, no placeholder, no silhouette and no grey
+   person-icon. Those read as broken, and `TWITTER-CONNECT.md` §8 is emphatic that the unlinked path
+   is the MAIN path: most players never link, and the pseudonym plus the wallet key beside it is a
+   complete, good rendering of a player rather than a degraded one.
+
+   NOTHING HERE NAGS. There is no "connect X" affordance on a row and there never may be — the
+   connect control lives in the wallet panel, once (§4.0). A leaderboard that asks forty rows' worth
+   of strangers to link is the growth tactic this document explicitly refuses.
+
+   IT IS LOCAL TO THIS FILE ON PURPOSE. `.sc-who-n` is a `screens.css` class, so a `ui/` primitive
+   has no business knowing about it; what the three boards need is one answer to "how does a name
+   render on THIS screen", and that is this function. If a fourth surface wants the same pairing it
+   should lift this, not copy it. */
+function NameCell({ link, name }: { link: LinkRecord | null; name: string }) {
+  if (link === null) return <span className="sc-who-n">{name}</span>;
+  return <XIdentity link={link} />;
 }
 
 export function LeaderboardView() {
@@ -320,6 +348,11 @@ function RoundBoard({
   label: string;
   disclosure: HouseDisclosure;
 }) {
+  // THE IDENTITY MAP, READ HERE RATHER THAN THREADED THROUGH. It is a context value, so this costs
+  // one lookup and keeps the three boards' prop lists as they were. `loading` is deliberately not
+  // consulted: nothing on this board may wait on the identity feed (`useLinks.ts`), and a round
+  // renders completely and correctly while it is still outstanding.
+  const { map } = useLinks();
   // An empty board never renders a `ScrollBox` at all — there is no box, so there is no stop to
   // decide about. The same is true of the two boards below: the empty state is structurally
   // excluded rather than measured away.
@@ -398,7 +431,12 @@ function RoundBoard({
                   <span className="u">{SIDE_TOKEN[f.side].name}</span>
                 </div>
                 <div role="cell" className="sc-who" title={f.wallet}>
-                  <span className="sc-who-n">{f.name}</span>
+                  {/* `linkFor`, NEVER `map.get`. It is the single client-side guard that keeps a
+                      face off a house wallet, and it is a guard only because it lives at one call
+                      site — `linkFighters.ts`'s header is the argument. `f.house` is stamped by
+                      `withHouseMarks` upstream, so this reads the same fact the `house` marker two
+                      lines below prints. */}
+                  <NameCell link={linkFor(map, f.wallet, f.house)} name={f.name} />
                   {f.isYou ? <span className="u u--ink">you</span> : null}
                   {/* THE DISCLOSURE. Real text, not a colour or a shade: it is announced by a screen
                       reader, it survives a monochrome print, and it says the word rather than asking a
@@ -494,6 +532,11 @@ function AllTime({
   loading: boolean;
   label: string;
 }) {
+  // See `RoundBoard`. `house` is `false` here and that is not an oversight: `StandingsRow` is an
+  // aggregate over settled rounds whose house membership was already excluded upstream, so there is
+  // no per-row house mark on this board to key off. `linkFor` takes it as a parameter precisely so
+  // each surface has to state which of the two it is (`linkFighters.ts`).
+  const { map } = useLinks();
   if (!rows.length) {
     return (
       <Empty>
@@ -560,7 +603,7 @@ function AllTime({
               {i + 1}
             </div>
             <div role="cell" className="sc-who" title={r.wallet}>
-              <span className="sc-who-n">{r.name}</span>
+              <NameCell link={linkFor(map, r.wallet, false)} name={r.name} />
               {r.wallet === youKey ? <span className="u u--ink">you</span> : null}
               <span className="sc-who-k">{r.short}</span>
             </div>
@@ -627,6 +670,8 @@ function Hall({
   roundOf(p: RoundPlayer): bigint | null;
   label: string;
 }) {
+  // See `AllTime` — `RoundPlayer` is a settled-round row and carries no house mark either.
+  const { map } = useLinks();
   if (!rows.length) {
     return (
       <Empty>
@@ -690,7 +735,7 @@ function Hall({
                 <span className="u">{SIDE_TOKEN[p.side].name}</span>
               </div>
               <div role="cell" className="sc-who" title={p.wallet}>
-                <span className="sc-who-n">{p.name}</span>
+                <NameCell link={linkFor(map, p.wallet, false)} name={p.name} />
                 {p.wallet === youKey ? <span className="u u--ink">you</span> : null}
                 <span className="sc-who-k">{p.short}</span>
               </div>

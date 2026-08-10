@@ -217,6 +217,16 @@ export function useFixtureArena({ active, push, recordDeploy }: FixtureArenaPara
       fault: null,
       connect: async () => push("FIXTURE — no wallet to connect", "info"),
       disconnect: async () => push("FIXTURE — no wallet to disconnect", "info"),
+      // THROWS RATHER THAN FABRICATING A SIGNATURE, and that is the one place the fixture's "report
+      // the ungated state" rule above does not apply. Everything else on this object is a number or a
+      // no-op that makes the page reviewable; a signature is a CLAIM — the fixture has no key, so any
+      // bytes it returned would be a forgery of a proof, and the endpoint that consumed them would
+      // rightly reject it somewhere far from here. The fixture is honest about being a fiction; it
+      // does not get to be dishonest about cryptography.
+      signMessage: async () => {
+        push("FIXTURE — there is no wallet here to sign with", "info");
+        throw new Error("FIXTURE — there is no wallet here to sign with");
+      },
     },
     verify: { result: verifyResult, run: runVerify, running: false },
   };

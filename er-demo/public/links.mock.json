@@ -1,0 +1,41 @@
+{
+  "note": "Fixture for ?links=mock. UNSIGNED payloads — data/mockLinks.ts signs these at load with the key derived from MOCK_ATTESTATION_SEED, because a committed signature would expire after seven days and silently render everybody unlinked. Regenerate with `node scripts/make-mock-links.mjs`. Handles are prefixed mock_ so a screenshot of this can never be mistaken for a real identity.",
+  "identities": [
+    {
+      "xId": "9990000000000001",
+      "handle": "mock_kestrel",
+      "displayName": "Kestrel",
+      "avatarHash": "e62aa8235c00b9c5b2c570c1e90c85965b5c1427507327a14ab5c183e2936429"
+    },
+    {
+      "xId": "9990000000000002",
+      "handle": "mock_otter",
+      "displayName": "Otter 🦦",
+      "avatarHash": "689fad47c35a24fc7abf00987cc4c31a125c77ceabe084db6a2ade61a9471a98"
+    },
+    {
+      "xId": "9990000000000003",
+      "handle": "mock_vole",
+      "displayName": "",
+      "avatarHash": "e6b1949191480584cfaed4ae0bbf6f008c2b2a5c6b11578d2701d2fe8d70f9dd"
+    },
+    {
+      "xId": "9990000000000004",
+      "handle": "mock_shrike",
+      "displayName": "Shrike, of the , and : persuasion",
+      "avatarHash": "8fdec44397a6d5c0c6c9e9b74b3e7cf25e281eb3f61b28201ba3bd9774f6a65e"
+    },
+    {
+      "xId": "9990000000000005",
+      "handle": "mock_marten",
+      "displayName": "Marten",
+      "avatarHash": "429ad04cec253ce022b63c2c6f4f0cb4047161421d1bb88df8c83ee022f4c9c1"
+    },
+    {
+      "xId": "9990000000000006",
+      "handle": "mock_tern",
+      "displayName": "Tern",
+      "avatarHash": ""
+    }
+  ]
+}

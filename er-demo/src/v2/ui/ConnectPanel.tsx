@@ -16,9 +16,14 @@
 // bug wearing a different hat — `playGate` guarantees every block carries a route out, and this
 // renders that route as the thing you press.
 
+import { useState } from "react";
 import { DEVNET_ONLY_NOTE, type PlayBlock } from "../data/playGate.ts";
 import { useArena } from "../data/useArena.ts";
+import { useLinks } from "../data/useLinks.ts";
+import { FAILURE_COPY, LINKED_COPY, UNLINKED_COPY } from "../data/xConsent.ts";
 import { asSentence } from "./roundPhaseCopy.ts";
+import { linkedDateText } from "./linkedDate.ts";
+import { XIdentity } from "./XIdentity.tsx";
 import "./ConnectPanel.css";
 
 /** The waiting states worth telling a screen reader about, and the resting ones that are not.
@@ -126,6 +131,121 @@ export function ConnectPanel({ block, density }: ConnectPanelProps) {
       ) : null}
 
       {noteAlreadySaid ? null : <p className="u cx-net">{DEVNET_ONLY_NOTE}</p>}
+    </div>
+  );
+}
+
+// =================================================================================================
+// THE X IDENTITY BLOCK — the second tenant of this file, and the same bargain as the first.
+// =================================================================================================
+//
+// IT LIVES DIRECTLY UNDER THE WALLET ADDRESS because the link is ABOUT the wallet (`SOCIAL.md`
+// §4.0). A player asking "what does this site know about me" is looking at their key; the answer
+// belongs in the same breath, not four blocks down under a heading they have to go and find.
+//
+// IT WRITES NO COPY, exactly as `ConnectPanel` above it writes none. Every sentence comes from
+// `data/xConsent.ts`, where the claims can be reviewed next to the code that makes them true —
+// `REVOCATION_COPY`'s numbers are derived from `useLinks.ts#REFRESH_MS` and the avatar cache header
+// for precisely that reason. If a state reads badly, the fix is in that file.
+//
+// THERE ARE THREE STATES AND THE THIRD ONE IS NOT AN ERROR SCREEN.
+//
+//   off      — `?links=` is unset, which is the default and the shipping configuration. NOTHING is
+//              rendered. Stage 3 does not exist, and a `Connect X` button that cannot connect is
+//              worse than no button: this page's own account of the in-page airdrop makes the same
+//              argument, and it is right.
+//   unlinked — the control and the invitation. Once, here, and nowhere else on the page: there is no
+//              per-row nag on the leaderboard and there never may be (`TWITTER-CONNECT.md` §8).
+//   linked   — the face at 24px, the `@handle`, when it was linked, `Unlink`, and the sentence that
+//              disconnecting a wallet is NOT unlinking. That last one is not a nicety. It is the
+//              natural wrong assumption, and its consequence — your face keeps appearing on a board
+//              you think you have left — is exactly the class of surprise this page refuses.
+//   failed   — the reason and `Try again`. THERE IS NO HANDLE-ENTRY FALLBACK and there is nowhere to
+//              put one: `LinkRequest` has no `handle` field. The old build answered every OAuth
+//              failure with `prompt("Your X handle")` and wrote the answer through the same message
+//              as a proven one, which is the defect this entire feature exists to delete.
+//
+// NOTHING HERE IS GATED ON `loading`, except the one thing it exists for. `useLinks`' own contract:
+// it must never gate anything, and it is there so this panel does not flash "not connected" at
+// somebody who is. So the FIRST fetch renders nothing at all rather than a `Connect X` button that
+// is about to be replaced by a face. Every other surface renders straight through it.
+
+// WHAT BOTH CONTROLS DO TODAY, and it is the same thing: say so. Stage 3 — the OAuth start,
+// callback, challenge and link endpoints — does not exist, so neither `Connect X` nor `Unlink` can
+// run a ceremony, and this panel does not invent one, does not fake a request it never sent, and
+// does not report a failure that did not happen. `FAILURE_COPY.notBuilt` is that sentence, and it
+// lives in `xConsent.ts` with the rest of the copy, flagged there as provisional. When the ceremony
+// lands, these two `onClick`s are where it goes and the rest of this component is unchanged.
+
+export function XLinkPanel() {
+  const { source, you, loading } = useLinks();
+  /** What the last press produced, or null for "nothing has been pressed". A STRING rather than a
+   *  boolean so that when the ceremony arrives this is already the shape it needs — one reason out
+   *  of `FAILURE_COPY`, rendered — instead of a flag somebody has to widen. */
+  const [failure, setFailure] = useState<string | null>(null);
+
+  // The feature is off, which is the default and the deployed state. Not "disabled", not "coming
+  // soon" — absent. See this block's header.
+  if (source === "off") return null;
+  // The only thing `loading` is allowed to do anywhere in this program.
+  if (loading && you === null) return null;
+
+  if (you !== null) {
+    const linkedOn = linkedDateText(you.linkedAt, Date.now());
+    return (
+      <div className="xl" data-testid="x-link-panel" data-state={failure === null ? "linked" : "failed"}>
+        {/* 24px, which is the largest an avatar may be on the DOM outside the fighter inspector.
+            `SOCIAL.md` §4.6: size is the discipline that keeps a colour photograph honest on a page
+            whose only other colour is the two sides. */}
+        <XIdentity link={you} size={24} />
+        <div className="line xl-line">
+          {/* Withheld rather than faked when the timestamp is unusable — `linkedDateText` returns
+              null and this prints nothing, instead of asserting "linked 1 Jan 1970" as a fact. */}
+          {linkedOn === null ? null : (
+            <span className="u">
+              Linked · <span className="u--ink">{linkedOn}</span>
+            </span>
+          )}
+          <button type="button" className="btn btn--sm btn--ghost push" onClick={() => setFailure(FAILURE_COPY.notBuilt)}>
+            {failure === null ? LINKED_COPY.unlink : FAILURE_COPY.retry}
+          </button>
+        </div>
+        {/* THE IDENTITY STAYS ON SCREEN THROUGH THE FAILURE, and that is correctness rather than
+            layout: the unlink did not happen, so a panel that removed the face would be showing the
+            outcome of the thing that just failed. */}
+        {failure === null ? (
+          <p className="lede xl-note">{LINKED_COPY.disconnectIsNotUnlink}</p>
+        ) : (
+          <p className="lede xl-note" role="alert">
+            {failure}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="xl" data-testid="x-link-panel" data-state={failure === null ? "unlinked" : "failed"}>
+      {/* ONE BUTTON ACROSS BOTH STATES, in the same slot, and that is a focus decision rather than a
+          tidy one. Rendering a separate `Try again` control would unmount the button the reader just
+          pressed and drop focus to the top of the document — the exact defect `useFocusTrap.ts` was
+          written against. Same element, same position, new label. */}
+      <button type="button" className="btn btn--sm btn--wide" onClick={() => setFailure(FAILURE_COPY.notBuilt)}>
+        {failure === null ? UNLINKED_COPY.action : FAILURE_COPY.retry}
+      </button>
+      {failure === null ? (
+        <>
+          <p className="lede xl-note">{UNLINKED_COPY.invitation}</p>
+          {/* Said quietly and always. It is what makes not linking a CHOICE rather than a gap, and
+              it is the reason there is no nudge, no modal and no disabled control anywhere else:
+              play is never gated on this. */}
+          <p className="lede xl-note">{UNLINKED_COPY.optional}</p>
+        </>
+      ) : (
+        <p className="lede xl-note" role="alert">
+          {failure}
+        </p>
+      )}
     </div>
   );
 }

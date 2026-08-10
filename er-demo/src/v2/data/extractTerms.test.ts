@@ -29,6 +29,7 @@ function fighters(over: Partial<FighterView> = {}): FighterView[] {
     banked: 0n,
     dead: false,
     isYou,
+    avatarSrc: null,
   });
   return Array.from({ length: N }, (_, i) => (i === 0 ? { ...base(0, true), ...over } : base(i, false)));
 }

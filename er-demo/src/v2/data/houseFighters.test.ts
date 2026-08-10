@@ -34,6 +34,7 @@ function fighterAt(id: number, wallet: string, over: Partial<FighterView> = {}):
     house: false,
     dead: false,
     isYou: wallet === YOU,
+    avatarSrc: null,
     ...over,
   };
 }

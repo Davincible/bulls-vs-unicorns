@@ -18,6 +18,7 @@ function fighter(over: Partial<FighterView> & Pick<FighterView, "id" | "name">):
     house: false,
     dead: false,
     isYou: false,
+    avatarSrc: null,
     ...over,
   };
 }

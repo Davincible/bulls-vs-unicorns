@@ -24,7 +24,7 @@ import { useCallback, useEffect, useState } from "react";
 import { LAMPORTS_PER_SOL, type Connection } from "@solana/web3.js";
 import { shortKey } from "../contract.ts";
 import { assertDevnetConnection } from "./devnetOnly.ts";
-import type { ChainIdentity } from "./identity.ts";
+import { NO_WALLET_MESSAGE, type ChainIdentity } from "./identity.ts";
 import type { ArenaContextValue, ToastKind } from "./types.ts";
 
 /** Slow on purpose. The balance only moves when the wallet signs something or is funded, and both of
@@ -127,5 +127,9 @@ export function useWallet(
     fault: identity.fault,
     connect: identity.connect,
     disconnect: identity.disconnect,
+    // `identity.signMessage` is null when nobody is connected; the context's contract is a function
+    // that REJECTS instead, so a caller gets one sentence it can show rather than a null it has to
+    // remember to check. Same message the other unsignable paths answer with, from the same constant.
+    signMessage: identity.signMessage ?? (() => Promise.reject(new Error(NO_WALLET_MESSAGE))),
   };
 }

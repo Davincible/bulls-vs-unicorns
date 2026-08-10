@@ -256,6 +256,18 @@ export interface ArenaContextValue {
     /** Opens Phantom's approval popup. A no-op in burner mode. */
     connect(): Promise<void>;
     disconnect(): Promise<void>;
+    /** SIGN A PLAIN MESSAGE — one prompt, no transaction, no funds moved. Returns the raw 64-byte
+     *  detached ed25519 signature.
+     *
+     *  It exists for exactly one thing: proving to `/api/x/link` that this browser controls this
+     *  wallet, so an X identity cannot be attached to somebody else's address. `TWITTER-CONNECT.md`
+     *  §4 — OAuth proves control of the X account, this proves control of the wallet, and the two are
+     *  bound because the X identity is inside the bytes being signed.
+     *
+     *  REJECTS WITH `NO_WALLET_MESSAGE` WHEN NOBODY IS CONNECTED, exactly as the other signing paths
+     *  do, rather than being absent — a caller gets one sentence it can show a player instead of
+     *  having to check a null first and invent its own. */
+    signMessage(message: Uint8Array): Promise<Uint8Array>;
   };
 
   /** WHY THE LOCAL PLAYER CANNOT ACT, or `null` when they can — the single verdict behind every

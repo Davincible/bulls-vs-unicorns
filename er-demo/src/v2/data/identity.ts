@@ -41,6 +41,7 @@
 //    silent, expensive, remote failure into an immediate local answer.
 // ================================================================================================
 
+import { ed25519 } from "@noble/curves/ed25519";
 import { Keypair, PublicKey, type Transaction, type VersionedTransaction } from "@solana/web3.js";
 import type { Wallet } from "@coral-xyz/anchor";
 import type { TxSigner } from "../../chain/sendTx.ts";
@@ -62,6 +63,18 @@ export interface ChainIdentity {
    *  `TxSigner` union). `null` when nobody is connected, which is what makes an accidental press
    *  produce a sentence instead of a stack trace. */
   txSigner: TxSigner | null;
+  /** SIGNS A SENTENCE, NOT A TRANSACTION — one prompt, no fee, nothing on chain, no funds moved.
+   *
+   *  The X link ceremony is the only caller (`TWITTER-CONNECT.md` §4.1 step 5): the server hands the
+   *  browser a canonical message naming this wallet and one X account, the wallet signs it, and the
+   *  server verifies the signature against the wallet's public key. That signature is the entire
+   *  proof that the person who just finished an OAuth flow also controls this key — so it is the
+   *  thing that makes the link unforgeable, and it is why this member exists at all.
+   *
+   *  `null` when nobody is connected, mirroring `txSigner` exactly and for the same reason: it is
+   *  what makes an accidental press produce a sentence instead of a stack trace. Bytes in, raw
+   *  64-byte detached signature out — see `SigningWallet.signMessage` for what is NOT done to them. */
+  signMessage: ((message: Uint8Array) => Promise<Uint8Array>) | null;
   /** See landmine 1. In burner mode this is the burner itself and is used exactly as before. */
   tickerKeypair: Keypair;
   status: WalletStatus;
@@ -75,11 +88,34 @@ export interface ChainIdentity {
 export const NO_WALLET_MESSAGE =
   "Connect a wallet first — this page has nothing to sign with until you do.";
 
-/** The three members `AnchorProvider` actually consumes. */
+/**
+ * EVERYTHING THIS APP EVER ASKS A WALLET TO DO. The first three are the members `AnchorProvider`
+ * consumes; the fourth it has never heard of.
+ *
+ * `signMessage` sits on the same interface rather than on a second one because it is the same
+ * object — one wallet, one place to look for what it can do. Anchor never sees the extra member
+ * (`asAnchorWallet` casts to a type that does not declare it, and structural excess is not an
+ * error), so widening this costs the anchor path nothing.
+ */
 export interface SigningWallet {
   publicKey: PublicKey;
   signTransaction<T extends Transaction | VersionedTransaction>(tx: T): Promise<T>;
   signAllTransactions<T extends Transaction | VersionedTransaction>(txs: T[]): Promise<T[]>;
+  /**
+   * Sign a plain message — one prompt, no transaction, no funds moved.
+   *
+   * RETURNS THE RAW 64-BYTE DETACHED ED25519 SIGNATURE, and each of those words is load-bearing.
+   * Not a wrapper object: Phantom's injected provider resolves `{ signature, publicKey }` and the
+   * adapter already unwraps it, so a second wrapper here would be a shape every caller has to learn.
+   * Not base64, not hex: how a signature is encoded for a wire is the business of whoever is
+   * transporting it, and a wallet layer that picks one has decided a question it was not asked.
+   *
+   * AND NOTHING IS DONE TO THE MESSAGE. No prefix, no hash, no re-encoding, no normalisation — the
+   * bytes handed in are the bytes signed, so a verifier that reconstructs them from the same string
+   * gets `true` and one that does not gets `false`. That is the only property the link ceremony
+   * needs, and the only one that survives a message containing characters outside ASCII.
+   */
+  signMessage(message: Uint8Array): Promise<Uint8Array>;
 }
 
 /**
@@ -110,7 +146,7 @@ export function asAnchorWallet(w: SigningWallet): Wallet {
  *
  * `PublicKey.default` is the all-zero key (the System Program's address), which is the closest thing
  * Solana has to a written "nobody": it is a real, valid `PublicKey` so `AnchorProvider` is satisfied,
- * and no fighter in any round can ever equal it. Both sign methods reject — see landmine 2.
+ * and no fighter in any round can ever equal it. Every sign method rejects — see landmine 2.
  */
 const refuseToSign = async (): Promise<never> => {
   throw new Error(NO_WALLET_MESSAGE);
@@ -127,18 +163,24 @@ const refuseToSign = async (): Promise<never> => {
  * against the public devnet RPC whose 429s this repo already documents as its first failure mode —
  * and another full sweep every time a cancelled connect changed `fault`.
  *
- * It is safe to share because it is stateless: both methods only throw, and `PublicKey` is
+ * It is safe to share because it is stateless: every method only throws, and `PublicKey` is
  * immutable. Frozen so nothing can quietly give it the ability to sign later.
+ *
+ * TYPED AS `SigningWallet`, NOT `Wallet`, AND THE CAST MOVED TO THE CALLER — the one change this
+ * object needed when it gained `signMessage`. Anchor's `Wallet` does not declare that member, so
+ * storing the instance pre-cast would have hidden it from every reader and from the compiler,
+ * leaving the file's most important refusal reachable only through a second cast. `asAnchorWallet`
+ * is a no-op at runtime, so `walletIdentity` casting at the point where anchor's type is genuinely
+ * required hands `createProgram` this exact object, with this exact identity, as it always did.
  */
-const DISCONNECTED_WALLET: Wallet = Object.freeze(
-  asAnchorWallet({
-    publicKey: PublicKey.default,
-    signTransaction: <T extends Transaction | VersionedTransaction>(_tx: T): Promise<T> => refuseToSign(),
-    signAllTransactions: <T extends Transaction | VersionedTransaction>(_txs: T[]): Promise<T[]> => refuseToSign(),
-  }),
-);
+const DISCONNECTED_WALLET: SigningWallet = Object.freeze({
+  publicKey: PublicKey.default,
+  signTransaction: <T extends Transaction | VersionedTransaction>(_tx: T): Promise<T> => refuseToSign(),
+  signAllTransactions: <T extends Transaction | VersionedTransaction>(_txs: T[]): Promise<T[]> => refuseToSign(),
+  signMessage: (_message: Uint8Array): Promise<Uint8Array> => refuseToSign(),
+});
 
-export function disconnectedWallet(): Wallet {
+export function disconnectedWallet(): SigningWallet {
   return DISCONNECTED_WALLET;
 }
 
@@ -149,9 +191,17 @@ export function disconnectedWallet(): Wallet {
  * `wallet` and `player` move together by construction: a wallet object exists exactly when there is
  * a public key to sign with, so there is no state in which the page believes it can sign for someone
  * it cannot name.
+ *
+ * IT TAKES THE `SigningWallet`, NOT THE ANCHOR `Wallet`, and that is deliberate rather than
+ * incidental. Anchor's exported type declares three members and knows nothing about `signMessage`,
+ * so accepting it here would mean reaching the message signature through a cast on every call — a
+ * cast that asserts a member the type system had already been told did not exist. Taking the honest
+ * type instead means the ONE place that needs anchor's shape (`anchorWallet`) is the one place that
+ * casts, `asAnchorWallet` keeps its single documented justification, and `usePhantom` — which builds
+ * this object and knows exactly what it can do — no longer has to cast at all.
  */
 export function walletIdentity(input: {
-  wallet: Wallet | null;
+  wallet: SigningWallet | null;
   status: WalletStatus;
   fault: WalletFault | null;
   tickerKeypair: Keypair;
@@ -162,17 +212,59 @@ export function walletIdentity(input: {
   return {
     mode: "wallet",
     player: wallet?.publicKey ?? null,
-    anchorWallet: wallet ?? disconnectedWallet(),
-    // `Wallet` is structurally a superset of `sendTx`'s `WalletLikeSigner` — the same `publicKey`
-    // and the same `signTransaction<T extends Transaction>` — so the wallet IS the signer, with no
-    // adapter object in between to get out of step with it.
+    anchorWallet: asAnchorWallet(wallet ?? disconnectedWallet()),
+    // `SigningWallet` is structurally a superset of `sendTx`'s `WalletLikeSigner` — the same
+    // `publicKey` and the same `signTransaction<T extends Transaction>` — so the wallet IS the
+    // signer, with no adapter object in between to get out of step with it.
     txSigner: wallet === null ? null : { publicKey: wallet.publicKey, signTransaction: wallet.signTransaction },
+    // WRAPPED, WHERE `txSigner` ABOVE PASSES THE METHOD ITSELF — and the asymmetry is the point.
+    // `txSigner` hands `sendTx` an object with the method ON it, so `this` survives the journey.
+    // This member is a bare function, and a bare `wallet.signMessage` is an UNBOUND method: any
+    // implementation that reads `this` (a class-based adapter is the obvious one) would throw at the
+    // call site, which is a stranger halfway through linking their X account. The closure costs one
+    // allocation per `useMemo` recompute — the same cost `txSigner`'s object literal already pays —
+    // and removes the hazard entirely.
+    signMessage: wallet === null ? null : (message: Uint8Array) => wallet.signMessage(message),
     tickerKeypair,
     status,
     fault,
     connect,
     disconnect,
   };
+}
+
+/**
+ * THE BURNER SIGNING A MESSAGE — the only identity on this page that can do it without a dialog, and
+ * the reason the X link ceremony is testable at all.
+ *
+ * Wallet mode's `signMessage` can only be exercised by a human clicking Approve in an extension.
+ * Burner mode's cannot fail that way, so `?signer=burner` is what lets the fixture, the scripts and
+ * every headless test drive the whole ceremony — build the canonical message, sign it, verify it —
+ * with no browser in the room. That is worth more than the twelve lines it costs.
+ *
+ * `Keypair.secretKey` IS 64 BYTES: the 32-byte seed followed by the 32-byte public key. That is what
+ * NaCl calls a secret key and it is NOT what `@noble/curves` means by one — noble wants the seed
+ * alone. Handing it all 64 raises a length error if you are lucky and, in libraries that are lenient
+ * about it, silently signs under a key nobody can verify against. The check below derives the public
+ * half from the seed we are about to sign with and compares it to the keypair's own: one scalar
+ * multiplication, on a path that runs once per link, in exchange for turning that whole class of
+ * mistake from a signature a server rejects with no explanation into a local error naming the cause.
+ *
+ * `@noble/curves` rather than `tweetnacl` because noble is a direct dependency of this package and
+ * tweetnacl is only a transitive one — signing under a library nothing declares is a dependency that
+ * disappears the day an unrelated package drops it.
+ */
+function signWithKeypair(keypair: Keypair, message: Uint8Array): Uint8Array {
+  const seed = keypair.secretKey.slice(0, 32);
+  const derived = ed25519.getPublicKey(seed);
+  const expected = keypair.publicKey.toBytes();
+  if (derived.length !== expected.length || derived.some((byte, i) => byte !== expected[i])) {
+    throw new Error(
+      "This keypair's secret key does not derive its own public key, so any signature it produced " +
+        "would be unverifiable. The 64-byte secret key's first 32 bytes are the ed25519 seed.",
+    );
+  }
+  return ed25519.sign(message, seed);
 }
 
 /**
@@ -191,6 +283,9 @@ export function burnerIdentity(keypair: Keypair, wallet: Wallet): ChainIdentity 
     // The raw `Keypair`, exactly as before: `sendTx` signs synchronously with it and never opens a
     // dialog. Behaviour on this path is unchanged by this workstream.
     txSigner: keypair,
+    // Never null on this path, and never a popup: the key is in memory. `async` only because the
+    // contract is shared with a wallet that has to cross an extension boundary to answer.
+    signMessage: async (message: Uint8Array) => signWithKeypair(keypair, message),
     tickerKeypair: keypair,
     status: "connected",
     fault: null,

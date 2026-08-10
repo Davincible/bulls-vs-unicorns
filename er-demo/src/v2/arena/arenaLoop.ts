@@ -37,6 +37,7 @@ import {
   recoil,
   resizeField,
   stepField,
+  syncAvatars,
   syncBodies,
   type ArenaField,
 } from "./field.ts";
@@ -215,6 +216,15 @@ export function createArenaLoop(deps: ArenaLoopDeps): ArenaLoop {
       fresh = true;
       // A new cast means any shockwave still expanding belongs to a fight that no longer exists.
       impact.clear();
+    } else {
+      // THE SAME CAST CAN STILL CHANGE ITS FACE. A link resolving is not a new lineup — same ids,
+      // same wallets, same stakes — so the branch above correctly declines to rebuild, and without
+      // this line the avatar would never reach a body at all. See `syncAvatars`, which carries the
+      // whole argument for why this is an in-place write rather than a wider `lineupChanged`.
+      //
+      // `field` cannot be null here: `lineupChanged` returns true for a null field on its first
+      // line, so reaching this branch has already proved there is one.
+      syncAvatars(field, p.fighters);
     }
 
     if (streamChanged(p.hitEvents, streamMark)) {
