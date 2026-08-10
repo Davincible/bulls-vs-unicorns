@@ -34,8 +34,17 @@ export interface ArenaBody {
   y: number;
   vx: number;
   vy: number;
-  /** The drawn radius AND the collider. One number, so they cannot disagree. */
+  /** The drawn radius AND the collider. One number, so they cannot disagree.
+   *
+   *  It CHASES `rTarget` through a spring rather than tracking it exactly — see RADIUS_STIFFNESS. A
+   *  hit therefore makes the disc visibly recoil and settle, and because the recoil is applied to
+   *  this number and not to a separate "visual scale", the invariant above survives intact: the
+   *  circle you see is still the circle that collides and the circle you can click. */
   r: number;
+  /** What `worth` says this fighter should be, right now. `r` converges on it. */
+  rTarget: number;
+  /** Rate of change of `r`, px/s — the spring's state, and where a hit's flinch is injected. */
+  rVel: number;
   /** The radius this fighter entered at. Drawn as a hairline ghost ring, so a mauled fighter reads
    *  as diminished — a small disc inside the outline of the size it used to be — rather than just
    *  as a small disc. */
@@ -44,6 +53,10 @@ export interface ArenaBody {
   /** Radius of the AT-RISK portion (`hp`) inside the disc, or 0 when it wouldn't read. Everything
    *  outside it is banked and safe — the tension `extract()` exists to resolve, drawn. */
   rRisk: number;
+  /** `rRisk / r`, held separately so the at-risk boundary follows the disc through every frame of a
+   *  flinch instead of being recomputed only when the fight state moves. Zero when the boundary
+   *  would say nothing — see RISK_BAND. */
+  riskShare: number;
 
   // Mirrored from the replay's shadow state each frame; the painter reads them from here so it
   // never needs to know that a shadow-fight exists.
@@ -52,6 +65,15 @@ export interface ArenaBody {
   /** `hp + banked` — what the fighter is worth, and what its size means. */
   worth: bigint;
   dead: boolean;
+  /** When this fighter left the field, on the loop's rAF clock — `NOT_DEAD` while it is still in, and
+   *  `-Infinity` for one that was ALREADY out when the canvas first saw it (a mount into a fight in
+   *  progress, or a stream recomputed around an extraction).
+   *
+   *  Two consumers, and the distinction between "just died" and "was already dead" is load-bearing
+   *  for both: `arenaLoop` fires the death mark on the frame this is stamped, and `draw.ts` holds the
+   *  corpse's outline at full ink for a moment afterwards. Without the sentinel, a page opened
+   *  halfway through a round would detonate every corpse on the field in its first frame. */
+  deadAtMs: number;
 }
 
 export interface ArenaField {
@@ -81,8 +103,15 @@ export interface ArenaField {
  *  sixteen circles cover eight times the ink two do. Screenshotted at both ends — a full table in a
  *  narrow panel was a solid mass of overlapping discs and unreadable stacked labels, while a duel in
  *  a wide one was two dots adrift in white. Tying it to the room each fighter actually has makes a
- *  duel large and a brawl compact, at every panel size, with no special cases. */
-const BASE_RADIUS_SHARE = 0.115;
+ *  duel large and a brawl compact, at every panel size, with no special cases.
+ *
+ *  LOWERED FROM 0.115, and it is not a taste change — it is the exact compensation for the steeper
+ *  `RADIUS_EXPONENT` below. Total disc ink on the field is `Σ (worth/ref)^(2p)`; raising `p` from 0.5
+ *  to 0.72 raises that by a measured 19% at nine fighters and 15% at sixteen (`sandbox` run over the
+ *  fixture at both sizes), and 0.105 / 0.115 = 0.913 ≈ 1/√1.19 hands it straight back. The field is
+ *  therefore no more crowded than it was; only the SPREAD between fighters has widened, which is the
+ *  whole point of the change. */
+const BASE_RADIUS_SHARE = 0.105;
 /** …and the FLOOR must not be reachable by any geometry the shell can actually produce, or it
  *  quietly repeals the rule above.
  *
@@ -105,20 +134,90 @@ const BASE_RADIUS_SHARE = 0.115;
  *  far worse trade than a crowded phone. It binds only under ~350x260 at sixteen — narrower than any
  *  phone this page targets. */
 const BASE_RADIUS_RANGE = [8, 48] as const;
-/** Clamps on `sqrt(hp / refStake)`. Without the floor a nearly-dead fighter becomes a subpixel dot
- *  with a label floating over nothing; without the ceiling one runaway winner eats the field. Both
- *  bounds are wide enough that the interesting range — roughly a tenth of the band to four times it
- *  — is rendered honestly, and only the extremes are compressed. */
-const MIN_SCALE = 0.32;
-const MAX_SCALE = 2.1;
+
+/** HOW STEEPLY SIZE ANSWERS TO WORTH — `radius ∝ (worth / refStake) ^ p`. The single most consequential
+ *  number in this directory, and it was 0.5.
+ *
+ *  WHY 0.5 WAS DEFENSIBLE AND IS STILL WRONG HERE. `p = 0.5` makes AREA exactly proportional to value,
+ *  which is the textbook encoding and the one the previous note here argued for. Two things undo it.
+ *
+ *    1. THE EYE DOES NOT READ AREA LINEARLY. Flannery measured perceived magnitude of a circle at
+ *       about `area^0.87`, so a disc drawn with area exactly proportional to value is systematically
+ *       UNDER-read. The cartographic compensation for that is `p = 0.5 / 0.87 ≈ 0.575`, and it is the
+ *       floor of what is defensible here rather than the target.
+ *    2. THIS IS A CHANGE DISPLAY, NOT A PROPORTIONAL-SYMBOL MAP. Nobody estimates dollars off these
+ *       circles — the label under the disc, the hover readout, the roster below the frame and the
+ *       ghost ring all carry the figure exactly. What the disc is for is RANK and MOMENTUM: bigger or
+ *       smaller than a moment ago, bigger or smaller than the fighter next to it. The sensitivity of
+ *       that reading is `d(radius) / d(log worth) = p·r`, so `p` IS the dial, and 0.5 sets it to
+ *       about the least sensitive value any monotone power law can reasonably use.
+ *
+ *  AND THE FIGHT NEEDS THE SENSITIVITY, measured rather than asserted. Damage is
+ *  `min(ring_a, ring_d) * roll / 100`, which is deliberately size-neutral and low-churn, and it shows:
+ *  over the nine-fighter fixture the median hit moves a defender's radius by 0.03% and the 90th
+ *  percentile by 1.9%. Worse, it is all front-loaded — 50% of ALL the size movement in a 94-second
+ *  fight is done by t=3s and 90% of it by t=19s. At `p = 0.5` the fight's biggest winner ends 31%
+ *  larger than it entered and its biggest loser 30% smaller, and the field is then frozen to two
+ *  decimal places for the last seventy seconds. At 0.72 the same fight, the same numbers, the same
+ *  seed reads +48% / −40%: the difference between "that fighter got smaller" and "that fighter got
+ *  taken apart".
+ *
+ *  WHY NOT FURTHER. Past ~0.8 the fixture's own range punches through MAX_SCALE at nine fighters, so
+ *  the whale clamps and the honesty is repealed at exactly the end where the drama is. 0.72 keeps the
+ *  whole of the fixture's range inside the band at 9 and at 16.
+ *
+ *  WHAT IT COSTS, also measured: total disc ink at entry rises 19% (n=9) / 15% (n=16), which
+ *  BASE_RADIUS_SHARE gives back above; and ink GROWTH across the fight — the field getting heavier as
+ *  wealth concentrates — is 7% / 4%, so a late field is no more crowded than an early one.
+ *
+ *  Strictly monotonic in `worth`, which is the one property that must not be traded for any of this:
+ *  a bigger disc always means more money, at every point of the range and at both clamps. */
+const RADIUS_EXPONENT = 0.72;
+/** The ceiling on that scale. Raised from 2.1 alongside the exponent so the same real spread that fit
+ *  before still fits: `2.4 * 0.105` is `2.1 * 0.115` to within a percent, so the LARGEST disc this
+ *  field can draw is the same size it always was, and no existing geometry that was tuned against it
+ *  (scoreboard.ts's SHARE_SEPARATOR, which is sized to survive being stood on by the widest possible
+ *  fighter) moves underneath it. */
+const MAX_SCALE = 2.4;
+/** …and the floor is now in PIXELS rather than in scale, which is both more honest and more brutal.
+ *
+ *  A scale floor was the wrong shape for the job it was doing. Its stated purpose was that "a nearly
+ *  dead fighter becomes a subpixel dot with a label floating over nothing" — a claim about PIXELS —
+ *  but 0.32 of a base radius is a different number of pixels on every panel, and it bound where it
+ *  had no business binding: at sixteen fighters the fixture's smallest fighter is already under it at
+ *  the old exponent, so the field's most beaten-up players stopped shrinking and the routs the game
+ *  produces were being drawn as stalemates.
+ *
+ *  4px is what the smallest disc actually has to be. `bodyAt` allows 4px of slop, so a 4px fighter is
+ *  still comfortably clickable; `draw.ts`'s FACE_MIN_RADIUS already drops the artwork below 6.5 and
+ *  falls back to a flat disc in the side colour, which is legible at 4; and a name over a 4px dot is
+ *  unambiguous because nothing else is near it. Below the median it now simply keeps shrinking, all
+ *  the way down, which is what a fighter being emptied out looks like. */
+const MIN_RADIUS = 4;
 
 // Motion, all in px/s (or px/s²) per `unit`.
-const SEEK_ACCEL = 190;
-const MAX_SPEED = 135;
+/** RAISED FROM 190 / 135. The old pair produced a field of circles CONVERGING — a smooth glide toward
+ *  a standoff point, at a speed that never changed. Nothing about it read as two fighters closing on
+ *  each other, because closing is an acceleration and this was a drift. The reference this design is
+ *  preserving (`web/index.html`) is much more violent than that, and the whole of the motion here is
+ *  cosmetic — `run_fight()` picked every pair by hash before the first frame — so there is no
+ *  correctness left to spend and it should all go on the charge. */
+const SEEK_ACCEL = 300;
+const MAX_SPEED = 210;
 /** Inside this radius of the standoff point, cap the speed hard: the pair should visibly MEET and
- *  linger around the moment their event fires, not overshoot and orbit. */
-const APPROACH_RADIUS = 110;
-const APPROACH_SPEED = 42;
+ *  linger around the moment their event fires, not overshoot and orbit.
+ *
+ *  TIGHTENED FROM 110/42. That radius was over half the standoff distance on a desktop panel, so a
+ *  fighter spent most of its approach already inside the brake and the "charge" was a crawl with a
+ *  faster first second. The brake still exists and still does its job — a pair that sails through
+ *  each other is two circles that never met — but it now applies only in the last stride, and the
+ *  lunge below is explicitly exempt from it. */
+const APPROACH_RADIUS = 60;
+const APPROACH_SPEED = 66;
+/** How fast speed ABOVE the cap bleeds away, as a fraction per second — see the soft cap in
+ *  `stepField`. 6/s leaves a recoil visible for about 150ms, which is roughly nine frames and about
+ *  as long as a thrown fighter should still be visibly travelling before the seek takes over again. */
+const SPEED_BLEED = 6;
 /** A fighter steers to a point BESIDE its target, not to its centre.
  *
  *  Steering at the centre makes every fighter try to occupy the same coordinate as its opponent, and
@@ -144,13 +243,23 @@ const WALL_RESTITUTION = 0.9;
  *  breathing instead of packing into a solid mass. `web/index.html`'s `COMBAT.knock`, and it has to
  *  be a real fraction of `MAX_SPEED` to do anything against a seek force pulling twelve fighters at
  *  the same point — at a tenth of it the field simply fused into one knot. */
-const CONTACT_KNOCK = 75;
+const CONTACT_KNOCK = 105;
 /** The kick a LANDED HIT gives the pair, on top of the contact knock. Fired from the event stream,
  *  not from the collision, so a hit visibly throws two fighters apart — the clearest possible
  *  reading of "that just happened", and at the chain's pace of ~n hits a second it lands often
  *  enough to keep a melee from settling into a static huddle. Applied only while the pair is
- *  genuinely touching, so it is a recoil and not a permanent outward wind. */
-const HIT_RECOIL = 130;
+ *  genuinely touching, so it is a recoil and not a permanent outward wind.
+ *
+ *  IT IS NOW A TOTAL IMPULSE SPLIT BY MASS rather than a fixed velocity handed to each party, which
+ *  is what makes a big fighter hitting a small one THROW it. See `recoil`. The number roughly doubled
+ *  because half of it now goes to the attacker's recoil in the equal-mass case, where before the
+ *  attacker got an unrelated 0.5x of the defender's kick out of thin air. */
+const HIT_RECOIL = 300;
+/** …and it is scaled by the blow. `impact.ts`'s `hitForce` recovers the chain's own `roll ∈ [4, 27]`
+ *  from the published damage, so a light blow nudges and a heavy one launches — a ~4x spread that
+ *  the chain has always published and this canvas has never drawn. Floored well above zero: even the
+ *  weakest roll is a fighter being hit and has to move them. */
+const RECOIL_FORCE = [0.4, 1.5] as const;
 /** PERSONAL SPACE. Every fighter is attracted to some other fighter and nothing pushes the field
  *  apart at range, so a table converges on one tight knot in the middle and leaves two thirds of the
  *  arena white — verified in a browser at three different points of a fight before this existed.
@@ -165,8 +274,13 @@ const PERSONAL_SPACE = 2.4;
  *  hub like that contracts harder than a linear falloff can hold open. Two late fixture frames, nine
  *  fighters, 1440x950: the entire field of play was a 570x410 knot in one and a 430x555 column in the
  *  other, inside a 1,390x781 canvas — under a fifth of the paper, both outer thirds white, which is
- *  the "bunched into the upper middle" the redesign was called in for. */
-const SPREAD_ACCEL = 250;
+ *  the "bunched into the upper middle" the redesign was called in for.
+ *
+ *  RAISED FROM 250 IN LOCKSTEP WITH `SEEK_ACCEL`, which went 190 → 300. This constant's whole job is
+ *  described above as being able to WIN against the seek, so it is a RATIO and not an absolute: at
+ *  250 against a seek of 300 the knot this was written to prevent comes straight back. 395 holds
+ *  250/190 exactly. */
+const SPREAD_ACCEL = 395;
 /** …but a multiple of the RADII alone only spaces fighters relative to each other, which leaves a
  *  dozen well-spaced circles occupying one corner of a wide arena and the other two thirds blank —
  *  the second thing the screenshots showed, after the knot itself.
@@ -195,10 +309,112 @@ const SPACING_MAX_SHARE = 0.42;
  *  This nudges the CENTROID toward the middle of the field, applying the identical acceleration to
  *  every fighter. A uniform translation changes nothing about the crowd's internal structure: it
  *  doesn't compress the melee, doesn't override a duel, doesn't make anyone converge — it just keeps
- *  the composition framed. Capped so it is always a drift, never a current. */
-const RECENTRE_GAIN = 0.5;
-const RECENTRE_MAX_ACCEL = 60;
+ *  the composition framed. Capped so it is always a drift, never a current.
+ *
+ *  THE GAIN WENT 0.5 → 2 AND THE CAP 60 → 200, because a controller has to be able to out-run the
+ *  thing it is correcting and this one no longer could. Everything about the motion above got faster
+ *  — the seek by 1.6x, the recoil by more, and a lunge briefly exceeds all of it — so the crowd can
+ *  now put itself a third of the field off centre in a second, and at a gain of 0.5 the correction
+ *  took most of ten. Measured over the nine-fighter fixture, in the centroid's distance from the
+ *  middle (0% is perfectly framed):
+ *
+ *  ```text
+ *  gain/cap        centroid sd    off centre by >15% of the width
+ *  0.5 / 60        15.4%          29% of the fight     <- the new motion, old controller
+ *  0.5 / 200       12.0%          24%                  <- authority alone does not fix it
+ *  2.0 / 200        4.3%           0%                  <- this, and better than the old field ever was
+ *  ```
+ *
+ *  The old field measured 5.8% / 0% at its much lower energy, so this is not "as good as before" —
+ *  the composition is now held tighter than it was AND the fight is twice as violent. */
+const RECENTRE_GAIN = 2;
+const RECENTRE_MAX_ACCEL = 200;
+/** …AND IT HAS TO BE DAMPED, which it was not, and the omission only started to show once the field
+ *  got fast.
+ *
+ *  A gain against a position error and nothing else is a spring with no dashpot: it does not settle
+ *  the crowd on the middle, it swings the crowd THROUGH the middle and back. At the old speeds the
+ *  swing was small enough to read as drift — measured over the nine-fighter fixture, the centroid's
+ *  standard deviation was 5.8% of the field width and it never once sat more than 15% off centre. At
+ *  the new ones the same controller put it 15.4% out and off-centre by more than 15% for 29% of the
+ *  fight, which is the composition visibly sliding into one half of the arena and back.
+ *
+ *  So the controller opposes the crowd's MEAN VELOCITY as well as its position — a PD controller
+ *  rather than a P one. `2·√GAIN` is critical damping for this loop, which at a gain of 2 is 2.83;
+ *  this sits at 0.9 of it, so the recovery is quick rather than sluggish and still does not ring. It
+ *  costs one more accumulator in a sum the function was already taking, and like the position term it
+ *  is applied identically to every fighter, so it still cannot compress the melee, override a duel or
+ *  make anyone converge. */
+const RECENTRE_DAMP = 2.55;
 const MAX_DT = 1 / 30;
+
+/** ANTICIPATION AND FOLLOW-THROUGH, which is the cheapest drama in animation and the one this field
+ *  had none of.
+ *
+ *  The steering already knows who is about to fight whom — that is the whole premise of targeting.ts,
+ *  which reads a couple of seconds ahead of the playhead so that when a hit lands it lands on two
+ *  circles that are already touching. What it did NOT know was WHEN, so the approach was a uniform
+ *  glide and the hit arrived at an arbitrary point in it. It now gets the lead time as well, and
+ *  spends it the way an animator would:
+ *
+ *    WINDUP  from `WINDUP_MS` out to `LUNGE_MS`, a fighter accelerates AWAY from its target. It
+ *            visibly rears back. This is what makes the strike read as a decision rather than as an
+ *            arrival.
+ *    LUNGE   inside `LUNGE_MS`, a hard acceleration toward it, exempt from the approach brake. The
+ *            pair slams together, `separate()` resolves the overlap with an impulse, and `recoil()`
+ *            throws them apart on the same frame the number appears.
+ *
+ *  Both are pure decoration and cannot alter a single figure: `run_fight()` picked every pair and
+ *  every roll by `hash(seed, step)` before this canvas drew its first frame. If the lead time is
+ *  unknown — no upcoming event names this fighter, or its committed target is not the one it is about
+ *  to trade with — neither fires and the motion is exactly the ordinary seek.
+ *
+ *  120ms of lunge is about seven frames, which is where a strike stops reading as a teleport and
+ *  starts reading as a movement; 300ms of windup is long enough to be seen and short enough that a
+ *  fighter is never observably retreating from a fight it is winning. */
+const WINDUP_MS = 300;
+const LUNGE_MS = 120;
+const WINDUP_ACCEL = 420;
+const LUNGE_ACCEL = 1500;
+const LUNGE_SPEED = 460;
+
+/** THE DISC HAS MASS NOW, and the spring is where it lives. `r` chases `rTarget` instead of being
+ *  assigned it.
+ *
+ *  Two things fall out of that, and the second is the reason it exists. The first is that a fighter's
+ *  size changes with weight rather than by teleporting between two radii on the frame a poll lands.
+ *  The second is that a spring has somewhere to put an IMPULSE — so a hit can make a disc physically
+ *  recoil and settle, which is deformation, which is the only channel of violence left once gradients,
+ *  glow and colour are all forbidden.
+ *
+ *  Tuned rather than picked: `ωn = √900 = 30 rad/s` puts the damped period at 250ms and
+ *  `ζ = 33 / (2·30) = 0.55` gives a single ~13% overshoot that is gone inside half a second. Slacker
+ *  than that and a fighter under fire wobbles like jelly, which is a texture this page cannot have;
+ *  tighter and the flinch is not visible at all and the whole mechanism is dead weight.
+ *
+ *  It applies to `r` itself — the collider and the hit target — rather than to a separate drawn
+ *  scale, precisely so field.ts's central invariant survives: one number, so the circle you see, the
+ *  circle that collides and the circle you can click cannot disagree. */
+const RADIUS_STIFFNESS = 900;
+const RADIUS_DAMPING = 33;
+/** How hard a hit compresses the disc it lands on, as radii per second at full force. At the spring
+ *  above, an impulse of `3.2·r` peaks at about 12% of the radius — a flinch you can see at r=30 and
+ *  cannot mistake for the fighter having actually lost that much. The attacker swells by a third as
+ *  much, because taking money should read as a gain and not as a matching injury. */
+const FLINCH_SPEED = 3.2;
+const FLINCH_ATTACKER_SHARE = 0.34;
+/** A DEATH IS THE SAME SPRING AT ITS CEILING. A fighter going out convulses once, hard, and the
+ *  overshoot on the way back is what sells the ring as having been blown off it. */
+const DEATH_FLINCH_SPEED = 6;
+
+/** `deadAtMs` for a fighter still in the ring, and it is NEGATIVE on purpose.
+ *
+ *  It was `0`, which put the in-play sentinel inside the rAF clock's own domain — so `arenaLoop`'s
+ *  `b.deadAtMs === rafMs` test would match every LIVING body on a frame with `rafMs === 0`. Nothing
+ *  reaches that today (the only candidate is the first frame, and the first frame always rebuilds the
+ *  field and is therefore `fresh`, so the death scan does not run), but that is a coincidence holding
+ *  it up rather than a guard. A value the clock cannot produce costs nothing and needs no argument. */
+const NOT_DEAD = -1;
 
 export type MotionMode = "calm" | "active" | "rest";
 
@@ -262,12 +478,16 @@ function computeRefStake(fighters: FighterView[]): bigint {
  *  the winner is decided on", and it is the quantity that behaves the way the original game's
  *  circles did: raid the other side and you grow, get raided and you shrink.
  *
- *  `sqrt` so AREA is proportional to value — the encoding the eye actually integrates. Radius-
- *  proportional would exaggerate a 4x lead into a 16x blot. */
+ *  The exponent is `RADIUS_EXPONENT` and its derivation is the long note up there — the short version
+ *  is that it is between "area proportional to value" and "radius proportional to value", because
+ *  what this field is read for is momentum rather than magnitude. */
 export function radiusFor(value: bigint, refStake: bigint, baseRadius: number): number {
-  if (value <= 0n) return baseRadius * MIN_SCALE;
-  const scale = clamp(Math.sqrt(Number(value) / Number(refStake)), MIN_SCALE, MAX_SCALE);
-  return baseRadius * scale;
+  if (value <= 0n) return MIN_RADIUS;
+  const scale = Math.min(Math.pow(Number(value) / Number(refStake), RADIUS_EXPONENT), MAX_SCALE);
+  // `max` and not a clamp: the floor is in pixels and the ceiling is in scale, and they are two
+  // different arguments (see MIN_RADIUS / MAX_SCALE). Still strictly monotone in `value` — the max of
+  // a monotone function and a constant is monotone.
+  return Math.max(baseRadius * scale, MIN_RADIUS);
 }
 
 /** A stable pseudo-random in [0,1) from a string. Deterministic on purpose: the spawn layout must
@@ -312,6 +532,7 @@ export function createField(
   if (prev) for (const b of prev.bodies) carried.set(b.wallet, b);
 
   const bodies = fighters.map((f) => {
+    const r = radiusFor(f.hp + f.banked, refStake, baseRadius);
     const body: ArenaBody = {
       id: f.id,
       wallet: f.wallet,
@@ -323,13 +544,19 @@ export function createField(
       y: 0,
       vx: 0,
       vy: 0,
-      r: radiusFor(f.hp + f.banked, refStake, baseRadius),
+      r,
+      rTarget: r,
+      rVel: 0,
       r0: radiusFor(f.stake, refStake, baseRadius),
       rRisk: 0,
+      riskShare: 0,
       hp: f.hp,
       banked: f.banked,
       worth: f.hp + f.banked,
       dead: f.dead,
+      // ALREADY OUT AT CONSTRUCTION IS NOT A DEATH. A field built around a fight in progress must not
+      // announce every corpse it inherits — see `deadAtMs`.
+      deadAtMs: f.dead ? -Infinity : NOT_DEAD,
     };
     const before = carried.get(f.wallet);
     if (before) {
@@ -337,6 +564,15 @@ export function createField(
       body.y = before.y;
       body.vx = before.vx;
       body.vy = before.vy;
+      // Carry the spring too, or every entry landing in a lobby would snap the whole field's radii —
+      // the same twitch this merge exists to prevent, one property along.
+      body.r = before.dead === f.dead ? before.r : r;
+      body.rVel = before.rVel;
+      // ONLY WHEN THE CARRIED BODY WAS ALSO OUT. Carrying unconditionally overwrites the sentinel
+      // set above with the live body's `NOT_DEAD`, so a fighter constructed as dead would be handed
+      // a `deadAtMs` in the rAF clock's own range — and `draw.ts` would run a full death flash for a
+      // corpse whose death is inherited history, which is the one thing the sentinel exists to stop.
+      if (before.dead && f.dead) body.deadAtMs = before.deadAtMs;
     } else {
       spawn(body, f.wallet, w, h);
     }
@@ -376,7 +612,9 @@ export function resizeField(field: ArenaField, w: number, h: number): void {
   for (const b of field.bodies) {
     b.x *= sx;
     b.y *= sy;
-    sizeBody(field, b);
+    // SNAP. A resize is not an event in the fight, and easing every radius across a new base scale
+    // would have the whole field breathing every time a sidebar animated open.
+    sizeBody(field, b, true);
     b.r0 = radiusFor(b.stake, field.refStake, field.baseRadius);
   }
   clampToWalls(field);
@@ -387,31 +625,74 @@ export function resizeField(field: ArenaField, w: number, h: number): void {
  *  in both cases a mark that says nothing, on a design that has no room for those. */
 const RISK_BAND = [0.06, 0.94] as const;
 
-function sizeBody(field: ArenaField, b: ArenaBody): void {
-  b.r = radiusFor(b.worth, field.refStake, field.baseRadius);
+/** `snap` skips the spring and puts the drawn radius on its target immediately. Used wherever the
+ *  change is not something that HAPPENED to the fighter — construction, a resize, and every frame
+ *  under `prefers-reduced-motion`, where the spring must not run at all. */
+function sizeBody(field: ArenaField, b: ArenaBody, snap: boolean): void {
+  b.rTarget = radiusFor(b.worth, field.refStake, field.baseRadius);
   const frac = b.worth > 0n ? Number(b.hp) / Number(b.worth) : 0;
-  b.rRisk = !b.dead && frac > RISK_BAND[0] && frac < RISK_BAND[1] ? b.r * Math.sqrt(frac) : 0;
+  b.riskShare = !b.dead && frac > RISK_BAND[0] && frac < RISK_BAND[1] ? Math.sqrt(frac) : 0;
+  if (snap) {
+    b.r = b.rTarget;
+    b.rVel = 0;
+  }
+  b.rRisk = b.r * b.riskShare;
 }
 
 /** Pulls the replay's current hp/banked/dead onto the bodies and re-derives radii from them. The one
  *  place fight state enters the field — everything downstream (steering, collision, painting) reads
- *  it from the body. */
+ *  it from the body.
+ *
+ *  `nowMs` and `announce` exist only for the moment a fighter leaves. `announce` is false when the
+ *  transition is not news — a replay re-derived from scratch around an `extract()`, or a first sync
+ *  into a fight already in progress — and the corpse is then backdated so nothing downstream
+ *  detonates it. See `ArenaBody.deadAtMs`.
+ *
+ *  Returns whether anybody went out on THIS call and was announced, so the caller can skip a scan of
+ *  the whole field on the overwhelming majority of frames where nobody did. */
 export function syncBodies(
   field: ArenaField,
   shadow: { hp: bigint; banked: bigint; dead: number }[],
-): void {
+  nowMs: number,
+  snap: boolean,
+  announce: boolean,
+): boolean {
+  let died = false;
   for (const b of field.bodies) {
     const s: { hp: bigint; banked: bigint; dead: number } | undefined = shadow[b.id];
     if (!s) continue;
     b.hp = s.hp;
     b.banked = s.banked;
     b.worth = s.hp + s.banked;
-    b.dead = s.dead === 1;
+    const dead = s.dead === 1;
+    if (dead && !b.dead) {
+      b.deadAtMs = announce ? nowMs : -Infinity;
+      if (announce) {
+        died = true;
+        // The convulsion. Applied here rather than by the caller so that the one place fight state
+        // enters the field is also the one place its consequences leave it.
+        b.rVel -= DEATH_FLINCH_SPEED * b.r;
+      }
+    }
+    b.dead = dead;
     // Dead fighters keep sizing on `worth` like everyone else, drawn hollow. A player wiped out to
     // nothing leaves a small empty ring; a player who EXTRACTED a fortune leaves a large one. Both
     // are out of play, and the difference between them is the whole story of the round.
-    sizeBody(field, b);
+    sizeBody(field, b, snap);
   }
+  return died;
+}
+
+/** THE FLINCH. A landed hit compresses the defender's disc and swells the attacker's, as an impulse
+ *  into the radius spring — see RADIUS_STIFFNESS. `force` is `impact.ts`'s normalised roll, so the
+ *  chain's own dice decide how hard the disc buckles.
+ *
+ *  Called once per crossed `HitEvent`, from the loop, and never under reduced motion. */
+export function flinch(field: ArenaField, attackerId: number, defenderId: number, force: number): void {
+  const d = field.byId[defenderId];
+  if (d && !d.dead) d.rVel -= FLINCH_SPEED * force * d.r;
+  const a = field.byId[attackerId];
+  if (a && a !== d && !a.dead) a.rVel += FLINCH_SPEED * FLINCH_ATTACKER_SHARE * force * a.r;
 }
 
 /** One frame of motion. `targets[id]` is who to steer toward (see targeting.ts); `nowMs` drives the
@@ -420,6 +701,7 @@ export function syncBodies(
 export function stepField(
   field: ArenaField,
   targets: (number | null)[],
+  leadMs: number[],
   mode: MotionMode,
   dtMs: number,
   nowMs: number,
@@ -431,6 +713,8 @@ export function stepField(
   if (dt <= 0) return;
   const u = field.unit;
   const t = nowMs / 1000;
+
+  stepRadii(field, dt);
 
   // Not in `rest`: Settled means the field comes to a standstill, and either of these would be a
   // slow permanent creep that the decay never quite wins against.
@@ -460,13 +744,37 @@ export function stepField(
       const dist = Math.hypot(dx, dy) || 1;
       b.vx += (dx / dist) * SEEK_ACCEL * u * dt;
       b.vy += (dy / dist) * SEEK_ACCEL * u * dt;
+
+      // ANTICIPATION AND FOLLOW-THROUGH — see WINDUP_MS. Steered at the target's CENTRE and not at
+      // the standoff point: a lunge is a fighter going for another fighter, and aiming it at the
+      // polite spot beside them would be a fighter going for a coordinate.
+      const lead = leadMs[b.id] ?? Infinity;
+      let lunging = false;
+      if (lead <= WINDUP_MS) {
+        const tx = target.x - b.x;
+        const ty = target.y - b.y;
+        const td = Math.hypot(tx, ty) || 1;
+        lunging = lead <= LUNGE_MS;
+        // Away on the wind-up, at it on the lunge, and the sign is the entire mechanism.
+        const accel = (lunging ? LUNGE_ACCEL : -WINDUP_ACCEL) * u * dt;
+        b.vx += (tx / td) * accel;
+        b.vy += (ty / td) * accel;
+      }
+
       // Ease off as they close, so the pair meets and stays together across the moment the hit lands
-      // rather than sailing past each other at full tilt.
-      const cap = (dist < APPROACH_RADIUS * u ? APPROACH_SPEED : MAX_SPEED) * u;
+      // rather than sailing past each other at full tilt. The lunge is exempt: it is the one moment
+      // the fighter is supposed to sail.
+      const cap = (lunging ? LUNGE_SPEED : dist < APPROACH_RADIUS * u ? APPROACH_SPEED : MAX_SPEED) * u;
       const speed = Math.hypot(b.vx, b.vy);
       if (speed > cap) {
-        b.vx *= cap / speed;
-        b.vy *= cap / speed;
+        // A SOFT cap, and this is the bug that made the old recoil invisible. `recoil()` hands a
+        // fighter a velocity well above cruising speed — that is what being hit means — and a hard
+        // clip back to `cap` on the very next frame deleted the whole of it before it had moved
+        // anybody a pixel. Bleeding the excess off at a fixed rate instead lets the kick play out
+        // over ~150ms and still holds the steady-state speed at exactly `cap`, because the moment the
+        // seek is the only thing pushing, `cap / speed` is the binding term again.
+        b.vx *= Math.max(cap / speed, 1 - SPEED_BLEED * dt);
+        b.vy *= Math.max(cap / speed, 1 - SPEED_BLEED * dt);
       }
     } else {
       // A phase-shifted sinusoid rather than random noise: smooth frame to frame, reproducible, and
@@ -487,6 +795,39 @@ export function stepField(
 
   separate(field);
   clampToWalls(field);
+}
+
+/** ONE FRAME OF THE RADIUS SPRING, for every body — see RADIUS_STIFFNESS.
+ *
+ *  Semi-implicit Euler (velocity first, then position) rather than explicit: at a stiffness of 900
+ *  and a 33ms frame — which is what MAX_DT allows after a stall — explicit Euler adds energy and the
+ *  disc grows instead of settling. Semi-implicit is unconditionally stable at these numbers for one
+ *  extra line of nothing.
+ *
+ *  Floored at 1px. The overshoot on a hard flinch is bounded by the damping, but a hit on a fighter
+ *  already at MIN_RADIUS could still take the drawn radius through zero for a frame or two, and a
+ *  negative radius is an `arc()` that throws. */
+function stepRadii(field: ArenaField, dt: number): void {
+  for (const b of field.bodies) {
+    b.rVel += (-RADIUS_STIFFNESS * (b.r - b.rTarget) - RADIUS_DAMPING * b.rVel) * dt;
+    b.r += b.rVel * dt;
+    if (b.r < 1) {
+      b.r = 1;
+      if (b.rVel < 0) b.rVel = 0;
+    }
+    b.rRisk = b.r * b.riskShare;
+  }
+}
+
+/** HOW HEAVY A FIGHTER IS, and it is its AREA — which by `radiusFor` is very nearly what it is worth.
+ *
+ *  Nothing on the chain has a mass, so this is a free choice and it should be the one that says the
+ *  most true thing. Area is it: a whale that has eaten half the table shrugs off a blow from a minnow
+ *  and the minnow is thrown across the arena, which is the wealth asymmetry the field's whole visual
+ *  argument is about, restated as physics. It costs one multiply — no `sqrt`, no cached field to keep
+ *  in step with a radius that moves every frame. */
+function massOf(b: ArenaBody): number {
+  return b.r * b.r;
 }
 
 /** PERSONAL SPACE, applied as an acceleration before integration.
@@ -546,18 +887,26 @@ function spread(field: ArenaField, targets: (number | null)[], dt: number): void
 function recentre(field: ArenaField, dt: number): void {
   let sumX = 0;
   let sumY = 0;
+  let sumVx = 0;
+  let sumVy = 0;
   let live = 0;
   for (const b of field.bodies) {
     if (b.dead) continue;
     sumX += b.x;
     sumY += b.y;
+    sumVx += b.vx;
+    sumVy += b.vy;
     live++;
   }
   if (live === 0) return;
 
   const cap = RECENTRE_MAX_ACCEL * field.unit;
-  const ax = clamp((field.w / 2 - sumX / live) * RECENTRE_GAIN, -cap, cap) * dt;
-  const ay = clamp(((field.h - LABEL_SPACE) / 2 - sumY / live) * RECENTRE_GAIN, -cap, cap) * dt;
+  // Position error, less the crowd's own drift — see RECENTRE_DAMP.
+  const ax =
+    clamp((field.w / 2 - sumX / live) * RECENTRE_GAIN - (sumVx / live) * RECENTRE_DAMP, -cap, cap) * dt;
+  const ay =
+    clamp(((field.h - LABEL_SPACE) / 2 - sumY / live) * RECENTRE_GAIN - (sumVy / live) * RECENTRE_DAMP, -cap, cap) *
+    dt;
   for (const b of field.bodies) {
     if (b.dead) continue;
     b.vx += ax;
@@ -568,8 +917,16 @@ function recentre(field: ArenaField, dt: number): void {
 /** The kick a hit gives its pair. A no-op unless they are actually in contact — a raid between two
  *  fighters at opposite ends of the arena (the hash pairs them, not their positions) has no contact
  *  to recoil from, and inventing one would fling fighters around for reasons nothing on screen
- *  explains. Called once per crossed `HitEvent`, from the loop. */
-export function recoil(field: ArenaField, attackerId: number, defenderId: number): void {
+ *  explains. Called once per crossed `HitEvent`, from the loop.
+ *
+ *  IT IS NOW A CONSERVED IMPULSE SPLIT BY MASS. It used to hand the defender a fixed velocity and the
+ *  attacker half of it backwards, which is not a collision — it is two independent shoves that happen
+ *  to point in opposite directions, and it made a $6 minnow punching a $100 whale look exactly like
+ *  the reverse. Splitting one impulse in inverse proportion to mass gives the reading the fight
+ *  actually has: the whale barely rocks and the minnow is thrown clear.
+ *
+ *  `force` is `impact.ts`'s normalised roll, so the size of the impulse is the chain's own dice. */
+export function recoil(field: ArenaField, attackerId: number, defenderId: number, force: number): void {
   const a = field.byId[attackerId];
   const d = field.byId[defenderId];
   if (!a || !d || a === d || a.dead || d.dead) return;
@@ -577,11 +934,20 @@ export function recoil(field: ArenaField, attackerId: number, defenderId: number
   const dy = d.y - a.y;
   const dist = Math.hypot(dx, dy);
   if (dist <= 0 || dist > a.r + d.r + 6 * field.unit) return;
-  const k = (HIT_RECOIL * field.unit) / dist;
-  a.vx -= dx * k * 0.5;
-  a.vy -= dy * k * 0.5;
-  d.vx += dx * k;
-  d.vy += dy * k;
+
+  const ma = massOf(a);
+  const md = massOf(d);
+  const total = ma + md;
+  if (total <= 0) return;
+  const scale = RECOIL_FORCE[0] + (RECOIL_FORCE[1] - RECOIL_FORCE[0]) * force;
+  // Per unit of distance, so the two components below need no second normalisation.
+  const j = (HIT_RECOIL * field.unit * scale) / dist;
+  // Each party takes the share of the impulse the OTHER party's mass earns it — the standard split,
+  // and the reason a heavy attacker throws a light defender rather than both moving equally.
+  a.vx -= dx * j * (md / total);
+  a.vy -= dy * j * (md / total);
+  d.vx += dx * j * (ma / total);
+  d.vy += dy * j * (ma / total);
 }
 
 /** Positional separation plus an impulse exchange along the contact normal — `web/index.html`'s
@@ -593,9 +959,18 @@ export function recoil(field: ArenaField, attackerId: number, defenderId: number
  *  Two dead fighters, though, still push each other apart — they die where they were fighting, which
  *  is to say on top of each other, and a pile of concentric grey rings with three greyed labels
  *  stacked underneath is unreadable. Positional only, no impulse: they are markers being laid out,
- *  not bodies colliding. */
+ *  not bodies colliding.
+ *
+ *  MASS ENTERS IN BOTH HALVES, and it is what turns a collision into a COLLISION. The reference's
+ *  response assumed equal masses — the overlap was split down the middle and the normal velocities
+ *  were swapped outright — so a $6 fighter running into a $100 one moved both of them the same
+ *  distance, which is the single most obviously wrong thing the old field did. Weighting both the
+ *  positional fix and the impulse by `massOf` (area, i.e. very nearly worth) means the small fighter
+ *  bounces off the big one, and it degenerates to exactly the old behaviour when they are the same
+ *  size, so nothing about the feel this file set out to preserve is lost. */
 function separate(field: ArenaField): void {
   const bodies = field.bodies;
+  const knock = CONTACT_KNOCK * field.unit;
   for (let i = 0; i < bodies.length; i++) {
     const a = bodies[i];
     for (let j = i + 1; j < bodies.length; j++) {
@@ -609,21 +984,44 @@ function separate(field: ArenaField): void {
 
       const nx = dx / dist;
       const ny = dy / dist;
-      const overlap = (min - dist) / 2;
-      a.x -= nx * overlap;
-      a.y -= ny * overlap;
-      b.x += nx * overlap;
-      b.y += ny * overlap;
+      const overlap = min - dist;
+      const ma = massOf(a);
+      const mb = massOf(b);
+      const total = ma + mb || 1;
+      // The pair still moves `overlap` apart in total; who yields is decided by mass.
+      const pushA = overlap * (mb / total);
+      const pushB = overlap * (ma / total);
+      a.x -= nx * pushA;
+      a.y -= ny * pushA;
+      b.x += nx * pushB;
+      b.y += ny * pushB;
       if (a.dead) continue; // (and therefore b.dead — see the pairing guard above)
 
       const va = a.vx * nx + a.vy * ny;
       const vb = b.vx * nx + b.vy * ny;
       const diff = vb - va;
-      const knock = CONTACT_KNOCK * field.unit;
-      a.vx += nx * diff - nx * knock;
-      a.vy += ny * diff - ny * knock;
-      b.vx -= nx * diff - nx * knock;
-      b.vy -= ny * diff - ny * knock;
+      // APPROACHING ONLY. The old form ran the exchange unconditionally, which on a pair that was
+      // already separating handed them the closing speed they no longer had and pumped energy into
+      // a crowd that then jittered. `diff < 0` is the pair coming together.
+      if (diff < 0) {
+        // Elastic exchange along the normal, mass-weighted. At `ma == mb` this is `va' = vb`,
+        // `vb' = va` — the reference's swap, exactly.
+        const ja = 2 * diff * (mb / total);
+        const jb = 2 * diff * (ma / total);
+        a.vx += nx * ja;
+        a.vy += ny * ja;
+        b.vx -= nx * jb;
+        b.vy -= ny * jb;
+      }
+      // …and the knock, which is a push and not a bounce, so it applies whichever way they are
+      // already going. Split by mass too, or a big fighter would be shoved off its own duel by every
+      // small one that brushed it.
+      const ka = 2 * knock * (mb / total);
+      const kb = 2 * knock * (ma / total);
+      a.vx -= nx * ka;
+      a.vy -= ny * ka;
+      b.vx += nx * kb;
+      b.vy += ny * kb;
     }
   }
 }

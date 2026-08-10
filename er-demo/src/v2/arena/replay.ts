@@ -102,21 +102,47 @@ export function resetReplay(
   state.cursor = cursor;
 }
 
+/** How many of a frame's crossed events may ANNOUNCE themselves — see `advanceReplay`.
+ *
+ *  At the program's cap of sixteen fighters the chain lands ~16 hits a second against a 60Hz loop,
+ *  so a healthy frame crosses about a quarter of an event and even a 200ms hitch crosses three. This
+ *  is therefore unreachable in normal play and fires only on a genuine stall. */
+const MAX_ANNOUNCED = 3;
+
 /** Advances to `step`, calling `onEvent` for each newly-crossed hit — this is the ONLY path that
  *  fires impact FX. Loops rather than applying one event per frame so a frame that arrives late
  *  (a stall, a backgrounded tab) catches up in a single pass instead of playing the fight back in
- *  slow motion for however long it takes the cursor to walk the backlog. */
+ *  slow motion for however long it takes the cursor to walk the backlog.
+ *
+ *  …AND THAT CATCH-UP IS WHY `onEvent` GETS A SECOND ARGUMENT. Backgrounding the tab stops rAF while
+ *  the playhead keeps running on wall clock, so the first frame back crosses the entire backlog — a
+ *  minute hidden at sixteen fighters is around a thousand events, every one of them arriving in one
+ *  callback with one identical `nowMs`. `resetReplay` already refuses to announce hits that "already
+ *  happened"; these are the same hits arriving down the other path, and left unmarked they would
+ *  detonate a thousand shockwaves on one frame and stack a thousand impulses into bodies that then
+ *  ricochet off the walls for a second. (The per-mark throttles do not save it: they are spacings in
+ *  MILLISECONDS, and every event in a burst shares a timestamp.)
+ *
+ *  So the fight state still advances for every event — hp, deaths and the settled outcome are
+ *  untouched, exactly as before — and only the last `MAX_ANNOUNCED` of them are allowed to say so.
+ *  The count is resolved BEFORE anything is applied, because the caller needs to know an event is
+ *  the tail of a burst at the moment it is handed over, not afterwards. */
 export function advanceReplay(
   state: ReplayState,
   events: HitEvent[],
   step: number,
-  onEvent: (event: HitEvent) => void,
+  onEvent: (event: HitEvent, announce: boolean) => void,
 ): void {
-  while (state.cursor < events.length && Number(events[state.cursor].step) <= step) {
+  let end = state.cursor;
+  while (end < events.length && Number(events[end].step) <= step) end++;
+  const quietUntil = end - MAX_ANNOUNCED;
+
+  while (state.cursor < end) {
     const event = events[state.cursor];
     applyHitEvent(state.shadow, event);
+    const announce = state.cursor >= quietUntil;
     state.cursor++;
-    onEvent(event);
+    onEvent(event, announce);
   }
 }
 

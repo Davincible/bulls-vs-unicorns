@@ -61,6 +61,16 @@ const RIM_RANGE = [2, 4] as const;
 /** How strongly a corpse's face is drawn. Enough to say who it was, faint enough that a live fighter
  *  never has to compete with one for attention. */
 const SPENT_ALPHA = 0.3;
+/** THE DEATH FLASH — how long the corpse's outline stays struck at full ink before falling back to
+ *  the grey marker it will be for the rest of the round, and how much extra weight it carries at the
+ *  instant it goes.
+ *
+ *  Deliberately longer than any of impact.ts's marks (its death rings run 300ms). The rings are the
+ *  BLOW; this is the fighter, and it should still be legible as "that one just went out" a beat after
+ *  the shockwave has cleared and the eye has arrived. 520ms is about the reaction time of someone who
+ *  was looking at the other side of the field, which is the whole reason it exists. */
+const DEATH_FLASH_MS = 520;
+const DEATH_FLASH_WIDTH = 2.2;
 /** The enemy wedge, over artwork. Well under `web/index.html`'s 0.55: that value was tuned against a
  *  flat radial-gradient disc with nothing in it worth preserving, and at the same strength over a
  *  photograph the wedge simply repaints the fighter — which would throw away the coin identity that
@@ -152,6 +162,7 @@ export function drawBodies(
   palette: ArenaPalette,
   marks: BodyMarks,
   ink: InkMap,
+  nowMs: number,
 ): void {
   const bodies = field.bodies;
 
@@ -180,11 +191,21 @@ export function drawBodies(
       drawEnemyWedge(ctx, b, palette);
       drawRim(ctx, b, palette);
     } else {
-      // Hollow, grey, 1px, unchanged: a marker rather than a player. Still sized by what they were
-      // worth when they left, so an extraction and a wipeout do not look alike — and the greyed face
-      // inside it says WHICH coin went out without spending any colour to do it.
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = palette.ink4;
+      // Hollow, grey, 1px: a marker rather than a player. Still sized by what they were worth when
+      // they left, so an extraction and a wipeout do not look alike — and the greyed face inside it
+      // says WHICH coin went out without spending any colour to do it.
+      //
+      // …EXCEPT FOR THE FIRST HALF-SECOND. A fighter going out was the single most dramatic thing
+      // this game does and the quietest thing it drew: the disc simply became a grey outline between
+      // one frame and the next, and on the fixture that happens six times, every one of them in the
+      // stretch after the discs have stopped moving — so for three quarters of a round the deaths
+      // were the only events left and they were invisible. The outline is now struck at full ink and
+      // full weight at the moment of death and falls to the marker over DEATH_FLASH_MS. Flat vector,
+      // one stroke, no glow: the drama is in the CONTRAST and in how fast it goes.
+      const age = nowMs - b.deadAtMs;
+      const flash = age < DEATH_FLASH_MS ? 1 - age / DEATH_FLASH_MS : 0;
+      ctx.lineWidth = 1 + DEATH_FLASH_WIDTH * flash;
+      ctx.strokeStyle = flash > 0.5 ? palette.ink : flash > 0 ? palette.ink2 : palette.ink4;
       ctx.beginPath();
       ctx.arc(b.x, b.y, b.r, 0, TAU);
       ctx.stroke();

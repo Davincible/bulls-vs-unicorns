@@ -47,8 +47,15 @@ const OVERLAY_CLASS = "ovl";
 
 export interface ChromeMap {
   /** Read the overlays where they are RIGHT NOW and claim them. Called once per paint, before any
-   *  canvas painter claims anything. */
-  claim(ink: InkMap): void;
+   *  canvas painter claims anything.
+   *
+   *  `shakeX`/`shakeY` are the camera offset the canvas is about to draw everything else at
+   *  (arenaLoop.ts). The overlays are DOM and do not move with it, so they are the one writer whose
+   *  box has to be re-expressed in the shaken frame — SUBTRACTED, because a canvas translated by
+   *  `+s` puts a mark placed at `x` onto the screen at `x + s`, so the screen box the HUD occupies is
+   *  at `x - s` in the coordinates the labels are being laid out in. Without it a label would route
+   *  around where the HUD was rather than where it is, by up to the shake's amplitude. */
+  claim(ink: InkMap, shakeX: number, shakeY: number): void;
 }
 
 export function createChromeMap(canvas: HTMLCanvasElement): ChromeMap {
@@ -60,7 +67,7 @@ export function createChromeMap(canvas: HTMLCanvasElement): ChromeMap {
   const overlays = frame?.getElementsByClassName(OVERLAY_CLASS) ?? null;
 
   return {
-    claim(ink) {
+    claim(ink, shakeX, shakeY) {
       if (!overlays || overlays.length === 0) return;
       // One rect per overlay plus one for the canvas, at the top of the paint. Layout is still clean
       // from the browser's own last pass, so none of these force one: the only DOM the loop touches
@@ -80,10 +87,10 @@ export function createChromeMap(canvas: HTMLCanvasElement): ChromeMap {
         // the frame's border, so the boxes reach a pixel outside the field on two sides; the ink map
         // is rectangle arithmetic with no bounds of its own and does not care.
         ink.claim(
-          box.left - base.left,
-          box.top - base.top,
-          box.right - base.left,
-          box.bottom - base.top,
+          box.left - base.left - shakeX,
+          box.top - base.top - shakeY,
+          box.right - base.left - shakeX,
+          box.bottom - base.top - shakeY,
         );
       }
     },
