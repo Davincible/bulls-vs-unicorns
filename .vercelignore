@@ -20,7 +20,11 @@ engine/*
 web/
 shared/
 sandbox/
-scripts/
+# ANCHORED, and the leading slash is load-bearing. These patterns are gitignore syntax, so a bare
+# `scripts/` matches a directory of that name at ANY depth — including `er-demo/scripts/`, which the
+# build now needs. Deleting the explicit `er-demo/scripts/` line below did nothing for exactly that
+# reason: this line was still catching it, one directory deeper and silently.
+/scripts/
 target/
 pitch/
 
