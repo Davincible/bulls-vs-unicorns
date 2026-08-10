@@ -17,17 +17,41 @@
 import { createHash } from "node:crypto";
 
 export const BPS = 10_000n;
-export const MAX_FIGHTERS = 16;
+export const MAX_FIGHTERS = 48;
 export const DUST_ABSOLUTE = 1_000n;      // the deployed constant
 export const UNITS_PER_USD = 1_000_000n;  // er-demo/src/v2/contract.ts
-export const FEE_BPS = 20n;               // the deployed arena fee, 0.2%
+/** The arena entry fee, in basis points.
+ *
+ *  IT IS NO LONGER A CONSTANT ON CHAIN. `Arena.fee_bps` is a live account field with a setter
+ *  (`set_fee_bps`, bounded by `MAX_FEE_BPS = 1_000`), and v7 moved it from 20 to **100**. This rig
+ *  was written when 20 was the only rate that had ever existed and hardcoded it, which made every
+ *  study number silently a statement about 20 bps.
+ *
+ *  THE DEFAULT IS STILL 20 ON PURPOSE. HOUSE-EDGE-STUDY.md §1-§10 were measured at 20 bps, and a rig
+ *  that quietly re-based them would turn a published measurement into an unreproducible one. Set
+ *  `HE_FEE_BPS=100` in the environment to measure the rate the arena actually charges today; leave it
+ *  unset and every command in README.md reproduces the number it always printed. */
+export const FEE_BPS = BigInt(process.env.HE_FEE_BPS ?? 20);
 
-/** Deployed pacing: `canonical_cursor` = elapsed × 2 × fighter_count, saturating at MAX_STEPS. */
-export const MAX_STEPS = 4_000;
-export const FIGHT_TIMEOUT_SECONDS = 120;
+/** Deployed pacing: `canonical_cursor` = elapsed × 2 × fighter_count, saturating at the BELL — i.e.
+ *  `final_cursor` = FIGHT_TIMEOUT_SECONDS × STEPS_PER_FIGHTER_PER_SECOND × fighter_count, PER LINEUP,
+ *  with no flat ceiling layered on top.
+ *
+ *  180s, raised from 120s alongside the 16 -> 48 fighter cap (see FIGHT_TIMEOUT_SECONDS's mirror in
+ *  er-demo/src/chain/constants.ts for the re-measurement behind the new number). */
+export const FIGHT_TIMEOUT_SECONDS = 180;
 export const STEPS_PER_FIGHTER_PER_SECOND = 2;
-export const stepBudget = (n: number) =>
-  Math.min(MAX_STEPS, FIGHT_TIMEOUT_SECONDS * STEPS_PER_FIGHTER_PER_SECOND * n);
+
+/** `stepBudget` IS `final_cursor` now, not a mirror of it with a cap bolted on. It used to read
+ *  `Math.min(MAX_STEPS, FIGHT_TIMEOUT_SECONDS * STEPS_PER_FIGHTER_PER_SECOND * n)` — a flat 4,000-step
+ *  ceiling ANDed onto the per-lineup bell. That `min` was exactly the conflation the on-chain migration
+ *  removed: at sixteen fighters the bell (3,840 steps) sat under the cap (4,000) so the `min` was
+ *  inert and nobody noticed it was doing anything; at forty-eight fighters the bell is 17,280 steps and
+ *  the old cap would have silently truncated every study run in this directory to a quarter of a real
+ *  fight. This rig has no analogue of `MAX_STEPS_PER_CALL` (the program's new per-transaction compute
+ *  bound) because every caller here runs a whole fight to conclusion inside one process call, not one
+ *  bounded on-chain transaction — so the budget is the bell alone, DERIVED rather than capped. */
+export const stepBudget = (n: number) => FIGHT_TIMEOUT_SECONDS * STEPS_PER_FIGHTER_PER_SECOND * n;
 
 export interface Fighter {
   wallet: string;
@@ -36,6 +60,11 @@ export interface Fighter {
   stake: bigint;   // net of fee — what they put in, and their starting hp
   hp: bigint;      // value still in the ring
   banked: bigint;  // value raided off someone else; never at risk again
+  /** ADDITIVE, and only read by a damage rule that asks for it (`gate: "attacker"`). Undefined
+   *  everywhere it is not set, which is everywhere that existed before the small-stake study — so no
+   *  configuration written before this field existed can observe it. It models the wallet->X link
+   *  built in TWITTER-CONNECT.md: a bit the chain could carry and the fight could read. */
+  verified?: 0 | 1;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -209,9 +238,27 @@ export type DamageRule =
    *  P = 0 is `min` — measured size-neutral. P = BPS is `defender` — the deployed equaliser. In
    *  between, the tilt toward small stakes grows monotonically. One multiply, one multiply, one add,
    *  one divide by a constant; no weight table, no cumulative walk, no `% W`, no change to which hash
-   *  bytes drive the draws, and no change to `MAX_STEPS`. This is the mechanism the compute budget
-   *  can actually afford. */
-  | { blend: bigint };
+   *  bytes drive the draws, and no change to `MAX_STEPS_PER_CALL`. This is the mechanism the compute
+   *  budget can actually afford. */
+  | {
+      blend: bigint;
+      /** IDENTITY GATE. `"attacker"` means the blend applies to an exchange only when the ATTACKER
+       *  carries `verified === 1`; every other exchange falls back to `min`, i.e. to the shipped
+       *  size-neutral rule. Undefined (the default) is the ungated blend every prior study measured,
+       *  so no existing config changes meaning.
+       *
+       *  The attacker rather than the defender because the bonus is a bigger BITE, and a bite is
+       *  taken, not suffered — gating on the defender would let an unverified splitter farm verified
+       *  whales, which is the opposite of the intent. */
+      gate?: "attacker";
+      /** BOUNDED BONUS. When set, `basis` is clamped to `capMult * min(ring_a, ring_d)`, so the most
+       *  any exchange can move is `capMult` times what the size-neutral rule would move. `capMult = 1`
+       *  is exactly `min` whatever P is; large `capMult` is the unclamped blend. It exists because the
+       *  unclamped blend's payoff to a splitter grows without bound as the split gets finer (the
+       *  smaller the attacker, the larger `ring_d / min`), and a clamp is the only structural way to
+       *  bound that without an identity. Integer: one compare, one multiply. */
+      capMult?: bigint;
+    };
 
 /** What to do when the defender draw lands on the attacker.
  *
@@ -224,6 +271,121 @@ export type DamageRule =
  *            every `a`, so no slot can be favoured by where it sits. The shipped rule. */
 export type DefenderDraw = "bump" | "shift";
 
+// ---------------------------------------------------------------------------------------------
+// VOLATILITY KNOBS. Added for `fight-volatility.ts`, which asks a question none of the earlier
+// studies asked: not "who ends up with the money" but "how much does the SCOREBOARD move on the way
+// there". Every knob below is optional and every default reproduces the shipped fight exactly, so
+// `parity.ts` is unaffected and no configuration written before these existed can observe them.
+// ---------------------------------------------------------------------------------------------
+
+/** ROLL >100 IS THE ONE UNSAFE REGION, and it is unsafe for a reason worth writing down rather than
+ *  remembering. `dmg = basis * roll / 100` with `basis = min(ring_a, ring_d)` is followed by
+ *  `if (dmg > D.hp) dmg = D.hp`. While `roll <= 100` that clamp is DEAD CODE, because
+ *  `basis <= D.hp` gives `basis * roll / 100 <= D.hp` identically. Above 100 it comes alive — but
+ *  ASYMMETRICALLY: when `min == D.hp` the blow is clamped, and when `min == A.hp < D.hp` it is not.
+ *  A small attacker can then take more than its own ring off a big defender while a big attacker
+ *  facing a small defender cannot. That is the v5 seat-law defect in a different costume, and it is
+ *  measured rather than asserted in `fight-volatility.ts` part 2. */
+export const ROLL_CLAMP_FREE_MAX = 100n;
+
+/** Where a non-legacy roll takes its entropy. `legacy` drives the whole step from `h[0..9]`; `wide`
+ *  from `h[0..17]`. Bytes 20..28 are untouched by BOTH, so a knobbed roll costs no rearrangement of
+ *  the deployed byte layout and cannot perturb the pair draw. */
+const ROLL_BYTE_LO = 20;   // u32 LE at h[20..24] — the magnitude draw
+const ROLL_BYTE_SEL = 24;  // u32 LE at h[24..28] — the spike selector
+
+export type RollSpec =
+  /** The deployed die: `h[8] % 24 + 4`, i.e. 4..27 with modulo bias (`check-dice.ts`). */
+  | "legacy"
+  /** Uniform on `[lo, hi]` inclusive, drawn from a u32 so the modulo bias is `2^32 % m / 2^32`
+   *  (< 6e-8 for any m <= 256) rather than the byte's 1-in-24.
+   *
+   *  THE MEAN PINS THE SUPPORT. A uniform roll with the deployed mean of 15.25 cannot reach past
+   *  `hi = 2*15.25 = 30.5`, because a uniform's mean is the midpoint of its range. So "widen the die
+   *  without speeding the fight up" has exactly one maximal setting, `0..31`, worth 1.34x the
+   *  deployed standard deviation and no more. Anything wider is either faster (a pacing change) or
+   *  skewed (a `spike`). That is not a tuning detail, it is the reason the spike form exists. */
+  | { kind: "uniform"; lo: number; hi: number }
+  /** Heavy tail: with probability `1/pDen` the roll is `spike`, otherwise uniform on `[lo, hi]`.
+   *  Because the mass is concentrated low and the tail is rare, the mean can be held at the deployed
+   *  15.25 while the standard deviation goes up several-fold — which a uniform cannot do. */
+  | { kind: "spike"; pDen: number; spike: number; lo: number; hi: number };
+
+/** Domain separator for the surge-window bit. Step cursors are bounded by the bell, 17,280 at
+ *  `MAX_FIGHTERS`, so the top bit of the u64 counter is never set by a step and a window hash can
+ *  never collide with a step hash. Stated as a constant rather than as a comment because the whole
+ *  fairness argument for `surgeWindow` rests on the window bit being independent of the pair draw. */
+export const SURGE_DOMAIN = 0x8000_0000_0000_0000n;
+
+/** A recorded money curve. `v0[k]` is side 0's total live value (`sum(hp + banked)` over side 0)
+ *  immediately after the exchange at `step[k]`; between exchanges it does not move, so recording
+ *  only the exchanges is lossless rather than a sample.
+ *
+ *  Float64 because the pot is at most `MAX_FIGHTERS * $100 = 4.8e9` micro-units, which is exactly
+ *  representable — the analysis is allowed floats, the mechanism is not. `count` is a cursor into
+ *  caller-owned arrays so a study can allocate once and reuse across thousands of fights. */
+export interface FightTrace { step: Int32Array; v0: Float64Array; count: number; }
+
+/** The damage roll for this step, before any comeback scaling and before `rollCap`.
+ *
+ *  Kept out of the loop body so the deployed expression stays legible as one line, and so the Rust
+ *  port has an obvious single function to mirror. */
+function rollOf(cfg: FightConfig, h: Buffer): bigint {
+  const spec = cfg.roll ?? "legacy";
+  let r: bigint;
+  if (spec === "legacy") {
+    r = BigInt(h[cfg.layout === "legacy" ? 8 : 16] % 24) + 4n;
+  } else if (spec.kind === "uniform") {
+    const m = spec.hi - spec.lo + 1;
+    r = BigInt(spec.lo + (h.readUInt32LE(ROLL_BYTE_LO) % m));
+  } else {
+    if (h.readUInt32LE(ROLL_BYTE_SEL) % spec.pDen === 0) r = BigInt(spec.spike);
+    else { const m = spec.hi - spec.lo + 1; r = BigInt(spec.lo + (h.readUInt32LE(ROLL_BYTE_LO) % m)); }
+  }
+  const mul = cfg.rollMul;
+  return mul === undefined ? r : r * mul;
+}
+
+/** The exact mean of a `RollSpec`, as an exact rational reduced to a float. Reporting a measured
+ *  mean when a closed form exists is how a pacing claim rots; this makes the claim checkable. */
+export function rollMean(spec: RollSpec, layoutLegacyBias = true): number {
+  if (spec === "legacy") return layoutLegacyBias ? 3904 / 256 : 15.5;
+  if (spec.kind === "uniform") return (spec.lo + spec.hi) / 2;
+  const p = 1 / spec.pDen;
+  return p * spec.spike + (1 - p) * ((spec.lo + spec.hi) / 2);
+}
+
+/** The exact standard deviation of a `RollSpec`. */
+export function rollSd(spec: RollSpec): number {
+  const e2 = (() => {
+    if (spec === "legacy") {
+      let s = 0;
+      for (let b = 0; b < 256; b++) { const r = (b % 24) + 4; s += r * r; }
+      return s / 256;
+    }
+    const uni2 = (lo: number, hi: number) => {
+      let s = 0; for (let k = lo; k <= hi; k++) s += k * k; return s / (hi - lo + 1);
+    };
+    if (spec.kind === "uniform") return uni2(spec.lo, spec.hi);
+    const p = 1 / spec.pDen;
+    return p * spec.spike * spec.spike + (1 - p) * uni2(spec.lo, spec.hi);
+  })();
+  const m = rollMean(spec);
+  return Math.sqrt(Math.max(0, e2 - m * m));
+}
+
+/** The largest roll a spec can ever produce, after `rollMul`. Anything above `ROLL_CLAMP_FREE_MAX`
+ *  wakes the asymmetric clamp; the study labels such configs rather than silently capping them. */
+export function rollMax(cfg: FightConfig): bigint {
+  const spec = cfg.roll ?? "legacy";
+  const base = spec === "legacy" ? 27n
+    : spec.kind === "uniform" ? BigInt(spec.hi)
+    : BigInt(Math.max(spec.spike, spec.hi));
+  const m = base * (cfg.rollMul ?? 1n);
+  const cap = cfg.rollCap;
+  return cap !== undefined && cap < m ? cap : m;
+}
+
 export interface FightConfig {
   attacker: WeightSpec;
   defender: WeightSpec;
@@ -233,6 +395,78 @@ export interface FightConfig {
   /** Defaults to `bump` so that every config literal written before the fix still describes the
    *  fight it was written to describe. The shipped rule sets it explicitly. */
   defenderDraw?: DefenderDraw;
+
+  // --- volatility knobs. Every one of these is undefined in every config written before them. ---
+
+  /** Which die. Undefined is the deployed `h[8] % 24 + 4`. O(1): one u32 load, one modulo, one add. */
+  roll?: RollSpec;
+  /** Multiply the drawn roll. Paired with a step budget divided by the same integer this is the
+   *  "fewer, bigger exchanges" knob: expected total damage is unchanged, per-exchange size is `m`x,
+   *  and the number of exchanges is `1/m`x — so the aggregate swing goes as `sqrt(m)` while the
+   *  compute goes as `1/m`. Undefined is 1. */
+  rollMul?: bigint;
+  /** Ceiling applied to the roll AFTER `rollMul` and after any comeback scaling. Set it to
+   *  `ROLL_CLAMP_FREE_MAX` on any rule whose multiplier could push the roll past 100, so that the
+   *  rule under test is the rule under test and not an accidental re-run of the v5 clamp defect. */
+  rollCap?: bigint;
+
+  /** CORRELATION, the efficient lever. `L` consecutive steps share a SURGE SIDE drawn from
+   *  `tickHash(seed, SURGE_DOMAIN | windowIndex)`; inside the window, if the drawn attacker is not
+   *  on the surge side, attacker and defender swap roles.
+   *
+   *  WHY IT LOOKED FREE. The surge side is a fair coin independent of the pair draw, so for any
+   *  ordered pair `(i, j)` the post-swap probability is
+   *  `P(sigma = side_i) * P(a=i,d=j)  +  P(sigma = side_i) * P(a=j,d=i)  =  1/2 (u + u) = u`
+   *  — the MARGINAL ordered-pair distribution is not merely symmetric, it is byte-for-byte the
+   *  baseline's. Only the JOINT distribution across steps changes.
+   *
+   *  WHY THAT IS NOT ENOUGH, and this is the finding, not a caveat. The martingale needs
+   *  `E[dV_i | state] = 0` at each step, and once a window has begun its surge side is part of the
+   *  state. Inside a window one side always takes, and taking and giving are not symmetric under
+   *  `min`: an attacker BANKS what it wins, so its ring — and therefore its basis — does not move,
+   *  while a defender's ring decays geometrically. A run of length L gains a fighter about
+   *  `L * 0.1525 * ring` and costs it only `(1 - 0.8475^L) * ring`. Convexity, and it points at
+   *  whoever has the smaller ring. `fight-volatility.ts` measures the resulting band spread rather
+   *  than trusting either argument. Undefined or <= 1 is off. */
+  surgeWindow?: number;
+
+  /** THE RATCHET, made adjustable. Deployed, an attacker's winnings go to `banked`, which is safe
+   *  forever — so every exchange moves value permanently out of the at-risk pool, the basis
+   *  `min(ring_a, ring_d)` shrinks monotonically, and the scoreboard freezes long before the fight
+   *  ends. `retainBps` credits that share of a hit to the attacker's RING instead.
+   *
+   *  It is the only knob here that keeps the fight an EXACT martingale: the basis is still
+   *  `min(ring_a, ring_d)` (symmetric) and the ordered-pair draw is still uniform, so every step is
+   *  still zero-mean conditional on the state — the knob changes only WHERE the winnings sit.
+   *  Conservation is exact in integers: the split is `toRing = dmg * retainBps / BPS` and the
+   *  remainder, including the truncated unit, goes to `banked`. Undefined is 0 = the shipped ratchet. */
+  retainBps?: bigint;
+
+  /** THE CEILING ON THAT RING, and it is what makes `retainBps` shippable rather than merely
+   *  interesting. Unbounded, a high `retainBps` stops fights ENDING: rings are replenished as fast
+   *  as they are drained, almost nobody reaches the dust floor, and every round runs to the bell to
+   *  be settled on who was ahead. `"stake"` caps the repair at the fighter's own entry — winnings
+   *  mend your ring first and only the overflow is banked — so:
+   *    * total hp is still monotonically non-increasing, because the overflow always banks, and a
+   *      fight therefore still terminates;
+   *    * the knob self-limits, degenerating to exactly the shipped ratchet once everyone is whole;
+   *    * the martingale is untouched, because none of this changes the transfer, only where the
+   *      winner puts it.
+   *  One compare and one min per exchange. Undefined is no ceiling. */
+  retainCap?: "stake";
+
+  /** MEAN REVERSION IN THE LEAD. The roll is scaled by `1 + k * (V_other - V_mine) / pot`, where the
+   *  V's are the two sides' totals of `hp + banked` — so the side that is behind hits harder and the
+   *  side that is ahead hits softer, which is the only rule here that produces a genuine see-saw
+   *  rather than a wider wander.
+   *
+   *  It reads SIDES and never stakes, so it cannot express a size preference — but side is a free
+   *  choice at entry, and a rule that pays the trailing side pays whoever joins the lighter side.
+   *  That is a NEW positional edge of exactly the class §11.3 removed, and it is the test that
+   *  decides this candidate (`fight-volatility.ts` part 4). O(1) per step: the two side totals are
+   *  summed once per call and then moved by `+-dmg`, the same shape as a static stake weight.
+   *  `k` is in bps; undefined is 0 = off. */
+  comebackBps?: bigint;
 }
 
 /** THE SHIPPED RULE, as of the seat-law fix. `parity.ts` asserts this is byte-identical to
@@ -280,10 +514,26 @@ export interface FightStats {
  *  `continue` and the final hp/banked/dead vector is fixed. The chain still runs to the bell on
  *  chain; this only stops SIMULATING it. `st.steps` and `st.weightPasses` are therefore truncated
  *  when it is set, which is why the compute table in study-weights.ts runs with it OFF. */
-export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightConfig, hashes?: (Buffer | undefined)[], stopWhenOver = false): FightStats {
+export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightConfig, hashes?: (Buffer | undefined)[], stopWhenOver = false, trace?: FightTrace): FightStats {
   const n = f.length;
   const st: FightStats = { steps: 0, exchanges: 0, endedAt: steps, weightPasses: 0 };
   if (n < 2) return st;
+
+  // Side totals of `hp + banked`, maintained incrementally. Summed once here (O(n), the same once-
+  // per-call cost a static stake weight pays) and then moved by +-dmg on each exchange, so reading
+  // "who is winning" costs nothing per step. `comebackBps` needs them; `trace` records them; every
+  // other configuration pays two adds per exchange for them and is otherwise unaffected.
+  let v0 = 0n, v1 = 0n;
+  for (const g of f) { if (g.side === 0) v0 += g.hp + g.banked; else v1 += g.hp + g.banked; }
+  const pot = v0 + v1;
+  const comeback = cfg.comebackBps ?? 0n;
+  const retain = cfg.retainBps ?? 0n;
+  const retainToStake = cfg.retainCap === "stake";
+  const rollCap = cfg.rollCap;
+  const L = cfg.surgeWindow ?? 0;
+  const surging = L > 1;
+  let surgeWindowIdx = -1, surgeSide: 0 | 1 = 0;
+  if (trace) trace.count = 0;
 
   const wa: bigint[] = new Array(n).fill(0n);
   const wd: bigint[] = new Array(n).fill(0n);
@@ -340,21 +590,56 @@ export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightCo
     if (shift && !needD) { if (d >= a) d += 1; }
     else if (d === a) d = (d + 1) % n;
 
+    // SURGE. Applied to the RAW ordered pair, before any skip, because the fairness argument is
+    // about the distribution of the ordered pair itself and would not survive being applied to a
+    // filtered subset.
+    if (surging) {
+      const w = (step / L) | 0;
+      if (w !== surgeWindowIdx) {
+        surgeWindowIdx = w;
+        surgeSide = (tickHash(seed, SURGE_DOMAIN | BigInt(w))[0] & 1) as 0 | 1;
+      }
+      if (f[a].side !== surgeSide) { const t = a; a = d; d = t; }
+    }
+
     const A = f[a], D = f[d];
     if (A.side === D.side) continue;
     if (A.wallet === D.wallet) continue;
     if (A.dead === 1 || D.dead === 1) continue;
 
-    const roll = BigInt(h[cfg.layout === "legacy" ? 8 : 16] % 24) + 4n;
+    let roll = rollOf(cfg, h);
+    if (comeback !== 0n && pot > 0n) {
+      // Signed: the trailing side hits harder AND the leading side hits softer, so the total damage
+      // per exchange is unchanged to first order and the knob is a see-saw rather than an
+      // accelerator. Floored at zero — a side ahead by the whole pot has already won.
+      const mine = A.side === 0 ? v0 : v1;
+      const other = A.side === 0 ? v1 : v0;
+      let mult = BPS + (comeback * (other - mine)) / pot;
+      if (mult < 0n) mult = 0n;
+      roll = (roll * mult) / BPS;
+    }
+    if (rollCap !== undefined && roll > rollCap) roll = rollCap;
     let basis: bigint;
     if (cfg.damage === "min") basis = A.hp < D.hp ? A.hp : D.hp;
     else if (cfg.damage === "geo") basis = isqrt(A.hp * D.hp);
     else if (cfg.damage && typeof cfg.damage === "object") {
-      const P = cfg.damage.blend, lo = A.hp < D.hp ? A.hp : D.hp;
-      basis = (P * D.hp + (BPS - P) * lo) / BPS;
+      const lo = A.hp < D.hp ? A.hp : D.hp;
+      // The gate is checked BEFORE the blend is computed, so an ungated exchange is arithmetically
+      // identical to `damage: "min"` rather than to a blend with P forced to zero. The two agree, but
+      // only one of them is obviously the shipped rule when read.
+      if (cfg.damage.gate === "attacker" && A.verified !== 1) basis = lo;
+      else {
+        const P = cfg.damage.blend;
+        basis = (P * D.hp + (BPS - P) * lo) / BPS;
+        const cm = cfg.damage.capMult;
+        if (cm !== undefined) { const ceil = cm * lo; if (basis > ceil) basis = ceil; }
+      }
     } else basis = D.hp;
     let dmg = (basis * roll) / 100n;
-    if (dmg > D.hp) dmg = D.hp;   // never take more than is there; a no-op for every basis but `geo`
+    // Never take more than is there. A NO-OP under the shipped rule, and it is worth knowing exactly
+    // when it stops being one: for `geo`, and for any roll above 100 — see `ROLL_CLAMP_FREE_MAX`,
+    // where the asymmetry this clamp introduces is written out.
+    if (dmg > D.hp) dmg = D.hp;
     const floorD = dustFloor(cfg.dust, D);
     // TERMINATION, and it keys on the DEFENDER's ring alone.
     //
@@ -369,8 +654,18 @@ export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightCo
     if (dmg === 0n) continue;     // a blow too small to register moves nothing, and kills nobody
 
     D.hp = sat(D.hp, dmg);
-    A.banked += dmg;
+    // THE RATCHET, or not. `retain` of the hit lands back in the attacker's ring, where it is at
+    // risk again; the rest — including the unit lost to integer truncation — is banked. The sum is
+    // exactly `dmg`, so conservation is unchanged by construction rather than by measurement.
+    if (retain === 0n) A.banked += dmg;
+    else {
+      let toRing = (dmg * retain) / BPS;
+      if (retainToStake) { const room = A.stake > A.hp ? A.stake - A.hp : 0n; if (toRing > room) toRing = room; }
+      A.hp += toRing; A.banked += dmg - toRing;
+    }
+    if (A.side === 0) { v0 += dmg; v1 -= dmg; } else { v1 += dmg; v0 -= dmg; }
     st.exchanges++;
+    if (trace) { trace.step[trace.count] = step; trace.v0[trace.count] = Number(v0); trace.count++; }
     if (D.hp === 0n) {
       D.dead = 1;
       if (!over) {
@@ -395,8 +690,8 @@ export function winnerSide(f: Fighter[]): 0 | 1 {
 }
 
 /** `enter` with the deployed fee split: gross in, net staked, fee to the house. */
-export function makeFighter(wallet: string, side: 0 | 1, gross: bigint, feeBps = FEE_BPS): { f: Fighter; fee: bigint } {
+export function makeFighter(wallet: string, side: 0 | 1, gross: bigint, feeBps = FEE_BPS, verified?: 0 | 1): { f: Fighter; fee: bigint } {
   const fee = (gross * feeBps) / BPS;
   const net = gross - fee;
-  return { f: { wallet, side, dead: 0, stake: net, hp: net, banked: 0n }, fee };
+  return { f: { wallet, side, dead: 0, stake: net, hp: net, banked: 0n, verified }, fee };
 }

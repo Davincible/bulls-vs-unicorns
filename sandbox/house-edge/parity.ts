@@ -12,7 +12,7 @@
 
 import { newRound, enter, tick, settle, DUST } from "../../engine/src/er-sim.ts";
 import type { ERFighter } from "../../engine/src/er-sim.ts";
-import { BASELINE, DEPLOYED_V5, runFight, stepBudget, winnerSide, makeFighter, DUST_ABSOLUTE, isqrt, pow34 } from "./fight-variant.ts";
+import { BASELINE, DEPLOYED_V5, runFight, stepBudget, winnerSide, makeFighter, DUST_ABSOLUTE, isqrt, pow34, FEE_BPS } from "./fight-variant.ts";
 import type { Fighter } from "./fight-variant.ts";
 import { createHash } from "node:crypto";
 import { mulberry32 } from "./rng.ts";
@@ -57,7 +57,7 @@ const check = (ok: boolean, what: string) => {
 
     // er-sim path
     const round = newRound(seed);
-    for (let i = 0; i < n; i++) enter(round, `w${i}`, sides[i], gross[i], 20n);
+    for (let i = 0; i < n; i++) enter(round, `w${i}`, sides[i], gross[i], FEE_BPS);
     tick(round, steps);
     const w1 = settle(round);
 

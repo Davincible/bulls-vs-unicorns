@@ -25,7 +25,7 @@
 // `DEPLOYED_V5` in fight-variant.ts to see the old behaviour.
 
 import { newRound, enter, tick, settle } from "../../engine/src/er-sim.ts";
-import { stepBudget, UNITS_PER_USD } from "./fight-variant.ts";
+import { stepBudget, UNITS_PER_USD, FEE_BPS } from "./fight-variant.ts";
 import { createHash } from "node:crypto";
 
 const usd = (v: number) => BigInt(Math.round(v * 1e6));
@@ -38,7 +38,7 @@ const STAKES: [number, 0 | 1][] = [
 ];
 
 console.log(`\n=== does the fight pay by SEAT or by DEPOSIT? measured on engine/src/er-sim.ts ===\n`);
-console.log(`lineup: $200 whale + seven $5 minnows, 4 a side, 20 bps fee, ${stepBudget(8)} step budget`);
+console.log(`lineup: $200 whale + seven $5 minnows, 4 a side, ${FEE_BPS} bps fee, ${stepBudget(8)} step budget`);
 console.log(`averaged over 2,000 seeds (seed = sha256("equaliser|<i>"))\n`);
 
 const N = STAKES.length;
@@ -49,7 +49,7 @@ let sumPot = 0, sumAlive = 0, sumEnd = 0;
 for (let t = 0; t < TRIALS; t++) {
   const seed = createHash("sha256").update(`equaliser|${t}`).digest();
   const round = newRound(seed);
-  for (let i = 0; i < N; i++) enter(round, `w${i}`, STAKES[i][1], usd(STAKES[i][0]), 20n);
+  for (let i = 0; i < N; i++) enter(round, `w${i}`, STAKES[i][1], usd(STAKES[i][0]), FEE_BPS);
   tick(round, stepBudget(N));
   settle(round);
   for (let i = 0; i < N; i++) sumOut[i] += toUsd(round.fighters[i].hp + round.fighters[i].banked);

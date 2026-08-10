@@ -13,7 +13,7 @@
 // any house-edge question, and it is a race on transaction ordering.
 
 import { newRound, enter, tick, settle } from "../../engine/src/er-sim.ts";
-import { stepBudget, UNITS_PER_USD } from "./fight-variant.ts";
+import { stepBudget, UNITS_PER_USD, FEE_BPS } from "./fight-variant.ts";
 import { createHash } from "node:crypto";
 
 const toUsd = (u: bigint) => Number(u) / Number(UNITS_PER_USD);
@@ -34,7 +34,7 @@ for (const [label, sides] of Object.entries(LAYOUTS)) {
   for (let t = 0; t < TRIALS; t++) {
     const seed = createHash("sha256").update(`bias|${label}|${t}`).digest();
     const round = newRound(seed);
-    for (let i = 0; i < n; i++) enter(round, `w${i}`, sides[i], 10_000_000n, 20n);   // $10 each
+    for (let i = 0; i < n; i++) enter(round, `w${i}`, sides[i], 10_000_000n, FEE_BPS);   // $10 each
     tick(round, stepBudget(n));
     settle(round);
     for (let i = 0; i < n; i++) {

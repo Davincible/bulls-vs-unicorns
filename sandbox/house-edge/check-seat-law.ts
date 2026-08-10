@@ -12,14 +12,15 @@
 //     ROI_i  ~=  (S_opposing / n_myside) / stake_i  -  1
 //
 // If that holds, "small stakes have an edge" is the wrong description of the deployed game. The right
-// one is "deposits buy nothing; SEATS buy everything", and `MAX_FIGHTERS = 16` is the only thing
-// standing between the game and an unbounded sybil.
+// one is "deposits buy nothing; SEATS buy everything", and `MAX_FIGHTERS = 48` (raised from 16 in the
+// zero_copy migration) is the only thing standing between the game and an unbounded sybil — the ceiling
+// moved, the shape of the bound did not.
 //
 // Tested by predicting each fighter's payout from the formula and reporting the error, across
 // lineups chosen to stress it: balanced, lopsided in money, lopsided in headcount, and both.
 
 import { newRound, enter, tick, settle } from "../../engine/src/er-sim.ts";
-import { stepBudget, UNITS_PER_USD } from "./fight-variant.ts";
+import { stepBudget, UNITS_PER_USD, FEE_BPS } from "./fight-variant.ts";
 import { createHash } from "node:crypto";
 
 const usd = (v: number) => BigInt(Math.round(v * 1e6));
@@ -37,7 +38,7 @@ const CASES: Case[] = [
 ];
 
 console.log(`\n=== the seat law: does payout = (opposing side's stake) / (my side's seats)? ===`);
-console.log(`measured on engine/src/er-sim.ts, ${TRIALS} seeds per case, 20 bps fee, sides ALTERNATED across slots`);
+console.log(`measured on engine/src/er-sim.ts, ${TRIALS} seeds per case, ${FEE_BPS} bps fee, sides ALTERNATED across slots`);
 console.log(`(alternated because a blocked layout USED to add a +-15% slot artefact — fixed now, but the`);
 console.log(` layout is kept so this table stays comparable with the one taken before the fix)\n`);
 
@@ -48,14 +49,17 @@ for (const c of CASES) {
   for (let t = 0; t < TRIALS; t++) {
     const seed = createHash("sha256").update(`seat|${c.label}|${t}`).digest();
     const round = newRound(seed);
-    for (let i = 0; i < n; i++) enter(round, `w${i}`, c.stakes[i][1], usd(c.stakes[i][0]), 20n);
+    for (let i = 0; i < n; i++) enter(round, `w${i}`, c.stakes[i][1], usd(c.stakes[i][0]), FEE_BPS);
     tick(round, stepBudget(n));
     settle(round);
     for (let i = 0; i < n; i++) out[i] += toUsd(round.fighters[i].hp + round.fighters[i].banked);
     potSum += toUsd(round.pot);
   }
   // net-of-fee side totals and seat counts
-  const net = c.stakes.map(([v]) => v * 0.998);
+  // net of whatever fee this run charged — was hardcoded `* 0.998`, i.e. 20 bps, which silently
+  // mispredicted every seat-law cell as soon as `set_fee_bps` moved the rate.
+  const netOfFee = 1 - Number(FEE_BPS) / 10_000;
+  const net = c.stakes.map(([v]) => v * netOfFee);
   const sideTotal = [0, 0], sideSeats = [0, 0];
   for (let i = 0; i < n; i++) { sideTotal[c.stakes[i][1]] += net[i]; sideSeats[c.stakes[i][1]]++; }
 

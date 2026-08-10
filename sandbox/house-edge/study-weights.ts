@@ -12,7 +12,7 @@
 //     knob, and folding a behavioural model of it into this table would make the table a measurement
 //     of the model instead of the mechanism.
 
-import { runFight, payout, DUST_ABSOLUTE, winnerSide, W_UNIFORM, mix, isStatic } from "./fight-variant.ts";
+import { runFight, payout, DUST_ABSOLUTE, winnerSide, W_UNIFORM, mix, isStatic, FEE_BPS } from "./fight-variant.ts";
 import type { FightConfig, WeightSpec, DustRule } from "./fight-variant.ts";
 import { BANDS, makeLobby, fightersOf, roiWithSE, diffWithSE, pct, toUsd } from "./lobby.ts";
 
@@ -85,7 +85,7 @@ for (let r = 0; r < ROUNDS; r++) {
 
 console.log(`\n=== EXPERIMENT 1: what moves ROI by stake band ===`);
 console.log(`study seed "${STUDY_SEED}"  |  ${ROUNDS} rounds x ${PER_SIDE * 2} fighters = ${ROUNDS * PER_SIDE * 2} entries`);
-console.log(`economy: per-fighter settlement (hp + banked), 20 bps entry fee, no extractions`);
+console.log(`economy: per-fighter settlement (hp + banked), ${FEE_BPS} bps entry fee, no extractions`);
 console.log(`step budget: min(4000, 240 x n) = ${Math.min(4000, 240 * PER_SIDE * 2)} steps`);
 console.log(`ROI is dollar-weighted (sum payout / sum gross - 1); +/- is a bootstrap SE over rounds (2000 resamples)\n`);
 

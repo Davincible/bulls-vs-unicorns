@@ -17,7 +17,7 @@
 // reconstruction of it.
 
 import { newRound, enter, tick, PENALTY_HORIZON_STEPS } from "../../engine/src/er-sim.ts";
-import { DEPLOYED_V5, runFight, makeFighter, stepBudget } from "./fight-variant.ts";
+import { DEPLOYED_V5, runFight, makeFighter, stepBudget, FEE_BPS } from "./fight-variant.ts";
 import type { Fighter } from "./fight-variant.ts";
 import { createHash } from "node:crypto";
 
@@ -27,7 +27,7 @@ const STAKE = 10_000_000n;   // $10 each, equal — the same shape the horizon w
 /** First step at which one side has nobody standing, or the step budget if that never happens. */
 function endStepShipped(n: number, seed: Buffer): number {
   const round = newRound(seed);
-  for (let i = 0; i < n; i++) enter(round, `w${i}`, (i % 2) as 0 | 1, STAKE, 20n);
+  for (let i = 0; i < n; i++) enter(round, `w${i}`, (i % 2) as 0 | 1, STAKE, FEE_BPS);
   const budget = stepBudget(n);
   // Tick one step at a time so the FIRST step at which the fight is decided is observable; the
   // mirror has no "ended" flag of its own.
@@ -54,7 +54,7 @@ const head = "   n  budget   horizon   median end (v5)   median end (shipped)   
 console.log(head);
 console.log("-".repeat(head.length));
 
-for (let n = 2; n <= 16; n++) {
+for (let n = 2; n <= 48; n++) {
   const before: number[] = [], after: number[] = [];
   for (let t = 0; t < SEEDS; t++) {
     const seed = createHash("sha256").update(`len|${n}|${t}`).digest();

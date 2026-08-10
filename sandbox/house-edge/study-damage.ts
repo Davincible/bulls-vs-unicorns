@@ -8,7 +8,7 @@
 // If `min` or `geo` reproduces what attacker weighting buys, it is the mechanism to ship, and the
 // entire compute argument evaporates.
 
-import { runFight, payout, DUST_ABSOLUTE, W_UNIFORM, mix, BASELINE, DEPLOYED_V5 } from "./fight-variant.ts";
+import { runFight, payout, DUST_ABSOLUTE, W_UNIFORM, mix, BASELINE, DEPLOYED_V5, FEE_BPS } from "./fight-variant.ts";
 import type { FightConfig, DustRule } from "./fight-variant.ts";
 import { BANDS, makeLobby, fightersOf, roiWithSE, pct, toUsd } from "./lobby.ts";
 
@@ -55,7 +55,7 @@ for (let r = 0; r < ROUNDS; r++) {
 }
 
 console.log(`\n=== EXPERIMENT 5: O(1) damage rules vs O(n) weighted selection ===`);
-console.log(`study seed "${STUDY_SEED}"  |  ${ROUNDS} rounds x ${PER_SIDE * 2} fighters  |  20 bps fee\n`);
+console.log(`study seed "${STUDY_SEED}"  |  ${ROUNDS} rounds x ${PER_SIDE * 2} fighters  |  ${FEE_BPS} bps fee\n`);
 const head = "config                                 " + ["whale", "big", "medium", "small", "minnow"].map(s => s.padStart(16)).join("") + "    spread  alive  ends";
 console.log(head); console.log("-".repeat(head.length));
 for (let c = 0; c < CONFIGS.length; c++) {

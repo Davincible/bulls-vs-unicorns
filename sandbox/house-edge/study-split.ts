@@ -5,16 +5,20 @@
 // bothers to open more wallets, and the house's "many small accounts" strategy is simply the first
 // instance of an attack anyone can run.
 //
-// The bound is structural and worth stating before the numbers: `MAX_FIGHTERS = 16`, and `enter`
-// tops up rather than duplicating a wallet already on that side — so k is capped at 16 minus however
-// many slots other people took, and at 32 wallets even in principle (16 slots x nothing; a wallet may
-// hold one entry per side, so 16 slots is the real bound). Sybil resistance here is a seat limit, not
-// an identity check, and seats are the only thing that is scarce.
+// The bound is structural and worth stating before the numbers: `MAX_FIGHTERS = 48` (raised from 16
+// in the zero_copy migration — the seat law itself is unchanged, only how many seats there are to
+// claim), and `enter` tops up rather than duplicating a wallet already on that side — so k is capped
+// at 48 minus however many slots other people took, and at 96 wallets even in principle (48 slots x
+// two sides; a wallet may hold one entry per side, so 48 slots is the real bound). Sybil resistance
+// here is a seat limit, not an identity check, and seats are the only thing that is scarce. The
+// conclusion below (splitting does not pay under the shipped rule) does not depend on the seat count —
+// it follows from the seat law holding at ANY k <= seats — so raising the cap moves how far the sweep
+// can run, not what it finds.
 //
-// Design: the lobby is always exactly 16 fighters. The splitter takes k of them, the background
-// takes 16 - k. That confounds "more of my wallets" with "fewer of theirs" — deliberately, because
-// that is the actual trade a player faces in a 16-seat lobby, and separating the two would measure a
-// game nobody can play.
+// Design: the lobby is always exactly MAX_FIGHTERS fighters (48). The splitter takes k of them, the
+// background takes 48 - k. That confounds "more of my wallets" with "fewer of theirs" — deliberately,
+// because that is the actual trade a player faces in a full lobby, and separating the two would
+// measure a game nobody can play.
 
 import { runFight, payout, DUST_ABSOLUTE, W_UNIFORM, BASELINE, DEPLOYED_V5 } from "./fight-variant.ts";
 import type { FightConfig, DustRule } from "./fight-variant.ts";
@@ -25,7 +29,7 @@ import { mulberry32 } from "./rng.ts";
 const ROUNDS = Number(process.argv[2] ?? 3000);
 const STUDY_SEED = "house-edge-v1";
 const ABS: DustRule = { kind: "absolute", units: DUST_ABSOLUTE };
-const SEATS = 16;
+const SEATS = 48;
 const BUDGET = 80;    // USD — a whale-band budget, so k = 1 is the top band of experiment 1
 
 /** The recommended mechanism from experiment 5: uniform selection exactly as deployed, and the only
@@ -83,7 +87,7 @@ const COLUMNS: { label: string; cfg: FightConfig }[] = [
 ];
 
 console.log(`\n=== EXPERIMENT 4: is splitting a $${BUDGET} budget across k wallets profitable? ===`);
-console.log(`study seed "${STUDY_SEED}"  |  ${ROUNDS} rounds per cell  |  16 seats, splitter takes k, background takes 16-k`);
+console.log(`study seed "${STUDY_SEED}"  |  ${ROUNDS} rounds per cell  |  ${SEATS} seats, splitter takes k, background takes ${SEATS}-k`);
 console.log(`background drawn from the five bands (mean ~$42). ROI is on the splitter's whole $${BUDGET}.\n`);
 
 const header = "  k   stake each " + COLUMNS.map(c => c.label.padStart(17)).join("");

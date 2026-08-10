@@ -22,6 +22,248 @@ below is reproducible: see `sandbox/house-edge/README.md` for the exact commands
 > by five before quoting it as current, or better, re-run the rig at 100 — `fee_bps` is a live
 > account field now, not a constant, so the study's own assumption that it is fixed is the thing that
 > aged, not its arithmetic.
+>
+> **§11 is the re-measurement.** Added 2026-08-10: the same rig, at 100 bps, against the same seeds.
+> It supersedes every rate-dependent number below and states plainly which claims it overturns. Read
+> it before quoting anything from §1–§10.
+>
+> **This document measures the GAME. `HOUSE-STRATEGY.md` measures the OPERATOR** — what the house's
+> own wallets earn (nothing, in expectation), what the treasury figure overstates, which dial actually
+> controls the edge, and the fact that the deployed program moves no tokens at all.
+
+---
+
+## 11. CURRENT STATE — re-measured 2026-08-10 against the live algorithm at the live rate
+
+**This section supersedes every rate-dependent number in §1–§10.** Those sections were measured at
+20 bps and stay exactly as written, because a study rewritten to agree with its own recommendation is
+no longer evidence for it. This section is what the same rig prints at **100 bps**, which is what the
+arena charges now.
+
+**The rig was changed in one place, and here is the change.** `fight-variant.ts` had
+`export const FEE_BPS = 20n` — a hardcoded constant from a time when 20 was the only rate that had
+ever existed. It is now `BigInt(process.env.HE_FEE_BPS ?? 20)`, and the five other scripts that
+carried their own literal `20n` (and `check-seat-law.ts`, which carried a hardcoded `* 0.998`
+net-of-fee factor) now read that one export. **The default is still 20**, so every command in
+`sandbox/house-edge/README.md` reproduces the number it always printed and §1–§10 remain
+reproducible. Nothing else in the rig was touched. `parity.ts` passes at both rates:
+
+```
+cd engine
+npx tsx ../sandbox/house-edge/parity.ts                    # PARITY OK
+HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/parity.ts     # PARITY OK
+```
+
+That matters more than it looks: `BASELINE` is asserted byte-identical to `engine/src/er-sim.ts` over
+300 random lineups (195,954 exchanges, 0 mismatches) at both rates, so the fee change is provably not
+a change to the fight.
+
+### 11.1 THE HEADLINE — the house takes exactly 1.0000% of gross entries, with no variance at all
+
+```
+cd engine
+HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/check-house-accrual.ts 20000 4
+```
+20,000 rounds × 8 fighters, study seed `house-edge-v1`, measured against `engine/src/er-sim.ts`
+directly — its own `enter`/`tick`/`extract`/`settle` and its own `houseTook`/`grossDeposits`.
+
+| extraction regime | house take, % of gross entries | 95% CI | fee | penalty | conservation |
+|---|---|---|---|---|---|
+| nobody extracts | **1.0000%** | [1.0000, 1.0000] | 100% | 0% | exact, all 20,000 |
+| everyone extracts at the free horizon | **1.0000%** | [1.0000, 1.0000] | 100% | 0% | exact, all 20,000 |
+| each extracts at a uniform random cursor | 2.5427% | [2.5188, 2.5685] | 39.3% | 60.7% | exact, all 20,000 |
+| a quarter panic-extract early | 2.3036% | [2.2809, 2.3261] | 43.4% | 56.6% | exact, all 20,000 |
+
+**The confidence interval on the fee is degenerate, and that is the actual finding.** The entry fee
+is not a statistical edge that emerges over many rounds — it is arithmetic applied at `enter`, and the
+fight is a pure redistribution of what is left (`conservationHolds` returned true in every one of
+80,000 round-simulations). So the house's fee revenue has **zero variance**. There is no sample size
+at which it might come out differently.
+
+Player aggregate ROI is the same number with the sign flipped. Conservation makes "what does the house
+make" and "what do players lose" one question, not two.
+
+**The rounding goes the player's way and is bounded by seats, not by money.** `split_entry` floors, so
+the house takes slightly under 1%. Measured over 20,000 rounds the total given away was 69,262
+micro-units — **$0.069, or 3.46 micro-units per round**. The bound is one unit per entry, so
+`MAX_FIGHTERS = 16` caps it at $0.000016/round however the money is arranged. It cannot be farmed.
+
+**The extract penalty is a second and larger revenue stream, and it is behavioural, not structural.**
+The two middle rows above are worth more than the fee. §11.6 and `HOUSE-STRATEGY.md` treat it
+properly; the short version is that it pays only when players bail early, nobody has measured whether
+they do, and an informed player pays nothing.
+
+### 11.2 The seat-vs-deposit exploit is still dead at 100 bps
+
+```
+cd engine
+HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/study-split.ts 2500
+HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/demo-equalizer.ts
+HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/check-seat-law.ts
+```
+
+Dollars per round gained by splitting an $80 budget across k wallets, versus entering as one $80
+fighter — the §10.3 table, re-run at the current rate:
+
+| wallets | v5 (before) | SHIPPED, at 100 bps |
+|---|---|---|
+| 2 | +$36.73 | **−$0.32** |
+| 4 | +$94.89 | **−$0.48** |
+| 8 | **+$150.87** | **−$0.31** |
+| 12 | +$134.78 | −$0.18 |
+
+Every after-cell is negative and none is distinguishable from zero. **The $152/round farm is now worth
+minus the gas.** The rate change did not reopen it, and there is no reason it would have: the exploit
+lived in the damage basis, not in the fee.
+
+`demo-equalizer.ts` on the $200-whale lineup at 100 bps: the whale stakes $200 and collects **$198.03
+(ROI −1.0%)**; the seven $5 minnows collect $4.88–$5.01. The predictor "payout = a seat's share of the
+pot" is off by a mean **145.2%**; "payout = your own deposit" is off by **1.1%**. 83.0% of the pot is
+still sitting in rings at the bell, which is the mechanism §10.2 identified.
+
+### 11.3 Entry-order bias is still gone at 100 bps
+
+```
+cd engine
+HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/check-positional-bias.ts 24000
+```
+Eight fighters all staking exactly $10, 24,000 seeds. Fair share is now $9.900 (it was $9.980 at
+20 bps — the script derives it from `FEE_BPS` rather than from a literal, which is one of the things
+the parameterisation fixed).
+
+| layout | v5 (before) | at 100 bps, 24,000 seeds |
+|---|---|---|
+| `0,0,0,0,1,1,1,1` blocked | slots 3 and 7 **+15.1% / +15.0%**; slots 0 and 4 die 90.6% / 90.3% vs 64% | every slot within **±0.5%**, worst **1.9σ**; death rate **55.5–56.1%**, all eight |
+| `0,1,0,1,0,1,0,1` interleaved | flat, ±0.8% | every slot within ±0.5%, worst 1.8σ |
+
+The two layouts remain indistinguishable from each other. Which transaction confirmed first still buys
+nothing.
+
+### 11.4 What 20 → 100 bps did to players: exactly −0.80 points of ROI, and nothing else
+
+```
+cd engine
+npx tsx ../sandbox/house-edge/check-fee-rate.ts 15000 4
+```
+15,000 rounds, **identical lobbies and identical hash draws at every rate** — the columns are paired,
+so the differences are not sampling noise. The 0 bps column isolates the mechanism from the rake.
+
+| band | 0 bps | 20 bps | 100 bps | 200 bps | 100 vs 20 |
+|---|---|---|---|---|---|
+| whale ($80–100) | +0.025% | −0.175% | −0.975% | −1.976% | **−0.800%** |
+| big ($50–80) | −0.272% | −0.471% | −1.269% | −2.266% | −0.798% |
+| medium ($20–50) | +0.377% | +0.176% | −0.627% | −1.631% | −0.803% |
+| small ($8–20) | +0.270% | +0.069% | −0.733% | −1.736% | −0.802% |
+| minnow ($3–8) | −0.292% | −0.491% | −1.289% | −2.286% | −0.798% |
+| **all seats** | **+0.000%** | **−0.200%** | **−1.000%** | **−2.000%** | **−0.800%** |
+
+**The rake is exactly proportional and does not touch the fight.** Every band moved by −0.798% to
+−0.803% against a theoretical −0.800%. A band moving by materially more would have been an
+interaction, and an interaction would have been a defect. There isn't one.
+
+**But ROI is the wrong way to describe what a 5× rake does, and this is the part worth acting on.**
+
+| rate | mean ROI | stdev of one seat's ROI | P(seat loses money) | median seat ROI | rounds until rake > 1σ |
+|---|---|---|---|---|---|
+| 0 bps | +0.015% | 38.88% | 53.16% | −2.78% | never |
+| 20 bps | −0.185% | 38.80% | 53.39% | −2.97% | **44,167** |
+| **100 bps** | **−0.985%** | **38.49%** | **54.33%** | **−3.75%** | **1,528** |
+| 200 bps | −1.985% | 38.10% | 55.50% | −4.72% | 369 |
+
+Variance is unchanged — the rake takes from the mean and leaves the spread alone. What moved is
+**(σ/|μ|)², how long a player must play before the house's cut exceeds a one-standard-deviation swing
+in their own results: 44,167 rounds → 1,528.** At the ~110s cadence that is roughly six weeks of
+continuous play instead of three years. The rake became visible to an ordinary player about
+twenty-nine times sooner. That is the real content of "5× the rake", and §11.6 follows it to its
+conclusion.
+
+Note also that the median seat already loses money at 0 bps (−2.78%): the fight's payoff is
+right-skewed, so more than half of seats are below average before any fee is charged. The rake pushes
+P(a seat loses money) from 53.2% to 54.3%.
+
+### 11.5 The dice: what they actually do — and a correction to the premise
+
+```
+cd engine
+npx tsx ../sandbox/house-edge/check-dice.ts 2000000
+```
+
+Three different things get called "the dice", and only one of them decides whether stake size matters.
+
+**(1) Who is drawn.** `h[0..4] % n` for the attacker, and a rank among the `n−1` non-attackers for the
+defender. Over 2,000,000 hashes at n = 8: worst attacker-slot deviation **0.74σ**, worst defender-slot
+**1.30σ**, all 56 ordered pairs realised, worst cell 2.45σ. The residual modulo bias is `2^32 % n` out
+of `2^32` — under 4e-9, unmeasurable at any sample size this game will produce.
+
+**(2) How hard.** `roll = h[8] % 24 + 4`. **These dice genuinely are not uniform**, and the reason is
+modulo bias, not design: `h[8]` is a uniform byte and 256 = 24×10 + 16, so residues 0–15 are reachable
+eleven ways and residues 16–23 only ten.
+
+| | measured over 2,000,000 hashes | theory |
+|---|---|---|
+| rolls 4–19 (11/256 each) | 68.7928% | 68.7500% |
+| rolls 20–27 (10/256 each) | 31.2072% | 31.2500% |
+| mean roll | **15.24102** | 15.25000 (a uniform 4–27 would be 15.5) |
+
+Damage runs **1.67% weaker** than a uniform die would make it. That is a pacing effect — fights run
+marginally longer — and it is **size-neutral**: the same die is rolled for every exchange whoever is
+in it, so it cannot favour a band.
+
+**(3) Percent of what.** `basis = min(attacker.hp, defender.hp)`. This is the only size-sensitive term
+in the loop, and it is exactly symmetric: when a $100 fighter hits a $5 fighter the damage reads the
+same `min` as when the $5 fighter hits back. **The expected transfer between any two fighters is zero
+whatever their sizes — the fight is a martingale in `hp + banked` for every fighter.**
+
+> **THE PREMISE IN THE BRIEF IS WRONG, AND THIS IS THE PLACE TO SAY SO PLAINLY.** "The dice were
+> deliberately made non-uniform to give small players an edge" does not describe the shipped code. The
+> shipped rule is deliberately size-**neutral**, and it was made that way on purpose — see §10.2 and
+> §10.5.
+>
+> A small-stake edge and the sybil farm are **the same object seen from two sides.** Under v5 the
+> basis was the defender's ring alone, so a minnow hitting a whale took a whale-sized bite; that
+> produced the +660.92% minnow ROI in §10.2 and, inseparably, the $152/round eight-wallet farm in
+> §10.3. §10.5 records the decision not to sell any of it back: "every `P > 0` sells back the exploit
+> being closed, in proportion to `P`", and the mandate was to close a farm, not to price one.
+>
+> So the answer to "does the shipped curve give small players an edge" is **no, and it must not**, for
+> as long as `MAX_FIGHTERS = 16` seats are the only thing rationing sybils. Re-measured at 100 bps
+> (`HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/study-damage.ts 4000 4`), every band sits on the
+> rake and nowhere else:
+
+| band | v5 (before) | SHIPPED, at 100 bps |
+|---|---|---|
+| whale ($80–100) | −52.89% ± 0.36 | **−0.90% ± 0.25** |
+| big ($50–80) | −35.39% ± 0.48 | −1.50% ± 0.34 |
+| medium ($20–50) | +20.57% ± 0.93 | −0.19% ± 0.44 |
+| small ($8–20) | +199.01% ± 2.43 | −1.11% ± 0.49 |
+| minnow ($3–8) | **+654.81% ± 6.25** | **−1.55% ± 0.53** |
+| **spread** | **+707.7%** | **−0.6%** |
+
+Every band is within one to two standard errors of −1.00%, i.e. of the fee and nothing else.
+
+At sixteen fighters (`HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/study-damage.ts 2500 8`) the same
+holds: whale −0.94% ± 0.24, big −0.57% ± 0.35, medium −1.75% ± 0.42, small −1.48% ± 0.44, minnow
+−1.19% ± 0.46, **spread −0.3%** against v5's **+708.2%**. The result is not a lobby-size artefact.
+
+### 11.6 What this section does NOT establish, and one thing it overturns
+
+**It does not establish that the house receives any money.** §11.1 measures a ledger. The deployed
+program moves no tokens — verified, not assumed: zero occurrences of `anchor_spl`, `token::transfer`
+or `TokenAccount` in `programs/bulls-arena/src/lib.rs`; `Enter<'info>` (lib.rs:2413–2425) carries five
+accounts and none is a token account; `programs/vault/` is excluded from the workspace `members` list
+and still declares the placeholder id `VauLt1111...`. `fees_collected` and `Treasury.fees_accrued` are
+`u64` counters. **The 1% is exact arithmetic over money that has not moved.** See `HOUSE-STRATEGY.md`
+§1, which is where that finding is developed and where the operator's real cash flow is measured.
+
+**It overturns §10.10's closing sentence.** §10.10 said "if the target is 1% of volume, raise
+`FEE_BPS` from 20 to 100." That was done, it worked exactly as predicted, and it is no longer the
+binding constraint — the binding constraint is that there is no custody path for the proceeds, and no
+fee rate fixes that. `MAX_FEE_BPS = 1_000` is not the ceiling that matters.
+
+**Uncertainties 2, 3, 4, 6 and 7 in §8 are untouched by any of this.** Still no player-behaviour model
+— which is now the single largest term in the revenue estimate, because the extract penalty in §11.1
+swings the house's take between 1.00% and 2.54% purely on how often players bail. Still an invented
+lobby distribution. Still two teams only. Still bootstrap SEs that assume independent rounds.
 
 ---
 

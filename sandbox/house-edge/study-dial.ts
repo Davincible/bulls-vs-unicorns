@@ -12,7 +12,7 @@
 //   * basis = stake : the weight is frozen at entry. Cheap (one table per call) but has a residual
 //                     structural tilt it cannot dial out — measured here rather than asserted.
 
-import { runFight, payout, DUST_ABSOLUTE, mix } from "./fight-variant.ts";
+import { runFight, payout, DUST_ABSOLUTE, mix, FEE_BPS } from "./fight-variant.ts";
 import type { FightConfig, DustRule, WeightBasis } from "./fight-variant.ts";
 import { BANDS, makeLobby, fightersOf, roiWithSE, pct, toUsd } from "./lobby.ts";
 
@@ -51,7 +51,7 @@ for (let r = 0; r < ROUNDS; r++) {
 }
 
 console.log(`\n=== EXPERIMENT 2: calibrating the attacker-weight dial  w = M*v + mean(v) ===`);
-console.log(`study seed "${STUDY_SEED}"  |  ${ROUNDS} rounds x ${PER_SIDE * 2} fighters  |  20 bps fee, absolute dust\n`);
+console.log(`study seed "${STUDY_SEED}"  |  ${ROUNDS} rounds x ${PER_SIDE * 2} fighters  |  ${FEE_BPS} bps fee, absolute dust\n`);
 const head = "config                              " + ["whale", "big", "medium", "small", "minnow"].map(s => s.padStart(16)).join("") + "     spread";
 console.log(head); console.log("-".repeat(head.length));
 for (let c = 0; c < CONFIGS.length; c++) {

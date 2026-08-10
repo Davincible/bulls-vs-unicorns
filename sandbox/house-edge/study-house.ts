@@ -26,7 +26,7 @@ import { mulberry32 } from "./rng.ts";
 const ROUNDS = Number(process.argv[2] ?? 3000);
 const STUDY_SEED = "house-edge-v1";
 const ABS: DustRule = { kind: "absolute", units: DUST_ABSOLUTE };
-const MAX_FIGHTERS = 16;
+const MAX_FIGHTERS = 48;
 
 /** The recommended mechanism from experiment 5: uniform selection exactly as deployed, and the only
  *  change is what the damage roll is a percentage OF. `P` is in basis points; P = 0 is size-neutral,
@@ -110,7 +110,7 @@ const seOnVolume = (rs: Row[], seed = 11) => {
 };
 
 console.log(`\n=== EXPERIMENT 3: house take vs dial M, house fighter count, and player population ===`);
-console.log(`study seed "${STUDY_SEED}"  |  ${ROUNDS} rounds per cell  |  16 fighters per round (MAX_FIGHTERS)`);
+console.log(`study seed "${STUDY_SEED}"  |  ${ROUNDS} rounds per cell  |  ${MAX_FIGHTERS} fighters per round (MAX_FIGHTERS)`);
 console.log(`house plays $5 fighters. "wide" players = study.ts's five bands (mean ~$42). "small" players = $3-20 (mean ~$11.5).`);
 console.log(`fee = ${FEE_BPS} bps = ${Number(FEE_BPS * 100n / BPS)}% of volume, collected regardless — shown separately, never mixed into the edge.\n`);
 
