@@ -92,7 +92,24 @@ export interface SessionManager {
 // 60 * 1000) / 1000)`, i.e. the third argument is MINUTES FROM NOW, capped at `24 * 60` (the hook
 // throws "Expiry cannot be more than 24 hours" above that) — a real `.d.ts`/behaviour mismatch, not
 // a guess; worth a MAGICBLOCK_FEEDBACK.md entry alongside the others found this session.
-const SESSION_VALID_MINUTES = 60;
+// A FULL DAY, WHICH IS EXACTLY THE CEILING gum WILL ACCEPT. The hook throws above `24 * 60`, and the
+// comparison is `expiryInMinutes > 24 * 60`, so 1440 is the largest value that does not throw —
+// verified by reading the compiled bundle, not inferred from the message.
+//
+// It was 60. That number predates auto-deploy, which is the feature that changed the requirement:
+// capital is meant to keep playing across many rounds while nobody is watching, and an hour-long key
+// turned "battling while you sleep" into a wallet prompt every hour. Renewal is not free either —
+// `scripts/verify-session-renewal.mjs` proved on devnet that a second `create_session` with the same
+// signer fails with `custom program error: 0x0` (Anchor `init` on a live account), so every renewal
+// costs revoke-then-create, i.e. TWO approvals. One a day is a product; one an hour is not.
+//
+// NOT SEVEN DAYS, and that was the owner's call rather than a limit. `gpl_session` itself imposes no
+// such cap and a longer token is buildable. The reason to stop at a day is that a `SessionToken`
+// carries NO SPEND CAP and NO INSTRUCTION ALLOWLIST — whatever it can sign, it can sign for its whole
+// life — so the lifetime IS the blast radius. That risk is theoretical today only because the program
+// custodies nothing; it stops being theoretical the moment custody lands, and a habit built now would
+// have to be taken away then.
+const SESSION_VALID_MINUTES = 24 * 60;
 // Funds the session key's OWN account so IT can pay enter()/extract()'s tx fees without ever
 // touching the player's wallet again after this one signature — same amount and reasoning as Phase
 // 0's spike script (0.01 SOL there; doubled here since a real session now spans both enter AND

@@ -36,27 +36,48 @@ describe("sessionLife — the arithmetic", () => {
     expect(life).toMatchObject({ known: true, minutesLeft: ASSUMED_SESSION_MINUTES, lapsed: false, lapsing: false });
   });
 
+  // DERIVED FROM THE CONSTANT, NEVER FROM A LITERAL. These read `40` at +20 and `1` at +59, which
+  // hand-copied a one-hour session into a file whose entire subject is that the length is a MIRROR of
+  // a private const living somewhere else. Taking the session to a day broke four assertions —
+  // correctly, but for the wrong reason: the arithmetic never changed, only a number the test had
+  // written down. Expressed against the constant they check subtraction, which is what they are for.
   it("counts down", () => {
-    expect(sessionLife(T0, T0 + minutes(20))).toMatchObject({ minutesLeft: 40, lapsed: false });
-    expect(sessionLife(T0, T0 + minutes(59))).toMatchObject({ minutesLeft: 1, lapsed: false });
+    expect(sessionLife(T0, T0 + minutes(20))).toMatchObject({
+      minutesLeft: ASSUMED_SESSION_MINUTES - 20,
+      lapsed: false,
+    });
+    expect(sessionLife(T0, T0 + minutes(ASSUMED_SESSION_MINUTES - 1))).toMatchObject({
+      minutesLeft: 1,
+      lapsed: false,
+    });
   });
 
   it("starts nudging with ten minutes left — long enough to outlast a whole round", () => {
     // A round is a 60s lobby plus a fight capped at 120s. The warning has to arrive with room to
     // start a fresh session BEFORE the fight it would otherwise die in.
-    expect(sessionLife(T0, T0 + minutes(ASSUMED_SESSION_MINUTES - LAPSING_WITHIN_MINUTES)).known).toBe(true);
-    expect(sessionLife(T0, T0 + minutes(50))).toMatchObject({ lapsing: true, lapsed: false, minutesLeft: 10 });
-    expect(sessionLife(T0, T0 + minutes(49))).toMatchObject({ lapsing: false });
+    const atNudge = ASSUMED_SESSION_MINUTES - LAPSING_WITHIN_MINUTES;
+    expect(sessionLife(T0, T0 + minutes(atNudge))).toMatchObject({
+      lapsing: true,
+      lapsed: false,
+      minutesLeft: LAPSING_WITHIN_MINUTES,
+    });
+    expect(sessionLife(T0, T0 + minutes(atNudge - 1))).toMatchObject({ lapsing: false });
   });
 
   it("keeps `lapsing` true once it has lapsed", () => {
     // A caller that nudges on `lapsing` alone must not fall silent at the exact moment the nudge
     // matters most.
-    expect(sessionLife(T0, T0 + minutes(90))).toMatchObject({ lapsing: true, lapsed: true });
+    expect(sessionLife(T0, T0 + minutes(ASSUMED_SESSION_MINUTES + 30))).toMatchObject({
+      lapsing: true,
+      lapsed: true,
+    });
   });
 
   it("floors at zero rather than reporting negative minutes", () => {
-    expect(sessionLife(T0, T0 + minutes(200))).toMatchObject({ minutesLeft: 0, lapsed: true });
+    expect(sessionLife(T0, T0 + minutes(ASSUMED_SESSION_MINUTES * 3))).toMatchObject({
+      minutesLeft: 0,
+      lapsed: true,
+    });
   });
 });
 

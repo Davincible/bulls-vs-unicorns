@@ -39,10 +39,15 @@
  * the SDK call ever changes, this drifts and the page's countdown becomes imprecise — it does not
  * become a lie about whether you may play.
  */
-export const ASSUMED_SESSION_MINUTES = 60;
+export const ASSUMED_SESSION_MINUTES = 24 * 60;
 
-/** Under this and the UI starts suggesting a fresh session rather than merely reporting the clock —
- *  chosen to comfortably outlast one round (a 60s lobby plus a fight capped at 120s). */
+/** Under this and the UI starts suggesting a fresh session rather than merely reporting the clock.
+ *
+ *  IT IS SIZED AGAINST WHAT A PLAYER MIGHT BE IN THE MIDDLE OF, not against the session's length, so
+ *  taking the session from one hour to twenty-four did not move it. Ten minutes still comfortably
+ *  outlasts one round — a lobby plus a fight capped at 120s — which is the thing the nudge exists to
+ *  avoid interrupting. Scaling it with the session (2.4 hours at a day) would start nagging about a
+ *  key that has most of a working day left in it. */
 export const LAPSING_WITHIN_MINUTES = 10;
 
 const STORAGE_PREFIX = "v2_session_started:";
