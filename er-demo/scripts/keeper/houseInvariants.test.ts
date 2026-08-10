@@ -1,5 +1,5 @@
-// THE FIVE THINGS THE HOUSE MUST NEVER DO, checked against EVERY lobby shape a sixteen-seat round can
-// hold rather than against the handful anybody thought to write down.
+// THE FIVE THINGS THE HOUSE MUST NEVER DO, checked against EVERY lobby shape a forty-eight-seat round
+// can hold rather than against the handful anybody thought to write down.
 //
 // WHY THIS FILE EXISTS SEPARATELY FROM `houseBank.test.ts`. That file is a set of examples, and
 // examples are how a policy gets argued: "1 real player, 9 house fighters" is a sentence somebody has
@@ -11,7 +11,9 @@
 // It then found two more — a treasury-rule regression and a seat-reservation breach — in the fix for
 // the first, within a minute of each. Sweeping is cheaper than being clever.
 //
-// 5,826 shapes across both stages in about 200ms. The real fighters are raw 32-byte pubkeys rather
+// 71,490 shapes across both stages (up from 5,826 at the old sixteen-seat cap — the seat count enters
+// the shape count roughly quadratically via the (r0, r1) sweep, so the 3x seat increase is a ~12x
+// shape increase) — still comfortably sub-second. The real fighters are raw 32-byte pubkeys rather
 // than generated keypairs: a real player is defined as "a wallet the bank does not hold", nothing here
 // signs anything, and Ed25519 keygen is the only thing that would make this slow enough to skip.
 
@@ -25,7 +27,7 @@ import {
 } from "./config.ts";
 import { houseBankFrom, plannedHouseEntries, type HouseBank } from "./houseBank.ts";
 
-const SEATS = 16;
+const SEATS = 48;
 const CLOSES_AT = 1_800_000_000;
 /** The two moments the planner behaves differently at: before the fill lead, and inside it. */
 const STAGES = {
@@ -68,7 +70,7 @@ interface Shape {
   h0: number; h1: number;
 }
 
-/** Every lobby a sixteen-seat round can hold, at both stages. The house-side loops stop at 5 because
+/** Every lobby a forty-eight-seat round can hold, at both stages. The house-side loops stop at 5 because
  *  the shapes past that are dominated by the ones below them and the sweep is meant to stay fast
  *  enough that nobody is tempted to skip it. */
 function everyShape(): Shape[] {
@@ -138,7 +140,7 @@ const outcomes = everyShape().map(plan);
 
 describe("what the house does to every lobby a round can hold", () => {
   it("sweeps every shape, so a passing run below is a claim about all of them", () => {
-    expect(outcomes.length).toBe(5_826);
+    expect(outcomes.length).toBe(71_490);
   });
 
   it("never asks for a seat the round does not have", () => {

@@ -44,6 +44,7 @@ import {
 import { toAnchorWallet, useSigner } from "../../chain/useSigner.ts";
 import { feeRate, nameFor, shortKey, type FeeRate, type Side } from "../contract.ts";
 import { simBankrollUsd } from "./autoDeploy.ts";
+import { unattendedSigning, type UnattendedSigning } from "./autoPolicy.ts";
 import { signingPlan, type SessionSigning, type SessionWork } from "./autoSession.ts";
 import { classifyWalletError } from "./walletFault.ts";
 import { useAutoDeploy } from "./useAutoDeploy.ts";
@@ -92,31 +93,108 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
  * simulated ledger books the stake and the fee, and the repeat rule learns which side to follow.
  *
  * The indirection through a ref is not decoration. `useActions` needs this callback in order to be
- * built, and the repeat rule needs `actions.enter` in order to be built, so one of the two has to be
- * wired after the fact. A ref written on render is the cheapest honest way to close that loop; the
- * alternative is a context between two hooks that sit four lines apart.
+ * built, and the repeat rule needs `actions.enterUnattended` in order to be built, so one of the two
+ * has to be wired after the fact. A ref written on render is the cheapest honest way to close that
+ * loop; the alternative is a context between two hooks that sit four lines apart.
  *
  * THE FEE GOES THROUGH A REF FOR A SECOND, DIFFERENT REASON. It is read at CONFIRMATION time rather
  * than captured when this callback was built, which is both the more accurate rate (the door charged
  * whatever the arena said when the transaction landed, and the newest poll is the closest thing to
  * that) and the one that does not rebuild `onEntered` — and with it every callback in `useActions`
  * that depends on it — each time the arena poll returns a changed `fee_bps`.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * TWO CALLBACKS, NOT ONE, AND THE SECOND ONE IS A MONEY BUG THAT WAS SHIPPED.
+ *
+ * `ChainArena` holds the fixture as a FALLBACK — devnet has no round open, so invented data is on
+ * screen — and it wired that fixture's Deploy button to this same `onEntered`. Nothing about that
+ * press is real: no transaction, no signature, no stake, by the fixture's own contract. But
+ * `noteDeployRef` points at the CHAIN-pointed repeat rule, so a press on invented data was setting
+ * `state.side` on the rule that spends real money. That satisfies the `no-side` hold, whose whole
+ * documented meaning is "waiting for your first deploy" — and because there is no live round while
+ * the fallback is up, arming also records `floorRound: null`, which is the rule's other protection
+ * ("never spend money on the round already in front of you") correctly not applying because there is
+ * no such round. Put together: the keeper opens round 42, and a REAL deposit goes into a lobby the
+ * player never saw, on a side chosen by a press that was explicitly not a deploy.
+ *
+ * So the two are separated at the source. `onEntered` is a deposit into the world the rule is
+ * watching: it books the ledger AND configures the rule. `bookSimOnly` is a deposit into a world
+ * that is invented: it books the ledger and configures nothing. The line between them is not
+ * "fixture or chain" — under `?fixture=1` the rule IS pointed at the fixture and takes the full
+ * fan-out, which is what makes that mode a place to watch the rule work. The line is whether the
+ * deposit and the rule describe the same rounds.
+ *
+ * The simulated ledger takes both, and that is deliberate rather than an inconsistency: it is
+ * invented money by construction and carries the `SIM` marker everywhere it is shown, so invented
+ * events may move it. A real deposit may not be configured by one.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * AND A DEPLOY IS NEVER BOOKED AT A RATE NOBODY WAS CHARGED. `recordDeploy` prices the house's take
+ * off the `FeeRate` it is handed and reads only `bps`, never `known` — so while the arena account is
+ * unreadable, `feeRate(null)` hands it the build-time fallback and the simulated treasury and
+ * `referralEarned` accrue at a rate that was never charged, persisted to localStorage, permanently,
+ * with nothing marking it. That is the same defect as the production fee incident recorded on
+ * `FEE_BPS` (the rate was moved 20 → 100 on devnet while the site was serving), one layer down, and
+ * `recordDeploy`'s own doc comment names it as the thing that function exists to close.
+ *
+ * The honest options are to book at an invented rate, to book nothing at all, or to WAIT for the
+ * rate — and only the last of the three loses nothing. The deposit happened and the arena has a
+ * rate; this page has simply not read it yet, and the poll that failed will run again in a second.
+ * So an unpriced deploy is held and booked the moment a rate lands. If none ever does, it is never
+ * booked, which is a missing row in play money rather than a fabricated house take that outlives the
+ * page — the smaller of the two lies, and the one that cannot mislead anybody reading the referrals
+ * screen a week later.
  */
 function useOnEntered(
   recordDeploy: (side: Side, stakeUnits: bigint, arenaFee: FeeRate) => void,
   fee: FeeRate,
 ) {
-  const noteDeployRef = useRef<((side: Side) => void) | null>(null);
+  const noteDeployRef = useRef<((side: Side, roundNo: bigint | null) => void) | null>(null);
   const feeRef = useRef(fee);
   feeRef.current = fee;
-  const onEntered = useCallback(
+  /** Confirmed deploys the arena's rate was unreadable for. Bounded by how long a poll stays broken;
+   *  in the ordinary life of the page it is empty, and a deploy is booked in the same tick. */
+  const unpricedRef = useRef<{ side: Side; stakeUnits: bigint }[]>([]);
+
+  const bookSimOnly = useCallback(
     (side: Side, stakeUnits: bigint) => {
-      recordDeploy(side, stakeUnits, feeRef.current);
-      noteDeployRef.current?.(side);
+      const arenaFee = feeRef.current;
+      if (!arenaFee.known) {
+        unpricedRef.current.push({ side, stakeUnits });
+        return;
+      }
+      recordDeploy(side, stakeUnits, arenaFee);
     },
     [recordDeploy],
   );
-  return { onEntered, noteDeployRef };
+
+  // A RATE ARRIVED. `fee` changes identity only when `fee_bps` does (see the memo that builds it), so
+  // this runs on the poll that answers rather than on every render, and it is a no-op on every page
+  // that never had an unpriced deploy — which is all of them but the broken one.
+  useEffect(() => {
+    if (!fee.known || unpricedRef.current.length === 0) return;
+    const waiting = unpricedRef.current;
+    unpricedRef.current = [];
+    // The rate that has just been read, not the one in force when the transaction landed — which is
+    // the closest thing to it that exists, and the same approximation `feeRef` already makes for
+    // every ordinary deploy.
+    for (const d of waiting) recordDeploy(d.side, d.stakeUnits, fee);
+  }, [fee, recordDeploy]);
+
+  // THE ROUND TRAVELS WITH THE DEPOSIT, all the way from `useActions`' `targetRoundNoRef` — captured
+  // at send time — to the repeat rule's books. Nothing on this path derives it, because every place
+  // it could be derived from (`live.roundNo`, the round on screen) is the round the poll last read
+  // rather than the round the transaction was written to, and the two differ for up to a poll every
+  // time a new round opens. The simulated ledger does not want it: `recordDeploy` books a side and a
+  // stake against a wallet, not against a round.
+  const onEntered = useCallback(
+    (side: Side, stakeUnits: bigint, roundNo: bigint | null) => {
+      bookSimOnly(side, stakeUnits);
+      noteDeployRef.current?.(side, roundNo);
+    },
+    [bookSimOnly],
+  );
+  return { onEntered, bookSimOnly, noteDeployRef };
 }
 
 function FixtureArenaProvider({ children }: { children: ReactNode }) {
@@ -126,22 +204,54 @@ function FixtureArenaProvider({ children }: { children: ReactNode }) {
   // present, exactly as its treasury and its house roster are. `MOCK_FEE_BPS` says why it is 20.
   const fee = useMemo(() => feeRate(MOCK_FEE_BPS), []);
   const { onEntered, noteDeployRef } = useOnEntered(shell.simLedger.recordDeploy, fee);
+  // THE FIXTURE'S DEPLOY BUTTON KNOWS NOTHING ABOUT ROUNDS, so this supplies the one it is standing
+  // in. On the chain path the round comes off `useActions`' send-time capture; here there is no send,
+  // no PDA and no poll to lag behind it — the invented round on screen IS the round a press enters,
+  // which is what makes `?fixture=1` a place the rule's own bookkeeping can be watched working. The
+  // ref is written on render for the reason `noteDeployRef` beside it is: the fixture needs this
+  // callback in order to be built, so the round it reports can only be wired after the fact.
+  const fixtureRoundRef = useRef<bigint | null>(null);
+  const recordDeploy = useCallback(
+    (side: Side, stakeUnits: bigint) => onEntered(side, stakeUnits, fixtureRoundRef.current),
+    [onEntered],
+  );
   const fixture = useFixtureArena({
     active: true,
     push: shell.toasts.push,
-    recordDeploy: onEntered,
+    recordDeploy,
   });
+  fixtureRoundRef.current = fixture.live?.roundNo ?? null;
   const session = useFixtureSession();
 
   // Armed and evaluated on the fixture path too. Nothing is sent to any chain, but the rule's state
   // machine is the same one — which is exactly what makes `?fixture=1` a place to watch it work.
+  //
+  // THE FULL FAN-OUT IS CORRECT HERE, and it is the one place it is: the rule and the Deploy button
+  // are pointed at the same invented round, so a press on it genuinely is "the deposit this rule
+  // should follow". See `useOnEntered` for the fallback path, where they are pointed at different
+  // worlds and were wired together anyway.
   const autoDeploy = useAutoDeploy({
     live: fixture.live,
     // The fixture reads and writes the same invented round, so the two can never disagree.
     targetRoundNo: fixture.live?.roundNo ?? null,
     entering: fixture.actions.entering,
-    enter: fixture.actions.enter,
+    // THE FIXTURE'S OWN `enter`, WHICH IS THE UNATTENDED SENDER HERE BY BEING INCAPABLE OF ANYTHING
+    // ELSE: it takes a side and a stake, it pushes a toast and moves local state, and there is no
+    // wallet, no session and no chain anywhere behind it. Nothing it does can raise a dialog, which
+    // is the property `enterUnattended` exists to guarantee on the real path.
+    enterUnattended: fixture.actions.enter,
     simWalletUsd: simBankrollUsd(shell.simLedger.ledger.balances),
+    // Routed through the same function the chain path uses rather than hand-written as "silent", so
+    // the fixture exercises the real branch: `signingPlan` answers `{wallet, fixture}` here, and
+    // `unattendedSigning` is what decides that signing nothing costs no approval.
+    signing: unattendedSigning(session.plan),
+    sessionEpoch: session.epoch,
+    // There is no chain session, so there is no clock to turn into a number of rounds. The runway
+    // says so in words rather than quoting a session length nothing here is running under.
+    sessionMinutesLeft: null,
+    fee,
+    roundLog: fixture.history.rounds,
+    youPubkey: fixture.you.pubkey,
     push: shell.toasts.push,
   });
   noteDeployRef.current = autoDeploy.noteDeploy;
@@ -175,9 +285,16 @@ function FixtureArenaProvider({ children }: { children: ReactNode }) {
  *  session that silently did nothing would be worse than one that plainly says it's a stand-in. */
 function useFixtureSession(): ArenaContextValue["session"] {
   const [active, setActive] = useState(false);
+  // THE SAME COUNTER, AND IT IS NOT DECORATION EVEN HERE. The repeat rule's lapsed-session latch
+  // clears when this advances, and the fixture is where that machinery gets exercised without a
+  // wallet: pressing Start is the fixture's whole notion of "a session was successfully opened", so
+  // it is what bumps it. Nothing on this path can ever refuse a transaction, so the latch is never
+  // set — but a counter that stood still here would be a stand-in that quietly stopped standing in.
+  const [epoch, setEpoch] = useState(0);
   return useMemo(
     () => ({
       active,
+      epoch,
       busy: false,
       work: null,
       error: null,
@@ -194,14 +311,17 @@ function useFixtureSession(): ArenaContextValue["session"] {
         gate: null,
         solBalance: null,
       }),
-      start: async () => setActive(true),
+      start: async () => {
+        setActive(true);
+        setEpoch((n) => n + 1);
+      },
       end: async () => setActive(false),
       // No chain session exists, so there is no expiry to count down and nothing to infer one from.
       // `{ known: false }` is the truthful answer and renders as "expiry unknown" rather than as a
       // fabricated hour on a session that is a boolean.
       life: { known: false } as const,
     }),
-    [active],
+    [active, epoch],
   );
 }
 
@@ -348,7 +468,27 @@ function ChainArena({
     push: shell.toasts.push,
   });
 
-  const { onEntered, noteDeployRef } = useOnEntered(shell.simLedger.recordDeploy, fee);
+  // COULD THE NEXT DEPOSIT BE SIGNED WITH NOBODY IN THE ROOM — and if not, why. It is asked once,
+  // here, off the same `SigningPlan` the write path acts on, so the rule's status line and the
+  // transaction can never disagree about what signing this move would cost. `autoPolicy.ts` sorts
+  // every plan into "silent" and "costs an approval" and is total over the type, so a new plan shape
+  // fails the build here rather than defaulting to silent and shipping a dialog nobody can answer.
+  //
+  // THE GATE IS ASKED FIRST, AND IT HAS TO BE ASKED HERE. `signingPlan` consults `gate` fourth, below
+  // a live session and below burner mode, which is right for its own question — "how would this be
+  // signed" — and wrong for this one. With a session live and the gate blocking (a wallet whose
+  // devnet SOL ran out mid-run is the realistic case, since `playGate` blocks on the WALLET's balance
+  // while the session key pays its own fees), the plan answers `{kind:"session"}`, this answers
+  // "silent", the rule fires, and `requireReady` throws the gate's own copy back at it — one failed
+  // attempt and one red toast per round, forever, for a condition that is a HOLD with a sentence
+  // already on screen. Nothing may be sent unattended when nothing may be sent at all, and
+  // `no-signer`'s wording ("the wallet panel says what is missing") is exactly the account owed.
+  const unattended = useMemo<UnattendedSigning>(
+    () => (gate !== null ? { kind: "blocked", reason: "no-signer" } : unattendedSigning(sessionCtl.plan)),
+    [gate, sessionCtl.plan],
+  );
+
+  const { onEntered, bookSimOnly, noteDeployRef } = useOnEntered(shell.simLedger.recordDeploy, fee);
   const actions = useActions({
     program: chain.program,
     router: chain.router,
@@ -357,10 +497,14 @@ function ChainArena({
     arena: chain.arena,
     roundPda: chain.roundPda,
     live,
+    // The round `roundPda` was derived from, so a confirmed deposit is booked against the round it
+    // was written to rather than the round the poll happens to have read by the time it lands.
+    targetRoundNo: chain.roundNo,
     plan: sessionCtl.plan,
     signing: sessionCtl.signing,
     blocked: gate,
     onEntered,
+    push: shell.toasts.push,
   });
 
   const verify = useVerify(round, shell.toasts.push);
@@ -416,7 +560,11 @@ function ChainArena({
   const fixture = useFixtureArena({
     active: fallback,
     push: shell.toasts.push,
-    recordDeploy: onEntered,
+    // BOOKS THE PLAY MONEY AND CONFIGURES NOTHING. The repeat rule below is pointed at the chain, and
+    // a press on the invented round on screen is not a deposit it may learn a side from — see
+    // `useOnEntered` for the whole of that argument and for what it cost when the two were one
+    // callback.
+    recordDeploy: bookSimOnly,
   });
 
   // POINTED AT THE CHAIN, ALWAYS — including while the fixture is on screen as the fallback. The
@@ -429,8 +577,23 @@ function ChainArena({
     live,
     targetRoundNo: chain.roundNo,
     entering: actions.entering,
-    enter: actions.enter,
+    // NOT `actions.enter`, AND THE DIFFERENCE IS THE FEATURE. `enter` recovers from a lapsed session
+    // by replacing it — revoke-then-create, two Phantom approvals — which is the right answer for
+    // somebody who just pressed a button and the wrong one for a timer. This sender cannot open a
+    // session, renew one, or fall back to the wallet, and cannot extract. See `useActions.ts` and
+    // `autoPolicy.ts`.
+    enterUnattended: actions.enterUnattended,
     simWalletUsd: simBankrollUsd(shell.simLedger.ledger.balances),
+    signing: unattended,
+    sessionEpoch: sessionCtl.session.epoch,
+    // THE ADVISORY COUNTDOWN, AND IT REACHES ONLY THE COPY. `sessionExpiry.ts` is emphatic that the
+    // inference must never gate an action, and it does not: the runway uses it to name which bound
+    // runs out first, and `{ known: false }` — a session restored from a previous visit, which is a
+    // common state and not an edge one — simply takes it out of the comparison.
+    sessionMinutesLeft: sessionCtl.session.life.known ? sessionCtl.session.life.minutesLeft : null,
+    fee,
+    roundLog: history.rounds,
+    youPubkey,
     push: shell.toasts.push,
   });
   noteDeployRef.current = autoDeploy.noteDeploy;
@@ -597,7 +760,7 @@ export interface SessionControllerParams {
 
 /**
  * THE SESSION, MADE INVISIBLE — everything between `useAppSessionManager`'s four exports and a page
- * where a player approves one thing an hour.
+ * where a player approves one thing per session rather than one thing per move.
  *
  * It owns three jobs the rest of the file should not have to think about:
  *
@@ -730,6 +893,32 @@ function useSessionController(params: SessionControllerParams): {
    */
   const openInFlight = useRef<Promise<ActiveSession> | null>(null);
 
+  /**
+   * HOW MANY SESSIONS THIS TAB HAS SUCCESSFULLY OPENED — the identity the repeat rule's lapsed-
+   * session latch is keyed on. `ArenaContextValue.session.epoch` carries the full argument for why
+   * it is a count rather than the session token PDA (gum reuses the session signer keypair across a
+   * renewal, so the PDA is stable across one and a latch keyed on it would never clear); what
+   * belongs here is where it moves.
+   *
+   * IT IS BUMPED IN EXACTLY ONE PLACE, and that place covers all three entry points because every
+   * path to a NEW session runs through this function: `openSession` wraps it, `renewSession` revokes
+   * and then calls `openSession`, and the rail's Start does one or the other. Bumping at the call
+   * sites instead would be three chances to miss one, and a missed bump is a rule that stays dead
+   * with a working session key in its hand.
+   *
+   * ON SUCCESS ONLY. `createSession` resolves whether or not it worked — gum swallows its own
+   * failures — so this sits after the evidence that a session actually exists, not after the call.
+   *
+   * AND IT DOES NOT CHECK THAT THE SESSION IS A DIFFERENT ONE, which looks like an omission and is
+   * the opposite. The obvious guard — bump only if the token address changed — would suppress the
+   * bump on a RENEWAL, because gum reuses the session signer and therefore renews to the identical
+   * PDA. That is the same fact that rules the PDA out as the latch's key, and it rules it out here
+   * for the same reason. The residual cost of bumping once too often is one refused transaction that
+   * re-latches immediately; the cost of bumping once too seldom is a rule that stays dead holding a
+   * working session key, so the direction to err in is not in doubt.
+   */
+  const [sessionEpoch, setSessionEpoch] = useState(0);
+
   /** One `create_session`, start to finish: the wallet approval, the wait for the manager to catch
    *  up, and an honest throw when nothing arrived. Wrapped by `openSession`, never called directly. */
   const createFresh = useCallback(async (): Promise<ActiveSession> => {
@@ -740,7 +929,10 @@ function useSessionController(params: SessionControllerParams): {
       // every cancelled approval — a second of dead buttons after the player has already dismissed
       // the dialog and is waiting to be told what happened.
       const opened = await settled((s) => s !== null || errorRef.current !== null);
-      if (opened !== null) return opened;
+      if (opened !== null) {
+        setSessionEpoch((n) => n + 1);
+        return opened;
+      }
       // gum SWALLOWS ITS OWN FAILURES: `createSession` catches everything, calls `setError` and
       // resolves anyway (read from the compiled hook). So "no session arrived" is the only signal
       // there is that anything went wrong, and the reason — a cancelled popup, an unfunded wallet —
@@ -895,6 +1087,7 @@ function useSessionController(params: SessionControllerParams): {
   return {
     session: {
       active: sessionActive,
+      epoch: sessionEpoch,
       busy: isLoading,
       work,
       error,

@@ -536,7 +536,8 @@ export function plannedHouseEntries(
   const seats = round.fighters.length;
   const seatCeiling = seats - split.realCount;
   // AND NEVER TAKE THE LAST FEW, so a real player who has not arrived yet still finds a seat. With the
-  // default board of ten against sixteen seats this cannot bind; it is here for the day somebody sets
+  // default board of ten against forty-eight seats (was sixteen; the margin only grew) this cannot
+  // bind; it is here for the day somebody sets
   // `KEEPER_HOUSE_BOARD_TARGET` high, because the failure it prevents — a visitor meeting `RoundFull`
   // because the arena's own bots filled the room — is worse than the empty board that motivated
   // raising it. Applied here rather than validated in `config.ts` because this is the only place that

@@ -27,6 +27,13 @@
 //   the round — and "permanently within reach" is exactly what it wants to be. A player who has
 //   scrolled to the rosters to see who is still standing is precisely the player who needs it.
 //
+// AND ONE THING THAT IS NOT A MOVE AT ALL. When `autoDeploy` is armed, a rule is putting money into
+// rounds without anybody pressing anything, and the argument that put the deploy control on every
+// screen applies to STOPPING that with more force than it ever applied to starting it: the surface
+// that is always in reach is the surface a standing money instruction has to be answerable from. So
+// an armed rule gets one line here — its status, and a Pause — and an unarmed one gets nothing
+// whatsoever. See `AutoDeployLine` for why it is one line and why the on-chain revoke is not on it.
+//
 // WHAT IT COSTS IS ON THE CONTROL. The arena deducts `Arena.fee_bps` on entry — read off the account
 // and never a build-time constant, see `contract.ts`'s `FEE_BPS` for the incident that rule came from
 // — so the figure typed is not the figure that reaches the ring, and extracting is charged a decaying
@@ -239,9 +246,13 @@ function DeployBody() {
       {/* WHAT THE FIRST APPROVAL IS FOR, ON THE CONTROL THAT TRIGGERS IT — and gone the moment it is
           no longer true. A player who presses Deploy and gets a Phantom dialog about a session key
           they have never heard of reads it as the wrong transaction and cancels; this is the whole
-          difference between "one approval, then an hour of silence" and a rejected deploy. Above the
-          `entering` line rather than folded into it, because it has to be readable BEFORE the press,
-          which is the only time it can do its job. */}
+          difference between "one approval, then silence for the rest of the session" and a rejected
+          deploy. (That sentence used to name a period rather than the session. The length is a
+          private const this workstream does not own, it has already moved once, and a comment stating
+          a duration as a fact is how the next person learns the wrong number and writes it into copy
+          — which is exactly what had happened three files away. Say the rule, never the period.)
+          Above the `entering` line rather than folded into it, because it has to be readable BEFORE
+          the press, which is the only time it can do its job. */}
       {signingNote !== null ? <p className="lede dock-note">{signingNote}</p> : null}
 
       {/* `.lede`, not `.u`: a tracked-out uppercase sentence is the house voice for a LABEL, and
@@ -330,6 +341,70 @@ function ExtractBody() {
             : "You leave the fight straight away."}
       </p>
     </>
+  );
+}
+
+/**
+ * THE ONE THING IN THIS DOCK THAT IS NOT A MOVE THE PLAYER IS ABOUT TO MAKE — a move that is already
+ * being made on their behalf, and the press that stops it.
+ *
+ * IT RENDERS NOTHING WHEN NOTHING IS ARMED, which is the whole of its restraint and is the dock's
+ * standing rule rather than a decision taken here: this surface shows the move that can be made right
+ * now, and it does not advertise features. With no rule armed the dock is byte-for-byte what it was.
+ *
+ * WHERE IT SITS DEPENDS ON WHAT IS UNDER IT, and that is not fussiness — it is the two halves of the
+ * same rule, which is that a line goes beside the control it changes the meaning of and never in
+ * front of the one it does not.
+ *
+ *   · ABOVE DEPLOY. A player looking at Deploy while a rule is armed is looking at a button that will
+ *     put a SECOND stake into a round something else is already entering for them, and reading that
+ *     after pressing it is reading it too late.
+ *   · BELOW EVERYTHING ELSE — and the case that decides it is Extract. Auto-deploy enters and never
+ *     extracts (`SOCIAL.md` §1.1), so during a fight this line modifies nothing on the panel; it is
+ *     just two lines of prose. Extract is the most time-critical control in the game, it has to land
+ *     inside a running fight, and pushing it down the panel — on a phone, inside a sheet capped at
+ *     60vh — to make room for a sentence about a rule that cannot act until the next lobby is a real
+ *     cost paid for no benefit. The Pause stays reachable either way; it simply comes after the race.
+ *
+ * The same element is placed in one of two slots rather than rendered twice, so there is no way for
+ * the two positions to drift into saying different things.
+ *
+ * ONE LINE, AND THE REST IS IN THE RAIL. The limits, the runway and the account of the run are four
+ * paragraphs and they belong where there is room for them; what has to be HERE is the status and a
+ * stop, because this is the surface that is on screen on every screen. The status is
+ * `autoDeploy.status` verbatim — one wording per outcome, written beside the rule and covered by its
+ * tests — at `.dock-note`'s size, so even the longest of them (a lapsed session, which has to name
+ * the press that recovers it) costs three short lines rather than a wall.
+ *
+ * AND IT IS PAUSE, NOT REVOKE. Revoke is a transaction, it is a choice made against Pause rather than
+ * instead of it, and that choice needs the paragraph that distinguishes them — which is in the rail,
+ * two presses away, under a heading. A dock that offered the on-chain revoke with no room to say what
+ * it costs would be the compact surface making the consequential decision look like the convenient
+ * one. `SOCIAL.md` §5.4 wants the real stop one click from the wallet panel, and that is where it is.
+ */
+function AutoDeployLine() {
+  const { autoDeploy } = useArena();
+  if (!autoDeploy.armed) return null;
+
+  return (
+    // Margin on both edges rather than one, because this element is placed above the body in one
+    // branch and below it in another — see the header. A one-sided margin would be right in exactly
+    // one of the two positions and would look like a spacing bug in the other.
+    <div className="dock-row" style={{ alignItems: "flex-start", margin: "12px 0" }}>
+      <p className="lede dock-note" style={{ margin: 0, flex: "1 1 120px" }}>
+        <span className="u u--ink">Auto-deploy</span> · {autoDeploy.status}
+      </p>
+      {/* NO CONFIRM STEP, HERE LEAST OF ALL. The player is trying to stop money going out from the
+          smallest surface on the page; a second press is another round's stake. */}
+      <button
+        type="button"
+        className="btn btn--sm"
+        title="Stops this page sending the next deposit. It does not close your session key — the wallet panel has that one."
+        onClick={autoDeploy.disarm}
+      >
+        Pause
+      </button>
+    </div>
   );
 }
 
@@ -443,6 +518,10 @@ function StakeDockBody() {
    *  short label in that case (`gateLabel`), so this only has to stop "Round" swallowing it. */
   const handleWord = control === "none" && funnel === null ? "Round" : title;
 
+  /** Built once and placed in exactly ONE of the two slots below — see `AutoDeployLine` for which,
+   *  and why. It renders nothing at all unless a rule is armed, so the ordinary dock is unchanged. */
+  const autoLine = <AutoDeployLine />;
+
   // The rail is `min(420px, 100vw)` of fixed, opaque paper on the same edge. Wide enough and the
   // dock steps aside (`.dock--railed`); narrow, and the rail is the whole screen, so there is
   // nowhere to step to and the dock leaves rather than sitting invisibly underneath it holding a
@@ -547,6 +626,10 @@ function StakeDockBody() {
           </button>
         </div>
 
+        {/* Above Deploy, below everything else, and nothing at all when no rule is armed — the whole
+            argument is on `AutoDeployLine`. One element, two slots. */}
+        {control === "deploy" ? autoLine : null}
+
         {control === "deploy" ? (
           <DeployBody />
         ) : control === "extract" ? (
@@ -568,6 +651,8 @@ function StakeDockBody() {
           // The head above is already showing this state's label — see `title`.
           <RoundPhaseNote showLabel={false} announce={false} />
         )}
+
+        {control === "deploy" ? null : autoLine}
       </section>
     </>
   );

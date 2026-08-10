@@ -234,7 +234,7 @@ describe("what the page claims", () => {
   // ── #4 — counts and their nouns ──────────────────────────────────────────────────────────────
 
   it("derives the fighter count from the lineup rather than stapling it, and pluralises with it", async () => {
-    for (const lineup of [2, 16]) {
+    for (const lineup of [2, 16, 48]) {
       const s = await open(browser(), {
         query: `fixture=1&fighters=${lineup}`,
         keeper: keeperStates.heldOpenLobby(),
@@ -281,7 +281,7 @@ describe("what the page claims", () => {
     const checked: string[] = [];
     const wrong: string[] = [];
 
-    for (const lineup of [null, 2, 3, 16]) {
+    for (const lineup of [null, 2, 3, 16, 48]) {
       const s = await open(browser(), {
         query: lineup === null ? "fixture=1" : `fixture=1&fighters=${lineup}`,
         keeper: keeperStates.heldOpenLobby(),

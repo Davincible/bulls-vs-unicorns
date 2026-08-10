@@ -13,12 +13,24 @@
 // exactly how a UI ends up quoting a rate the program does not charge.
 //
 // THE CURSOR IS THE CANONICAL ONE (`LiveRound.stepsNow`), NOT `Round.tick_count`, and that is the
-// single most important line in this file. `extract()` runs `catch_up(r, now, u64::MAX)` BEFORE it
-// reads `let cursor = r.tick_count`, so the rate a player is charged is the rate at the cursor the
-// wall clock has reached — not at the stored one, which sits wherever the last person to send a
-// `tick()` left it (0, for an entire fight nobody is ticking). Quoting the stored cursor would
-// advertise the opening 20% for the length of a round in which the real rate had already decayed to
-// nothing, i.e. it would be wrong in the direction that talks players out of a free exit.
+// single most important line in this file. `extract()` catches the fight up BEFORE it reads
+// `let cursor = r.tick_count`, so the rate a player is charged is the rate at the cursor the wall
+// clock has reached — not at the stored one, which sits wherever the last person to send a `tick()`
+// left it (0, for an entire fight nobody is ticking). Quoting the stored cursor would advertise the
+// opening 20% for the length of a round in which the real rate had already decayed to nothing, i.e.
+// it would be wrong in the direction that talks players out of a free exit.
+//
+// THAT CATCH-UP IS NOW BOUNDED, AND IT USED TO BE `catch_up(r, now, u64::MAX)`. One `extract` may
+// advance at most `MAX_STEPS_PER_CALL` steps, because a neglected 48-fighter round can have 17,280
+// steps of arithmetic waiting and no transaction can execute that. When one bounded catch-up cannot
+// reach the present the program refuses with `FightBehind` rather than pricing the extract at a stale
+// cursor — refusing is the only safe direction, since a cursor short of the truth quotes a HIGHER
+// penalty and pays out a LARGER hp than the player still holds.
+//
+// NONE OF WHICH CHANGES WHAT THIS MODULE QUOTES. `stepsNow` is derived from the clock, so it is
+// already the cursor `extract` will reach, and the bound is a fact about how many transactions that
+// takes rather than about where the fight is. `useActions.ts` is where it is handled: it ticks and
+// retries, so a player never sees a bound they have no button for.
 //
 // Pure and React-free: `extractTerms.test.ts` runs it directly, and both providers — the chain one
 // and the fixture — call these same two functions, so the fixture cannot show a mechanic the chain
@@ -26,7 +38,7 @@
 
 import { extractPenaltyBps, penaltyHorizonSteps, splitExtraction } from "../../sim/erSim.ts";
 import {
-  MAX_STEPS,
+  finalCursor,
   stepsPerSecond,
   type ExtractEligibility,
   type ExtractTerms,
@@ -60,8 +72,8 @@ export interface ExtractTermsInput {
 /** `split_extraction(taken, n, cursor)`: what a fighter banks and what the house takes.
  *
  *  Delegated in full — the only thing added is the unit conversion, since `LiveRound` counts steps
- *  in `number` (a cursor is bounded by MAX_STEPS = 4,000) and the program's mirror counts them in
- *  `bigint`. */
+ *  in `number` (a cursor is bounded by `finalCursor(fighterCount)` — per-lineup, not a flat ceiling)
+ *  and the program's mirror counts them in `bigint`. */
 export function extractSplit(
   hp: bigint,
   fighterCount: number,
@@ -74,7 +86,7 @@ export function extractSplit(
 /** The whole price of leaving, at this instant, for this lineup. */
 export function extractTerms(input: ExtractTermsInput): ExtractTerms {
   const n = input.fighters.length;
-  const cursor = Math.max(0, Math.min(Math.floor(input.stepsNow), MAX_STEPS));
+  const cursor = Math.max(0, Math.min(Math.floor(input.stepsNow), finalCursor(n)));
   const rate = stepsPerSecond(n);
   const freeAtStep = Number(penaltyHorizonSteps(n));
   const stepsToFree = Math.max(0, freeAtStep - cursor);
@@ -103,7 +115,7 @@ export function extractTerms(input: ExtractTermsInput): ExtractTerms {
         ? DECAY_PREVIEW_SECONDS.map((inSeconds) => ({
             inSeconds,
             penaltyBps: Number(
-              extractPenaltyBps(n, BigInt(Math.min(cursor + inSeconds * rate, MAX_STEPS))),
+              extractPenaltyBps(n, BigInt(Math.min(cursor + inSeconds * rate, finalCursor(n)))),
             ),
           }))
         : [],

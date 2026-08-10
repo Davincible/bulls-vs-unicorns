@@ -25,7 +25,7 @@ import { ExtractButton } from "./ui/ExtractButton.tsx";
 import { VerifyPanel } from "./ui/VerifyPanel.tsx";
 import { PixiCanvas } from "./render/PixiCanvas.tsx";
 import { fromFighterStates } from "./render/adapt.ts";
-import { MAX_STEPS } from "./render/gameLoop.ts";
+import { finalCursor } from "./render/gameLoop.ts";
 import { runFullFight, type HitEvent, type HitEventEntry } from "./sim/hitEvents.ts";
 import "./App.css";
 
@@ -143,7 +143,7 @@ function App() {
   // Primitive keys derived from `round`, NOT `round` itself, are what `hitEvents` memoizes on below.
   // `useRound()` (chain/useRound.ts) hands back a brand-new `RoundState` object on every ~1.5s poll
   // even when nothing relevant changed, so memoizing on `round` directly would re-run the full
-  // MAX_STEPS-step fight simulation every poll tick — exactly what this task calls out as the thing
+  // per-lineup fight simulation every poll tick — exactly what this task calls out as the thing
   // NOT to do. `seedHex`/`entriesKey` only change when the seed actually reveals (Drawing -> Fight) or
   // when the entry list itself changes shape (never, in practice, once the lobby has closed) — never
   // when only the live per-tick fields (hp/banked/dead) update underneath them.
@@ -151,11 +151,13 @@ function App() {
   const entriesKey = round ? round.fighters.map((f) => `${f.wallet.toBase58()}:${f.side}:${f.stake}`).join(",") : "";
 
   // The full precomputed hit sequence for the current fight — a pure function of (seed, entries,
-  // steps), per hitEvents.ts's own contract. Runs to MAX_STEPS unconditionally rather than to
-  // `round.tickCount` (which is only meaningful once Settled, well after the canvas already needs to
-  // start animating): MAX_STEPS is `resolve()`'s own on-chain ceiling (lib.rs), and gameLoop.ts's
-  // playhead independently caps at the same constant, so precomputing exactly that far means the
-  // event stream never runs out from under a live-playing fight.
+  // steps), per hitEvents.ts's own contract. Runs to `finalCursor(entries.length)` unconditionally
+  // rather than to `round.tickCount` (which is only meaningful once Settled, well after the canvas
+  // already needs to start animating): `finalCursor` is the last cursor a fight of THIS lineup can
+  // ever reach — resolve()'s catch_up (lib.rs) clamps to the same bell (FIGHT_TIMEOUT_SECONDS) — and
+  // gameLoop.ts's playhead independently caps at the same per-lineup ceiling, so precomputing exactly
+  // that far means the event stream never runs out from under a live-playing fight, at every lineup
+  // size rather than only at the one a flat MAX_STEPS used to happen to cover.
   const hitEvents = useMemo<HitEvent[]>(() => {
     if (!seedHex || !round) return [];
     const entries: HitEventEntry[] = round.fighters.map((f) => ({
@@ -163,7 +165,7 @@ function App() {
       side: f.side as 0 | 1,
       stake: f.stake,
     }));
-    return runFullFight(Buffer.from(round.seed), entries, MAX_STEPS).events;
+    return runFullFight(Buffer.from(round.seed), entries, finalCursor(entries.length)).events;
     // `round` is deliberately omitted: `seedHex`/`entriesKey` already fully determine everything this
     // closure reads off of it (the seed bytes and each fighter's wallet/side/stake) — see the comment
     // above. Whenever those primitives are unchanged, `round`'s live fields may still have moved, but

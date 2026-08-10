@@ -80,8 +80,11 @@ describe("parseFightersFlag", () => {
   });
 
   it("reads the program's ceiling off the documented URL", () => {
-    expect(parseFightersFlag("?fixture=1&fighters=16")).toBe(MAX_LINEUP);
-    expect(parseFightersFlag("?fighters=16&fixture=1")).toBe(MAX_LINEUP);
+    // Written as `MAX_LINEUP` on BOTH sides rather than as the literal it happens to equal: the
+    // ceiling has already moved once (16 -> 48) and a literal here would have turned that into a
+    // test asserting the old cap against the new one.
+    expect(parseFightersFlag(`?fixture=1&fighters=${MAX_LINEUP}`)).toBe(MAX_LINEUP);
+    expect(parseFightersFlag(`?fighters=${MAX_LINEUP}&fixture=1`)).toBe(MAX_LINEUP);
   });
 
   it("clamps out-of-range and falls back on junk", () => {
@@ -92,9 +95,9 @@ describe("parseFightersFlag", () => {
   });
 
   it("survives the parameter being repeated — first wins, and it is still a legal size", () => {
-    const n = parseFightersFlag("?fighters=16&fighters=3");
+    const n = parseFightersFlag("?fighters=12&fighters=3");
     expect(n).toBeGreaterThanOrEqual(MIN_LINEUP);
     expect(n).toBeLessThanOrEqual(MAX_LINEUP);
-    expect(n).toBe(16);
+    expect(n).toBe(12);
   });
 });

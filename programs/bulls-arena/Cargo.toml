@@ -50,3 +50,31 @@ solana-sha256-hasher = "3.1.0"
 # allocator in: session_keys") — documented in the crate's install snippet, found here the hard way
 # in Phase 0, see MAGICBLOCK_FEEDBACK.md's entry on it.
 session-keys = { version = "3.1.1", features = ["no-entrypoint"] }
+# Required by `#[account(zero_copy)]`, and required HERE rather than inherited. The macro expands to
+# `#[derive(::bytemuck::Pod)]` — an absolute path, resolved in THIS crate's dependency graph — so
+# anchor-lang having bytemuck is not enough and the omission is a compile error, not a subtle one.
+# `derive` is the feature that carries the Pod/Zeroable derives. Already in the lockfile transitively
+# (solana-address pulls the same 1.25.2), so this adds no download and no second version.
+bytemuck = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+# The compute gate (`tests/compute.rs`). LiteSVM runs the COMPILED SBF binary against real account
+# bytes in-process and reports `compute_units_consumed`, which is the only way to measure the real
+# instructions off-chain: `bench_fight` can only measure the loop, and reaching `Phase::Fight`
+# legitimately needs the VRF oracle. Building a round's bytes directly sidesteps both.
+#
+# 0.11 SPECIFICALLY, and the reason is type identity rather than features. litesvm 0.7 is built on
+# the solana 2.x crate family, so its `Pubkey` is a DIFFERENT TYPE from the `solana-pubkey` 3.0.0 that
+# anchor-lang 1.0.2 pulls in — every address would have to be round-tripped through `to_bytes()` at
+# the boundary, which is exactly the kind of conversion that silently measures the wrong account.
+# 0.11 is on solana 3.x and the types unify.
+litesvm = "0.11"
+solana-account = "3"
+solana-pubkey = "3"
+solana-sdk-ids = "3"
+solana-clock = "3"
+solana-instruction = "3"
+solana-keypair = "3"
+solana-message = "3"
+solana-signer = "3"
+solana-transaction = "3"

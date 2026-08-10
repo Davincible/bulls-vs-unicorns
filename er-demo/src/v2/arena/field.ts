@@ -220,6 +220,21 @@ const MAX_SCALE = 2.4;
  *  the way down, which is what a fighter being emptied out looks like. */
 const MIN_RADIUS = 4;
 
+/** How many relaxation passes `buildField` runs before the first paint, to settle the overlaps a
+ *  deterministic spawn deterministically produces.
+ *
+ *  A RENDERING BUDGET, NOT A COUNT OF FIGHTERS, and it is named here because it used to be a bare
+ *  `16` inline — the same number `MAX_FIGHTERS` happened to be at the time, which made it read like a
+ *  per-fighter pass and it never was. It is one-shot and off the frame path (`separate` is O(n²), so
+ *  even a full board is ~37k pair checks once, at spawn), so its cost is not what bounds it.
+ *
+ *  IT IS UNVALIDATED ABOVE SIXTEEN BODIES. The value was chosen when that was the whole board; a
+ *  fuller field starts with more overlaps and may want more passes to clear them. Left alone on
+ *  purpose — whether a 48-disc spawn actually settles is something you can only answer by looking at
+ *  it, and sizing the canvas for 48 is a separate piece of work. This comment is here so that work
+ *  finds the knob instead of rediscovering the literal. */
+const SPAWN_SETTLE_PASSES = 16;
+
 // Motion, all in px/s (or px/s²) per `unit`.
 
 /** THE ROUND HAS TO BUILD, and this is the one thing `web/index.html` had that this field did not.
@@ -805,8 +820,9 @@ export function createField(
     fervourRamp: 1,
   };
   // Deterministic spawn means deterministic overlaps. Settle them before the first paint so a lobby
-  // never opens with two fighters fused together — 16 passes of the same solver the loop uses.
-  for (let i = 0; i < 16; i++) separate(field);
+  // never opens with two fighters fused together — `SPAWN_SETTLE_PASSES` of the same solver the loop
+  // uses.
+  for (let i = 0; i < SPAWN_SETTLE_PASSES; i++) separate(field);
   clampToWalls(field);
   return field;
 }

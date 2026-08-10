@@ -6,7 +6,7 @@
 // constants, so it stayed green while both had gone stale against the deployed program. It now
 // asserts against chain/constants.ts, the same values the instruction builders use.
 import { describe, expect, test } from "vitest";
-import { MAX_STEPS, stepsPerSecond, canonicalCursor } from "../chain/constants.ts";
+import { FIGHT_TIMEOUT_SECONDS, finalCursor, stepsPerSecond, canonicalCursor } from "../chain/constants.ts";
 import { playheadStep } from "./gameLoop.ts";
 
 describe("playheadStep", () => {
@@ -16,7 +16,10 @@ describe("playheadStep", () => {
 
   test("matches the on-chain canonical_cursor() at whole-second boundaries", () => {
     const start = 1_000_000;
-    for (const fighters of [2, 4, 8, 16]) {
+    // 48, not 16, is the current MAX_FIGHTERS ceiling — swept alongside the smaller lineups so this
+    // assertion covers the largest final_cursor() the chain will ever ask this function to saturate
+    // at, not just the lineup size that used to be the cap.
+    for (const fighters of [2, 4, 8, 16, 48]) {
       expect(playheadStep(start, start, fighters)).toBe(0);
       for (const seconds of [1, 4, 17]) {
         expect(playheadStep(start, start + seconds * 1_000, fighters))
@@ -37,9 +40,9 @@ describe("playheadStep", () => {
     expect(step).toBeCloseTo(stepsPerSecond(4) / 2, 5);
   });
 
-  test("caps at MAX_STEPS no matter how much wall-clock time has elapsed — mirrors the chain's .min()", () => {
-    const farInFuture = ((MAX_STEPS / stepsPerSecond(2)) + 60) * 1000;
-    expect(playheadStep(0, farInFuture, 2)).toBe(MAX_STEPS);
+  test("caps at finalCursor(fighterCount) no matter how much wall-clock time has elapsed — mirrors the chain's bell", () => {
+    const farInFuture = (FIGHT_TIMEOUT_SECONDS + 60) * 1000;
+    expect(playheadStep(0, farInFuture, 2)).toBe(finalCursor(2));
   });
 
   test("never goes negative if nowMs is somehow before fightStartedAtMs (clock skew)", () => {

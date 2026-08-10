@@ -504,14 +504,17 @@ function envInt(name: string, fallback: number, min: number): number {
 
 /** HOW MANY WALLETS THE HOUSE BANKS, and therefore the most fighters it could ever field at once.
  *
- *  TEN, RAISED FROM SIX, and the raise is the whole point of this section. `MAX_FIGHTERS` is 16 and
- *  live rounds #23, #27 and #28 each ran FOUR fighters — a quarter-full board, which is most of why
- *  the arena read as dead. Ten house wallets plus real arrivals is a board that looks like an arena.
+ *  TEN, RAISED FROM SIX, and the raise is the whole point of this section. `MAX_FIGHTERS` was 16 at
+ *  the time — it is 48 now, the 16 -> 48 fighter cap — and live rounds #23, #27 and #28 each ran FOUR
+ *  fighters against that old ceiling: a quarter-full board, which is most of why the arena read as
+ *  dead. Ten house wallets plus real arrivals is a board that looks like an arena, of the size the
+ *  arena used to be; see the note on `HOUSE_BOARD_TARGET` below for whether ten still reads as full
+ *  now that the room holds forty-eight.
  *
- *  NOT SIXTEEN, and that gap is deliberate rather than timid: the house must never be able to fill
- *  the room, or a real player arrives to `RoundFull` and the arena's own liquidity is what shut them
- *  out. `plannedHouseEntries` enforces the reservation against the chain's own seat count; this
- *  number just has no business approaching it.
+ *  NOT `MAX_FIGHTERS` (48, up from 16 — the gap only widened), and that gap is deliberate rather than
+ *  timid: the house must never be able to fill the room, or a real player arrives to `RoundFull` and
+ *  the arena's own liquidity is what shut them out. `plannedHouseEntries` enforces the reservation
+ *  against the chain's own seat count; this number just has no business approaching it.
  *
  *  RAISING IT COSTS THE OPERATOR TWO THINGS AND BOTH ARE SMALL. A new wallet is funded to
  *  `HOUSE_WALLET_TARGET_SOL` once (0.01 SOL) and spends 5,000 lamports per round it enters. Going
@@ -533,11 +536,11 @@ export const HOUSE_WALLET_COUNT = envInt("KEEPER_HOUSE_WALLET_COUNT", 10, 2);
  *  nothing about the count. That is now chunked at `FUNDING_CHUNK`, with the payer pre-flight
  *  charging one signature per chunk, so the ceiling no longer encodes a packet size.
  *
- *  The second was that `MAX_FIGHTERS` is sixteen, so "a bank larger than the room is wallets that can
+ *  The second was that `MAX_FIGHTERS` was sixteen, so "a bank larger than the room is wallets that can
  *  never enter". True of a bank read in index order, which is what it was: `plannedHouseEntries` took
  *  the lowest-numbered free wallets, so wallets past the board size genuinely never played. It now
  *  rotates the starting point by round number, and THAT is what a pool larger than the board is for —
- *  not more fighters per round, which the chain caps at sixteen regardless, but a different cast
+ *  not more fighters per round, which the chain caps at `MAX_FIGHTERS` regardless, but a different cast
  *  between rounds. Nine regulars every round reads as a fixture; thirty wallets seating nine of them
  *  reads as a population.
  *
@@ -545,7 +548,16 @@ export const HOUSE_WALLET_COUNT = envInt("KEEPER_HOUSE_WALLET_COUNT", 10, 2);
  *  is published in the keeper's status file and marked on the leaderboard, and each one holds
  *  `HOUSE_WALLET_TARGET_SOL`, so the pool is a standing capital commitment: at 0.01 SOL a wallet,
  *  thirty is ~0.30 SOL parked. Twice the round's seat count is enough rotation that the cast turns
- *  over completely every few rounds; more than that buys diminishing variety for linear cost. */
+ *  over completely every few rounds; more than that buys diminishing variety for linear cost.
+ *
+ *  THAT DERIVATION NO LONGER MATCHES ITS OWN NUMBER, AND THIS IS FLAGGED RATHER THAN SILENTLY FIXED.
+ *  32 was chosen as exactly twice sixteen, the `MAX_FIGHTERS` of that session. `MAX_FIGHTERS` is now
+ *  48 for the 16 -> 48 fighter cap, and "twice the round's seat count" by the SAME rule would be 96 —
+ *  three times the standing capital (32 wallets at 0.01 SOL is ~0.32 SOL parked; 96 would be ~0.96
+ *  SOL). Whether that trade is worth it is an operator call this file will not make unilaterally: the
+ *  cast-rotation argument above still holds AT 32 (it turns over completely every few rounds; it is
+ *  just now rotating through a smaller fraction of a bigger room than the rule that picked 32
+ *  intended), so 32 is not WRONG, only no longer derived from the number that used to justify it. */
 const HOUSE_WALLET_COUNT_MAX = 32;
 if (HOUSE_WALLET_COUNT > HOUSE_WALLET_COUNT_MAX) {
   throw new Error(
@@ -609,9 +621,17 @@ if (HOUSE_WALLET_COUNT > HOUSE_WALLET_COUNT_MAX) {
  *
  *  So this is a number bought for how the board LOOKS, priced as a cost. That is a legitimate thing to
  *  buy — an arena that reads as dead has no real players to earn from, and sixteen seats running at
- *  four was the complaint that started this. It is 10 because that is where the room reads as full
- *  while the reservation still leaves six seats for arrivals. It is the OWNER'S dial, not this file's,
- *  which is the whole reason it reads from the environment. */
+ *  four was the complaint that started this. It was 10 because that is where a SIXTEEN-seat room read
+ *  as full while the reservation still left six seats for arrivals.
+ *
+ *  THAT "READS AS FULL" CLAIM IS STALE AND NOT RE-DERIVED HERE, ON PURPOSE. `MAX_FIGHTERS` is now 48
+ *  (the 16 -> 48 fighter cap), and ten fighters in a forty-eight-seat room is a fifth full, not full —
+ *  arguably the same "arena reads as dead" complaint that motivated raising this off its old default of
+ *  four in the first place. Whether the default should rise again, and to what, is the OWNER'S dial and
+ *  the owner's judgement call to re-make against the new room size, not something to be silently
+ *  reassigned here; this comment exists so that judgement gets made deliberately rather than by
+ *  omission. It is the OWNER'S dial, not this file's, which is the whole reason it reads from the
+ *  environment. */
 export const HOUSE_BOARD_TARGET = envInt("KEEPER_HOUSE_BOARD_TARGET", 10, 1);
 
 /** HOW MANY HOUSE FIGHTERS EACH REAL ENTRANT DISPLACES.
@@ -696,12 +716,14 @@ if (PEAK_HOUSE_FIGHTERS > HOUSE_WALLET_COUNT) {
  *  real player `RoundFull` — the arena's own liquidity locking out the only participant it exists to
  *  attract, which is a strictly worse failure than an empty board.
  *
- *  FOUR because that is a full lobby's worth of arrivals inside one grace window, and because with
- *  the defaults it never binds: `HOUSE_BOARD_TARGET` of 10 against 16 seats already leaves six. It is
- *  a backstop against a misconfigured target, not part of the normal arithmetic — which is exactly
- *  why it is applied in `plannedHouseEntries` against the chain's own `fighters.length` rather than
- *  against a copy of `MAX_FIGHTERS` restated here. See this file's header on why program constants
- *  are not mirrored into it. */
+ *  FOUR because that is a full lobby's worth of arrivals inside one grace window — an estimate of
+ *  ARRIVAL RATE, not of room size, so the 16 -> 48 fighter cap does not disturb it — and because with
+ *  the defaults it never binds: `HOUSE_BOARD_TARGET` of 10 against `MAX_FIGHTERS` (48, was 16) leaves
+ *  38 free seats rather than six, more slack than before rather than less. It is a backstop against a
+ *  misconfigured target, not part of the normal arithmetic — which is exactly why it is applied in
+ *  `plannedHouseEntries` against the chain's own `fighters.length` rather than against a copy of
+ *  `MAX_FIGHTERS` restated here. See this file's header on why program constants are not mirrored
+ *  into it. */
 export const REAL_SEATS_RESERVED = 4;
 
 /** How long before the lobby deadline the house tops up to its full target.

@@ -630,27 +630,64 @@ const signatures = {};
     heading("12. resolve — both fighters have left the ring, so the fight is over; settling");
     const targetWaitMs = (SETTLE_PAUSE_SECONDS + 2) * 1000 - (Date.now() - fightStartedAtWall);
     if (targetWaitMs > 0) { info(`waiting ${(targetWaitMs / 1000).toFixed(1)}s more…`); await sleep(targetWaitMs); }
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const builder = authority.methods.resolve().accounts({ payer: forkPayer.publicKey, round: roundPda, magicProgram: new PublicKey("Magic11111111111111111111111111111111111111"), magicContext: new PublicKey("MagicContext1111111111111111111111111111111") })
-          .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 })]);
-        signatures.resolve = await sendTx(router, builder, forkPayer, "resolve");
-        break;
-      } catch (e) {
-        // Matched from the LOGS, not via `instanceof anchor.AnchorError`. `sendTx` calls
-        // `sendRawTransaction` on a plain web3.js Connection, so Anchor's `translateError` — which
-        // only runs inside AnchorProvider's own send/simulate — never sees this error. It is always a
-        // SendTransactionError. The `instanceof` form this replaced could never be true, which
-        // quietly reduced a 3-attempt retry to a single attempt: a `resolve` landing one second early
-        // aborted the whole run and stranded a delegated round in Fight phase.
-        const tooEarly = /Error Code: FightNotOverYet\b/.test(logsOf(e));
-        if (tooEarly && attempt < 3) {
-          warn(`resolve() too early (attempt ${attempt}) — waiting 3s more`);
-          await sleep(3000);
-          continue;
+    // `resolve` no longer either throws FightNotOverYet or settles outright — it GRINDS, advancing
+    // the fight by at most MAX_STEPS_PER_CALL (3,000) steps per call and settling only once genuinely
+    // caught up. A call can come back Ok with the round STILL IN Fight, and that is a WORK problem,
+    // not the TIMING problem the FightNotOverYet retry below covers — conflating the two would either
+    // give up on a round that just needs another call, or wait on one that isn't behind at all. So
+    // this is two loops with two budgets: the inner one is the unchanged timing retry; the outer one
+    // re-sends resolve with NO sleep between grind calls, since the backlog at any lineup grows at
+    // only 2*fighterCount steps/second, far below the 3,000 one call clears. `close_round` right after
+    // this refuses a non-terminal round outright, so leaving without Settled here would only surface
+    // as a more confusing failure one step down.
+    //
+    // MAX_STEPS_PER_CALL, FIGHT_TIMEOUT_SECONDS and STEPS_PER_FIGHTER_PER_SECOND are mirrored from
+    // lib.rs (er-demo/src/chain/constants.ts carries the same three), literals here for the same
+    // reason LOBBY_SECONDS above is one: this file deliberately imports nothing from src/.
+    const MAX_STEPS_PER_CALL = 3_000;
+    const FIGHT_TIMEOUT_SECONDS = 180;
+    const STEPS_PER_FIGHTER_PER_SECOND = 2;
+    const roundBeforeResolve = await authority.account.round.fetch(roundPda);
+    // The bound: the most steps this exact lineup's fight could ever be behind by
+    // (FIGHT_TIMEOUT_SECONDS * STEPS_PER_FIGHTER_PER_SECOND * fighterCount, i.e. finalCursor), ceiling-
+    // divided by what one call can clear.
+    const maxGrindCalls = Math.ceil(
+      (FIGHT_TIMEOUT_SECONDS * STEPS_PER_FIGHTER_PER_SECOND * roundBeforeResolve.fighterCount) / MAX_STEPS_PER_CALL,
+    );
+    let resolvedRound = roundBeforeResolve;
+    for (let grindCall = 1; grindCall <= maxGrindCalls; grindCall++) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const builder = authority.methods.resolve().accounts({ payer: forkPayer.publicKey, round: roundPda, magicProgram: new PublicKey("Magic11111111111111111111111111111111111111"), magicContext: new PublicKey("MagicContext1111111111111111111111111111111") })
+            .preInstructions([anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 })]);
+          signatures.resolve = await sendTx(router, builder, forkPayer, `resolve (grind ${grindCall}/${maxGrindCalls})`);
+          break;
+        } catch (e) {
+          // Matched from the LOGS, not via `instanceof anchor.AnchorError`. `sendTx` calls
+          // `sendRawTransaction` on a plain web3.js Connection, so Anchor's `translateError` — which
+          // only runs inside AnchorProvider's own send/simulate — never sees this error. It is always a
+          // SendTransactionError. The `instanceof` form this replaced could never be true, which
+          // quietly reduced a 3-attempt retry to a single attempt: a `resolve` landing one second early
+          // aborted the whole run and stranded a delegated round in Fight phase.
+          const tooEarly = /Error Code: FightNotOverYet\b/.test(logsOf(e));
+          if (tooEarly && attempt < 3) {
+            warn(`resolve() too early (attempt ${attempt}) — waiting 3s more`);
+            await sleep(3000);
+            continue;
+          }
+          throw e;
         }
-        throw e;
       }
+      resolvedRound = await authority.account.round.fetch(roundPda);
+      if (resolvedRound.phase === Phase.Settled) break;
+      info(`resolve() ground more steps but the round is still Fight (tick_count=${resolvedRound.tickCount.toString()}) — calling again immediately, no sleep`);
+    }
+    if (resolvedRound.phase !== Phase.Settled) {
+      throw new Error(
+        `round still in Fight after ${maxGrindCalls} grind calls (tick_count=${resolvedRound.tickCount.toString()}) — ` +
+        `this is a WORK problem (resolve() kept grinding but never caught the fight up), not a timing one ` +
+        `(FightNotOverYet, the bell never rang) — the two get separate retries above for exactly this reason.`,
+      );
     }
     heading("13. close_round");
     {

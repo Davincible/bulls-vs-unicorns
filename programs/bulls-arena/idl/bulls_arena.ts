@@ -767,11 +767,21 @@ export type BullsArena = {
         "held everything. That is the free-refund bug wearing a different hat. Settling the ring to the",
         "current time first makes the payout a function of the clock, not of anyone's diligence.",
         "",
-        "The cost of that is bounded, not unbounded: `catch_up` can never run more than `MAX_STEPS`",
-        "steps (see `canonical_cursor`), the same ceiling `resolve` is measured against. In the normal",
-        "case — anything at all ticking — it runs single digits, and this stays the cheap instruction it",
-        "needs to be. Clients should still request the CU ceiling on it, because the bound that makes",
-        "this safe is a worst case, not a typical one.",
+        "AND IF THE CATCH-UP CANNOT FINISH, THIS REFUSES RATHER THAN PAYS. `catch_up` is bounded now",
+        "(`MAX_STEPS_PER_CALL`), so on a badly-neglected round one call may not reach the cursor real",
+        "time is at. Paying out at the cursor it DID reach would hand the player a larger `hp` than",
+        "they actually still hold — the free-refund bug arriving from a new direction, and this time",
+        "bought by neglect rather than by declining to tick. So `FightBehind`, and the caller sends a",
+        "`tick` or two first. Two things keep that from being a real obstruction: the backlog is single",
+        "digits whenever ANY client is ticking (the browser does, once a second, from every open tab),",
+        "and `tick` is permissionless, so the player who wants to extract can clear the backlog",
+        "themselves without anyone's cooperation.",
+        "",
+        "The refusal REVERTS the catch-up this call did, which is the right trade here and the opposite",
+        "of the call `resolve` makes. `resolve` grinds because its job IS the arithmetic and reverting",
+        "would mean it never converges. This instruction's job is a payout at a particular instant; a",
+        "partial advance is not a partial payout, and succeeding-with-nothing-extracted would be a",
+        "worse answer to a player pressing a button than a clear refusal.",
         "",
         "IT IS NOT FREE, AND IT IS CHEAPEST LAST. What leaves the ring is split: the fighter keeps most",
         "of it, the house takes `extract_penalty_bps(fighter_count, cursor)` — 20% at the opening bell,",
@@ -1199,8 +1209,31 @@ export type BullsArena = {
         "somebody having done optional work, which is exactly how a round becomes permanently stuck.",
         "This repo already has two of those (task #15) and does not need a third failure mode. So",
         "`resolve` is self-sufficient: it can always finish the job alone, and ticking only ever makes",
-        "it cheaper. In the fully-unticked worst case it does precisely what the old one-shot `resolve`",
-        "did, against the same MAX_STEPS bound that was measured and devnet-verified for it.",
+        "it cheaper.",
+        "",
+        "IT MAY NOW NEED MORE THAN ONE TRANSACTION, AND THAT IS THE ONE REAL COST OF THE BIGGER CAP.",
+        "A neglected 48-fighter round has up to 17,280 steps of arithmetic waiting at the bell, and no",
+        "transaction can execute that at any CU price (see `MAX_STEPS_PER_CALL`). So this instruction",
+        "GRINDS: each call advances at most one transaction's worth, and settles on the call that",
+        "brings the fight genuinely up to date. **A caller loops until `phase == Settled`** — up to six",
+        "times in the pathological case, once in every normal one, where some client has been ticking",
+        "and the backlog is single digits.",
+        "",
+        "IT RETURNS `Ok` WITHOUT SETTLING, WHICH IS DELIBERATE AND IS THE WHOLE DESIGN. The obvious",
+        "alternative — return an error saying \"not caught up, tick first\" — is wrong in a way that",
+        "matters: an error REVERTS, so the steps that call just ran are thrown away and the round never",
+        "advances no matter how many times anyone calls. Grinding forward and reporting progress is the",
+        "only shape in which repeated calls converge. `Ticked` is emitted for exactly that reason: it",
+        "is how a caller sees the round moving under it rather than guessing.",
+        "",
+        "AND IT DOES NOT COMMIT ON THOSE CALLS. Committing an unsettled round would pay for a",
+        "base-layer settlement per grind step, which is the cost the round is delegated to avoid.",
+        "",
+        "SELF-SUFFICIENCY IS THEREFORE INTACT, and that is the property worth checking rather than",
+        "assuming, because it is what stops a round becoming permanently stuck — this repo has two of",
+        "those already. Nothing here requires anyone ELSE to have done anything: whoever wants the",
+        "round settled can do every step of it themselves, from any wallet, with no cooperation. What",
+        "changed is the number of transactions that takes, not who can send them.",
         "",
         "WHEN IT MAY BE CALLED: once the fight is genuinely over (one side has nobody standing), or once",
         "the bell has rung (`FIGHT_TIMEOUT_SECONDS`), whichever comes first — see that constant for why",
@@ -1209,6 +1242,14 @@ export type BullsArena = {
         "",
         "The catch-up runs BEFORE that check on purpose: a fight that ends inside the very steps this",
         "call is about to run is over, and should settle now rather than making someone call twice.",
+        "",
+        "A FINISHED FIGHT SETTLES EVEN WHEN THE CURSOR IS BEHIND, and that is a correctness statement",
+        "rather than a shortcut. `fight_is_over` is MONOTONE: steps only ever set `dead = 1`, never",
+        "clear it, and once one side has nobody standing no further exchange is possible at all",
+        "(`advance_fight` skips every pair with a dead party). So a fight that is over at the partial",
+        "cursor is over at the canonical one, holding exactly the same `hp` and `banked`. Grinding the",
+        "remaining steps would be arithmetic with a proven-empty result, and refusing to settle until",
+        "it was done would delay a decided round for no reason.",
         "",
         "PER-HIT DATA STILL DOES NOT BELONG ON-CHAIN. Every blow is recomputable from the seed by",
         "anyone; storing them is publishing our own homework at a cost per byte. Only the inputs",
@@ -1828,6 +1869,11 @@ export type BullsArena = {
       "code": 6021,
       "name": "roundTooRecent",
       "msg": "this round is inside the retention window and may not be closed yet"
+    },
+    {
+      "code": 6022,
+      "name": "fightBehind",
+      "msg": "the fight has not been advanced to the present — tick it first, then extract"
     }
   ],
   "types": [
@@ -1965,20 +2011,16 @@ export type BullsArena = {
     },
     {
       "name": "fighter",
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
       "type": {
         "kind": "struct",
         "fields": [
           {
             "name": "wallet",
             "type": "pubkey"
-          },
-          {
-            "name": "side",
-            "type": "u8"
-          },
-          {
-            "name": "dead",
-            "type": "u8"
           },
           {
             "name": "stake",
@@ -1991,6 +2033,28 @@ export type BullsArena = {
           {
             "name": "banked",
             "type": "u64"
+          },
+          {
+            "name": "side",
+            "type": "u8"
+          },
+          {
+            "name": "dead",
+            "type": "u8"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                6
+              ]
+            },
+            "docs": [
+              "Alignment, declared rather than implied — see the struct's doc comment. Always zero; nothing",
+              "reads it. It exists so `bytemuck::Pod` will accept this type AND so a borsh-shaped decoder",
+              "lands on the same offsets the program does."
+            ]
           }
         ]
       }
@@ -2031,6 +2095,10 @@ export type BullsArena = {
     },
     {
       "name": "round",
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
       "type": {
         "kind": "struct",
         "fields": [
@@ -2051,12 +2119,49 @@ export type BullsArena = {
             "type": "u8"
           },
           {
+            "name": "fighterCount",
+            "type": "u16",
+            "docs": [
+              "Moved ahead of `bump` for alignment — see the struct's doc comment. A `u16` at offset 43",
+              "would have made `repr(C)` insert a byte the clients' decoder does not know about."
+            ]
+          },
+          {
             "name": "bump",
             "type": "u8"
           },
           {
-            "name": "fighterCount",
-            "type": "u16"
+            "name": "houseSwept",
+            "type": "u8",
+            "docs": [
+              "Has `sweep_house_take` already taken this round's `fees_collected + penalties_collected` onto",
+              "the arena's `Treasury`? One byte, so a permissionless sweep cannot be run twice.",
+              "",
+              "`u8` RATHER THAN `bool`, AND NOT BY PREFERENCE. `bytemuck` does not implement `Pod` for",
+              "`bool` and is right not to: `bool` has exactly two valid bit patterns and a zero-copy cast",
+              "would happily hand out a `bool` holding 0x02, which is undefined behaviour rather than a",
+              "surprising value. A `u8` has no invalid pattern. Read it through `Round::is_swept()` so the",
+              "call sites still say what they mean; the only place the raw byte appears is where it is set.",
+              "",
+              "ON THE ROUND RATHER THAN INFERRED, because there is nothing to infer it from: the sweep moves",
+              "no value out of the round (the totals stay for auditing — zeroing them would destroy the very",
+              "record conservation is checked against), so after a sweep the account is byte-identical to",
+              "before it except for this flag. Without it the second call is indistinguishable from the",
+              "first and the house's total inflates by one round every time anyone presses the button."
+            ]
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                2
+              ]
+            },
+            "docs": [
+              "Alignment, declared rather than implied — see the struct's doc comment and `Fighter`'s.",
+              "Always zero; nothing reads it."
+            ]
           },
           {
             "name": "tickCount",
@@ -2147,20 +2252,6 @@ export type BullsArena = {
               "A RECORD, NOT CUSTODY, exactly as `penalties_collected` is: this program holds no balances",
               "(see the file header), so both are claims the off-chain treasury is settled against until",
               "ARCHITECTURE-N-TEAM.md §4 lands. See `sweep_house_take` for which half of that survives."
-            ]
-          },
-          {
-            "name": "houseSwept",
-            "type": "bool",
-            "docs": [
-              "Has `sweep_house_take` already taken this round's `fees_collected + penalties_collected` onto",
-              "the arena's `Treasury`? One bit, so a permissionless sweep cannot be run twice.",
-              "",
-              "ON THE ROUND RATHER THAN INFERRED, because there is nothing to infer it from: the sweep moves",
-              "no value out of the round (the totals stay for auditing — zeroing them would destroy the very",
-              "record conservation is checked against), so after a sweep the account is byte-identical to",
-              "before it except for this flag. Without it the second call is indistinguishable from the",
-              "first and the house's total inflates by one round every time anyone presses the button."
             ]
           },
           {
@@ -2294,7 +2385,7 @@ export type BullsArena = {
                     "name": "fighter"
                   }
                 },
-                16
+                48
               ]
             }
           }

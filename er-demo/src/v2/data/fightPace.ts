@@ -15,7 +15,7 @@
 // Both constants come through `contract.ts`, which re-exports `chain/constants.ts` — the one
 // maintained mirror of lib.rs.
 
-import { FIGHT_TIMEOUT_SECONDS, MAX_STEPS, stepsPerSecond, type PhaseName, type Side } from "../contract.ts";
+import { FIGHT_TIMEOUT_SECONDS, finalCursor, stepsPerSecond, type PhaseName, type Side } from "../contract.ts";
 import type { SignerMode } from "./flags.ts";
 
 /** Just enough of a fighter to know whether their side still has anyone in the ring. */
@@ -124,7 +124,9 @@ export function shouldDriveFight({ fallback, sessionActive, solBalance, mode }: 
  *
  * Lobby/Drawing  — nothing has happened; 0/0.
  * Fight          — live-ticking off the wall clock at the chain's own per-fighter rate, capped at
- *                  `MAX_STEPS` exactly as `canonical_cursor()` saturates.
+ *                  `finalCursor(fighterCount)` exactly as `canonical_cursor()` saturates — the bell,
+ *                  not a flat ceiling, so a 48-fighter fight gets the 17,280 steps it needs rather
+ *                  than the 720 a duel tops out at.
  * Settled        — FROZEN at the chain's recorded `tick_count`, and the clock frozen at the fight
  *                  time that cursor represents. `contract.ts`'s doc comment says `elapsedSec` is 0
  *                  outside Fight; taken literally that renders a finished round's clock as `0:00`
@@ -137,7 +139,7 @@ export function fightPace(input: FightPaceInput): FightPace {
   const rate = stepsPerSecond(input.fighters.length);
 
   if (input.phase === "Settled") {
-    const steps = Math.min(Number(input.tickCount), MAX_STEPS);
+    const steps = Math.min(Number(input.tickCount), finalCursor(input.fighters.length));
     return {
       elapsedSec: rate > 0 ? steps / rate : 0,
       stepsNow: steps,
@@ -152,7 +154,12 @@ export function fightPace(input: FightPaceInput): FightPace {
   const elapsedSec = Math.max(0, (input.nowMs - input.fightStartedAtMs) / 1000);
   return {
     elapsedSec,
-    stepsNow: Math.min(Math.floor(elapsedSec * rate), MAX_STEPS),
+    // Clamped on ELAPSED SECONDS, not on the step product — `canonicalCursor` in chain/constants.ts
+    // does the same thing for the same reason: this is what it means for the fight to stop AT THE
+    // BELL rather than to stop once the arithmetic happens to reach a number. Clamping the product
+    // instead would agree with the chain by coincidence (both land on `finalCursor(n)` at the tail),
+    // not by construction.
+    stepsNow: Math.min(Math.floor(elapsedSec), FIGHT_TIMEOUT_SECONDS) * rate,
     resolvable: isResolvable(input, elapsedSec),
   };
 }

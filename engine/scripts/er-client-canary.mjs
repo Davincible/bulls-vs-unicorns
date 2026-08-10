@@ -446,34 +446,71 @@ async function sendTx(methodsBuilder, signer, label, { blockhashAccounts, endpoi
       info(`waiting ${(targetWaitMs / 1000).toFixed(1)}s more before resolve() is legal…`);
       await sleep(targetWaitMs);
     }
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        // resolve() runs the fight loop on-chain — up to MAX_STEPS=7,000 steps at ~187 CU/step
-        // (ER-030's own measurement) plus the settlement pass and commit CPI, comfortably over
-        // Solana's DEFAULT ~200,000 CU per-transaction budget. Without explicitly raising the ceiling
-        // this failed on real devnet with "Computational budget exceeded" — the program's own comment
-        // ("187.4 CU/step against a 1.4M CU ceiling") already assumes a caller requests that ceiling;
-        // nothing does it automatically, so this instruction has to ask for it explicitly, matching
-        // the same CU_CEILING=1,400,000 engine/scripts/er-cu-bench.mjs measured against.
-        const builder = authority.methods
-          .resolve()
-          .accounts({
-            payer: forkPayer.publicKey,
-            round: roundPda,
-            magicProgram: MAGIC_PROGRAM_ID,
-            magicContext: MAGIC_CONTEXT_ID,
-          })
-          .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 })]);
-        await sendTx(builder, forkPayer, "resolve");
-        break;
-      } catch (e) {
-        if (e instanceof anchor.AnchorError && e.error.errorCode.code === "FightNotOverYet" && attempt < 3) {
-          warn(`resolve() too early (attempt ${attempt}), on-chain clock hadn't caught up — waiting 3s more`);
-          await sleep(3000);
-          continue;
+    // resolve() runs the fight loop on-chain — up to MAX_STEPS_PER_CALL=3,000 steps per call.
+    // Measured against the compiled SBF binary under litesvm, a real 48-fighter round in
+    // Phase::Fight (`programs/bulls-arena/tests/compute.rs` — a test rather than a comment, and
+    // the program's own doc comment above MAX_STEPS_PER_CALL says why that distinction matters):
+    // a grinding resolve costs ~647,924 CU and a settling one ~668,826 CU, 46-48% of Solana's
+    // 1,400,000 CU ceiling and comfortably over the DEFAULT ~200,000 CU per-transaction budget.
+    // Without explicitly raising the ceiling this failed on real devnet with "Computational budget
+    // exceeded" — nothing raises it automatically, so this instruction has to ask for it
+    // explicitly, matching the same CU_CEILING=1,400,000 engine/scripts/er-cu-bench.mjs measures
+    // against.
+    //
+    // "A GRINDING RESOLVE" IN THAT MEASUREMENT IS NOT A HYPOTHETICAL — it is the outcome this loop
+    // now has to keep asking for. `resolve` used to either throw FightNotOverYet or settle the round
+    // outright; it now advances the fight by at most MAX_STEPS_PER_CALL steps per call and only
+    // settles once genuinely caught up, so a call can come back Ok with the round STILL IN Fight —
+    // a WORK problem, not the TIMING problem FightNotOverYet is. Conflating the two would either give
+    // up on a round that just needs another call, or wait on one that isn't behind at all. So this is
+    // two loops with two budgets: the inner one is the unchanged timing retry; the outer one re-sends
+    // resolve with NO sleep between grind calls, since the backlog at any lineup grows at only
+    // 2*fighterCount steps/second, far below the 3,000 one call clears. The bound is
+    // FIGHT_TIMEOUT_SECONDS * STEPS_PER_FIGHTER_PER_SECOND * fighterCount (i.e. finalCursor — mirrored
+    // from lib.rs, literals here for the same reason LOBBY_SECONDS above is one) ceiling-divided by
+    // MAX_STEPS_PER_CALL — the most steps this exact lineup's fight could ever be behind by, divided
+    // by what one call can clear.
+    const MAX_STEPS_PER_CALL = 3_000;
+    const FIGHT_TIMEOUT_SECONDS = 180;
+    const STEPS_PER_FIGHTER_PER_SECOND = 2;
+    const roundBeforeResolve = await authority.account.round.fetch(roundPda);
+    const maxGrindCalls = Math.ceil(
+      (FIGHT_TIMEOUT_SECONDS * STEPS_PER_FIGHTER_PER_SECOND * roundBeforeResolve.fighterCount) / MAX_STEPS_PER_CALL,
+    );
+    let resolvedRound = roundBeforeResolve;
+    for (let grindCall = 1; grindCall <= maxGrindCalls; grindCall++) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const builder = authority.methods
+            .resolve()
+            .accounts({
+              payer: forkPayer.publicKey,
+              round: roundPda,
+              magicProgram: MAGIC_PROGRAM_ID,
+              magicContext: MAGIC_CONTEXT_ID,
+            })
+            .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 })]);
+          await sendTx(builder, forkPayer, `resolve (grind ${grindCall}/${maxGrindCalls})`);
+          break;
+        } catch (e) {
+          if (e instanceof anchor.AnchorError && e.error.errorCode.code === "FightNotOverYet" && attempt < 3) {
+            warn(`resolve() too early (attempt ${attempt}), on-chain clock hadn't caught up — waiting 3s more`);
+            await sleep(3000);
+            continue;
+          }
+          throw e;
         }
-        throw e;
       }
+      resolvedRound = await authority.account.round.fetch(roundPda);
+      if (resolvedRound.phase === Phase.Settled) break;
+      info(`resolve() ground more steps but the round is still Fight (tick_count=${resolvedRound.tickCount.toString()}) — calling again immediately, no sleep`);
+    }
+    if (resolvedRound.phase !== Phase.Settled) {
+      throw new Error(
+        `round still in Fight after ${maxGrindCalls} grind calls (tick_count=${resolvedRound.tickCount.toString()}) — ` +
+        `this is a WORK problem (resolve() kept grinding but never caught the fight up), not a timing one ` +
+        `(FightNotOverYet, the bell never rang) — the two get separate retries above for exactly this reason.`,
+      );
     }
 
     // ---- close_round — commit_and_undelegate back to the base layer -------------------------------
@@ -510,7 +547,7 @@ async function sendTx(methodsBuilder, signer, label, { blockhashAccounts, endpoi
   winner          side ${final.winner}
   pot             ${final.pot.toString()}
   fighter_count   ${final.fighterCount}
-  tick_count      ${final.tickCount.toString()}  (steps run by resolve())
+  tick_count      ${final.tickCount.toString()}  (the fight's cursor once resolve() finished grinding it to Settled)
   lobby_opened_at ${final.lobbyOpenedAt.toString()}
   lobby_closes_at ${final.lobbyClosesAt.toString()}  (a ${Number(final.lobbyClosesAt) - Number(final.lobbyOpenedAt)}s entry window, clamped into [20, 3600] on-chain)
   fight_started_at ${final.fightStartedAt.toString()}`);

@@ -4,7 +4,7 @@
 // rather than against a hand-written expectation.
 
 import { describe, expect, it } from "vitest";
-import { FIGHT_TIMEOUT_SECONDS, MAX_STEPS, canonicalCursor, type Side } from "../contract.ts";
+import { FIGHT_TIMEOUT_SECONDS, canonicalCursor, finalCursor, type Side } from "../contract.ts";
 import { fightIsOver, fightPace, shouldDriveFight, type PaceFighter } from "./fightPace.ts";
 
 function lineup(sides: Side[], dead: boolean[] = []): PaceFighter[] {
@@ -140,9 +140,13 @@ describe("fightPace", () => {
     expect(pace.stepsNow).toBe(10 * RATE_FOR_FOUR);
   });
 
-  it("saturates at MAX_STEPS however long the round is left unattended", () => {
+  it("saturates at finalCursor(fighterCount) however long the round is left unattended", () => {
+    // finalCursor(4) is 1,440 — the per-lineup bell for FOUR fighters, not the old flat 4,000.
+    // Asserting against the FOUR-fighter ceiling rather than a generic constant is a strictly
+    // stronger check than the pre-split test: it fails if `fightPace` ever saturates at the wrong
+    // lineup's bell, which a shared flat constant could never catch.
     const pace = fightPace({ ...base, phase: "Fight", nowMs: base.fightStartedAtMs + 86_400_000 });
-    expect(pace.stepsNow).toBe(MAX_STEPS);
+    expect(pace.stepsNow).toBe(finalCursor(FOUR.length));
   });
 
   it("never runs the clock backwards when the chain's clock is ahead of the browser's", () => {

@@ -170,10 +170,16 @@ export function createImpactFxController(deps: ImpactFxDeps): ImpactFxController
       existing.expiresAtMs = nowMs + GLOW_DURATION_MS;
       return;
     }
-    // Deduplication above already bounds this by the fighter count (MAX_FIGHTERS = 16 on-chain), but
-    // 16 simultaneously filtered objects is exactly the case REACT.md §8 warns about — and a glow on
-    // everyone at once stops meaning "these two are trading blows right now". Capped, not throttled:
-    // which sprites are glowing is the signal, so holding a slot until it expires is the point.
+    // Deduplication above already bounds this by the fighter count (MAX_FIGHTERS, now 48 on-chain),
+    // but that bound was never the one doing the work and it got three times weaker: 48 simultaneously
+    // filtered objects is emphatically the case REACT.md §8 warns about — and a glow on everyone at
+    // once stops meaning "these two are trading blows right now". Capped, not throttled: which
+    // sprites are glowing is the signal, so holding a slot until it expires is the point.
+    //
+    // MAX_CONCURRENT_GLOWS ITSELF IS NOT SIZED AGAINST THE LINEUP and deliberately stays put. It is a
+    // GPU budget — how many filtered display objects this canvas will pay for in a frame — so it
+    // answers a question about the device, not about how many people entered the round. The cap
+    // rising is the argument for keeping it, not for raising it.
     if (glows.length >= MAX_CONCURRENT_GLOWS) return;
     const filter = glowFilterFor(sprite);
     sprite.avatar.filters = [filter];

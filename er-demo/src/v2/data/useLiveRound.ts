@@ -5,7 +5,7 @@
 //   1. `hitEvents` memoises on PRIMITIVE KEYS derived from the round (the seed hex and an entries
 //      key), never on the polled `round` object. `useRound()` hands back a brand-new `RoundState`
 //      every ~1.5s poll even when nothing changed, so memoising on it would re-run the entire
-//      MAX_STEPS-step fight — sha256 per step — every poll tick, forever.
+//      `finalCursor(fighterCount)`-step fight — sha256 per step — every poll tick, forever.
 //   2. The 250ms clock only runs during Fight. Outside it, nothing about `LiveRound` moves between
 //      polls, so a timer would be four re-renders a second of identical output.
 
@@ -14,7 +14,7 @@ import type { PublicKey } from "@solana/web3.js";
 import type { BullsArenaProgram } from "../../chain/program.ts";
 import { useRound, type RoundState } from "../../chain/useRound.ts";
 import { runFullFight, type HitEvent } from "../../sim/hitEvents.ts";
-import { MAX_STEPS, type LiveRound } from "../contract.ts";
+import { finalCursor, type LiveRound } from "../contract.ts";
 import { isSeedRevealed, toHex, toHitEventEntries, toLiveRound } from "./liveRound.ts";
 
 /** Fast enough that the fight clock never visibly stutters, slow enough that a sixteen-fighter roster
@@ -66,10 +66,13 @@ export function useLiveRound(
   const hitEvents = useMemo<HitEvent[]>(() => {
     const r = roundRef.current;
     if (!seedHex || !r) return [];
-    // Runs to MAX_STEPS unconditionally rather than to `tickCount` (only meaningful once Settled, long
-    // after the canvas needs to start animating). MAX_STEPS is `canonical_cursor()`'s own on-chain
-    // saturation point, so the stream can never run out from under a live fight.
-    return runFullFight(Buffer.from(r.seed), toHitEventEntries(r.fighters), MAX_STEPS).events;
+    // Runs to `finalCursor(fighterCount)` unconditionally rather than to `tickCount` (only meaningful
+    // once Settled, long after the canvas needs to start animating). `finalCursor` is
+    // `canonical_cursor()`'s own on-chain saturation point for THIS lineup, so the stream can never
+    // run out from under a live fight — and never overshoots it either, now that the ceiling scales
+    // with the roster instead of being one flat number for every lineup.
+    return runFullFight(Buffer.from(r.seed), toHitEventEntries(r.fighters), finalCursor(r.fighters.length))
+      .events;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedHex, entriesKey]);
 

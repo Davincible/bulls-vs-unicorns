@@ -14,7 +14,6 @@ import {
   ARENAS,
   EXTRACT_PENALTY_START_BPS,
   FIGHT_TIMEOUT_SECONDS,
-  MAX_STEPS,
   MIN_STAKE_USD,
   ONE_CENT_UNITS,
   SIDE_TOKEN,
@@ -26,6 +25,7 @@ import {
   counted,
   entriesOpen,
   feeOn,
+  finalCursor,
   nameFor,
   shortKey,
   sideTotals,
@@ -144,7 +144,7 @@ function bellLeft(live: LiveRound): string {
  *  a fight the chain is not running. */
 function paceLine(fighterCount: number): string {
   const rate = stepsPerSecond(fighterCount);
-  return `${rate} steps/sec · 2 per fighter · stops at ${MAX_STEPS.toLocaleString("en-US")}`;
+  return `${rate} steps/sec · 2 per fighter · stops at ${finalCursor(fighterCount).toLocaleString("en-US")}`;
 }
 
 /** Provenance for anything derived from the round on screen. It is only `chain` when the provider
@@ -251,8 +251,12 @@ function TheRound() {
               <RoundClockSlot className="num num--lg" />
             </div>
             <div className="u" style={{ marginTop: 6 }}>
-              {(live?.stepsNow ?? 0).toLocaleString("en-US")} / {MAX_STEPS.toLocaleString("en-US")}{" "}
-              steps
+              {/* The ceiling is per-lineup (`finalCursor(fighterCount)`), so with no round in scope
+                  there is no honest number to divide by — "0 / 0" would read as a fight already at
+                  its bell rather than as no fight existing yet. */}
+              {live
+                ? `${live.stepsNow.toLocaleString("en-US")} / ${finalCursor(fighters.length).toLocaleString("en-US")} steps`
+                : <><Dash /> steps</>}
             </div>
           </div>
         </div>
@@ -668,8 +672,14 @@ function TheArena() {
               state has ever had on this page. */}
           <RoundClockSlot className="num ovl-clock" />
           <div className="ovl-line">
+            {/* Same reasoning as 00-1's step readout: the ceiling is per-lineup
+                (`finalCursor(fighterCount)`), so with no round in scope there is no honest number to
+                divide by — printing a ceiling for a lineup of zero would claim a fight that isn't
+                there. */}
             <span className="u">
-              {(live?.stepsNow ?? 0).toLocaleString("en-US")}/{MAX_STEPS.toLocaleString("en-US")}
+              {live
+                ? `${live.stepsNow.toLocaleString("en-US")}/${finalCursor(fighters.length).toLocaleString("en-US")}`
+                : <Dash />}
             </span>
           </div>
           {/* WHO IS AHEAD, UNDER HOW LONG IS LEFT. The left edge of the field is one column and it

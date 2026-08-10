@@ -19,7 +19,8 @@
 //      immutable array; v2 has to survive the array being REPLACED mid-fight (an `extract()` forces
 //      the data layer to recompute the stream from the extraction point on). A cursor into the old
 //      array means nothing in the new one, so the only correct move is to re-derive the whole
-//      replay from step 0 — which is cheap, because it is a pure fold over at most 4,000 events.
+//      replay from step 0 — which is cheap, because it is a pure fold over at most
+//      `finalCursor(fighterCount)` events: 720 for a duel, 17,280 at the 48-fighter ceiling.
 //
 // Nothing here is a second opinion about fight state: `applyHitEvent` is `sim/hitEvents.ts`'s own,
 // the same function `hitEvents.test.ts` already proves reaches identical numbers to `tick()`'s
@@ -27,7 +28,7 @@
 
 import { applyHitEvent, type HitEvent } from "../../sim/hitEvents.ts";
 import type { ERFighter } from "../../sim/erSim.ts";
-import { MAX_STEPS, stepsPerSecond, type FighterView } from "../contract.ts";
+import { finalCursor, stepsPerSecond, type FighterView } from "../contract.ts";
 
 export interface ReplayState {
   /** Indexed by `FighterView.id`, which is the same index `HitEvent.attackerId`/`defenderId` use. */
@@ -38,9 +39,11 @@ export interface ReplayState {
 
 /** Where the playhead is, as a float step count — this canvas's sub-second twin of the program's own
  *  `canonical_cursor()`. Returns a float on purpose: it converges to the chain's integer
- *  `min(floor(elapsed) * stepsPerSecond(n), MAX_STEPS)` at every whole-second boundary, which is the
- *  only place the chain itself ever moves, and the fractional part in between exists purely to make
- *  the animation smooth. It never changes which events have "happened" at a second mark.
+ *  `min(floor(elapsed), FIGHT_TIMEOUT_SECONDS) * stepsPerSecond(n)` at every whole-second boundary,
+ *  which is the only place the chain itself ever moves, and the fractional part in between exists
+ *  purely to make the animation smooth. It never changes which events have "happened" at a second
+ *  mark. Clamped here to `finalCursor(n)` — the same bell, expressed as the per-lineup step ceiling
+ *  this function's return type actually wants.
  *
  *  `fighterCount` is the WHOLE lineup, dead included — `canonical_cursor()` takes
  *  `round.fighters.len()`, and a fight that sped up as players were knocked out would drift away
@@ -57,7 +60,7 @@ export function playheadStep(
 ): number {
   if (fightStartedAtMs === null) return 0;
   const elapsedSeconds = Math.max(0, (nowEpochMs - fightStartedAtMs) / 1000);
-  return Math.min(elapsedSeconds * stepsPerSecond(fighterCount), MAX_STEPS);
+  return Math.min(elapsedSeconds * stepsPerSecond(fighterCount), finalCursor(fighterCount));
 }
 
 /** The instant the lobby closed: everyone at full hp (= net-of-fee stake), nothing banked, nobody

@@ -65,6 +65,9 @@
 //   Lobby, expired, < 2         -> abandon_round, then straight on to the next round
 //   Drawing                     -> wait for the VRF callback, bounded; then walk away (see the wedge)
 //   Fight                       -> tick once a second; resolve once it is over or the bell has rung
+//                                  (resolve GRINDS on a badly neglected round — up to MAX_STEPS_PER_CALL
+//                                  steps per call, so it can take several passes through this same
+//                                  branch before the phase actually moves to Settled)
 //   Settled, still delegated    -> close_round
 //   Settled / Abandoned, home   -> sweep_house_take if it is owed; hold until nextLobbyOpensAt, then
 //                                  open_round for counter + 1
@@ -771,9 +774,11 @@ async function resolveRound(
   roundPda: PublicKey,
   byTimeout: boolean,
 ): Promise<void> {
+  // "resolving", not "settling": a call here can grind rather than finish (see the comment on
+  // `outcome.sent` below), so this log fires once per attempt at settling, not once per settle.
   info(byTimeout
-    ? `the bell has rung (${FIGHT_TIMEOUT_SECONDS}s) — settling round #${round.roundNo}`
-    : `one side has nobody standing — settling round #${round.roundNo}`);
+    ? `the bell has rung (${FIGHT_TIMEOUT_SECONDS}s) — resolving round #${round.roundNo}`
+    : `one side has nobody standing — resolving round #${round.roundNo}`);
 
   for (let attempt = 1; attempt <= RESOLVE_RETRY_ATTEMPTS; attempt++) {
     try {
@@ -783,10 +788,18 @@ async function resolveRound(
         `resolve #${round.roundNo}`,
       );
       if (outcome.sent) {
-        // THE RESULT HOLD STARTS HERE — derived from when `resolve` actually landed, not assumed from
-        // when the fight might have ended. Latched: `driveSettled` will not re-stamp it while this
-        // round stands, which is what makes the published countdown count DOWN.
-        ctx.timeline.settledObservedAtSec = ctx.client.nowSec();
+        // `settledObservedAtSec` is NOT stamped here, even though this line only runs after a `resolve`
+        // that landed. THE FIX THIS WAS: `resolve` now GRINDS rather than finishing in one call — a
+        // neglected round can carry up to `finalCursor(fighterCount)` steps of backlog (17,280 at 48
+        // fighters) and each call advances at most `MAX_STEPS_PER_CALL` (3,000), committing only once
+        // it genuinely catches the fight up. A "sent" resolve is therefore not "the round is settled";
+        // it can be one grind of up to six, and this round is still reading `Fight` on the very next
+        // poll. Stamping the result-hold start here would count down a hold for a result that does not
+        // exist yet. `driveSettled` below is the honest place: it stamps the first pass that OBSERVES
+        // `Settled`, which is exactly the moment a result exists to hold, whether that took one
+        // `resolve` or six. `refreshAfterStep` still belongs here — a sent resolve changed on-chain
+        // state (tick_count at minimum) even when it did not settle, so the next pass should re-read
+        // rather than act on the snapshot this one started with.
         ctx.refreshAfterStep = true;
       }
       return;
@@ -816,10 +829,17 @@ async function driveSettled(
   round: RawRoundAccount,
   roundPda: PublicKey,
 ): Promise<void> {
-  // LATCHED, NOT RE-STAMPED. A keeper that booted into an already-settled round did not see `resolve`
-  // land, so it stamps the first moment IT saw the result — honest, and it only ever extends the hold.
-  // What it must never do is stamp again on a later pass of the same round: that moves the published
-  // countdown backwards, which is the one thing the result hold exists not to do.
+  // THE ONLY PLACE THIS GETS STAMPED, NOT JUST A FALLBACK FOR IT. `resolveRound` used to stamp it
+  // itself the instant a `resolve` transaction landed, with this as a fallback for a keeper that
+  // booted into an already-settled round and never saw one land. That stopped being honest once
+  // `resolve` started GRINDING (a neglected round needs up to six calls, one `MAX_STEPS_PER_CALL` of
+  // backlog per call, to genuinely catch up) — a landed `resolve` no longer implies a settled round,
+  // so `resolveRound` no longer stamps at all, and every path to a result now passes through here.
+  //
+  // LATCHED, NOT RE-STAMPED, regardless: this stamps the first pass that OBSERVES `Settled`, once,
+  // and it only ever extends the hold. What it must never do is stamp again on a later pass of the
+  // same round: that moves the published countdown backwards, which is the one thing the result hold
+  // exists not to do.
   if (ctx.timeline.settledObservedAtSec === null) ctx.timeline.settledObservedAtSec = state.nowSec;
   const opensAt = ctx.timeline.settledObservedAtSec + RESULT_HOLD_SECONDS;
 
@@ -910,9 +930,11 @@ async function sweepHouseTake(
   roundPda: PublicKey,
 ): Promise<void> {
   if (!ctx.features.houseTakeSweep) return;
-  // `?? false` is the true value, not a default: a program with no sweep instruction has swept
-  // nothing. See `houseSwept` in chain/program.ts.
-  if (round.houseSwept ?? false) return;
+  // `?? 0` is the true value, not a default: a program with no sweep instruction has swept nothing.
+  // `round.houseSwept` is a `u8` on the wire (bytemuck can't make `bool` Pod — see `houseSwept` in
+  // chain/program.ts), so it is compared against `0` here rather than tested for truthiness, matching
+  // the type it actually decodes to.
+  if ((round.houseSwept ?? 0) !== 0) return;
   if (state.roundDelegated !== false) return; // still delegated, or not asked — see the doc comment
   if (state.nowSec < ctx.timeline.sweepRetryAfterSec) return;
 
@@ -1088,9 +1110,10 @@ async function closeOneFinishedRound(ctx: KeeperContext, state: KeeperChainState
   // already-closed branch, so `false` here is not a claim, it is an unused field.
   const delegated = round === null ? false : await ctx.client.isDelegated(roundPda);
   const decision = decideClose({
-    // `?? false` is the true value rather than a default — see `houseSwept` in chain/program.ts: a
+    // `roundCloser.ts`'s `houseSwept` is a `boolean` — this is the conversion point from the wire's
+    // `u8` (see `houseSwept` in chain/program.ts). `?? 0` is the true value rather than a default: a
     // program with no sweep instruction has swept nothing.
-    round: round === null ? null : { phase: round.phase, houseSwept: round.houseSwept ?? false },
+    round: round === null ? null : { phase: round.phase, houseSwept: (round.houseSwept ?? 0) !== 0 },
     delegated,
   });
 
@@ -1301,7 +1324,11 @@ async function summariseRound(ctx: KeeperContext, round: RawRoundAccount, roundP
   plain(`  pot            ${round.pot.toString()}`);
   plain(`  lobby          ${lobbySeconds}s ${c.d}(the window the chain recorded)${c.x}`);
   plain(`  drawing        ${fmtDuration(drawingSeconds)} ${c.d}(close_lobby_and_draw -> Fight, wall clock)${c.x}`);
-  plain(`  fight          ${fmtDuration(fightSeconds)} ${c.d}(fight_started_at -> resolve landing)${c.x}`);
+  // "-> round observed Settled", not "-> resolve landing": `resolveRound` can grind across several
+  // `resolve` calls on a neglected round (see its own comment), so the moment a `resolve` transaction
+  // lands is no longer necessarily the moment the round settles. `settledObservedAtSec` is stamped by
+  // `driveSettled` on the first pass that reads the phase as `Settled`, which is the honest instant.
+  plain(`  fight          ${fmtDuration(fightSeconds)} ${c.d}(fight_started_at -> round observed Settled)${c.x}`);
   plain(`  result hold    ${RESULT_HOLD_SECONDS}s ${c.d}(configured; close_round runs inside it)${c.x}`);
   plain(`  operator spent ${spent === null ? "unknown (this keeper did not open this round)" : `${fmtSol(spent)} ${c.d}(measured balance delta; includes the round PDA's rent, which nothing reclaims)${c.x}`}`);
 }

@@ -69,9 +69,13 @@ describe("clampLineup", () => {
   });
 
   it("clamps out-of-range requests to the program's own bounds instead of rejecting them", () => {
-    // Above the ceiling reads as "as many as possible" — 16 is that answer, and it is `MAX_FIGHTERS`
-    // in lib.rs. Below the floor reads as "as few as possible": 2, the minimum for a fight.
-    expect(clampLineup("40")).toBe(MAX_LINEUP);
+    // Above the ceiling reads as "as many as possible" — `MAX_LINEUP` is that answer, and it is
+    // `MAX_FIGHTERS` in lib.rs. Below the floor reads as "as few as possible": 2, the minimum.
+    //
+    // The over-ceiling probes are written against `MAX_LINEUP + 1` rather than a literal, because a
+    // literal stops probing the ceiling the moment the ceiling moves: this test used to ask for 40
+    // when the cap was 16, and 40 is now a perfectly legal lineup that clamps to nothing.
+    expect(clampLineup(String(MAX_LINEUP + 1))).toBe(MAX_LINEUP);
     expect(clampLineup("999999")).toBe(MAX_LINEUP);
     expect(clampLineup("1")).toBe(MIN_LINEUP);
     expect(clampLineup("0")).toBe(MIN_LINEUP);
@@ -88,7 +92,7 @@ describe("clampLineup", () => {
 
   it("accepts numbers as well as strings, on the same terms", () => {
     expect(clampLineup(16)).toBe(16);
-    expect(clampLineup(40)).toBe(MAX_LINEUP);
+    expect(clampLineup(MAX_LINEUP + 1)).toBe(MAX_LINEUP);
     expect(clampLineup(Number.NaN)).toBe(DEFAULT_LINEUP);
     expect(clampLineup(Number.POSITIVE_INFINITY)).toBe(DEFAULT_LINEUP);
   });
@@ -129,13 +133,17 @@ describe("buildLineup", () => {
 
   it("is a prefix — growing the lineup never recasts the fighters already in it", () => {
     // This is what makes two screenshots at different sizes comparable: fighter 3 is the same $100
-    // whale at 9 as at 16, so a difference between the two images is the LINEUP SIZE and not a
+    // whale at 9 as at 48, so a difference between the two images is the LINEUP SIZE and not a
     // different cast wearing the same numbers.
-    const sixteen = buildLineup(16);
+    //
+    // Compared against the FULL lineup, not against a literal 16 as it once was — a fixed reference
+    // shorter than `MAX_LINEUP` makes every assertion above its length vacuously true, so raising the
+    // cap would have quietly stopped testing the sizes the raise was for.
+    const full = buildLineup(MAX_LINEUP);
     for (let n = MIN_LINEUP; n <= MAX_LINEUP; n++) {
       const some = buildLineup(n);
-      expect(some.wallets, `lineup of ${n}`).toEqual(sixteen.wallets.slice(0, n));
-      expect(some.entries, `lineup of ${n}`).toEqual(sixteen.entries.slice(0, n));
+      expect(some.wallets, `lineup of ${n}`).toEqual(full.wallets.slice(0, n));
+      expect(some.entries, `lineup of ${n}`).toEqual(full.entries.slice(0, n));
     }
   });
 
@@ -148,7 +156,7 @@ describe("buildLineup", () => {
   });
 
   it("clamps rather than trusting its argument", () => {
-    expect(buildLineup(40).entries).toHaveLength(MAX_LINEUP);
+    expect(buildLineup(MAX_LINEUP + 1).entries).toHaveLength(MAX_LINEUP);
     expect(buildLineup(0).entries).toHaveLength(MIN_LINEUP);
     expect(buildLineup(Number.NaN).entries).toHaveLength(DEFAULT_LINEUP);
   });
@@ -182,9 +190,14 @@ describe("buildLineup", () => {
   });
 
   it("keeps every stake inside the fixture's stated $5–$100 band, with real spread", () => {
-    // Stake is what `field.ts`'s `radiusFor` sizes a disc from. A flat table would field sixteen
-    // identical circles and quietly retire the label-overlap case 16 fighters exists to stress, so
-    // spread is a property worth asserting rather than eyeballing.
+    // Stake is what `field.ts`'s `radiusFor` sizes a disc from. A flat table would field forty-eight
+    // identical circles and quietly retire the label-overlap case the large lineups exist to stress,
+    // so spread is a property worth asserting rather than eyeballing.
+    //
+    // The distinctness assertion below is now true BY CONSTRUCTION — `STAKE_USD`'s generated tail is
+    // dealt from the band without replacement rather than drawn from it. Kept anyway: it is the
+    // statement of what the dealing is FOR, and it is what fails if anyone reaches for the simpler
+    // `MIN + floor(rnd * span)` (measured: 25 distinct out of 32).
     const usd = buildLineup(MAX_LINEUP).entries.map((e) => unitsToUsd(e.stake));
     for (const v of usd) {
       expect(v).toBeGreaterThanOrEqual(5);

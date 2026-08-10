@@ -219,20 +219,29 @@ describe("the appointment book", () => {
     expect(held).toEqual([1, 0, 1]);
   });
 
-  it("keeps four fifths of the field's links mutual across a whole seeded fight", () => {
+  it("keeps three quarters of the field's links mutual across a whole seeded fight", () => {
     // THE RATCHET, and the one test here that is a measurement rather than a hand-checked fixture.
     // It has to be: reciprocity is a property of how the sweep behaves against a HASH-PICKED stream,
     // and a tidy synthetic fixture hides it — a round-robin of perfect matchings scores 100% under
     // the old back-to-front sweep too.
     //
     // Driven on the real thing (fixture lineup, seeded `runFullFight`, 30 seconds at 60fps, fighters
-    // dying out of the stream as their hp reaches zero) this measures 87.1% at nine fighters and
-    // 85.4% at sixteen. The same drive against `render/arena/retarget.ts`'s `computeTargets` — the
-    // shape this module replaced — scores 57.0% and 50.6%. The bar sits between the two regimes and
-    // is a floor to hold, not a target to hit: a change that legitimately trades a little reciprocity
-    // for something else stays green, and a change that reverts to a function-on-the-fighters does
-    // not.
-    for (const count of [9, 16]) {
+    // dying out of the stream as their hp reaches zero) this measures 87.0% at nine fighters, 84.8%
+    // at sixteen and 77.5% at forty-eight. The same drive against `render/arena/retarget.ts`'s
+    // `computeTargets` — the shape this module replaced — scores 57.0% and 50.6%. The bar sits
+    // between the two regimes and is a floor to hold, not a target to hit: a change that legitimately
+    // trades a little reciprocity for something else stays green, and a change that reverts to a
+    // function-on-the-fighters does not.
+    //
+    // RECIPROCITY FALLS AS THE LINEUP GROWS, AND 48 IS WHY THIS TEST WAS RENAMED. It used to sweep
+    // [9, 16] and call itself "four fifths", which was true of both points it measured while sixteen
+    // was the cap. At the cap's new value it is 77.5% — still clear of the 0.75 floor this test has
+    // always actually asserted, but no longer four fifths, so the name was quietly overclaiming by
+    // the width of the change. The trend is inherent rather than a defect: more fighters means more
+    // ways for the hash-picked stream to point two fighters at different partners in the same frame.
+    // Whether 77.5% is good ENOUGH to look right on a 48-disc canvas is a rendering question and
+    // belongs to whoever sizes that canvas; this test's job is to stop the ratchet slipping.
+    for (const count of [9, 16, 48]) {
       const events = fight(count, 1500);
       const driver = replayDriver(count, events);
       let mutual = 0;

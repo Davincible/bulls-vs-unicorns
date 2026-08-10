@@ -36,7 +36,9 @@
 //   cd er-demo && bun run scripts/verify-house-take.ts
 
 import { assertDevnetUrl } from "../src/devnet-guard.ts";
-import { BASE_RPC, PHASE_NAME, Phase, PROGRAM_ID, ROUTER_URL } from "../src/chain/constants.ts";
+import {
+  BASE_RPC, finalCursor, MAX_STEPS_PER_CALL, PHASE_NAME, Phase, PROGRAM_ID, ROUTER_URL,
+} from "../src/chain/constants.ts";
 import { createProgram } from "../src/chain/program.ts";
 import { sendTx } from "../src/chain/sendTx.ts";
 import { createBurnerWallet, loadOrCreateBurnerKeypair } from "../src/chain/useSigner.ts";
@@ -456,19 +458,43 @@ const LOBBY_SECONDS = 600;   // long, so "closed early" is a fact about the cloc
 
     // ---- 11. resolve ----------------------------------------------------------------------------
     heading("11. resolve — side 0 is empty, so the fight is genuinely over");
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const { signature } = await sendTx(router, roundIx.resolve(authority, { payer: forkPayer.publicKey, round: roundPda }), forkPayer, "resolve");
-        signatures.resolve = signature;
-        break;
-      } catch (e) {
-        if (anchorErrorCode(e) === "FightNotOverYet" && attempt < 3) {
-          warn(`resolve() too early (attempt ${attempt}) — waiting 3s`);
-          await sleep(3000);
-          continue;
+    // `resolve` no longer either throws FightNotOverYet or settles outright — it GRINDS, advancing
+    // the fight by at most MAX_STEPS_PER_CALL (3,000) steps per call and settling only once genuinely
+    // caught up. A call can come back `Ok` with the round STILL IN Fight, which is a WORK problem, not
+    // the TIMING problem FightNotOverYet is — conflating the two would either give up on a round that
+    // just needs another call, or wait on one that isn't behind at all. So this is two loops with two
+    // budgets: the inner one is the unchanged timing retry; the outer one re-sends resolve with NO
+    // sleep between grind calls, since the backlog at any lineup grows at only 2*fighterCount
+    // steps/second, far below the 3,000 one call clears. `close_round` right after this refuses a
+    // non-terminal round outright, so leaving without Settled here would only surface as a more
+    // confusing failure two steps down.
+    const maxGrindCalls = Math.ceil(finalCursor(round.fighterCount) / MAX_STEPS_PER_CALL);
+    let resolvedRound = round;
+    for (let grindCall = 1; grindCall <= maxGrindCalls; grindCall++) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const { signature } = await sendTx(router, roundIx.resolve(authority, { payer: forkPayer.publicKey, round: roundPda }), forkPayer, `resolve (grind ${grindCall}/${maxGrindCalls})`);
+          signatures.resolve = signature;
+          break;
+        } catch (e) {
+          if (anchorErrorCode(e) === "FightNotOverYet" && attempt < 3) {
+            warn(`resolve() too early (attempt ${attempt}) — waiting 3s`);
+            await sleep(3000);
+            continue;
+          }
+          throw e;
         }
-        throw e;
       }
+      resolvedRound = await authority.account.round.fetch(roundPda);
+      if (resolvedRound.phase === Phase.Settled) break;
+      info(`resolve() ground more steps but the round is still Fight (tick_count=${resolvedRound.tickCount.toString()}) — calling again immediately, no sleep`);
+    }
+    if (resolvedRound.phase !== Phase.Settled) {
+      throw new Error(
+        `round still in Fight after ${maxGrindCalls} grind calls (tick_count=${resolvedRound.tickCount.toString()}) — ` +
+        `this is a WORK problem (resolve() kept grinding but never caught the fight up), not a timing one ` +
+        `(FightNotOverYet, the bell never rang) — the two get separate retries above for exactly this reason.`,
+      );
     }
 
     // ---- 12. close_round + undelegate ------------------------------------------------------------
@@ -518,7 +544,10 @@ const LOBBY_SECONDS = 600;   // long, so "closed early" is a fact about the cloc
 
     // ---- 14. sweep_house_take ---------------------------------------------------------------------
     heading("14. sweep_house_take — the take reaches the arena's books");
-    if (final.houseSwept) throw new Error("round is already swept before this script swept it");
+    // Truthiness on `houseSwept` (a wire `u8`, not a `bool` — see `houseSwept` in chain/program.ts)
+    // still means what it looks like: 0/undefined falsy, 1 truthy — spelled out explicitly rather
+    // than relied on, since `=== true` a few lines below is the shape that goes quietly wrong here.
+    if ((final.houseSwept ?? 0) !== 0) throw new Error("round is already swept before this script swept it");
     {
       // Permissionless: signed by PLAYER B, who is neither the arena authority nor an account in the
       // instruction. That is the claim being tested, so a fork-payer signature here would prove less.
@@ -544,9 +573,13 @@ const LOBBY_SECONDS = 600;   // long, so "closed early" is a fact about the cloc
     await readSettled(
       "round.house_swept after sweep_house_take",
       () => authorityBase.account.round.fetchNullable(roundPda),
-      (r) => r.houseSwept === true,
+      // `houseSwept` is a wire `u8`, not a `bool` (bytemuck can't make `bool` Pod — see `houseSwept`
+      // in chain/program.ts): `=== true` type-checked against the old `boolean`-typed field and was
+      // never true against the real value, so this would have retried until `readSettled`'s own
+      // timeout on every real sweep instead of confirming one.
+      (r) => r.houseSwept === 1,
     );
-    ok("Round.house_swept is now true");
+    ok("Round.house_swept is now 1");
 
     await expectRejection(
       "a SECOND sweep of the same round",

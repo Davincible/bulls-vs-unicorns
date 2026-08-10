@@ -269,8 +269,15 @@ why, and what would make it pressable.
 - Money figures go through `usd()`/`usdSigned()`; the fight clock through `clock()`.
 - Fight pacing comes from `contract.ts`, which **re-exports** `chain/constants.ts` (the maintained
   mirror of `lib.rs`). The fight is **stepped** and its pace is **per fighter**:
-  `stepsPerSecond(n) = n * 2`, ceiling `MAX_STEPS = 4_000`, and the round becomes settleable when
-  the fight is genuinely over **or** the bell rings at `FIGHT_TIMEOUT_SECONDS = 120`.
+  `stepsPerSecond(n) = n * 2`, and the round becomes settleable when the fight is genuinely over
+  **or** the bell rings at `FIGHT_TIMEOUT_SECONDS = 180`. There is no flat step ceiling any more —
+  `MAX_STEPS` used to be one, doing two unrelated jobs at once (how long a fight may run, and how
+  much work one transaction may do), and the two stopped agreeing the moment the fighter cap grew
+  past 16. They are now two different constants: `MAX_STEPS_PER_CALL` is a compute bound that
+  belongs only on `roundIx.tick`'s `steps` argument (`chain/round.ts`), and `finalCursor(fighterCount)`
+  — `FIGHT_TIMEOUT_SECONDS * stepsPerSecond(fighterCount)` — is the per-lineup bell every progress
+  bar, playhead clamp and precompute budget on this page wants: 720 steps for a duel, 17,280 at the
+  48-fighter ceiling. **Never use a flat number where a lineup is in scope.**
   There is no flat `STEPS_PER_SECOND` and no `MIN_FIGHT_SECONDS` — both existed earlier in this
   session, were copied into `contract.ts`, and were wrong within hours. Never hand-copy a chain
   constant a second time; a UI that disagrees is animating a different fight from the one settling.

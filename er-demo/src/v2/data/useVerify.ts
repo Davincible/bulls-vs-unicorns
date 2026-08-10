@@ -7,8 +7,9 @@
 // is 0 until `resolve()` writes it. Running it earlier would compare a zero-step replay against a
 // half-fought round and report a mismatch that means nothing — so this refuses, out loud, instead.
 //
-// WHY THE DEFERRED CALL. `verifyRound` is synchronous and does up to MAX_STEPS sha256 rounds; on a
-// large lineup that is long enough to drop frames. Flipping `running` and yielding to the browser
+// WHY THE DEFERRED CALL. `verifyRound` is synchronous and does up to `finalCursor(fighterCount)`
+// sha256 rounds — 17,280 at the 48-fighter ceiling, up from 4,000 at the old flat cap — long enough
+// to drop frames. Flipping `running` and yielding to the browser
 // before starting means the button can actually render its pending state, instead of the page
 // freezing with the button still looking idle.
 

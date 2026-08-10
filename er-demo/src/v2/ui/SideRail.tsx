@@ -6,7 +6,9 @@ import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
 import {
   SIDE_TOKEN,
+  STAKE_PRESETS,
   TOKENS,
+  usd,
   usdCompact,
   usdCompactSigned,
   usdToUnits,
@@ -15,11 +17,15 @@ import {
 } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
 import { ASSUMED_SESSION_TOP_UP_SOL, sessionPanelNote, sessionStatus } from "../data/autoSession.ts";
+import { runwayNote, type AutoLimits } from "../data/autoPolicy.ts";
+import type { HoldReason } from "../data/autoDeploy.ts";
+import type { ToastKind } from "../data/types.ts";
 import { ASSUMED_SESSION_MINUTES, type SessionLife } from "../data/sessionExpiry.ts";
 import { CombatLog } from "./CombatLog.tsx";
 import { ConnectPanel } from "./ConnectPanel.tsx";
 import { PaperTheme } from "./PaperTheme.tsx";
-import { Bar, Dash, HouseTag, Mark, Tag } from "./primitives.tsx";
+import { Bar, Dash, HouseTag, Mark, Seg, Tag } from "./primitives.tsx";
+import { feeNote } from "../views/feeCopy.ts";
 import { coverageFigure, coverageNote, coveragePhrase } from "../views/coverage.ts";
 import { useShell, type Rail } from "./shell.ts";
 import { useFocusTrap } from "./useFocusTrap.ts";
@@ -64,13 +70,44 @@ function Fact({ name, children }: { name: string; children: ReactNode }) {
 // Tenant 1 — wallet, session, and the simulated cashier
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * A SPAN OF MINUTES, IN WORDS THAT STAY SENSIBLE AT ANY SCALE — because the scale moves underneath
+ * this file and has already moved once.
+ *
+ * THE DEFECT IT FIXES, verbatim from the line below it: `roughly ${life.minutesLeft} minutes left`.
+ * That was written when a play session was short enough for minutes to be the unit anybody would
+ * think in, and it read perfectly. The session's length is a private const this workstream does not
+ * own (`sessionExpiry.ts` is the single mirror of it and explains why); it then grew by more than an
+ * order of magnitude, and the same sentence started printing a four-figure minute count —
+ * arithmetically true, useless to read, and the exact shape of copy that survives the change that
+ * invalidates it because nobody re-reads a working sentence.
+ *
+ * So no unit is chosen here in advance: minutes while minutes are the unit somebody thinks in, hours
+ * past that, days past that. It takes minutes because that is what `SessionLife` counts in, and it
+ * commits to no period at all, which is the property that has to hold whatever the constant becomes
+ * next. Everything it produces is approximate — it is rendering an inference, not a deadline.
+ */
+function spanOfMinutes(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  if (m < 1) return "under a minute";
+  if (m < 120) return `${m} ${m === 1 ? "minute" : "minutes"}`;
+  const hours = Math.round(m / 60);
+  if (hours < 48) return `about ${hours} hours`;
+  const days = Math.round(hours / 24);
+  return `about ${days} ${days === 1 ? "day" : "days"}`;
+}
+
 /** HOW LONG THE SESSION HAS LEFT, in words — every one of them hedged, and none of them a deadline.
  *
- *  `sessionExpiry.ts` counts forward from a MIRRORED constant (the hour lives as a private const in
+ *  `sessionExpiry.ts` counts forward from a MIRRORED constant (the length lives as a private const in
  *  `chain/session/useSessionKeyManager.ts`), so this is an inference and is written as one. Nothing
  *  here is an instruction any more: a lapsed session is replaced by the next move on its own (see
  *  `autoSession.ts`'s `afterRefusal`). It is here so a player who opens this panel can SEE what is
  *  signing for them and roughly how long it has, not so they can be told to go and fix something.
+ *
+ *  NO SENTENCE HERE NAMES A PERIOD, and that is a rule rather than a preference — see `spanOfMinutes`
+ *  for the incident. "Past its hour" was the other half of the same defect and is now "past its
+ *  expiry": it was a claim about a constant this file does not own, printed as a fact.
  *
  *  `{ known: false }` is a real and common answer, not an error: a session restored from a previous
  *  visit has no local record of when it began. Saying so beats inventing a clock. */
@@ -79,19 +116,432 @@ function sessionAge(life: SessionLife): string {
     return "Started in an earlier visit, so its age is unknown here. If the chain refuses a move on it, the next move replaces it — you do not have to do anything.";
   }
   if (life.lapsed) {
-    return "Probably past its hour. It may still work — the chain decides, not this page — and if the chain refuses it, the next move replaces it for you.";
+    return "Probably past its expiry. It may still work — the chain decides, not this page — and if the chain refuses it, the next move replaces it for you.";
   }
   const elapsed = Math.max(0, ASSUMED_SESSION_MINUTES - life.minutesLeft);
   // `minutesLeft` is rounded up, so the first minute of a session reported "Started about 0 minutes
   // ago" — a number doing no work in a sentence that reads better without it.
   const age =
     elapsed < 1
-      ? `Started just now · roughly ${life.minutesLeft} minutes left.`
-      : `Started about ${elapsed} ${elapsed === 1 ? "minute" : "minutes"} ago · roughly ${life.minutesLeft} left.`;
+      ? `Started just now · roughly ${spanOfMinutes(life.minutesLeft)} left.`
+      : `Started about ${spanOfMinutes(elapsed)} ago · roughly ${spanOfMinutes(life.minutesLeft)} left.`;
   // The nudge is a description, not a chore: the renewal happens on the next move whether or not
   // anybody reads this. Worth saying only because it costs two approvals rather than the usual none,
   // and a player who would rather take that between rounds than mid-fight can now choose to.
   return life.lapsing ? `${age} When it runs out the next move replaces it — two approvals.` : age;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Auto-deploy — the account of a rule that spends money with nobody in the room, and the stops
+// ---------------------------------------------------------------------------------------------
+
+/** The budgets offered as one press. Presets rather than a free field for the reason every other
+ *  money control on this page is: this is a decision made once, in a 420px column, and a number box
+ *  mid-edit is a NaN that `limitBlock` and `clampToLimits` both have to defend against. The list
+ *  brackets `DEFAULT_LIMITS.budgetUsd`, which has to be IN it — a Seg whose current value is not one
+ *  of its options renders four unpressed buttons and reads as a control with no setting. */
+const BUDGET_PRESETS_USD = [50, 100, 250, 500];
+
+/** `null` is a real setting for both of these — "no drawdown stop", "no round ceiling" — and it is
+ *  not the same as zero. A 0% drawdown stop means "the moment I am down at all", which `limitBlock`
+ *  implements deliberately; a 0 round ceiling would mean a run that may enter no rounds. So the OFF
+ *  choice is carried as an id of its own rather than as a sentinel number, and the two conversions
+ *  below are the only place the mapping exists. */
+const OFF = "off";
+const DRAWDOWN_OPTIONS = [
+  { id: OFF, label: "Off" },
+  { id: "25", label: "25%" },
+  { id: "50", label: "50%" },
+  { id: "75", label: "75%" },
+];
+const CEILING_OPTIONS = [
+  { id: OFF, label: "None" },
+  { id: "10", label: "10" },
+  { id: "25", label: "25" },
+  { id: "100", label: "100" },
+];
+
+function limitId(value: number | null): string {
+  return value === null ? OFF : String(value);
+}
+
+function limitValue(id: string): number | null {
+  return id === OFF ? null : Number(id);
+}
+
+/** WHAT THE RULE IS, IN A HEADLINE — the `Status` row, which is a category and never a paraphrase.
+ *
+ *  `autoDeploy.status` is the sentence, it is already written, and it is already tested next to the
+ *  rule that produces it (`holdText`). Nothing here restates it. What a `Fact` row needs and a
+ *  paragraph cannot be is the answer at a glance to the one question a player opening this rail is
+ *  actually holding: is money still going out, and if it has stopped, is it stopped because it is
+ *  between rounds or because it is waiting on me?
+ *
+ *  EVERY `HoldReason` GETS ITS OWN CASE, ON PURPOSE. Each new one is a new decision about which of
+ *  those two a player is in, and quietly filing it under "running" would report a rule that has
+ *  STOPPED as one that is merely between rounds — the single most expensive thing this surface could
+ *  get wrong.
+ *
+ *  This comment used to say the switch had no `default` and that "the build fails here instead". The
+ *  first half was true and the second was not, which made it worse than saying nothing: it advertised
+ *  a guarantee nobody had checked. `tsconfig.app.json` does not set `strict` or `noImplicitReturns`,
+ *  so a missing member fell out of the bottom as `undefined` and the caller's `standing.word` threw —
+ *  a white screen, of the same class as commit 6d83f0a. There is now a real `default` at the foot of
+ *  the switch carrying a `never` assignment, which fails the build for the reason this paragraph
+ *  always claimed, plus a runtime fallback for the paths a compiler cannot see.
+ *
+ *  `sessionHold` exists because of where this block sits. It is directly beneath `Play session`, and
+ *  every one of these four reasons is answered by that block — so the copy points at it rather than
+ *  describing a panel the reader is already looking at. `no-signer` is deliberately not one of them:
+ *  its sentence points at the WALLET, which is a different block again. */
+function standingOf(
+  armed: boolean,
+  hold: HoldReason | null,
+): { word: string; sessionHold: boolean } {
+  // `hold` is null exactly when a deposit is being sent right now — see `AutoDeployHandle.hold`.
+  if (hold === null) return { word: armed ? "DEPOSITING NOW" : "OFF", sessionHold: false };
+
+  switch (hold) {
+    case "disarmed":
+      return { word: "OFF", sessionHold: false };
+
+    // Between rounds, mid-attempt, or waiting on a poll. Every one of these lifts by itself, with
+    // nothing to press and no round lost.
+    case "no-round":
+    case "round-changing":
+    case "waiting-for-next-round":
+    case "deployed-this-round":
+    case "missed-this-round":
+    case "sending":
+    case "already-in":
+    case "busy":
+    case "backing-off":
+      return { word: "ARMED AND RUNNING", sessionHold: false };
+
+    // Armed, and nothing will be deposited until something changes that this page cannot change on
+    // its own. The sentence under this row names the one press in every case.
+    case "no-side":
+    case "amount-unusable":
+    case "drawdown-stopped":
+    case "drawdown-unknown":
+    case "budget-spent":
+    case "round-ceiling":
+    case "no-signer":
+      return { word: "ARMED BUT HELD", sessionHold: false };
+    case "session-lapsed":
+    case "needs-session":
+    case "session-stopped":
+    case "session-unaffordable":
+      return { word: "ARMED BUT HELD", sessionHold: true };
+    default: {
+      // THE EXHAUSTIVENESS PROMISE ABOVE THIS FUNCTION WAS NOT KEPT, AND THIS IS WHERE IT IS KEPT.
+      //
+      // The comment claimed "the build fails here instead" for an unhandled `HoldReason`. It did not:
+      // `tsconfig.app.json` sets `noUnusedLocals`, `noUnusedParameters`, `erasableSyntaxOnly` and
+      // `noFallthroughCasesInSwitch`, and deliberately NOT `strict` or `noImplicitReturns` — so a
+      // switch that misses a member falls out of the bottom, returns `undefined`, and the caller's
+      // `standing.word` throws. That is a WHITE SCREEN, not a wrong label, and it is the same class as
+      // commit 6d83f0a where a failed session took the whole app down. An agent adding a
+      // twenty-second `HoldReason` this session hit it, backed the member out, and routed around the
+      // rail rather than arming the mine further.
+      //
+      // TWO GUARDS, because they fail at different times and one of them is not enough. The `never`
+      // assignment is a COMPILE error the moment a member is added without a case here, and it works
+      // without `strict` — assigning a non-`never` to `never` is an error in any mode, which is
+      // exactly why this idiom is worth having in a project that has not turned strict on. The
+      // returned value is the RUNTIME half, for the paths a compiler cannot see: a stale bundle, a
+      // value cast through `any`, a hold string arriving from somewhere this type does not govern.
+      //
+      // "ARMED BUT HELD" is the honest fallback rather than "OFF". An unknown hold is still a hold —
+      // the rule is not running — and telling a player their unattended money-spending rule is OFF
+      // when it might not be is the one direction this must never be wrong in.
+      const unhandled: never = hold;
+      void unhandled;
+      return { word: "ARMED BUT HELD", sessionHold: false };
+    }
+  }
+}
+
+/**
+ * AUTO-DEPLOY, IN THE ONE PLACE THAT IS ALWAYS REACHABLE.
+ *
+ * WHY IT IS IN THIS RAIL AT ALL, given that 00-3 already has the full arm control. Because the arm
+ * control is four screens down inside one tab, and a rule that spends money unattended has to be
+ * answerable and stoppable from wherever the player happens to be standing. The rail is one press
+ * from every screen. Everything here is either an ACCOUNT of what the rule did while nobody was
+ * watching, or a way to stop it.
+ *
+ * IT SITS DIRECTLY UNDER `Play session`, AND THAT ADJACENCY IS LOAD-BEARING RATHER THAN TIDY. The
+ * session is the entire reason unattended play is possible — it is what signs without a dialog — and
+ * it is also the thing whose lapse stops the rule. So when the rule holds for a session reason, this
+ * block points one block up instead of describing a panel the reader is already looking at.
+ *
+ * NOTHING HERE ARMS ANYTHING, deliberately. Arming is a decision made beside the stake and the side,
+ * which is 00-3, and a second arm control would be a second place for the same state to be described
+ * differently. What this owns is the half that has to survive the player walking away: the limits
+ * committed to a run, the account of it, and the two stops.
+ */
+function AutoDeployBlock() {
+  const { autoDeploy, fee, session, toasts } = useArena();
+  const { armed, hold, limits, nextAmountUsd, side, status } = autoDeploy;
+  const standing = standingOf(armed, hold);
+
+  /** One limit at a time, with the others carried through — `setLimits` takes the whole set, applies
+   *  it mid-run without restarting it, and is a no-op on an unchanged set by identity. */
+  const setLimit = (patch: Partial<AutoLimits>) => autoDeploy.setLimits({ ...limits, ...patch });
+
+  // WHY REVOKE MIGHT NOT BE PRESSABLE, in the same shape and from the same evidence as the Stop
+  // button one block above — SPEC.md: a control a player cannot press must say why, and what would
+  // make it pressable. `work` covers the whole of an open/replace/close, including the wallet dialogs
+  // in the middle of it, which is precisely the window in which `busy` drops momentarily to false.
+  const revokeBlocked =
+    session.work !== null || session.busy
+      ? "Revoke comes back the moment the play session finishes opening, replacing or closing."
+      : !session.auto
+        ? "Already revoked — play sessions are stopped, so nothing can sign for you without your wallet. Start, in the block above, turns them back on."
+        : null;
+
+  return (
+    <Block title="Auto-deploy">
+      <Fact name="Status">{standing.word}</Fact>
+      <Fact name="Next deposit">
+        {nextAmountUsd === null ? <Dash /> : usdCompact(usdToUnits(nextAmountUsd))}
+      </Fact>
+      <Fact name="Side">
+        {side === null ? (
+          <Dash />
+        ) : (
+          <>
+            <Mark side={side} /> {SIDE_TOKEN[side].name}
+          </>
+        )}
+      </Fact>
+
+      {/* THE SENTENCE, FROM THE RULE. `holdText`/`abandonText` are written beside the state machine
+          and covered by its tests, so this renders them and adds nothing — one wording per outcome,
+          everywhere it appears. It is here armed or not: a rule that can spend money is owed a status
+          line that never reads as nothing. */}
+      <p className="lede" style={{ marginTop: 10, fontSize: 12 }}>
+        {status}
+      </p>
+      {standing.sessionHold ? (
+        <p className="lede" style={{ marginTop: 6, fontSize: 12 }}>
+          That is the Play session block directly above this one.
+        </p>
+      ) : null}
+
+      {/* THE TWO KILL SWITCHES — `SOCIAL.md` §5.4, and the distinction between them is the most
+          important thing on this surface.
+
+          FIRST, AND NOT LAST. The brief puts them at the foot of the block; they are here at the top
+          because a stop control below four rows of budget presets is not "one click from wherever
+          you are standing", it is one click plus a scroll, and the whole argument for putting
+          auto-deploy in this rail was that the stop must never be hunted for.
+
+          NEITHER GETS A CONFIRM DIALOG. A confirmation step on a stop button is a defect, not a
+          safety feature: the player is trying to stop money going out, every extra press is another
+          round's stake, and "are you sure" is the page asking a question at the one moment it has no
+          right to. Both are one press, both do exactly what their label says. */}
+      <div className="line line--wrap" style={{ marginTop: 14, gap: 8 }}>
+        <button
+          type="button"
+          className="btn btn--sm"
+          disabled={!armed}
+          title="Stops this page sending the next deposit. It does not close your session key."
+          onClick={autoDeploy.disarm}
+        >
+          Pause
+        </button>
+        <button
+          type="button"
+          className="btn btn--sm btn--ghost"
+          disabled={revokeBlocked !== null}
+          title="Closes the session key on chain, so it cannot enter another round at all."
+          onClick={pressSession(toasts.push, session.end)}
+        >
+          Revoke session
+        </button>
+      </div>
+      {/* THE COPY THAT MUST NOT FLATTER PAUSE. `SOCIAL.md` §5.4 is explicit that revoking is "the one
+          that works even if our server is compromised, our client is wrong, or we are unreachable"
+          and that it "must be described honestly as the real one". Pause is this page choosing to
+          stop; revoking removes the key's ability to act. A player picking between two stop buttons
+          is entitled to know which one survives us being wrong, and there is no wording of Pause that
+          earns the word "guarantee". */}
+      <p className="lede" style={{ marginTop: 10, fontSize: 12 }}>
+        Two stops, and only one of them holds if this page is wrong. Pause is this page deciding not
+        to send the next deposit: instant, no transaction, no approval, and it takes effect before the
+        next round. It is worth exactly as much as our code being correct. Revoke closes the session
+        key on chain, so the key that has been signing for you cannot enter another round at all —
+        that one still works if this client is wrong, our server is compromised, or we are
+        unreachable, which is why it is the real one. It costs one approval in Phantom and sends the
+        key&apos;s unspent SOL back. Neither asks you to confirm.
+      </p>
+      <p className="lede" style={{ marginTop: 8, fontSize: 12 }}>
+        {revokeBlocked ??
+          (armed
+            ? "Revoke is the same control as Stop in the block above; it is repeated here because this is where the choice between the two gets made."
+            : "Nothing is armed, so there is nothing to pause — the Repeat every round box in 00-3 Deploy is what arms one. Revoke still works, and stops this page signing anything without your wallet.")}
+      </p>
+
+      {/* SAID ONCE, PLAINLY, AND NOWHERE ELSE ON THE PAGE. Somebody leaving this running overnight is
+          entitled to know what their deposit actually does to a round, and it is not what the phrase
+          "join a round" implies: `scripts/keeper/houseBank.ts` seats exactly ONE house fighter into
+          an empty room (at one fighter the chain refuses to draw the round at all, which is the
+          invariant that number comes from), holds the lobby open for a person rather than a clock
+          (`keeperStatus.ts`'s `waiting-for-players`), and fills the board in around the first real
+          entrant before closing entries itself.
+
+          NO OPPONENT COUNT, AND THAT IS THE POINT OF THE LAST SENTENCE. At lobby time the board is
+          not drawn, so any figure for "who you would be fighting" would be invented — which SPEC
+          forbids outright. The honest version is the mechanism in words. */}
+      <p className="lede" style={{ marginTop: 14, fontSize: 12 }}>
+        Worth knowing before you leave one running: an automatic entry is usually the only real one in
+        the round. The keeper holds a lobby open with a single house fighter and waits for a person
+        rather than a clock, so your deposit is what closes entries and starts the fight — and the
+        rest of the board is filled in around you, after you are in. Who that turns out to be is not
+        knowable at lobby time, so this page will not put a number on it.
+      </p>
+
+      {/* THE STATEMENT. The only copy on this page written for somebody who was not present for any
+          of what it describes, which is why it is rendered whether or not anything has happened —
+          `tallyReport` says something true before the first round as well as after the hundredth. */}
+      <div className="line" style={{ marginTop: 18 }}>
+        <span className="u">What it has done</span>
+      </div>
+      <p className="lede" style={{ marginTop: 8, fontSize: 12 }}>
+        {autoDeploy.report}
+      </p>
+
+      {/* HOW FAR IT CAN GO, and which bound gets there first. `runwayNote` computes both money bounds
+          off the live `FeeRate` and names whichever of the money, the session and the ceiling
+          actually binds — which is the half that matters now: at the old session length the SESSION
+          was what ended an unattended run, and at the length it is now the budget or the drawdown
+          stop almost always gets there first. Rendering `runway.binding`'s own sentence rather than
+          asserting either one is what keeps this true the next time the constant moves. */}
+      <div className="line" style={{ marginTop: 18 }}>
+        <span className="u">How far it can go</span>
+      </div>
+      <p className="lede" style={{ marginTop: 8, fontSize: 12 }} title={feeNote(fee)}>
+        {/* A RUNWAY PRICED AT NOTHING IS NOT A PROJECTION, IT IS AN ARTEFACT. `runway` is computed
+            from `nextAmountUsd ?? 0`, so a rule that resolves to no sendable amount produces "funds 0
+            rounds if every fight is lost" — a figure with nothing behind it, in a sentence a player
+            would size a night's budget against. SPEC's rule is that we never invent a number, so the
+            projection is withheld and the reason for withholding it is what prints instead. */}
+        {nextAmountUsd === null
+          ? "Nothing to project yet: the rule does not currently resolve to an amount worth sending, and a runway priced at nothing would be a made-up number. The status above says what would change that."
+          : runwayNote(autoDeploy.runway)}
+      </p>
+
+      {/* THE BOUNDS, AS PRESETS. `Seg` because that is this page's control for a choice among a few
+          named values (the cashier's token picker above, 00-3's stake presets, the repeat sizing) —
+          a new control vocabulary for the one panel that spends money unattended would be the worst
+          possible place to introduce one. Applied through `setLimits`, which takes effect mid-run
+          without restarting it: raising a spent budget resumes the run at the next round, because
+          `budget-spent` is a derived hold rather than a flag. */}
+      <div className="line line--wrap" style={{ marginTop: 18 }}>
+        <span className="u">Limits</span>
+        <span className="push">
+          <Tag kind="sim" />
+        </span>
+      </div>
+
+      <div className="line line--wrap" style={{ marginTop: 12 }}>
+        <span className="u">Budget for this run</span>
+        <Seg<number>
+          ariaLabel="Budget for this run"
+          value={limits.budgetUsd}
+          onChange={(budgetUsd) => setLimit({ budgetUsd })}
+          options={BUDGET_PRESETS_USD.map((b) => ({ id: b, label: usd(usdToUnits(b), 0) }))}
+        />
+      </div>
+
+      <div className="line line--wrap" style={{ marginTop: 12 }}>
+        <span className="u">Most in any one round</span>
+        <Seg<number>
+          ariaLabel="Most it will put into any one round"
+          value={limits.perRoundCapUsd}
+          onChange={(perRoundCapUsd) => setLimit({ perRoundCapUsd })}
+          options={STAKE_PRESETS.map((p) => ({ id: p, label: usd(usdToUnits(p), 0) }))}
+        />
+      </div>
+
+      <div className="line line--wrap" style={{ marginTop: 12 }}>
+        <span className="u">Stop if down by</span>
+        <Seg<string>
+          ariaLabel="Drawdown stop, as a share of the budget"
+          value={limitId(limits.drawdownStopPct)}
+          onChange={(id) => setLimit({ drawdownStopPct: limitValue(id) })}
+          options={DRAWDOWN_OPTIONS}
+        />
+      </div>
+
+      <div className="line line--wrap" style={{ marginTop: 12 }}>
+        <span className="u">Rounds at most</span>
+        <Seg<string>
+          ariaLabel="Round ceiling for this run"
+          value={limitId(limits.maxRounds)}
+          onChange={(id) => setLimit({ maxRounds: limitValue(id) })}
+          options={CEILING_OPTIONS}
+        />
+      </div>
+
+      {/* WHAT THE `SIM` MARKER ABOVE ACTUALLY MEANS HERE, because "simulated" is doing a narrower and
+          more important job than it does over the cashier. These are not readings of a simulated
+          ledger — they are bounds this TAB enforces on real transactions, and the program knows
+          nothing about any of them. It custodies no tokens, so there is no committed capital anywhere
+          for a budget to be a budget OF, and nothing on chain would stop a second tab.
+
+          AND THE SECOND SENTENCE IS REQUIRED RATHER THAN HELPFUL: `setLimits`' own note says a panel
+          offering both the budget and the drawdown stop is owed it. The stop is a percentage of what
+          is committed, so raising the budget raises the dollar loss it tolerates, in proportion —
+          which is what "half of what I put in" means when somebody puts more in, and is not what a
+          player pressing one control necessarily has in mind. */}
+      <p className="lede" style={{ marginTop: 12, fontSize: 12 }}>
+        These bounds are enforced by this tab, not by the program — the arena custodies no tokens, so
+        nothing on chain knows a budget exists, and closing this tab ends the run rather than settling
+        it. The drawdown stop is a share of the budget, so raising the budget also raises the loss it
+        will sit through, in proportion.
+      </p>
+    </Block>
+  );
+}
+
+/**
+ * THE SESSION BUTTONS THREW INTO NOTHING, and the message they threw was the one written to unblock
+ * the person pressing them.
+ *
+ * `createSession` (`chain/session/useSessionKeyManager.ts`) pre-flights the balance itself and throws
+ * "wallet has X SOL but starting a session needs about 0.021 (it funds the session key so IT can pay
+ * for enter/extract)". That throw never reaches gum, so `session.error` — which is gum's channel —
+ * stays null and the panel rendered nothing at all. `void session.start()` then dropped it as an
+ * unhandled rejection into the console.
+ *
+ * IT IS REACHABLE, NOT THEORETICAL: `playGate` blocks at a balance of exactly zero, and the session
+ * top-up is 0.02 SOL. A wallet holding 0.005 devnet SOL passes the gate, gets an enabled Start
+ * button, presses it, and nothing whatsoever happens. `src/ui/SessionButton.tsx` solved the same
+ * problem in the legacy app for the same reason; a toast is this page's equivalent of its local error
+ * state.
+ *
+ * MODULE-LEVEL because two blocks in this rail now press session controls: the Play session block's
+ * Start/Stop, and the auto-deploy block's Revoke, which is the same `session.end` reached from the
+ * place the decision to use it is actually made. A second inline copy of this wrapper would be a
+ * second chance to forget it, and forgetting it is silent by construction — the symptom is a button
+ * that does nothing at all.
+ */
+function pressSession(
+  push: (text: string, kind?: ToastKind) => void,
+  fn: () => Promise<void>,
+): () => void {
+  return () => {
+    void (async () => {
+      try {
+        await fn();
+      } catch (e) {
+        push(e instanceof Error ? e.message : String(e), "error");
+      }
+    })();
+  };
 }
 
 function WalletTenant() {
@@ -125,31 +575,8 @@ function WalletTenant() {
     );
   };
 
-  /**
-   * THE SESSION BUTTONS THREW INTO NOTHING, and the message they threw was the one written to
-   * unblock the person pressing them.
-   *
-   * `createSession` (`chain/session/useSessionKeyManager.ts`) pre-flights the balance itself and
-   * throws "wallet has X SOL but starting a session needs about 0.021 (it funds the session key so
-   * IT can pay for enter/extract)". That throw never reaches gum, so `session.error` — which is
-   * gum's channel — stays null and the panel rendered nothing at all. `void session.start()` then
-   * dropped it as an unhandled rejection into the console.
-   *
-   * IT IS REACHABLE, NOT THEORETICAL: `playGate` blocks at a balance of exactly zero, and the
-   * session top-up is 0.02 SOL. A wallet holding 0.005 devnet SOL passes the gate, gets an enabled
-   * Start button, presses it, and nothing whatsoever happens. `src/ui/SessionButton.tsx` solved the
-   * same problem in the legacy app for the same reason; a toast is this page's equivalent of its
-   * local error state.
-   */
-  const runSession = (fn: () => Promise<void>) => () => {
-    void (async () => {
-      try {
-        await fn();
-      } catch (e) {
-        toasts.push(e instanceof Error ? e.message : String(e), "error");
-      }
-    })();
-  };
+  /** See `pressSession` — the whole account of why these two buttons need a wrapper at all. */
+  const runSession = (fn: () => Promise<void>) => pressSession(toasts.push, fn);
 
   return (
     <>
@@ -204,10 +631,16 @@ function WalletTenant() {
                   never asks it for anything else". Starting a session signs a transfer of 0.02 SOL
                   out of the wallet and into the session key (`SESSION_TOP_UP_LAMPORTS`) — twenty
                   times a typical fee, and a transfer rather than a fee. Naming it is cheap; the
-                  alternative was the same class of claim this codebase refuses everywhere else. */}
+                  alternative was the same class of claim this codebase refuses everywhere else.
+
+                  IT ALSO USED TO SAY "once an hour at most", WHICH WAS A DURATION STATED AS A FACT.
+                  How often that top-up is asked for is exactly how long a session lasts, which is a
+                  private const this workstream does not own and which has already moved (see
+                  `spanOfMinutes`). The honest and change-proof form is the RULE — once per session,
+                  and only when there isn't one — which stays true at every length. */}
               {burner
                 ? "Devnet only. This key is generated in your browser and pays the fees for your own entries."
-                : `Devnet only. Your wallet pays the devnet fees for your own entries. The only other thing it is ever asked for is ${ASSUMED_SESSION_TOP_UP_SOL} SOL to fund a play session key, once an hour at most, and revoking one sends the unspent part back.`}
+                : `Devnet only. Your wallet pays the devnet fees for your own entries. The only other thing it is ever asked for is ${ASSUMED_SESSION_TOP_UP_SOL} SOL to fund a play session key — once per session, and only when there isn't one — and revoking a session sends the unspent part back.`}
             </p>
           </>
         ) : null}
@@ -286,6 +719,11 @@ function WalletTenant() {
           {sessionPanelNote(session.plan)}
         </p>
       </Block>
+
+      {/* DIRECTLY UNDER THE SESSION, and above the money. The session is what makes unattended play
+          possible at all and its lapse is what stops the rule, so the block that explains itself by
+          pointing one block up has to be the one immediately below it. See `AutoDeployBlock`. */}
+      <AutoDeployBlock />
 
       <Block
         title="Simulated balances"

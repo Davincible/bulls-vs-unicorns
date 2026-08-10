@@ -124,10 +124,15 @@ describe("the assembled page", () => {
   });
 
   it("renders at both ends of the lineup the program allows", async () => {
-    // 2 and 16 are `MAX_FIGHTERS`' own bounds (`data/fixtureLineup.ts`). The page had only ever been
-    // run at the fixture's hand-written 9; the rosters, the standings and the canvas at 16 are what
-    // `?fighters=` exists to make reviewable, and nothing was watching them.
-    for (const lineup of [2, 16]) {
+    // 2 and 48 are `MAX_FIGHTERS`' own bounds (`data/fixtureLineup.ts`). The page had only ever been
+    // run at the fixture's hand-written 9; the rosters, the standings and the canvas at the ceiling
+    // are what `?fighters=` exists to make reviewable, and nothing was watching them.
+    //
+    // THE UPPER BOUND MOVED 16 -> 48 AND THIS SWEEP HAD TO MOVE WITH IT, or the test would have gone
+    // on rendering a third of the board and calling it "both ends". 16 is kept as the middle point:
+    // it is the lineup every deployed round has been fielding, so a regression there is a regression
+    // in what is actually live, and it is the only one of the three with existing screenshots.
+    for (const lineup of [2, 16, 48]) {
       const s = await open(browser(), {
         query: `fixture=1&fighters=${lineup}`,
         keeper: keeperStates.heldOpenLobby(),

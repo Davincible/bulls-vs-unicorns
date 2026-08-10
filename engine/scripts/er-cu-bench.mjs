@@ -1,9 +1,14 @@
 #!/usr/bin/env node
-// ER-030 — measure what a whole fight actually COSTS, on devnet.
+// ER-030 — measure what one fight-loop CALL actually COSTS, on devnet.
 //
-// The design decision this settles: can one transaction resolve an entire match? That depends on
-// compute units per simulation step, and estimating compute is how you end up with a program that
-// works at 500 steps and dies at 4,000 in front of players.
+// The design decision this settles: does a single `tick` call bounded by MAX_STEPS_PER_CALL fit
+// inside one transaction's compute budget? That used to be the same question as "can one transaction
+// resolve an entire match", because MAX_STEPS was both numbers at once. The zero_copy migration split
+// it: how LONG a fight may run is now FIGHT_TIMEOUT_SECONDS (via finalCursor), how much work one CALL
+// may do is MAX_STEPS_PER_CALL, and above a small lineup the two stop being close — a 48-fighter
+// round's bell is 17,280 steps against a 3,000-step-per-call bound, so resolving a neglected one takes
+// up to six calls. This script measures the second half — compute units per simulation step — because
+// THAT is how you end up with a program that works at 500 steps and dies at 3,000 in front of players.
 //
 // Method: SIMULATE `bench_fight` at increasing step counts and read `unitsConsumed` back. Simulation
 // returns real compute without spending anything or mutating state, so this can sweep freely.
@@ -25,8 +30,8 @@
 import { readFileSync } from "node:fs";
 import { ComputeBudgetProgram, Connection, Keypair, Transaction } from "@solana/web3.js";
 import {
-  BASE_RPC, DEVNET_GENESIS, FIGHT_TIMEOUT_SECONDS, MAX_STEPS, PROGRAM_ID, createArenaProgram,
-  loadArenaIdl, stepsPerSecond,
+  BASE_RPC, DEVNET_GENESIS, MAX_STEPS_PER_CALL, PROGRAM_ID, createArenaProgram, finalCursor,
+  loadArenaIdl,
 } from "./arena-client.mjs";
 
 const c = { g: "\x1b[32m", y: "\x1b[33m", r: "\x1b[31m", d: "\x1b[2m", x: "\x1b[0m" };
@@ -41,11 +46,13 @@ const CU_CEILING = 1_400_000;
  *  measures the FIGHT rather than the instruction wrapped around it. */
 const CU_RESERVED_FOR_THE_REST = 30_000;
 
-/** The sweep. `MAX_STEPS` is in it BY CONSTRUCTION rather than by the coincidence that it currently
- *  equals 4,000 — the headroom assertion at the bottom reads the measurement at that exact point, so
- *  a `MAX_STEPS` that moved out of a hardcoded list would silently turn that assertion into an
- *  extrapolation. */
-const STEP_SWEEP = [...new Set([100, 250, 500, 1_000, 2_000, MAX_STEPS, 8_000])].sort((a, b) => a - b);
+/** The sweep. `MAX_STEPS_PER_CALL` is in it BY CONSTRUCTION rather than by the coincidence that it
+ *  currently equals 3,000 — the headroom assertion at the bottom reads the measurement at that exact
+ *  point, so a `MAX_STEPS_PER_CALL` that moved out of a hardcoded list would silently turn that
+ *  assertion into an extrapolation. 8,000 stays in the sweep above the cap on purpose: it is what
+ *  shows the curve continuing past the point any real call is allowed to reach. */
+const STEP_SWEEP =
+  [...new Set([100, 250, 500, 1_000, 2_000, MAX_STEPS_PER_CALL, 8_000])].sort((a, b) => a - b);
 
 /** The full lineup, read off the IDL's own `Round.fighters` array rather than written as 16.
  *
@@ -171,42 +178,53 @@ function benchFighters(idl) {
   console.log(`  ${c.d}(${CU_RESERVED_FOR_THE_REST.toLocaleString()} CU reserved for the commit CPI and Anchor's own frame)${c.x}`);
 
   // THE ASSERTION THE OLD SCRIPT NEVER MADE. A number printed on a terminal is not a guarantee; the
-  // guarantee is that `resolve` can always finish a fight in one transaction, and that is exactly
-  // `MAX_STEPS` worth of fight.
+  // guarantee this constant exists to make is narrower than it used to be: that a single `tick` call
+  // asking for `MAX_STEPS_PER_CALL` steps always fits inside one transaction's compute budget. It is
+  // NOT "resolve can always finish a fight in one transaction" — that was true of the old `MAX_STEPS`
+  // only because the cursor ceiling and the per-call bound happened to be the same number, and they no
+  // longer are. `finalCursor(fighters)` — the bell, imported from arena-client.mjs rather than
+  // re-derived from its pieces here — is now PER LINEUP and can exceed the per-call bound widely: at 48 fighters the bell is 17,280 steps against a
+  // 3,000-step cap, so a neglected round takes up to six `tick` calls to reach resolve(). That is a
+  // keeper-cadence fact — how often it must call `tick` before calling `resolve` — not a compute
+  // failure, and it is not what this script measures or asserts.
   //
-  // IT IS CHECKED AGAINST THE MEASUREMENT AT `MAX_STEPS`, NOT AGAINST THE FITTED LINE, because the
-  // cost curve is not linear and the fit errs in the dangerous direction. `advance_fight` skips dead
-  // fighters cheaply, and at a full lineup the fight is largely decided well before the end of the
+  // IT IS CHECKED AGAINST THE MEASUREMENT AT `MAX_STEPS_PER_CALL`, NOT AGAINST THE FITTED LINE, because
+  // the cost curve is not linear and the fit errs in the dangerous direction. `advance_fight` skips
+  // dead fighters cheaply, and at a full lineup the fight is largely decided well before the end of the
   // sweep — so steps beyond that point cost far less than the early ones, a line drawn through 100
   // and 8,000 UNDERSTATES the marginal cost over the first few thousand, and `fits` comes out
   // optimistic. The direct reading has no such problem: it is what the transaction actually consumed.
   // The fit stays, as reporting.
   //
-  // One caveat, stated because the check would otherwise look stronger than it is: MAX_STEPS is read
-  // from er-demo/src/chain/constants.ts, which is a HAND-MAINTAINED mirror of lib.rs (the IDL carries
-  // no constants section). This notices a change to the mirror. It does not notice lib.rs moving and
-  // the mirror not following — closing that needs `#[constant]` on MAX_STEPS in the program.
-  const bell = stepsPerSecond(fighters) * FIGHT_TIMEOUT_SECONDS;
-  console.log(`\n  ${c.d}MAX_STEPS is ${MAX_STEPS.toLocaleString()}; the bell at ${fighters} fighters ` +
-    `reaches ${bell.toLocaleString()} steps${c.x}`);
+  // One caveat, stated because the check would otherwise look stronger than it is: MAX_STEPS_PER_CALL
+  // is read from er-demo/src/chain/constants.ts, which is a HAND-MAINTAINED mirror of lib.rs (the IDL
+  // carries no constants section). This notices a change to the mirror. It does not notice lib.rs
+  // moving and the mirror not following — closing that needs `#[constant]` on MAX_STEPS_PER_CALL in
+  // the program.
+  const bell = finalCursor(fighters);
+  const callsToResolve = Math.ceil(bell / MAX_STEPS_PER_CALL);
+  console.log(`\n  ${c.d}MAX_STEPS_PER_CALL is ${MAX_STEPS_PER_CALL.toLocaleString()}; the bell at ` +
+    `${fighters} fighters reaches ${bell.toLocaleString()} steps — a neglected round needs up to ` +
+    `${callsToResolve} tick call${callsToResolve === 1 ? "" : "s"} to get there${c.x}`);
 
-  const atMax = results.find((r) => r.steps === MAX_STEPS);
-  if (!atMax || atMax.err || atMax.cu <= 0) {
-    console.error(`  ${c.r}✗ no usable measurement at MAX_STEPS (${MAX_STEPS.toLocaleString()}) — ` +
-      `the headroom claim cannot be made.${c.x}`);
+  const atCap = results.find((r) => r.steps === MAX_STEPS_PER_CALL);
+  if (!atCap || atCap.err || atCap.cu <= 0) {
+    console.error(`  ${c.r}✗ no usable measurement at MAX_STEPS_PER_CALL ` +
+      `(${MAX_STEPS_PER_CALL.toLocaleString()}) — the headroom claim cannot be made.${c.x}`);
     process.exit(1);
   }
-  const worstCase = atMax.cu + CU_RESERVED_FOR_THE_REST;
+  const worstCase = atCap.cu + CU_RESERVED_FOR_THE_REST;
   if (worstCase > CU_CEILING) {
-    console.error(`  ${c.r}✗ a worst-case resolve (${MAX_STEPS.toLocaleString()} steps) does NOT fit in one ` +
-      `transaction — measured ${atMax.cu.toLocaleString()} CU + ${CU_RESERVED_FOR_THE_REST.toLocaleString()} ` +
-      `reserved = ${worstCase.toLocaleString()}, over the ${CU_CEILING.toLocaleString()} ceiling.${c.x}`);
-    console.error(`  ${c.d}Either MAX_STEPS must come down or the fight step must get cheaper. A round that ` +
-      `cannot be resolved is a round that is stuck.${c.x}`);
+    console.error(`  ${c.r}✗ a full call (${MAX_STEPS_PER_CALL.toLocaleString()} steps) does NOT fit in ` +
+      `one transaction — measured ${atCap.cu.toLocaleString()} CU + ` +
+      `${CU_RESERVED_FOR_THE_REST.toLocaleString()} reserved = ${worstCase.toLocaleString()}, over the ` +
+      `${CU_CEILING.toLocaleString()} ceiling.${c.x}`);
+    console.error(`  ${c.d}Either MAX_STEPS_PER_CALL must come down or the fight step must get cheaper. ` +
+      `A call that cannot land is a round that can never be ticked forward.${c.x}`);
     process.exit(1);
   }
-  console.log(`  ${c.g}✓${c.x} a worst-case resolve measured ${atMax.cu.toLocaleString()} CU — fits with ` +
-    `${(CU_CEILING - worstCase).toLocaleString()} CU to spare`);
+  console.log(`  ${c.g}✓${c.x} a full ${MAX_STEPS_PER_CALL.toLocaleString()}-step call measured ` +
+    `${atCap.cu.toLocaleString()} CU — fits with ${(CU_CEILING - worstCase).toLocaleString()} CU to spare`);
 })().catch((e) => {
   console.error(`\n  ${c.r}✗ ${e.message}${c.x}`);
   if (e.logs) console.error(e.logs.slice(-8).map((l) => "    " + l).join("\n"));

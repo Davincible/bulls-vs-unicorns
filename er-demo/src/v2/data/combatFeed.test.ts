@@ -2,9 +2,9 @@
 // ways a narrator lies: reporting an exchange before the playhead reaches it, reporting one twice,
 // and reporting one that involves a fighter who is not in the round.
 //
-// The fourth property under test is not correctness but cost. The stream runs to `MAX_STEPS` and the
-// readouts re-render four times a second, so "does it avoid walking the array" is a behaviour worth
-// pinning rather than a comment worth trusting.
+// The fourth property under test is not correctness but cost. The stream runs to
+// `finalCursor(fighterCount)` and the readouts re-render four times a second, so "does it avoid
+// walking the array" is a behaviour worth pinning rather than a comment worth trusting.
 
 import { describe, expect, it } from "vitest";
 import type { HitEvent } from "../../sim/hitEvents.ts";

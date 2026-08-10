@@ -77,7 +77,8 @@ export interface ArenaContextValue {
   /** The full precomputed hit stream for the current fight; empty outside Fight/Settled.
    *
    *  RAW, AND ALMOST NOTHING SHOULD WANT IT. It is the canvas's input — indices, bigint steps, no
-   *  fighters attached — and it runs to `MAX_STEPS` regardless of where the playhead is. A surface
+   *  fighters attached — and it runs to `finalCursor(fighterCount)` regardless of where the playhead
+   *  is. A surface
    *  that wants to NARRATE the fight wants `combat` below, which is this stream cut at the cursor and
    *  resolved to fighters, done once instead of once per consumer. */
   hitEvents: HitEvent[];
@@ -153,11 +154,42 @@ export interface ArenaContextValue {
 
   /** THE SESSION KEY — which is not a feature of this page so much as the way it signs.
    *
-   *  A session is opened by the FIRST deploy or extract and signs everything for the next hour, so
+   *  A session is opened by the FIRST deploy or extract and signs everything until it runs out, so
    *  the ordinary player never touches any of this: they approve one Phantom dialog, once, and the
-   *  rest of the hour is silent. `autoSession.ts` holds the whole decision and the words for it. */
+   *  rest of the session is silent. `autoSession.ts` holds the whole decision and the words for it.
+   *
+   *  NOTHING HERE SAYS HOW LONG THAT IS, deliberately. The length is a chosen constant in
+   *  `chain/session/useSessionKeyManager.ts` that this layer neither owns nor can read back
+   *  (`sessionExpiry.ts` is the single mirror of it and explains why), and it is moving. Every
+   *  sentence on this context is phrased to survive the move — "until it runs out", never "for the
+   *  hour" — because copy stating a duration is copy nobody re-reads on the day it changes. */
   session: {
     active: boolean;
+    /**
+     * HOW MANY SESSIONS THIS TAB HAS SUCCESSFULLY OPENED. Starts at 0, meaning none ever; bumped by
+     * `openSession` and `renewSession`, on SUCCESS ONLY. Monotonic, in memory, per tab.
+     *
+     * IT EXISTS BECAUSE THE OBVIOUS IDENTITY DOES NOT WORK, and that is worth writing down where
+     * somebody will find it before proposing the obvious one again. A lapsed session has to be
+     * latched — `autoDeploy.ts`'s `deadSessionEpoch` — so that an unattended rule pays for one
+     * refused transaction per lapse rather than one per round, and a latch needs something to key
+     * on. The session token PDA is the natural key: it is derived from the program, the session
+     * signer and the authority, and `sessionExpiry.ts` keys its own records on exactly that.
+     *
+     * It cannot be used here. gum REUSES THE SAME SESSION SIGNER KEYPAIR ACROSS A RENEWAL — that is
+     * precisely why renewal has to be revoke-then-create, and `scripts/verify-session-renewal.mjs`
+     * exists to prove it against the deployed program (its line 78 says so outright: a second
+     * `create_session` on the same signer fails because the token account still exists). A reused
+     * signer means an IDENTICAL PDA before and after a renewal, so a latch keyed on it would never
+     * see the world change: auto-deploy would go quiet at its first lapse and stay quiet for the
+     * rest of the tab's life, which is the exact opposite of the self-clearing property the whole
+     * design rests on.
+     *
+     * So the identity is an app-owned count that depends on no gum internals at all. It answers one
+     * question — "is the session that was refused still the session we have?" — and it answers it
+     * without needing to know anything about the session itself.
+     */
+    epoch: number;
     /** The session SDK is doing something. Deliberately NOT a "we are opening a session" signal:
      *  gum flips the same flag while signing an ordinary session-signed transaction, which is a
      *  hundred times an hour and needs no approval at all. See `opening`. */
@@ -185,7 +217,7 @@ export interface ArenaContextValue {
     /** HOW LONG IT HAS LEFT — INFERRED, AND ADVISORY ONLY.
      *
      *  Nothing can read a session's real expiry back (see `sessionExpiry.ts`): gum carries no
-     *  timestamp and the hour is a private const in `chain/session/useSessionKeyManager.ts`. This is
+     *  timestamp and the length is a private const in `chain/session/useSessionKeyManager.ts`. This is
      *  counted forward from when THIS browser started the session, so `{ known: false }` is a real
      *  and common answer — a session restored from a previous visit has no local record.
      *

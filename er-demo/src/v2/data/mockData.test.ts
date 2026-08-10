@@ -25,7 +25,7 @@ import {
   mockFightersAt,
 } from "./mockData.ts";
 import { DEFAULT_LINEUP, MAX_LINEUP, MIN_LINEUP } from "./fixtureLineup.ts";
-import { MAX_STEPS, worth } from "../contract.ts";
+import { finalCursor, worth } from "../contract.ts";
 
 describe("the live fixture round", () => {
   it("fields the default lineup when no flag is present", () => {
@@ -33,7 +33,8 @@ describe("the live fixture round", () => {
   });
 
   it("stays inside the program's own bounds", () => {
-    // `MAX_FIGHTERS = 16`, and `run_fight` clamps to a floor of 2.
+    // Written against `MIN_LINEUP`/`MAX_LINEUP` rather than the numbers they currently hold — the
+    // ceiling has already moved once (16 -> 48) and the floor is `run_fight`'s own clamp of 2.
     expect(MOCK_FIGHTER_SEEDS.length).toBeGreaterThanOrEqual(MIN_LINEUP);
     expect(MOCK_FIGHTER_SEEDS.length).toBeLessThanOrEqual(MAX_LINEUP);
   });
@@ -53,7 +54,10 @@ describe("the live fixture round", () => {
     // Nobody extracts in the fixture, so the pre-penalty identity has to hold at EVERY cursor, not
     // just at the end. A drift here would mean the fixture is inventing or destroying money.
     const pot = MOCK_FIGHTER_SEEDS.reduce((s, f) => s + f.stake, 0n);
-    for (const step of [0, 1, 17, 120, 500, 1_219, 2_508, MAX_STEPS]) {
+    // 2_508 is a probe near the tail, not the ceiling itself — it stays comfortably under
+    // `finalCursor(9)` = 3,240 (the default lineup's bell), so it still exercises "well into the
+    // fight" rather than "at the fight's very end", which the trailing `finalCursor` entry covers.
+    for (const step of [0, 1, 17, 120, 500, 1_219, 2_508, finalCursor(MOCK_FIGHTER_SEEDS.length)]) {
       const total = mockFightersAt(step).reduce((s, f) => s + worth(f), 0n);
       expect(total, `at step ${step}`).toBe(pot);
     }
@@ -61,7 +65,9 @@ describe("the live fixture round", () => {
 
   it("never lets a fighter's ring go negative or a corpse come back", () => {
     let deadSoFar = new Set<string>();
-    for (const step of [0, 50, 200, 600, 1_200, 2_600, MAX_STEPS]) {
+    // 2_600, like the 2_508 probe above, sits under `finalCursor(9)` = 3,240 — a late-fight sample,
+    // with the trailing `finalCursor` entry covering the fight's actual end.
+    for (const step of [0, 50, 200, 600, 1_200, 2_600, finalCursor(MOCK_FIGHTER_SEEDS.length)]) {
       const now = mockFightersAt(step);
       for (const f of now) {
         expect(f.hp, `${f.name} hp at ${step}`).toBeGreaterThanOrEqual(0n);
@@ -79,7 +85,7 @@ describe("the live fixture round", () => {
     let last = -1n;
     for (const ev of MOCK_HIT_EVENTS) {
       expect(ev.step).toBeGreaterThanOrEqual(last);
-      expect(Number(ev.step)).toBeLessThanOrEqual(MAX_STEPS);
+      expect(Number(ev.step)).toBeLessThanOrEqual(finalCursor(MOCK_FIGHTER_SEEDS.length));
       expect(ev.amount).toBeGreaterThan(0n);
       expect(ev.attackerId).not.toBe(ev.defenderId);
       last = ev.step;

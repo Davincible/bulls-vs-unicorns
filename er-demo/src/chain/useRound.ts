@@ -84,9 +84,14 @@ function toPlainRound(raw: RawRoundAccount): RoundState {
     // rather than left for the deploy that would have found it.
     penaltiesCollected: bnOr0(raw.penaltiesCollected),
     feesCollected: bnOr0(raw.feesCollected),
-    // Same reason, expressed for a bool: absent means the revision has no sweep, which means nothing
-    // has been swept.
-    houseSwept: raw.houseSwept ?? false,
+    // Same "absent means the revision has no sweep" reasoning as above, plus the boundary conversion
+    // this field alone needs: the wire value is a `u8` (bytemuck can't make `bool` Pod — see
+    // `RawRoundAccount.houseSwept`'s own doc comment in program.ts), so `raw.houseSwept` is a NUMBER
+    // here, not a boolean, and `?? false` on a number would type-error rather than silently misbehave.
+    // `!== 0` is the same normalization `f.dead !== 0` already does below for exactly the same reason —
+    // this is the one place a raw wire count becomes an app-level boolean; nothing past this function
+    // should ever see the byte again.
+    houseSwept: (raw.houseSwept ?? 0) !== 0,
     seedCommit: raw.seedCommit,
     seed: raw.seed,
     lobbyOpenedAt: bnOr0(raw.lobbyOpenedAt),

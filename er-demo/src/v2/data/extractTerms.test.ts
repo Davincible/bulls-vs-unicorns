@@ -8,7 +8,7 @@
 // some, claiming a rate outside Fight, and promising that waiting is cheaper when it isn't.
 
 import { describe, expect, it } from "vitest";
-import { extractPenaltyBps, penaltyHorizonSteps, splitExtraction } from "../../sim/erSim.ts";
+import { MAX_FIGHTERS, extractPenaltyBps, penaltyHorizonSteps, splitExtraction } from "../../sim/erSim.ts";
 import { EXTRACT_PENALTY_START_BPS, stepsPerSecond, type FighterView, type LiveRound } from "../contract.ts";
 import { extractEligibility, extractSplit, extractTerms } from "./extractTerms.ts";
 
@@ -31,6 +31,22 @@ function fighters(over: Partial<FighterView> = {}): FighterView[] {
     isYou,
   });
   return Array.from({ length: N }, (_, i) => (i === 0 ? { ...base(0, true), ...over } : base(i, false)));
+}
+
+/** `fighters()` at an arbitrary count. `fighters()` itself is pinned to the fixture's nine, which is
+ *  the right default for every test about quoting a rate and the wrong one for the sweep across
+ *  lineup sizes below. */
+function lineupOf(count: number): FighterView[] {
+  const nine = fighters();
+  return Array.from({ length: count }, (_, i) => ({
+    ...nine[i % nine.length],
+    id: i,
+    wallet: `w${i}`,
+    short: `w${i}`,
+    name: `W${i}`,
+    side: (i % 2) as 0 | 1,
+    isYou: i === 0,
+  }));
 }
 
 function liveRound(over: Partial<LiveRound> = {}): LiveRound {
@@ -110,16 +126,20 @@ describe("extractTerms", () => {
     expect(free.secondsToFree).toBe(0);
   });
 
-  it("gives a duel a much shorter horizon than a sixteen-way, because their fights are", () => {
-    const duel = extractTerms({ phase: "Fight", fighters: fighters().slice(0, 2), stepsNow: 0 });
-    const brawl = extractTerms({
-      phase: "Fight",
-      fighters: [...fighters(), ...fighters().slice(0, 7).map((f) => ({ ...f, isYou: false }))],
-      stepsNow: 0,
-    });
-    expect(duel.freeAtStep).toBe(Number(penaltyHorizonSteps(2)));
-    expect(brawl.freeAtStep).toBe(Number(penaltyHorizonSteps(16)));
-    expect(duel.freeAtStep).toBeLessThan(brawl.freeAtStep);
+  it("scales the horizon with the lineup, strictly, all the way to the program's ceiling", () => {
+    // It used to compare exactly two points, a duel against a sixteen-way, which is the whole claim
+    // only while sixteen IS the ceiling. It is not — `MAX_FIGHTERS` is 48 — and a two-point check
+    // sitting a third of the way up the table would have gone on passing while the entries above it
+    // were never quoted at all. So this walks the range instead and asserts the property the two
+    // points were standing in for: the horizon is STRICTLY increasing in the lineup, and the value
+    // this converter quotes is the one `sim/erSim.ts` holds, at every size the program will field.
+    let previous = 0;
+    for (let n = 2; n <= MAX_FIGHTERS; n++) {
+      const terms = extractTerms({ phase: "Fight", fighters: lineupOf(n), stepsNow: 0 });
+      expect(terms.freeAtStep, `lineup of ${n}`).toBe(Number(penaltyHorizonSteps(n)));
+      expect(terms.freeAtStep, `lineup of ${n}`).toBeGreaterThan(previous);
+      previous = terms.freeAtStep;
+    }
   });
 
   it("previews nothing outside Fight, where waiting does not move the cursor", () => {

@@ -52,7 +52,10 @@ function rawRound(over: Partial<RawRoundAccount> = {}): RawRoundAccount {
     // chosen before the fee existed — see the dedicated fixture below, which prices a lineup at a
     // real rate so `pot` and `grossDeposits` are genuinely different numbers.
     feesCollected: new BN(0),
-    houseSwept: false,
+    // A NUMBER, NOT A BOOLEAN, and this fixture builds a `RawRoundAccount` — wire data, not app
+    // data. `Round.house_swept` is a `u8` on chain (bytemuck cannot make `bool` Pod), so Anchor's
+    // coder hands back 0 or 1 and `useRound.ts` is the one place that turns it into a boolean.
+    houseSwept: 0,
     seedCommit: Array.from({ length: 32 }, () => 1),
     seed: Array.from({ length: 32 }, () => 2),
     // The lobby deadline, added to the program after this fixture was written. A summary derives

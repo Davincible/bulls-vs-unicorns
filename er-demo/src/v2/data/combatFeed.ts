@@ -8,9 +8,10 @@
 //
 // IT MUST NOT SCAN THE STREAM, and that is the whole design constraint. The fight runs at
 // `stepsPerSecond(n) = n * 2` and the readouts re-render four times a second, so anything O(events)
-// here would walk up to `MAX_STEPS` entries four times a second for as long as a fight lasts. The
-// stream is ordered by step and never reordered, so finding the cursor is a binary search and the
-// window is a slice: O(log n) and a bounded allocation, whatever the fight is doing.
+// here would walk up to `finalCursor(n)` entries — 17,280 at the 48-fighter ceiling — four times a
+// second for as long as a fight lasts. The stream is ordered by step and never reordered, so finding
+// the cursor is a binary search and the window is a slice: O(log n) and a bounded allocation,
+// whatever the fight is doing.
 //
 // The other half of the cheapness is the caller's: the stream itself is memoised on primitive keys
 // (`useLiveRound.ts`'s seed hex and entries key) precisely so a 1.5s poll returning a fresh
@@ -28,10 +29,13 @@ import type { CombatEvent, CombatFeed, FighterView } from "../contract.ts";
  *
  *  The window has to be big enough that a consumer which only looks once per throttle interval still
  *  sees everything it was owed. The fastest this program can produce exchanges is a full lobby:
- *  `stepsPerSecond(MAX_FIGHTERS)` = 32 a second, one per step. Four seconds of that is 128, which
- *  covers the toast rail's coalescing window (3s, `ui/combatFeed.ts`) with a second to spare for a
- *  dropped frame or a tab that was briefly backgrounded. A two-fighter duel runs at 4 a second, so
- *  the same window there is half a minute of fight.
+ *  `stepsPerSecond(MAX_FIGHTERS)` = 96 a second (48 fighters, one per step), raised from 32 alongside
+ *  the 16 -> 48 fighter cap. Four seconds of that is 384, which covers the toast rail's coalescing
+ *  window (3s, `ui/combatFeed.ts`) with a second to spare for a dropped frame or a tab that was
+ *  briefly backgrounded — the same margin as before, since it is a fixed 4-second window regardless
+ *  of rate. A two-fighter duel runs at 4 a second, so the same window there is now a minute and a
+ *  half of fight (was half a minute at the old cap) — DERIVED, not chosen: it is simply what a
+ *  4-second window looks like once expressed at the slowest lineup's pace.
  *
  *  It is deliberately larger than any log would render. A log shows the last handful and slices; the
  *  cost of the surplus is a bounded array of small objects rebuilt on a tick that already rebuilds

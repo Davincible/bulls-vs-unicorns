@@ -2,7 +2,8 @@
 // anyone doing anything.
 //
 // THE PROBLEM. A session key is what makes a mid-fight `extract()` land without a wallet popup, and
-// it lasts an hour. Nothing in this app can read that expiry back: gum-react-sdk's session object
+// it lasts for a fixed period set when it is created. Nothing in this app can read that expiry back:
+// gum-react-sdk's session object
 // carries no timestamp, and the sixty minutes is a PRIVATE const (`SESSION_VALID_MINUTES`) inside
 // `chain/session/useSessionKeyManager.ts`, which this workstream may not edit and which does not
 // export it. So a session silently lapses and the next `extract` — mid-fight, in the exact seconds
@@ -105,7 +106,7 @@ export type SessionLife =
       minutesLeft: number;
       /** Time to suggest starting a fresh one, before it matters mid-fight. */
       lapsing: boolean;
-      /** Believed to be past its hour. ADVISORY: the chain decides, and it may still work. */
+      /** Believed to be past its expiry. ADVISORY: the chain decides, and it may still work. */
       lapsed: boolean;
     };
 

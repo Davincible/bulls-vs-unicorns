@@ -20,7 +20,8 @@
 
 import { assertDevnetUrl } from "../src/devnet-guard.ts";
 import {
-  BASE_RPC, MIN_LOBBY_SECONDS, PHASE_NAME, Phase, PROGRAM_ID, ROUTER_URL,
+  BASE_RPC, finalCursor, MAX_STEPS_PER_CALL, MIN_LOBBY_SECONDS, PHASE_NAME, Phase, PROGRAM_ID,
+  ROUTER_URL,
 } from "../src/chain/constants.ts";
 import { createProgram, type RawRoundAccount } from "../src/chain/program.ts";
 import { sendTx } from "../src/chain/sendTx.ts";
@@ -284,27 +285,54 @@ const load = (p: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(rea
     // genuinely OVER (one side has nobody standing) or that the bell has rung
     // (FIGHT_TIMEOUT_SECONDS). Player A above is this round's only side-0 fighter and has just
     // extracted, which takes them out of the ring — so side 0 is empty and the fight really is over.
-    // The retry stays: it costs one branch and covers the case where a future edit to this script
-    // enters more fighters and the round has to wait for the bell instead.
+    // The FightNotOverYet retry stays: it costs one branch and covers the case where a future edit to
+    // this script enters more fighters and the round has to wait for the bell instead.
+    //
+    // THAT RETRY IS A TIMING CONCERN AND IT IS NOT THE ONLY ONE HERE ANY MORE. `resolve` used to
+    // either throw FightNotOverYet or settle the round outright; it now GRINDS — each call advances
+    // the fight by at most MAX_STEPS_PER_CALL (3,000) steps and only settles once it has genuinely
+    // caught up. A call can come back `Ok` with the round STILL IN Fight, and that is a WORK problem
+    // (more grinding needed), not a TIMING one — conflating the two would mean either giving up on a
+    // round that just needs another call, or waiting on a round that isn't behind at all. So this is
+    // two loops, each with its own budget: the inner one waits out FightNotOverYet (unchanged), the
+    // outer one re-sends resolve with NO sleep between grind calls, because at a full board the
+    // backlog grows at only 2*fighterCount steps/second — far below the 3,000 one call clears, so
+    // sleeping here would only waste wall-clock waiting for a race this script already wins. The
+    // bound is `finalCursor(fighterCount) / MAX_STEPS_PER_CALL` — the most steps this exact lineup's
+    // fight could ever be behind by, ceiling-divided by what one call can clear.
     heading("8. resolve — the fight is over (A extracted, side 0 is empty), so settle now");
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const { signature } = await sendTx(
-          router,
-          roundIx.resolve(authority, { payer: forkPayer.publicKey, round: roundPda }),
-          forkPayer,
-          "resolve",
-        );
-        signatures.resolve = signature;
-        break;
-      } catch (e) {
-        if (e instanceof AnchorError && e.error.errorCode.code === "FightNotOverYet" && attempt < 3) {
-          warn(`resolve() too early (attempt ${attempt}) — waiting 3s more`);
-          await sleep(3000);
-          continue;
+    let resolvedRound = await authority.account.round.fetch(roundPda);
+    const maxGrindCalls = Math.ceil(finalCursor(resolvedRound.fighterCount) / MAX_STEPS_PER_CALL);
+    for (let grindCall = 1; grindCall <= maxGrindCalls; grindCall++) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const { signature } = await sendTx(
+            router,
+            roundIx.resolve(authority, { payer: forkPayer.publicKey, round: roundPda }),
+            forkPayer,
+            `resolve (grind ${grindCall}/${maxGrindCalls})`,
+          );
+          signatures.resolve = signature;
+          break;
+        } catch (e) {
+          if (e instanceof AnchorError && e.error.errorCode.code === "FightNotOverYet" && attempt < 3) {
+            warn(`resolve() too early (attempt ${attempt}) — waiting 3s more`);
+            await sleep(3000);
+            continue;
+          }
+          throw e;
         }
-        throw e;
       }
+      resolvedRound = await authority.account.round.fetch(roundPda);
+      if (resolvedRound.phase === Phase.Settled) break;
+      info(`resolve() ground more steps but the round is still Fight (tick_count=${resolvedRound.tickCount.toString()}) — calling again immediately, no sleep`);
+    }
+    if (resolvedRound.phase !== Phase.Settled) {
+      throw new Error(
+        `round still in Fight after ${maxGrindCalls} grind calls (tick_count=${resolvedRound.tickCount.toString()}) — ` +
+        `this is a WORK problem (resolve() kept grinding but never caught the fight up), not a timing one ` +
+        `(FightNotOverYet, the bell never rang) — the two get separate retries above for exactly this reason.`,
+      );
     }
 
     // ---- close_round — commit_and_undelegate back to the base layer -------------------------------
@@ -339,7 +367,7 @@ const load = (p: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(rea
   winner          side ${final.winner}
   pot             ${final.pot.toString()}
   fighter_count   ${final.fighterCount}
-  tick_count      ${final.tickCount.toString()}  (steps run by resolve())
+  tick_count      ${final.tickCount.toString()}  (the fight's cursor once resolve() finished grinding it to Settled)
   lobby_opened_at ${final.lobbyOpenedAt.toString()}
   lobby_closes_at ${final.lobbyClosesAt.toString()}  (a ${Number(final.lobbyClosesAt.toString()) - Number(final.lobbyOpenedAt.toString())}s entry window; this script asked for ${MIN_LOBBY_SECONDS}s)
   fight_started_at ${final.fightStartedAt.toString()}`);

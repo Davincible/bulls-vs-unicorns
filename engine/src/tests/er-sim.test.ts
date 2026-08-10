@@ -45,7 +45,7 @@ test("nothing about the outcome depends on wall-clock time or call order", () =>
 // ── conservation ──────────────────────────────────────────────────────────────────────────────
 // The money invariant. Damage MOVES value between fighters; it must never create or destroy it.
 test("total value is conserved across the whole fight", () => {
-  const r = lobby(seedOf("cons"), MAX_FIGHTERS);  // cap is 16 now, not 40
+  const r = lobby(seedOf("cons"), MAX_FIGHTERS);  // the full lineup — MAX_FIGHTERS is 48
   const before = totalValue(r);
   tick(r, 2000);
   assert.equal(totalValue(r), before, "value was created or destroyed by the sim");

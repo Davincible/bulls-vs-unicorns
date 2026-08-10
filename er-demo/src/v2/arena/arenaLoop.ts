@@ -273,8 +273,8 @@ export function createArenaLoop(deps: ArenaLoopDeps): ArenaLoop {
     //
     // Its ramp was `roundT / BATTLE_MS`, a share of the round's own length. The exact analogue here is
     // the playhead's share of the LAST EVENT'S STEP, because that is where THIS fight stops — not
-    // where the program's cap would. Dividing by `MAX_STEPS` instead would be wrong by however short
-    // the fight is, which at the low end is nearly all of it: `stepsPerSecond(2)` is 4, so a duel that
+    // where the program's cap would. Dividing by `finalCursor(n)` instead would be wrong by however
+    // short the fight is, which at the low end is nearly all of it: `stepsPerSecond(2)` is 4, so a duel that
     // settles by step 300 would live its entire life inside the first 8% of the ramp and never once
     // leave a walk. An empty or not-yet-started stream is 0, which is exactly the opening pace.
     const lastStep = p.hitEvents.length > 0 ? Number(p.hitEvents[p.hitEvents.length - 1].step) : 0;

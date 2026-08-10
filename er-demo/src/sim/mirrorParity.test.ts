@@ -13,12 +13,12 @@
 // (two copies of the same logic, one of them stale), and it is exactly what the damage-basis and
 // draw-pair fixes had to be applied to twice, in lockstep, to avoid re-creating.
 //
-// So this sweeps: ~200 pseudorandom lineups across the whole legal space (2..16 fighters, three
-// distinct side layouts, stakes spanning four orders of magnitude including sub-DUST, top-up
-// entries, varying fee rates, a few hundred steps each) and asserts the two modules agree on every
-// field of every fighter, on the round-level counters, and on who won. It imports the engine module
-// by relative path — this is a test, not app code, so the "er-demo does not cross-import from
-// engine/" boundary that justifies the copy in the first place is not what is being crossed here.
+// So this sweeps: 282 lineups across the whole legal space (2..48 fighters, three distinct side
+// layouts, stakes spanning four orders of magnitude including sub-DUST, top-up entries, varying fee
+// rates, a few hundred steps each) and asserts the two modules agree on every field of every
+// fighter, on the round-level counters, and on who won. It imports the engine module by relative
+// path — this is a test, not app code, so the "er-demo does not cross-import from engine/" boundary
+// that justifies the copy in the first place is not what is being crossed here.
 //
 // DETERMINISTIC, NOT RANDOM. Lineups come from a fixed-seed integer PRNG, so a failure reproduces
 // exactly and CI never flakes. Widen the sweep by changing LINEUP_COUNT or GENERATOR_SEED, never by
@@ -41,7 +41,18 @@ function makeRng(seed: number): () => number {
 }
 
 const GENERATOR_SEED = 0x5eed_1e55;
-const LINEUP_COUNT = 200;
+
+/** 282 = 6 x 47 x ... — precisely, 6 x (MAX_FIGHTERS - 1), which is also divisible by the 3 side
+ *  layouts, so every (lineup size, layout) PAIR is generated exactly twice.
+ *
+ *  IT IS A MULTIPLE RATHER THAN A ROUND NUMBER because the size sweep below is now cyclic, and a
+ *  count that did not divide evenly would field some sizes more often than others for no reason. It
+ *  was 200, drawn randomly, back when there were 15 sizes to cover — and raising the cap to 48 is
+ *  what made that untenable rather than merely loose: covering 47 sizes by uniform random draw is a
+ *  coupon-collector problem needing ~47 x H(47) ~= 209 draws ON AVERAGE, so a 200-lineup random sweep
+ *  would have failed its own coverage assertion about as often as it passed. The fix is to stop
+ *  drawing and start cycling; see `count` in `generateLineups`. */
+const LINEUP_COUNT = 282;
 
 interface Entry {
   wallet: string;
@@ -93,7 +104,12 @@ function generateLineups(): Lineup[] {
     const seed = Buffer.alloc(32);
     for (let b = 0; b < 32; b += 4) seed.writeUInt32LE(rng(), b);
 
-    const count = 2 + (rng() % (demo.MAX_FIGHTERS - 1));   // 2..16 distinct fighters
+    // CYCLED, NOT DRAWN — for exactly the reason `sideFor`'s layouts are cycled: WHICH SIZE is the
+    // point, so leaving it to the dice makes coverage a thing to hope for and then assert, rather
+    // than a thing the generator cannot fail to do. At 15 sizes a random draw covered them all
+    // comfortably; at 47 it does not (see LINEUP_COUNT). Cycling also pairs every size with every
+    // layout, which a random size never guaranteed even when it did hit all fifteen.
+    const count = 2 + (i % (demo.MAX_FIGHTERS - 1));   // 2..48 distinct fighters
     const layout = i % 3;
     const entries: Entry[] = [];
     for (let f = 0; f < count; f++) {
@@ -195,7 +211,9 @@ describe("er-demo/src/sim/erSim.ts is the same program as engine/src/er-sim.ts",
 
     expect(Math.min(...counts)).toBe(2);
     expect(Math.max(...counts)).toBe(demo.MAX_FIGHTERS);
-    expect(counts.size).toBe(demo.MAX_FIGHTERS - 1);   // every lineup size 2..16 was generated
+    // Every lineup size 2..48 was generated. Guaranteed by the cyclic `count` rather than hoped for,
+    // which makes this assertion a check on the GENERATOR still being cyclic — not on the dice.
+    expect(counts.size).toBe(demo.MAX_FIGHTERS - 1);
     expect(sawExtraction).toBe(true);
     expect(sawSubDustStake).toBe(true);
     expect(sawDeath).toBe(true);

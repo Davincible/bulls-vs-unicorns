@@ -28,9 +28,9 @@ import { Connection, Keypair, PublicKey, SystemProgram, Transaction } from "@sol
 import { ConnectionMagicRouter } from "@magicblock-labs/ephemeral-rollups-sdk";
 import {
   BASE_RPC, BN, DELEGATION_PROGRAM_ID, DEVNET_GENESIS, EPHEMERAL_QUEUE, FIGHT_TIMEOUT_SECONDS,
-  MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID, MIN_LOBBY_SECONDS, PHASE_NAME, Phase, PROGRAM_ID, ROUTER_URL,
-  SLOT_HASHES_SYSVAR, VRF_PROGRAM_ID, arenaPda, createArenaProgram, decodeAccount, delegationPdas,
-  fightIsOver, loadArenaIdl, roundPda, stepsPerSecond,
+  MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID, MAX_STEPS_PER_CALL, MIN_LOBBY_SECONDS, PHASE_NAME, Phase,
+  PROGRAM_ID, ROUTER_URL, SLOT_HASHES_SYSVAR, VRF_PROGRAM_ID, arenaPda, createArenaProgram,
+  decodeAccount, delegationPdas, fightIsOver, finalCursor, loadArenaIdl, roundPda, stepsPerSecond,
 } from "./arena-client.mjs";
 
 const c = { r: "\x1b[31m", g: "\x1b[32m", y: "\x1b[33m", d: "\x1b[2m", x: "\x1b[0m" };
@@ -218,7 +218,7 @@ async function waitUntil(untilSec, what) {
   head("3. two fighters enter, inside the rollup");
   // TWO DISTINCT WALLETS, not the payer twice: `run_fight` refuses to let a wallet damage itself, so
   // a round whose fighters are the same identity never lands a blow, never satisfies `fight_is_over`,
-  // and can only end at the 120-second bell in a tie. Two identities make it a real fight.
+  // and can only end at the bell (FIGHT_TIMEOUT_SECONDS, 180s) in a tie. Two identities make it a real fight.
   //
   // EACH PAYS ITS OWN FEE, which is why they have to be funded at all. The frugal-looking version —
   // payer as fee payer, fighter as a second signer — is rejected by the router with "transaction
@@ -320,7 +320,7 @@ async function waitUntil(untilSec, what) {
   // then separately wait for the fight to end" it was: the CANONICAL cursor advances with real time
   // whether anyone ticks or not, but the fighter array on the account only moves when someone runs
   // the steps. Waiting without ticking therefore watched a fight that could never end, and reached
-  // `resolve` at the 120-second bell every single time — a tie, decided by a timeout, reported as a
+  // `resolve` at the bell (FIGHT_TIMEOUT_SECONDS, 180s) every single time — a tie, decided by a timeout, reported as a
   // round-trip. `resolve` would have caught the whole fight up itself in one call, which is exactly
   // why that bug was invisible.
   //
@@ -401,10 +401,37 @@ async function waitUntil(untilSec, what) {
   // Re-reading the phase first is the honest encoding of the claim. What is being proven is "a round
   // can live in an Ephemeral Rollup and come back", not "this process personally sent every
   // transaction". Step 9 asserts the part that actually matters and does not care who got there.
+  //
+  // NO FightNotOverYet RETRY ON THE SEND BELOW, AND THAT IS DELIBERATE, NOT AN OVERSIGHT THIS PASS
+  // LEFT BEHIND. Step 6's own tick loop exits only once `fightIsOver(current)` is true or the bell
+  // (`FIGHT_TIMEOUT_SECONDS`) has passed — exactly the two conditions `resolve` requires — so by the
+  // time this call is sent the round is never SUPPOSED to be timing-blocked. If it throws
+  // FightNotOverYet anyway, that is a clock-skew bug in this script's own bell check worth surfacing
+  // loudly, not a race worth quietly retrying around.
+  //
+  // `resolve` ITSELF CAN STILL NEED MORE THAN ONE CALL, THOUGH — a separate, WORK concern rather than
+  // a timing one. It advances the fight by at most MAX_STEPS_PER_CALL (3,000) steps per call and only
+  // settles once genuinely caught up, so one `Ok` response no longer means Settled. Step 6's loop
+  // keeps the stored cursor "level with the clock" (see its own comment), so in practice one call is
+  // always enough here — the loop below is that argument made structural rather than merely assumed,
+  // bounded by finalCursor(fighterCount)/MAX_STEPS_PER_CALL (the most steps this lineup's fight could
+  // ever be behind by, divided by what one call clears) and re-sent with no sleep between calls.
   const beforeResolve = await readRound(erProgram, validator, round);
   if (beforeResolve.phase === Phase.Fight) {
-    await send(router, [await erProgram.methods.resolve().accounts(settleAccounts).instruction()],
-      [payer], "resolve + commit");
+    const maxGrindCalls = Math.ceil(finalCursor(beforeResolve.fighterCount) / MAX_STEPS_PER_CALL);
+    let resolvedRound = beforeResolve;
+    for (let grindCall = 1; grindCall <= maxGrindCalls && resolvedRound.phase === Phase.Fight; grindCall++) {
+      await send(router, [await erProgram.methods.resolve().accounts(settleAccounts).instruction()],
+        [payer], maxGrindCalls > 1 ? `resolve + commit (grind ${grindCall}/${maxGrindCalls})` : "resolve + commit");
+      resolvedRound = await readRound(erProgram, validator, round);
+    }
+    if (resolvedRound.phase === Phase.Fight) {
+      die(
+        `round still in Fight after ${maxGrindCalls} grind calls (tick_count=${resolvedRound.tickCount}) — this is ` +
+        `a WORK problem (resolve() kept grinding but never caught the fight up), not the FightNotOverYet timing ` +
+        `problem step 6's own ticking was meant to rule out — see this step's comment.`,
+      );
+    }
   } else {
     info(`already ${PHASE_NAME[beforeResolve.phase]} — someone else resolved it first ` +
       `(resolve is permissionless). Skipping to the base-layer check.`);
@@ -434,14 +461,21 @@ async function waitUntil(untilSec, what) {
       // `penaltiesCollected` or the lobby window, and the next inserted field decided whether the
       // luck held.
       //
-      // THAT FIELD HAS NOW LANDED AND THE LUCK WOULD HAVE HELD AGAIN — `fees_collected` and
-      // `house_swept` went in between `penalties_collected` and `seed_commit`, still after all four —
-      // which is the least reassuring possible outcome and exactly why the argument was never about
-      // those four offsets. Nine bytes moved the fighter array from 165 to 174, and the only work this
-      // file had to do to keep up was name one more field. `verify-session-extract.mjs`, which still
-      // hand-rolls its decoder because it deliberately imports nothing, had to move every offset
-      // after the pot and now carries a length tripwire so that the next one fails loudly. That is
-      // the whole argument for reading through the IDL rather than a repair.
+      // THE LUCK RAN OUT FOR GOOD WHEN `Round` MOVED TO `zero_copy` (MAX_FIGHTERS 16 -> 48,
+      // FIGHT_TIMEOUT_SECONDS 120 -> 180): the migration REORDERED the struct rather than merely
+      // appending to it — `fighter_count` moved ahead of `bump`, `house_swept` came up beside it, and
+      // `Fighter` grew from 58 bytes to 64 with its own fields in a different order. None of `d[48]`,
+      // `d[49]`, `d.readUInt16LE(51)`, `d.readBigUInt64LE(53)` would read the fields they used to read
+      // today; some would not even read the same TYPE of field. This file needed no repair, because it
+      // had already stopped depending on the answer — `decodeAccount` below reads through the IDL,
+      // which regenerated itself off the same struct and kept naming the right fields under new
+      // offsets with zero lines changed here. That is the vindication the argument above was reasoning
+      // toward: not that the four offsets would keep holding, but that it would stop mattering whether
+      // they did. `verify-session-extract.mjs`, which still hand-rolls its decoder because it
+      // deliberately imports nothing, is the control group for that claim: it has no IDL between it
+      // and the bytes, so this same reordering is a live hazard for it in a way it no longer is here —
+      // not re-verified as part of this change (out of scope: this file's job is the offsets in
+      // er-roundtrip.mjs, not auditing a sibling script), but worth a reader's suspicion.
       const final = decodeAccount(baseProgram, "round", back, "the base layer");
       const big = (v) => BigInt(v.toString());
       // The three quantities every verifier in this repo computes, named the same way in each — see

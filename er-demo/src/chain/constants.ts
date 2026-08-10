@@ -106,19 +106,49 @@ export const PHASE_NAME = ["Lobby", "Drawing", "Fight", "Settled", "Abandoned"] 
 
 // ---- fight pacing — mirrored from programs/bulls-arena/src/lib.rs ------------------------------
 //
-// These four live here, not in render/, because they are chain facts: the program derives the
-// fight's cursor from them, and anything client-side that disagrees is drawing a different fight
-// from the one being settled. render/gameLoop.ts re-exports MAX_STEPS rather than keeping its own
+// These live here, not in render/, because they are chain facts: the program derives the fight's
+// cursor from them, and anything client-side that disagrees is drawing a different fight from the
+// one being settled. render/gameLoop.ts derives its playhead from these rather than keeping its own
 // copy — it used to hold `STEPS_PER_SECOND = 175 / MAX_STEPS = 7_000`, both already stale against
 // the deployed program, which is exactly the failure mode a single source of truth prevents.
 //
 // Read lib.rs's own doc comments for the measurements behind them; the short version is that the
 // rate is PER FIGHTER because a fight's length in steps grows ~n^1.5, so no flat rate can pace both
-// a two-fighter duel and a sixteen-fighter brawl.
+// a two-fighter duel and a forty-eight-fighter brawl.
 export const STEPS_PER_FIGHTER_PER_SECOND = 2;
-export const MAX_STEPS = 4_000;
-/** The bell: after this long, `resolve()` succeeds even with fighters still standing. */
-export const FIGHT_TIMEOUT_SECONDS = 120;
+
+/** THE MOST FIGHT ANY ONE TRANSACTION MAY RUN — a compute bound, and nothing else.
+ *
+ *  IT REPLACES `MAX_STEPS`, which was doing two jobs: the ceiling the cursor saturated at (i.e. how
+ *  long a fight may ever be) AND the ceiling on how much arithmetic one instruction could be handed.
+ *  At sixteen fighters the two coincided harmlessly — the bell was 3,840 steps and the cap 4,000, so
+ *  no real fight met either — and they stop coinciding the moment the lineup grows: a 48-fighter
+ *  fight needs ~11,900 steps to reach a conclusion. How LONG a fight may be is now
+ *  `FIGHT_TIMEOUT_SECONDS`; how much work one CALL may do is this.
+ *
+ *  THE ONLY THING IN THE BROWSER THAT SHOULD USE IT IS `roundIx.tick`'s `steps` argument. Anything
+ *  asking "how far can this fight ever get" wants `finalCursor(fighterCount)` below — the two used
+ *  to be the same number and are not any more, so a progress bar drawn against this one would fill
+ *  up and stop at 3,000 of a 17,280-step round.
+ *
+ *  Measured on the compiled SBF binary under litesvm (`programs/bulls-arena/tests/compute.rs`), at
+ *  `MAX_FIGHTERS` rather than at sixteen because cost per step RISES with the lineup. It is a CU
+ *  number, not a design number. */
+export const MAX_STEPS_PER_CALL = 3_000;
+
+/** THE BELL: after this long, `resolve()` succeeds even with fighters still standing — and it is now
+ *  also the cursor ceiling, which it was not before. `canonicalCursor` clamps ELAPSED SECONDS to it
+ *  rather than clamping the step product to a separate constant, which is the same statement made
+ *  where it belongs: a fight advances until the bell and then stops, at every lineup rather than by
+ *  coincidence at one.
+ *
+ *  180s, RAISED FROM 120s alongside the 16 -> 48 fighter cap. The old number was justified against a
+ *  sixteen-fighter worst case of 84s, but that measurement predated the `min(ring_a, ring_d)` damage
+ *  rule and every fight got longer under it: re-measured, a 120s bell was already settling a quarter
+ *  of live sixteen-fighter rounds on who was ahead rather than on a wipeout (74.2% concluded). 180s
+ *  is what a 48-fighter round needs to beat that same bar (76.2%). No lineup runs at a different
+ *  SPEED — the bell is a backstop, and a fight that finishes at 40 seconds still settles at 40. */
+export const FIGHT_TIMEOUT_SECONDS = 180;
 
 export function stepsPerSecond(fighterCount: number): number {
   return fighterCount * STEPS_PER_FIGHTER_PER_SECOND;
@@ -200,8 +230,26 @@ export function lobbyIsDead(fighterCount: number, lobbyClosesAtSec: number, nowS
  *  what a client should believe about the current fight regardless of whether anyone has ticked
  *  recently. `render/gameLoop.ts` computes the same quantity at sub-second precision for smooth
  *  animation; the two agree exactly at every whole-second mark, which is the only place the chain
- *  itself ever moves. */
+ *  itself ever moves.
+ *
+ *  THE CLAMP IS ON ELAPSED TIME, NOT ON THE PRODUCT. It used to be `.min(MAX_STEPS)` — a flat 4,000,
+ *  which is a statement about how much arithmetic one caller may be handed, applied to a quantity
+ *  that means how long a FIGHT is. Clamping the seconds to the bell says the thing that was actually
+ *  meant, and it is true at every lineup rather than only at the one where the two numbers happened
+ *  to sit near each other. */
 export function canonicalCursor(fightStartedAtSec: number, fighterCount: number, nowSec: number): number {
   const elapsed = Math.max(0, Math.floor(nowSec) - fightStartedAtSec);
-  return Math.min(elapsed * stepsPerSecond(fighterCount), MAX_STEPS);
+  return Math.min(elapsed, FIGHT_TIMEOUT_SECONDS) * stepsPerSecond(fighterCount);
+}
+
+/** The Rust `final_cursor()` — THE LAST CURSOR A FIGHT OF THIS LINEUP CAN EVER REACH, i.e. the bell
+ *  expressed in steps.
+ *
+ *  This is the number every "how far along is the fight" denominator wants, and it is PER LINEUP: a
+ *  two-fighter round tops out at 720 steps and a forty-eight-fighter round at 17,280. It used to be
+ *  the single constant `MAX_STEPS` for every lineup, which was wrong even at sixteen (the bell was
+ *  3,840, the constant 4,000) and merely close enough not to be noticed. Progress bars, playhead
+ *  clamps and precompute budgets all derive from here rather than restating the multiplication. */
+export function finalCursor(fighterCount: number): number {
+  return FIGHT_TIMEOUT_SECONDS * stepsPerSecond(fighterCount);
 }

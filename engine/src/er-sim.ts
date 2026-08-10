@@ -54,7 +54,12 @@ export interface ERRound {
 }
 
 export const BPS = 10_000n;
-export const MAX_FIGHTERS = 16;   // mirrors the Rust — see the stack-limit note there
+/** Mirrors the Rust. 48, raised from 16: `zero_copy` removed the 4 KB stack limit that used to bind
+ *  the cap, and once nothing structural refused a bigger board the binding constraint became the
+ *  GAME — 48 is the largest lineup that still reaches a conclusion before the bell as often as the
+ *  deployed sixteen-fighter round already does (76.2% against 74.2%). See `MAX_FIGHTERS` in lib.rs
+ *  for the sweep, and for why the fix was a longer bell rather than a faster fight. */
+export const MAX_FIGHTERS = 48;
 
 /** Below this, a fighter is finished off rather than left to decay.
  *
@@ -77,19 +82,32 @@ export const DUST = 1_000n;
  *  full reasoning and the alternatives rejected. */
 export const EXTRACT_PENALTY_START_BPS = 2_000n;
 
-/** The cursor at which extracting becomes free, indexed by `fighterCount - 2` (so 2..16 fighters).
+/** The cursor at which extracting becomes free, indexed by `fighterCount - 2` (so 2..48 fighters).
  *
- *  = round(25 × n^1.5), measured this session against this very module: 400 seeds per lineup size,
- *  equal stakes, counting steps until one side has nobody standing. A fight's length is ~n^1.5, and
- *  per-fighter pacing only divides that by n — so the horizon has to scale with the lineup or a duel
- *  (median 19.5s) and a sixteen-way (median 54.4s) cannot share one curve. Again: the Rust constant
- *  carries the measurement table and the reasoning; this is its mirror, and
+ *  = round(25 × n^1.5), measured against this very module: 400 seeds per lineup size, equal stakes,
+ *  counting steps until one side has nobody standing. A fight's length is ~n^1.5, and per-fighter
+ *  pacing only divides that by n — so the horizon has to scale with the lineup or a duel (median
+ *  19.5s) and a sixteen-way (median 54.4s) cannot share one curve.
+ *
+ *  EXTENDING THE TABLE FROM 16 SEATS TO 48 CHANGED NONE OF THE FIFTEEN ENTRIES THAT WERE ALREADY
+ *  HERE. The rule really is `round(25 × n^1.5)` and it was re-derived from the formula rather than
+ *  appended to, so every lineup the live arena currently fields is charged exactly what it is
+ *  charged today; only the entries above n = 16 are new.
+ *
+ *  Again: the Rust constant carries the measurement table and the reasoning; this is its mirror, and
  *  `parity_tests::the_typescript_mirrors_carry_the_same_penalty_curve` parses these very numbers out
  *  of this file and fails if they ever stop matching. */
 export const PENALTY_HORIZON_STEPS = [
-  71, 130, 200, 280, 367,             // n = 2..6
-  463, 566, 675, 791, 912,            // n = 7..11
-  1_039, 1_172, 1_310, 1_452, 1_600,  // n = 12..16
+    71,   130,   200,   280,   367,  // n =  2..6
+   463,   566,   675,   791,   912,  // n =  7..11
+ 1_039, 1_172, 1_310, 1_452, 1_600,  // n = 12..16
+ 1_752, 1_909, 2_070, 2_236, 2_406,  // n = 17..21
+ 2_580, 2_758, 2_939, 3_125, 3_314,  // n = 22..26
+ 3_507, 3_704, 3_904, 4_108, 4_315,  // n = 27..31
+ 4_525, 4_739, 4_956, 5_177, 5_400,  // n = 32..36
+ 5_627, 5_856, 6_089, 6_325, 6_563,  // n = 37..41
+ 6_805, 7_049, 7_297, 7_547, 7_800,  // n = 42..46
+ 8_055, 8_314,                       // n = 47..48
 ] as const;
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);

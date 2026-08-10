@@ -21,7 +21,7 @@ import {
 import {
   DEFAULT_EPHEMERAL_QUEUE,
   DEFAULT_LOBBY_SECONDS,
-  MAX_STEPS,
+  MAX_STEPS_PER_CALL,
   PROGRAM_ID,
   SLOT_HASHES_SYSVAR,
   VRF_PROGRAM_ID,
@@ -30,16 +30,29 @@ import type { BullsArenaProgram } from "./program.ts";
 
 const textEncoder = new TextEncoder();
 
-/** The ceiling a Solana transaction can request. `resolve` and `extract` both ask for it because both
- *  can, in the worst case, have to run the whole fight (MAX_STEPS steps) in one call — see
- *  `catch_up`'s doc comment in lib.rs. Matches CU_CEILING in engine/scripts/er-cu-bench.mjs. */
+/** The ceiling a Solana transaction can request. `resolve` and `extract` both ask for it because
+ *  `catch_up` (lib.rs) is bounded per call at `MAX_STEPS_PER_CALL` steps, not per fight — a call can,
+ *  in the worst case, have to run that many steps of backlog, and 3,000 * CU_PER_STEP + CU_TX_OVERHEAD
+ *  still fits comfortably under this with room to spare (940,000 of 1,400,000).
+ *
+ *  THIS NO LONGER MEANS ONE CALL FINISHES THE FIGHT. A round nobody ticked can carry up to
+ *  `finalCursor(fighterCount)` steps of backlog — 17,280 at 48 fighters — and `MAX_STEPS_PER_CALL`
+ *  caps every call, `resolve` included, at 3,000 of them. A neglected 48-fighter round needs up to six
+ *  `resolve` calls to grind through its backlog before it can settle; this constant only sizes what ONE
+ *  of those calls may cost, not how many are needed. Matches CU_CEILING in
+ *  engine/scripts/er-cu-bench.mjs. */
 const CU_CEILING = 1_400_000;
 
 /** Upper bound on one fight step, from the task-#15 re-measurement: the real cost falls from ~271 to
  *  ~198 CU/step as fighters die, so 300 is a ceiling rather than an average — a `tick` sized with this
  *  cannot run out of budget partway and leave the round mid-flight. The default 200,000 CU budget
  *  would silently cover a small tick and fail on a large one, which is the kind of intermittent
- *  failure that is worst to diagnose. */
+ *  failure that is worst to diagnose.
+ *
+ *  STILL VALID AFTER THE MAX_STEPS SPLIT: this is a per-step measurement, independent of how many
+ *  steps any one call is allowed to request. The request itself is now clamped tighter — at most
+ *  `MAX_STEPS_PER_CALL` (3,000) rather than the old MAX_STEPS (4,000) — so the headroom under
+ *  CU_CEILING this was sized against has only grown. */
 const CU_PER_STEP = 300;
 const CU_TX_OVERHEAD = 40_000;
 
@@ -260,12 +273,21 @@ export function closeLobbyAndDraw(
 // SESSION KEYS (Phase 6). Same `player`/`signer`/`sessionToken` shape as `enter` — see that
 // function's own comment. Extract is the mid-fight decision under real time pressure, so it's the
 // instruction Session Keys matters most for: no fresh wallet popup once a session is active.
-// The CU ceiling is NOT belt-and-braces here. `extract` now brings the fight up to the current
-// on-chain second before it banks anything (lib.rs `catch_up`) — because otherwise the payout would
-// depend on whether anyone had bothered to `tick` recently, which is the free-refund bug wearing a
-// different hat. In the normal case that is a handful of steps; on a round nobody has ticked it can
-// be the whole fight, and an extract that failed on compute budget at the moment a player pressed the
-// button would be the single worst failure this app has.
+// The CU ceiling is NOT belt-and-braces here. `extract` brings the fight up to the current on-chain
+// second before it banks anything (lib.rs `catch_up`) — because otherwise the payout would depend on
+// whether anyone had bothered to `tick` recently, which is the free-refund bug wearing a different
+// hat. In the normal case that is a handful of steps, and an extract that failed on compute budget at
+// the moment a player pressed the button would be the single worst failure this app has.
+//
+// IT CAN NO LONGER BE "THE WHOLE FIGHT", which is what this comment used to say and is worth
+// correcting rather than deleting, because the bound is the whole reason the fighter cap could rise.
+// That catch-up is now capped at `MAX_STEPS_PER_CALL` per call. On a round nobody has ticked, one
+// extract therefore cannot reach the present at all: the program answers `FightBehind` rather than
+// pricing the payout at a stale cursor, and `data/useActions.ts` responds by sending a `tick` and
+// retrying. Measured under LiteSVM, this instruction costs 651,018 CU — about 46% of the ceiling it
+// asks for. The ask stays at the ceiling because the margin is worth more here than the priority fee
+// it costs, but do NOT read that headroom as room to bundle a `tick` into this transaction: the two
+// together measure 1,278,835 CU, 91.3%, and `useActions.ts` explains why they are kept apart.
 export function extract(
   program: BullsArenaProgram,
   params: { round: PublicKey; player: PublicKey; signer: PublicKey; sessionToken: PublicKey | null },
@@ -292,7 +314,7 @@ export function extract(
 // The CU limit is sized from the REQUESTED steps rather than the ceiling — a tick is meant to be the
 // cheap, frequent call, and asking for 1.4M CU to run four steps would misreport what it costs.
 export function tick(program: BullsArenaProgram, params: { round: PublicKey; steps: number }) {
-  const steps = Math.max(1, Math.min(Math.floor(params.steps), MAX_STEPS));
+  const steps = Math.max(1, Math.min(Math.floor(params.steps), MAX_STEPS_PER_CALL));
   return program.methods
     .tick(steps)
     .accounts({ round: params.round })
@@ -421,10 +443,14 @@ export function sweepHouseTake(
 
 // ---- close_round_account — reclaim a finished round's rent ---------------------------------------
 //
-// THE ONLY INSTRUCTION IN THIS PROGRAM THAT DESTROYS ANYTHING. A `Round` is 1,102 bytes and its
-// rent-exempt deposit is ~0.008561 SOL — 95.4% of the 0.008971 a whole round costs to run, measured
-// on v6 rounds #3 and #4 — and until v7 nothing ever reclaimed a lamport of it. This hands the
-// deposit back to the authority that paid it at `openRound`.
+// THE ONLY INSTRUCTION IN THIS PROGRAM THAT DESTROYS ANYTHING. A `Round` is now 3,248 bytes (was
+// 1,102 — the 16 -> 48 fighter cap grew the account far more than `house_swept`'s bool -> u8 change
+// did), so its rent-exempt deposit is ~0.023497 SOL: (3,248 + 128) * 3,480 lamports/byte-year * 2
+// years' exemption threshold, the same formula that produced the old ~0.008561 SOL figure at 1,102
+// bytes. STALE, DELIBERATELY DROPPED RATHER THAN GUESSED: the old comment also claimed this was
+// "95.4% of the 0.008971 a whole round costs to run", measured on live v6 rounds #3 and #4 — that
+// percentage needs a fresh devnet measurement at the new size, which hasn't been taken, so it is not
+// restated here. This hands the deposit back to the authority that paid it at `openRound`.
 //
 // FOUR CONDITIONS, ALL ENFORCED ON CHAIN, none of them the caller's to decide:
 //   * the round is `Settled` or `Abandoned`                        — else `RoundNotTerminal`

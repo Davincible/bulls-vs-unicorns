@@ -572,7 +572,9 @@ const DEADLINE_MARGIN_SECONDS = 3;
         () => authorityBase.account.round.fetchNullable(pdaFor(roundNo)),
         (v) => v.phase === Phase.Abandoned,
       );
-      info(`round #${roundNo}  phase=${PHASE_NAME[r.phase]}  fighters=${r.fighterCount}  house_swept=${r.houseSwept ?? false}`);
+      // `r.houseSwept` is the wire `u8` (0 or 1), not a boolean — see `houseSwept` in chain/program.ts
+      // — so `?? 0` is the true default here, matching what the field actually decodes to.
+      info(`round #${roundNo}  phase=${PHASE_NAME[r.phase]}  fighters=${r.fighterCount}  house_swept=${r.houseSwept ?? 0}`);
     }
 
     // ---- 8. sweep two of the three -----------------------------------------------------------------
@@ -588,7 +590,13 @@ const DEADLINE_MARGIN_SECONDS = 3;
       await readSettled(
         `round #${roundNo}.house_swept after the sweep`,
         () => authorityBase.account.round.fetchNullable(pdaFor(roundNo)),
-        (r) => r.houseSwept === true,
+        // `houseSwept` is a wire `u8`, not a `bool` (bytemuck can't make `bool` Pod — see
+        // `houseSwept` in chain/program.ts): `=== true` was this line until the type changed from
+        // `boolean` to `number` — it type-checked against the old (wrong) type and was never true
+        // against the real wire value, so `readSettled` would have retried a genuinely-swept round
+        // until its own timeout instead of confirming it. The type fix turns that into a compile
+        // error here instead of a silent hang.
+        (r) => r.houseSwept === 1,
       );
       ok(`round #${roundNo} is swept`);
     }
@@ -596,7 +604,10 @@ const DEADLINE_MARGIN_SECONDS = 3;
     // the loop above having skipped it: if something else swept it, claim 3 would fail for a reason
     // that has nothing to do with the guard it is testing.
     const forClaim3 = await readSettled(`round #${unswept} before claim 3`, () => authorityBase.account.round.fetchNullable(pdaFor(unswept)));
-    if (forClaim3.houseSwept) throw new Error(`round #${unswept} has been swept — case 3 would prove nothing`);
+    // Truthiness on a `number | undefined` still means what it looks like it means (0 and undefined
+    // are falsy, 1 is truthy), unlike `=== true` above — but spelled out explicitly here rather than
+    // relying on that, now that the field is a wire `u8` and not a `bool`.
+    if ((forClaim3.houseSwept ?? 0) !== 0) throw new Error(`round #${unswept} has been swept — case 3 would prove nothing`);
     ok(`round #${unswept} is deliberately NOT swept`);
 
     // ---- 9. CLAIM 4 — a non-authority is refused ---------------------------------------------------

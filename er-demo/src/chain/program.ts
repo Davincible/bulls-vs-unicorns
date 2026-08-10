@@ -108,9 +108,21 @@ export interface RawRoundAccount {
    *  `Treasury`? The sweep leaves the totals in place for auditing, so this flag is the only thing
    *  that distinguishes a swept round from an unswept one.
    *
-   *  Optional for the same reason as `feesCollected` above, and read as `?? false` — a program that
-   *  has no sweep instruction has swept nothing, so `false` is the true value there. */
-  houseSwept?: boolean;
+   *  A `u8` (0 or 1), NOT A `bool` — and this is a WIRE FACT, not a style choice this file made up.
+   *  The program reinterprets the account's raw bytes directly via `bytemuck` rather than paying a
+   *  deserialize pass, and `bytemuck::Pod` requires every field of a Pod struct to itself be Pod.
+   *  `bool` is not: two of its eight possible bit patterns are not `0`/`1`, so a `bool` field could
+   *  read as neither `true` nor `false` from bytes bytemuck didn't validate — undefined behaviour
+   *  bytemuck refuses to compile. The program therefore writes only `0` or `1` into a `u8`, and
+   *  Anchor's TypeScript coder decodes exactly what's on the wire: a NUMBER, not a boolean. Compare it
+   *  with `!== 0` (or `!x` for zero), never `=== true` — that comparison type-checks but is never true
+   *  for a number, which is exactly the bug this type is shaped to make impossible rather than merely
+   *  documented. `useRound.ts`'s `toPlainRound` is the one place this gets normalized into
+   *  `RoundState.houseSwept: boolean` for everything downstream.
+   *
+   *  Optional for the same reason as `feesCollected` above, and read as `?? 0` — a program that has no
+   *  sweep instruction has swept nothing, so `0` is the true value there. */
+  houseSwept?: number;
   seedCommit: number[];
   seed: number[];
   /** On-chain unix seconds: when `open_round` stamped the lobby, and when it stops taking entries.

@@ -83,28 +83,69 @@ async function send(conn, ixs, signers, label) {
   return sig;
 }
 
-/** `Round::SIZE` in lib.rs, which is what `#[account(init, space = ...)]` allocates — so a round
- *  account is this long exactly, on either layer, delegated or not.
+/** THE `Round` BYTE LAYOUT, AS ONE TABLE RATHER THAN A WALK — absolute offsets from the start of the
+ *  account, discriminator included.
  *
- *  THE TRIPWIRE THE DECODER BELOW HAS NEEDED FOR THREE REVISIONS. Every field inserted into `Round`
- *  so far has been inserted BEFORE the fighter array, and the decoder's failure mode is not an
- *  exception — it is fighters read N bytes early, i.e. plausible wallets and plausible lamport
- *  figures that are simply not the ones on chain. This constant turns "somebody remembered" into
- *  "the layout is the one this file was written against, or the script stops". It cannot tell you
- *  WHICH field moved, but it fails on the run where the change lands rather than on the day someone
- *  disbelieves an hp figure. 1,102 = 174 bytes of header + 58 x 16 fighters; it was 1,093 before
- *  `fees_collected` (8) and `house_swept` (1).
+ *  THE WALK IS WHAT KEPT BREAKING. This decoder used to advance a cursor field by field, with the
+ *  fields nobody needed skipped as bare arithmetic (`o += 3`, `o += 32 + 32`). It was wrong three
+ *  times, each time for the same reason: a field inserted upstream moved everything after it, the
+ *  skips silently absorbed the difference, and the failure was not an exception but fighters read N
+ *  bytes early — plausible wallets and plausible lamport figures that are simply not the ones on
+ *  chain. A walk can only be checked by re-walking it. A table can be read straight across against
+ *  `the_account_layout_is_exactly_what_the_clients_decode` in lib.rs, which prints these very
+ *  numbers, and a field that moves changes ONE line here instead of shifting every line after it.
  *
- *  A LITERAL RATHER THAN `coder.accounts.size("Round")`, though this file loads the IDL two lines up
- *  and could ask it. Deriving it would make the tripwire fire when the IDL IS STALE, which is a
- *  different claim from the one wanted here and usually a false alarm: the decoder below is
- *  hand-rolled precisely so that reading a delegated round needs no IDL at all, and a stale IDL
- *  breaks nothing else in this script (it supplies `idl.address` and instruction encodings, neither
- *  of which moves when `Round` gains a field). The claim this constant makes is about the LAYOUT ON
- *  CHAIN, so it is stated here independently, exactly as the offsets below are. Its authority is
- *  `impl Round { pub const SIZE }` in lib.rs — the one place the number is derived rather than
- *  copied, and itself checked by `the_account_is_exactly_the_size_its_layout_needs`. */
-const ROUND_SIZE = 1102;
+ *  THE `zero_copy` MIGRATION IS ALSO WHY THE WALK HAD TO GO, not merely why it was rewritten: the
+ *  layout is now `repr(C)` and was REORDERED for alignment, not just extended. `house_swept` came up
+ *  to sit beside `bump`, `fighter_count` moved ahead of `bump`, and `Fighter` went from
+ *  `wallet, side, dead, stake, hp, banked` in 58 bytes to `wallet, stake, hp, banked, side, dead` in
+ *  64. Every offset a walk would have inherited is wrong in a way that still decodes.
+ *
+ *  LITERALS RATHER THAN `coder.accounts.size("Round")`, though this file loads the IDL and could ask
+ *  it. Deriving from the IDL would make the tripwire fire when the IDL IS STALE, which is a different
+ *  claim from the one wanted here and usually a false alarm: this decoder is hand-rolled precisely so
+ *  that reading a delegated round needs no IDL at all. The claim these numbers make is about the
+ *  LAYOUT ON CHAIN, so it is stated independently. Their authority is `Round`'s `repr(C)` declaration
+ *  in lib.rs. */
+const ROUND = {
+  arena:               8,
+  roundNo:            40,
+  phase:              48,
+  winner:             49,
+  fighterCount:       50,
+  bump:               52,
+  houseSwept:         53,
+  padding:            54,
+  tickCount:          56,
+  pot:                64,
+  penaltiesCollected: 72,
+  feesCollected:      80,
+  seedCommit:         88,
+  seed:              120,
+  lobbyOpenedAt:     152,
+  lobbyClosesAt:     160,
+  fightStartedAt:    168,
+  fighters:          176,
+};
+
+/** A `Fighter`, relative to its own start. 58 bytes of content in 64 — the six trailing bytes are
+ *  declared padding, because `repr(C)` would otherwise insert them silently and a client decoding
+ *  flat borsh would read every fighter after the first at the wrong place. */
+const FIGHTER = { wallet: 0, stake: 32, hp: 40, banked: 48, side: 56, dead: 57 };
+const FIGHTER_SIZE = 64;
+
+/** `MAX_FIGHTERS` in lib.rs — 48 since `zero_copy` removed the 4 KB stack limit that used to bind it. */
+const MAX_FIGHTERS = 48;
+
+/** `Round::SIZE`, which is what `#[account(init, space = ...)]` allocates — so a round account is
+ *  this long exactly, on either layer, delegated or not. 3,248 bytes.
+ *
+ *  DERIVED FROM THE TABLE ABOVE rather than restated, which makes it a stronger tripwire than the
+ *  literal it replaces. It used to be a hand-tallied `1102 = 174 + 58 x 16` that could agree with the
+ *  chain while an individual offset was wrong; computing it from `fighters` means a typo anywhere in
+ *  the header table changes this total too, so the length check below catches header drift and not
+ *  merely a change in the fighter count. */
+const ROUND_SIZE = ROUND.fighters + MAX_FIGHTERS * FIGHTER_SIZE;
 
 /** Reads Round straight off whichever layer is asked — Anchor's own decoder expects the program to
  *  own the account, and a delegated account is owned by the Delegation Program. */
@@ -123,59 +164,59 @@ async function readRound(conn, roundPda) {
     throw new Error(
       d.length < ROUND_SIZE
         ? `Round is ${d.length} bytes, this decoder expects ${ROUND_SIZE} — the account is SHORTER, so you are ` +
-          `almost certainly running against an older deployment than the lib.rs in this working tree. This ` +
-          `script asserts things about \`fees_collected\`/\`house_swept\` that only the newer program records, ` +
-          `so it genuinely cannot verify that deployment: DEPLOY FIRST, then re-run. (If the program IS current, ` +
-          `then the layout moved — see below.)`
+          `almost certainly running against an older deployment than the lib.rs in this working tree. A 1,102-byte ` +
+          `round is the pre-zero_copy layout at MAX_FIGHTERS = 16, whose fields sit in a DIFFERENT ORDER as well as ` +
+          `at different offsets, so nothing here can be salvaged by adjusting a number: DEPLOY FIRST, then re-run. ` +
+          `(If the program IS current, then the layout moved again — see below.)`
         : `Round is ${d.length} bytes, this decoder expects ${ROUND_SIZE} — the account layout changed and every ` +
-          `offset below is suspect. Re-derive them from \`impl Round { SIZE }\` in lib.rs before trusting a ` +
+          `offset in the ROUND table above is suspect. Re-derive them from \`Round\`'s repr(C) declaration in ` +
+          `lib.rs, which \`the_account_layout_is_exactly_what_the_clients_decode\` prints, before trusting a ` +
           `single number this script prints.`,
     );
   }
-  let o = 8 + 32 + 8;
-  const phase = d[o]; o += 3;
-  const fighterCount = d.readUInt16LE(o); o += 2 + 8;
-  const pot = d.readBigUInt64LE(o); o += 8;
-  // `penalties_collected` sits here, between `pot` and `seed_commit` — the house's cumulative take
-  // from extract penalties. A hand-rolled decoder is exactly the thing a new field breaks silently:
-  // skip it without reading it and every fighter below is decoded 8 bytes early, which produces
-  // plausible-looking nonsense rather than an error.
-  const penaltiesCollected = d.readBigUInt64LE(o); o += 8;
-  // ...and it has now happened TWICE more, exactly as predicted above. The second time is documented
-  // below, at the `seed`/`fight_started_at` gap where it landed. The third is HERE, in this very gap:
-  // `fees_collected` (8) and `house_swept` (1) were inserted between `penalties_collected` and
-  // `seed_commit`, moving the fighter array from offset 165 to 174. Without the two lines below, this
-  // decoder would still read fighters at 165 — every wallet, hp and banked figure nonsense that looks
-  // like data.
+  const phase = d[ROUND.phase];
+  const fighterCount = d.readUInt16LE(ROUND.fighterCount);
+  const pot = d.readBigUInt64LE(ROUND.pot);
+  // The house's two takes, both READ rather than skipped because the conservation check in step 6
+  // needs them: `penalties_collected` is what `extract` moved out of the ring, `fees_collected` is
+  // what `enter` took at the door, and `pot` is the sum of stakes NET of the latter.
+  const penaltiesCollected = d.readBigUInt64LE(ROUND.penaltiesCollected);
+  const feesCollected = d.readBigUInt64LE(ROUND.feesCollected);
+  const lobbyOpenedAt = d.readBigInt64LE(ROUND.lobbyOpenedAt);
+  const lobbyClosesAt = d.readBigInt64LE(ROUND.lobbyClosesAt);
+
+  // THREE FREE ALIGNMENT PROBES, read for their invariants rather than for their values. Nothing
+  // below consumes `house_swept` or the padding, and that is the point: the account carries bytes
+  // whose legal range is narrower than a byte, so checking them costs nothing and turns a misaligned
+  // decoder into an exception instead of into plausible hp figures. The length check above proves
+  // the account is the right SIZE; these prove the header inside it is where this file thinks.
   //
-  // Twice right is enough to stop leaving this to whoever reads the comment next, which is why there
-  // is now a `ROUND_SIZE` length check above and a bool check below. A prediction that keeps coming
-  // true and keeps being a prediction is a note, not a defence.
-  //
-  // `fees_collected` is READ, not skipped, because the conservation check in step 6 needs it: the
-  // house takes at the door as well as on the way out, and `pot` is the sum of stakes NET of that fee.
-  // `house_swept` is read too, though nothing here consumes it, and that is the point — a borsh bool
-  // is 0 or 1 and nothing else, so this one byte is a free alignment check on every offset above it.
-  // Skipping it saves a line and throws away the only self-verifying byte in the header.
-  const feesCollected = d.readBigUInt64LE(o); o += 8;
-  const houseSwept = d[o]; o += 1;
+  // `house_swept` is a `u8` rather than a `bool` now (bytemuck cannot make `bool` Pod — see its doc
+  // comment in lib.rs), so the range is a property of the PROGRAM writing only 0 or 1, not of the
+  // encoding refusing anything else. It is the same check either way, on a slightly weaker footing.
+  const houseSwept = d[ROUND.houseSwept];
   if (houseSwept !== 0 && houseSwept !== 1) {
-    throw new Error(`house_swept decoded as ${houseSwept} at offset ${o - 1}, and a bool is 0 or 1. ` +
-      `This decoder is misaligned — do not trust the fighters it returns.`);
+    throw new Error(`house_swept decoded as ${houseSwept} at offset ${ROUND.houseSwept}, and the ` +
+      `program only ever writes 0 or 1. This decoder is misaligned — do not trust anything it returns.`);
   }
-  o += 32 + 32;                                            // seed_commit, seed
-  // THE SECOND TIME: `lobby_opened_at` and `lobby_closes_at` landed here, between `seed` and
-  // `fight_started_at`, and this decoder read every fighter 16 bytes early until these two lines
-  // existed. Read rather than skipped, because `lobby_closes_at` is not incidental to this script —
-  // step 4 waits on it.
-  const lobbyOpenedAt = d.readBigInt64LE(o); o += 8;
-  const lobbyClosesAt = d.readBigInt64LE(o); o += 8 + 8;    // + fight_started_at, still unused here
+  if (d[ROUND.padding] !== 0 || d[ROUND.padding + 1] !== 0) {
+    throw new Error(`Round.padding at offset ${ROUND.padding} is not zero — the program never writes ` +
+      `those bytes, so this decoder is misaligned. Do not trust anything it returns.`);
+  }
+  if (fighterCount > MAX_FIGHTERS) {
+    throw new Error(`fighter_count decoded as ${fighterCount} at offset ${ROUND.fighterCount}, above ` +
+      `MAX_FIGHTERS (${MAX_FIGHTERS}) — either this decoder is misaligned or the cap moved.`);
+  }
+
   const fighters = [];
   for (let i = 0; i < fighterCount; i++) {
-    const b = o + i * 58;
+    const b = ROUND.fighters + i * FIGHTER_SIZE;
     fighters.push({
-      wallet: new PublicKey(d.subarray(b, b + 32)), side: d[b + 32], dead: d[b + 33],
-      stake: d.readBigUInt64LE(b + 34), hp: d.readBigUInt64LE(b + 42), banked: d.readBigUInt64LE(b + 50),
+      wallet: new PublicKey(d.subarray(b + FIGHTER.wallet, b + FIGHTER.wallet + 32)),
+      side: d[b + FIGHTER.side], dead: d[b + FIGHTER.dead],
+      stake: d.readBigUInt64LE(b + FIGHTER.stake),
+      hp: d.readBigUInt64LE(b + FIGHTER.hp),
+      banked: d.readBigUInt64LE(b + FIGHTER.banked),
     });
   }
   return { phase, fighterCount, pot, penaltiesCollected, feesCollected, houseSwept, lobbyOpenedAt, lobbyClosesAt, fighters };

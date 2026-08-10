@@ -221,7 +221,8 @@ export interface LiveRound {
    *  start. Use `phase`, never `elapsedSec > 0`, to ask whether a fight is running. */
   elapsedSec: number;
   /** Where the replay playhead is right now — the program's own `canonical_cursor()`:
-   *  `min(elapsed * stepsPerSecond(fighterCount), MAX_STEPS)`. */
+   *  `min(elapsedSeconds, FIGHT_TIMEOUT_SECONDS) * stepsPerSecond(fighterCount)`, i.e. clamped to
+   *  `finalCursor(fighterCount)` — the per-lineup bell, not a flat ceiling. */
   stepsNow: number;
   /** True once anyone may settle this round: the fight is genuinely over (one side has nobody left
    *  standing) OR the bell has rung (`FIGHT_TIMEOUT_SECONDS`). This is the real deadline an extract
@@ -318,8 +319,9 @@ export interface CombatEvent {
 
 /** THE FIGHT'S RECENT PAST, resolved once in `data/` and shaped for the two surfaces that want it.
  *
- *  IT IS A WINDOW, NOT THE STREAM. `hitEvents` is the whole fight — up to `MAX_STEPS` entries,
- *  precomputed the instant the seed reveals — and neither surface that narrates it wants that: a log
+ *  IT IS A WINDOW, NOT THE STREAM. `hitEvents` is the whole fight — up to `finalCursor(fighterCount)`
+ *  entries, precomputed the instant the seed reveals — and neither surface that narrates it wants
+ *  that: a log
  *  shows the last handful, a toast rail shows what happened since it last looked. Handing views the
  *  raw array would put the same cursor arithmetic (where is the playhead, which of these have I
  *  already said out loud) in every one of them, at `stepsPerSecond(n)` and four re-renders a second,
@@ -531,11 +533,11 @@ export const UNITS_PER_USD = 1_000_000n;
 // A second hand-copy of a moving constant is how a UI ends up animating a different fight from the
 // one being settled. There is one mirror; this is not it.
 export {
-  MAX_STEPS,
   FIGHT_TIMEOUT_SECONDS,
   STEPS_PER_FIGHTER_PER_SECOND,
   stepsPerSecond,
   canonicalCursor,
+  finalCursor,
 } from "../chain/constants.ts";
 
 // NEITHER IS THE EXTRACT PENALTY, for the same reason and from a different mirror: the curve lives

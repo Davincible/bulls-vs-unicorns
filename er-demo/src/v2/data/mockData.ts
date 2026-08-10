@@ -13,7 +13,7 @@
 
 import { runFullFight, type HitEvent, type HitEventEntry } from "../../sim/hitEvents.ts";
 import {
-  MAX_STEPS,
+  finalCursor,
   nameFor,
   shortKey,
   usdToUnits,
@@ -48,7 +48,7 @@ export const MOCK_SEED = Buffer.from(
   Uint8Array.from({ length: 32 }, (_, i) => (i * 37 + 11) & 0xff),
 );
 
-const FULL = runFullFight(MOCK_SEED, ENTRIES, MAX_STEPS);
+const FULL = runFullFight(MOCK_SEED, ENTRIES, finalCursor(ENTRIES.length));
 
 /** The whole fight, precomputed — exactly what the real provider hands the canvas. */
 export const MOCK_HIT_EVENTS: HitEvent[] = FULL.events;

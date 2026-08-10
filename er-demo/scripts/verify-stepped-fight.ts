@@ -27,8 +27,8 @@
 
 import { assertDevnetUrl } from "../src/devnet-guard.ts";
 import {
-  BASE_RPC, canonicalCursor, MAX_STEPS, MIN_LOBBY_SECONDS, PHASE_NAME, Phase, PROGRAM_ID, ROUTER_URL,
-  stepsPerSecond,
+  BASE_RPC, canonicalCursor, finalCursor, MAX_STEPS_PER_CALL, MIN_LOBBY_SECONDS, PHASE_NAME, Phase,
+  PROGRAM_ID, ROUTER_URL, stepsPerSecond,
 } from "../src/chain/constants.ts";
 import { createProgram, type BullsArenaProgram, type RawRoundAccount } from "../src/chain/program.ts";
 import { sendTx } from "../src/chain/sendTx.ts";
@@ -369,19 +369,24 @@ const pct = (part: bigint, whole: bigint) => `${(Number(part) / Number(whole) * 
     // fight past where the clock already says it is, however large an argument they pass.
     heading("6. a caller cannot tick the fight past the clock, whatever they ask for");
     {
+      // `MAX_STEPS_PER_CALL`, not `finalCursor(fighterCount)`: this claim is about the ARGUMENT, not
+      // the fight, and `roundIx.tick` itself clamps any request above `MAX_STEPS_PER_CALL` before it
+      // ever leaves the browser (round.ts) — so that is the largest steps value a real caller can even
+      // ask for, and it comfortably exceeds this duel's ~720-step `finalCursor(2)`, which is what
+      // "the entire fight at once" still means at this lineup size.
       const sig = (await sendTx(router,
-        roundIx.tick(authority, { round: roundPda, steps: MAX_STEPS }), forkPayer,
-        `tick(${MAX_STEPS}) — asking for the entire fight at once`)).signature;
+        roundIx.tick(authority, { round: roundPda, steps: MAX_STEPS_PER_CALL }), forkPayer,
+        `tick(${MAX_STEPS_PER_CALL}) — asking for the entire fight at once`)).signature;
       signatures.tickGreedy = sig;
       const after = await readRound();
       const allowed = canonicalCursor(fightStartedAt, fighterCount, Date.now() / 1000);
       if (Number(after.tickCount) > allowed) {
-        throw new Error(`tick(${MAX_STEPS}) reached cursor ${after.tickCount} but the clock only allows ${allowed} — ` +
+        throw new Error(`tick(${MAX_STEPS_PER_CALL}) reached cursor ${after.tickCount} but the clock only allows ${allowed} — ` +
           `a caller who can outrun the clock can choose where the fight stops, which is the exact bug ` +
           `the 'steps' argument was removed from resolve() for.`);
       }
       assertConserved(after, "after a greedy tick");
-      ok(`asked for ${MAX_STEPS} steps, got cursor ${after.tickCount} (clock allows ${allowed}) — bounded by time, not by the argument`);
+      ok(`asked for ${MAX_STEPS_PER_CALL} steps, got cursor ${after.tickCount} (clock allows ${allowed}) — bounded by time, not by the argument`);
     }
 
     // ---- extract must catch the fight up BY ITSELF ---------------------------------------------------
@@ -477,25 +482,54 @@ const pct = (part: bigint, whole: bigint) => `${(Number(part) / Number(whole) * 
     // ---- finish and settle ---------------------------------------------------------------------------
     heading("9. resolve + close_round");
     // Side 0's only fighter has extracted, so the fight is over by the program's own rule and
-    // `resolve` is legal immediately. The retry covers the case where it isn't yet.
-    for (let attempt = 1; attempt <= 4; attempt++) {
-      try {
-        signatures.resolve = (await sendTx(router,
-          roundIx.resolve(authority, { payer: forkPayer.publicKey, round: roundPda }), forkPayer, "resolve")).signature;
-        break;
-      } catch (e) {
-        if (e instanceof AnchorError && e.error.errorCode.code === "FightNotOverYet" && attempt < 4) {
-          warn("resolve refused — both sides still standing and the bell has not rung; waiting 5s");
-          await sleep(5000);
-          continue;
+    // `resolve` is legal immediately. The inner retry below covers the case where it isn't yet.
+    //
+    // SETTLING CAN NOW TAKE MORE THAN ONE `resolve` CALL, WHICH IS A DIFFERENT PROBLEM FROM THE ONE
+    // THE RETRY COVERS. `resolve` grinds the fight forward by at most MAX_STEPS_PER_CALL (3,000) steps
+    // per call and only settles once genuinely caught up — a call can come back `Ok` with the round
+    // STILL IN Fight, which is a WORK problem, not the TIMING problem FightNotOverYet is. Conflating
+    // the two would either give up on a round that just needs another call, or wait on one that isn't
+    // behind at all. So this is two loops with two budgets: the inner one is the unchanged timing
+    // retry; the outer one re-sends resolve with NO sleep between grind calls — the backlog at any
+    // lineup grows at only 2*fighterCount steps/second, far below the 3,000 one call clears, so
+    // sleeping here would only spend wall-clock losing a race this script already wins. The bound is
+    // `finalCursor(fighterCount)`, the most steps THIS lineup's fight could ever be behind by, ceiling-
+    // divided by what one call can clear.
+    const ceiling = finalCursor(fighterCount);
+    const maxGrindCalls = Math.ceil(ceiling / MAX_STEPS_PER_CALL);
+    let settled = await readRound();
+    for (let grindCall = 1; grindCall <= maxGrindCalls; grindCall++) {
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        try {
+          signatures.resolve = (await sendTx(router,
+            roundIx.resolve(authority, { payer: forkPayer.publicKey, round: roundPda }), forkPayer,
+            `resolve (grind ${grindCall}/${maxGrindCalls})`)).signature;
+          break;
+        } catch (e) {
+          if (e instanceof AnchorError && e.error.errorCode.code === "FightNotOverYet" && attempt < 4) {
+            warn("resolve refused — both sides still standing and the bell has not rung; waiting 5s");
+            await sleep(5000);
+            continue;
+          }
+          throw e;
         }
-        throw e;
       }
+      settled = await readRound();
+      if (settled.phase === Phase.Settled) break;
+      info(`resolve() ground more steps but the round is still Fight (tick_count=${settled.tickCount}) — calling again immediately, no sleep`);
     }
-    const settled = await readRound();
-    if (settled.phase !== Phase.Settled) throw new Error(`phase is ${PHASE_NAME[settled.phase]}, expected Settled`);
+    if (settled.phase !== Phase.Settled) {
+      throw new Error(
+        `round still in Fight after ${maxGrindCalls} grind calls (tick_count=${settled.tickCount}) — this is a ` +
+        `WORK problem (resolve() kept grinding but never caught the fight up), not a timing one ` +
+        `(FightNotOverYet, the bell never rang) — the two get separate retries above for exactly this reason.`,
+      );
+    }
     assertConserved(settled, "after resolve");
-    if (settled.tickCount > BigInt(MAX_STEPS)) throw new Error(`cursor ${settled.tickCount} exceeded MAX_STEPS ${MAX_STEPS}`);
+    // `finalCursor(fighterCount)`, not `MAX_STEPS_PER_CALL`: this is a claim about the FIGHT (how far
+    // the settled cursor could ever have got, at this lineup's own pace and bell) — see the previous
+    // section's comment for why the two constants mean different things now.
+    if (settled.tickCount > BigInt(ceiling)) throw new Error(`cursor ${settled.tickCount} exceeded finalCursor(${fighterCount}) ${ceiling}`);
     ok(`settled at cursor ${settled.tickCount}; winner side ${(await authority.account.round.fetch(roundPda)).winner}`);
 
     signatures.closeRound = (await sendTx(router,

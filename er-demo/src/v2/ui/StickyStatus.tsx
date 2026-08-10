@@ -20,7 +20,7 @@
 // winner and the length the fight ran once Settled) rather than `0:00` next to a live-looking rule.
 
 import { useEffect, useRef, useState } from "react";
-import { FIGHT_TIMEOUT_SECONDS, MAX_STEPS, SIDE_TOKEN, clock, sideTotals, usdCompact } from "../contract.ts";
+import { FIGHT_TIMEOUT_SECONDS, SIDE_TOKEN, clock, finalCursor, sideTotals, usdCompact } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
 import { Bar } from "./primitives.tsx";
 import { useShell } from "./shell.ts";
@@ -139,6 +139,9 @@ export function StickyStatus() {
   const aPct = total > 0n ? (Number(aTot) / Number(total)) * 100 : 50;
   const phase = live?.phase ?? null;
   const steps = live?.stepsNow ?? 0;
+  // 0 with no round in scope: `Bar` already treats a zero max as an empty bar, which is the correct
+  // reading here too — there is no lineup to derive a ceiling from, not a fight parked at its bell.
+  const maxSteps = live ? finalCursor(live.fighters.length) : 0;
 
   // One word. The strip is 40px tall and has three groups to fit; the sentence version of each phase
   // ("Lobby — deposits open") lives in 00-1 and on the dock, both of which have room for it.
@@ -189,7 +192,7 @@ export function StickyStatus() {
                 <F name="Clock" value={clock(live.elapsedSec)} />
                 <F
                   name="Step"
-                  value={`${steps.toLocaleString("en-US")}/${MAX_STEPS.toLocaleString("en-US")}`}
+                  value={`${steps.toLocaleString("en-US")}/${finalCursor(live.fighters.length).toLocaleString("en-US")}`}
                 />
                 {/* Not a countdown to the end of the fight — the round can be settled the moment one
                     side has nobody standing. The bell is the outer bound, and `resolvable` is the
@@ -227,11 +230,13 @@ export function StickyStatus() {
           </span>
         </div>
 
-        {/* The fight's position between the opening bell and the chain's own step ceiling, as the
-            same hairline `Bar` the rest of the page measures things with. It sits on the strip's
-            bottom edge so the bar itself doubles as the rule that separates the strip from the page.
-            In Lobby and Drawing `stepsNow` is 0 and it draws empty, which is the truth. */}
-        <Bar value={BigInt(steps)} max={BigInt(MAX_STEPS)} />
+        {/* The fight's position between the opening bell and THIS lineup's own step ceiling
+            (`finalCursor(fighterCount)`, not a flat constant — a 48-fighter round's bar fills over
+            17,280 steps, a duel's over 720), as the same hairline `Bar` the rest of the page measures
+            things with. It sits on the strip's bottom edge so the bar itself doubles as the rule that
+            separates the strip from the page. In Lobby and Drawing `stepsNow` is 0 and it draws
+            empty, which is the truth — as does a max of 0 with no round in scope at all. */}
+        <Bar value={BigInt(steps)} max={BigInt(maxSteps)} />
       </div>
     </>
   );

@@ -49,10 +49,11 @@ const u8 = () => d[o++];
 const pk = () => { const v = new PublicKey(d.subarray(o, o + 32)); o += 32; return v; };
 
 // ONLY THE FIELDS THIS SCRIPT HAS ACTUALLY CHECKED AGAINST THE CHAIN. It stops after `phase`
-// deliberately: the next fields are `winner: u8, bump: u8`, and an earlier version read a u64 from
-// that offset and printed it as `pot`, yielding 2,680,059,919,616 for a round whose real pot was
-// 41,916,000. A number that wrong is still a number, and it went unquestioned until it was compared
-// against the keeper. Use the keeper's status file for the pot — it decodes with the real IDL.
+// deliberately: the next fields are `winner: u8, fighter_count: u16, bump: u8, house_swept: u8,
+// padding: [u8; 2]`, and an earlier version read a u64 from that offset and printed it as `pot`,
+// yielding 2,680,059,919,616 for a round whose real pot was 41,916,000. A number that wrong is still
+// a number, and it went unquestioned until it was compared against the keeper. Use the keeper's
+// status file for the pot — it decodes with the real IDL.
 const PHASE = ["Lobby", "Drawing", "Fight", "Settled", "Abandoned"];
 const out = {};
 out.arena = pk().toBase58();
@@ -62,8 +63,9 @@ out.phase = `${PHASE[phase] ?? "?"} (${phase})`;
 console.log("\nheader:", out);
 
 // Scan the whole account for 32-byte windows that are plausible pubkeys and count how many times
-// each distinct one appears — the fighter array is a fixed [Fighter; 16], so unused slots are the
-// default pubkey and the used ones stand out.
+// each distinct one appears — the fighter array is a fixed [Fighter; 48] (a `Fighter` is 64 bytes,
+// up from 58, since the 16 -> 48 fighter cap), so unused slots are the default pubkey and the used
+// ones stand out.
 const counts = new Map();
 for (let i = 8; i + 32 <= d.length; i++) {
   const key = new PublicKey(d.subarray(i, i + 32)).toBase58();

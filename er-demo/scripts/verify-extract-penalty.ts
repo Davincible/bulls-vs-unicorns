@@ -35,8 +35,8 @@
 
 import { assertDevnetUrl } from "../src/devnet-guard.ts";
 import {
-  BASE_RPC, canonicalCursor, MIN_LOBBY_SECONDS, PHASE_NAME, Phase, PROGRAM_ID, ROUTER_URL,
-  stepsPerSecond,
+  BASE_RPC, canonicalCursor, finalCursor, MAX_STEPS_PER_CALL, MIN_LOBBY_SECONDS, PHASE_NAME, Phase,
+  PROGRAM_ID, ROUTER_URL, stepsPerSecond,
 } from "../src/chain/constants.ts";
 import { createProgram, type BullsArenaProgram, type RawRoundAccount } from "../src/chain/program.ts";
 import { sendTx } from "../src/chain/sendTx.ts";
@@ -527,22 +527,45 @@ interface ExtractOutcome {
        `of a ${afterBoth.pot} pot, on top of ${afterBoth.feesCollected} already taken in entry fees`);
 
     heading("7. resolve + close_round — and the identity again, on the base layer");
-    for (let attempt = 1; attempt <= 6; attempt++) {
-      try {
-        signatures.resolve = (await sendTx(router,
-          roundIx.resolve(authority, { payer: forkPayer.publicKey, round: roundPda }), forkPayer, "resolve")).signature;
-        break;
-      } catch (e) {
-        if (e instanceof AnchorError && e.error.errorCode.code === "FightNotOverYet" && attempt < 6) {
-          warn("resolve refused — both sides still standing and the bell has not rung; waiting 5s");
-          await sleep(5000);
-          continue;
+    // `resolve` no longer either throws FightNotOverYet or settles outright — it GRINDS, advancing
+    // the fight by at most MAX_STEPS_PER_CALL (3,000) steps per call and settling only once genuinely
+    // caught up. A call can come back `Ok` with the round STILL IN Fight, and that is a WORK problem,
+    // not the TIMING problem the FightNotOverYet retry below covers — conflating the two would either
+    // give up on a round that just needs another call, or wait on one that isn't behind at all. So
+    // this is two loops with two budgets: the inner one is the unchanged timing retry; the outer one
+    // re-sends resolve with NO sleep between grind calls, since the backlog at any lineup grows at
+    // only 2*fighterCount steps/second, far below the 3,000 one call clears. The bound is
+    // `finalCursor(fighterCount)`, the most steps THIS lineup's fight could ever be behind by,
+    // ceiling-divided by what one call can clear.
+    const maxGrindCalls = Math.ceil(finalCursor(fighterCount) / MAX_STEPS_PER_CALL);
+    let settled = await readRound();
+    for (let grindCall = 1; grindCall <= maxGrindCalls; grindCall++) {
+      for (let attempt = 1; attempt <= 6; attempt++) {
+        try {
+          signatures.resolve = (await sendTx(router,
+            roundIx.resolve(authority, { payer: forkPayer.publicKey, round: roundPda }), forkPayer,
+            `resolve (grind ${grindCall}/${maxGrindCalls})`)).signature;
+          break;
+        } catch (e) {
+          if (e instanceof AnchorError && e.error.errorCode.code === "FightNotOverYet" && attempt < 6) {
+            warn("resolve refused — both sides still standing and the bell has not rung; waiting 5s");
+            await sleep(5000);
+            continue;
+          }
+          throw e;
         }
-        throw e;
       }
+      settled = await readRound();
+      if (settled.phase === Phase.Settled) break;
+      info(`resolve() ground more steps but the round is still Fight (tick_count=${settled.tickCount}) — calling again immediately, no sleep`);
     }
-    const settled = await readRound();
-    if (settled.phase !== Phase.Settled) throw new Error(`phase is ${PHASE_NAME[settled.phase]}, expected Settled`);
+    if (settled.phase !== Phase.Settled) {
+      throw new Error(
+        `round still in Fight after ${maxGrindCalls} grind calls (tick_count=${settled.tickCount}) — this is a ` +
+        `WORK problem (resolve() kept grinding but never caught the fight up), not a timing one ` +
+        `(FightNotOverYet, the bell never rang) — the two get separate retries above for exactly this reason.`,
+      );
+    }
     assertConserved(settled, "after resolve");
     ok(`settled at cursor ${settled.tickCount}; winner side ${(await authority.account.round.fetch(roundPda)).winner}`);
 

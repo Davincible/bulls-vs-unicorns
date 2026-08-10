@@ -9,7 +9,7 @@
 // targets -> sync every Pixi sprite's position/hp bar from its Matter body + shadow state -> advance
 // any in-flight impactFx animations.
 import Matter from "matter-js";
-import { MAX_STEPS, stepsPerSecond } from "../chain/constants.ts";
+import { finalCursor, stepsPerSecond } from "../chain/constants.ts";
 import { spawnFighterBodies, type ArenaScene } from "./arena/ArenaScene.ts";
 import { computeTargets, steer } from "./arena/retarget.ts";
 import { buildShadowFighters, advanceShadow } from "./shadowFight.ts";
@@ -26,14 +26,21 @@ import type { PixiCanvasProps } from "./types.ts";
 // session and to a per-fighter rate in this one — so the canvas was playing the fight at 44x the
 // chain's pace and would have kept running 3,000 steps past where the chain stops. A second copy of a
 // chain fact is a second thing to forget to update; there is now one copy, in the layer that owns
-// talking to the chain, and this module re-exports `MAX_STEPS` so App.tsx's import is unchanged.
+// talking to the chain, and this module re-exports it so App.tsx's import is unchanged.
+//
+// `MAX_STEPS` ITSELF LATER SPLIT IN TWO (the 16 -> 48 fighter cap): a flat cursor ceiling stopped
+// being able to describe every lineup, so the program replaced it with `finalCursor(fighterCount)` —
+// the per-lineup cursor ceiling — and `MAX_STEPS_PER_CALL`, a compute bound on a single transaction
+// that this module has no reason to know about (round.ts's `tick` is the one caller that sizes a
+// transaction; this loop only ever asks "how far can THIS fight's playhead go"). This module now
+// re-exports `finalCursor` where it used to re-export `MAX_STEPS`.
 //
 // `playheadStep` computes the SAME quantity as the program's `canonical_cursor()` — the cursor real
 // elapsed time says the fight has reached — but at sub-second float precision. It converges to the
 // exact on-chain integer at every whole-second mark, which is the only place the chain itself ever
 // moves; the fractional part between marks exists purely to make the animation smooth, not to change
 // which `HitEvent`s have happened at any second boundary.
-export { MAX_STEPS } from "../chain/constants.ts";
+export { finalCursor } from "../chain/constants.ts";
 
 /** The fixed step handed to `Matter.Engine.update()` every frame — REACT.md §8's performance budget
  *  verbatim: "Physics substeps: 60Hz fixed step is enough."
@@ -61,7 +68,7 @@ const PHYSICS_STEP_MS = 1000 / 60;
 export function playheadStep(fightStartedAtMs: number | null, nowMs: number, fighterCount: number): number {
   if (fightStartedAtMs === null) return 0;
   const elapsedSeconds = Math.max(0, (nowMs - fightStartedAtMs) / 1000);
-  return Math.min(elapsedSeconds * stepsPerSecond(fighterCount), MAX_STEPS);
+  return Math.min(elapsedSeconds * stepsPerSecond(fighterCount), finalCursor(fighterCount));
 }
 
 export interface GameLoopHandles {

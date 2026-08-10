@@ -6,7 +6,7 @@
 // being a second, less-maintained fixture that drifts from the first.
 
 import { useCallback, useMemo, useState } from "react";
-import { MAX_STEPS, bpsPct, nameFor, shortKey, sideTotals, usd, type Side } from "../contract.ts";
+import { bpsPct, finalCursor, nameFor, shortKey, sideTotals, usd, type Side } from "../contract.ts";
 import type { VerifyResult } from "../../ui/verifyRound.ts";
 import type { ArenaContextValue, ToastKind } from "./types.ts";
 import { combatFeed } from "./combatFeed.ts";
@@ -145,7 +145,7 @@ export function useFixtureArena({ active, push, recordDeploy }: FixtureArenaPara
     const winner: 0 | 1 = a >= b ? 0 : 1;
     setVerifyResult({
       verdict: "verified",
-      steps: Math.min(Number(live.tickCount), MAX_STEPS),
+      steps: Math.min(Number(live.tickCount), finalCursor(live.fighters.length)),
       seedHex: MOCK_SEED.toString("hex"),
       winnerOnChain: winner,
       winnerRecomputed: winner,

@@ -106,6 +106,21 @@ use session_keys::{session_auth_or, Session, SessionError, SessionToken};
 // (devnet-eu/-tee/-as/-us) reported STALE immediately afterward. Same result as v2's upgrade and v1's
 // before it. The preflight cost one second and named the problem exactly, instead of a spent round
 // and a confusing error about the code under test — which is the entire return on having written it.
+// THIS BUILD CANNOT BE DEPLOYED OVER AN ID THAT ALREADY HAS ROUNDS, AND THE FAILURE IS A PANIC
+// RATHER THAN AN ERROR. Everything above explains why each new id was FORCED (the ER's stale
+// bytecode cache); this is the first version where a fresh id is also REQUIRED by the account layout,
+// and the two reasons are independent. Whoever next weighs ~2.4 SOL against "can I just upgrade in
+// place" needs this paragraph before they answer.
+//
+// `Round` is `#[account(zero_copy)]` now, so `AccountLoader::load*` ends in
+// `bytemuck::from_bytes(&data[8..])`, which requires the slice length to equal `size_of::<Round>()`
+// EXACTLY and panics otherwise. The discriminator is derived from the type NAME, which has not
+// changed — so an old 1,102-byte round passes the discriminator check and then aborts on the cast.
+// Not `AccountDidNotDeserialize`, which a client could report: a panic, on every instruction that
+// touches any round opened before the upgrade, forever, with no migration path because the account
+// cannot be resized in place past `MAX_PERMITTED_DATA_INCREASE`.
+//
+// A fresh id has no such rounds, which is why the plan is safe. An in-place upgrade of v7 is not.
 declare_id!("EpRY6fkv4RcazjYSJyk8rppeVTVMcWhCcVtTVrKkTLT4"); // devnet keypair: .devnet/program-keypair-v7.json
 
 pub const ARENA_SEED: &[u8] = b"arena";
@@ -127,10 +142,12 @@ pub const TREASURY_SEED: &[u8] = b"treasury";
 /// HOW MANY OF THE NEWEST ROUNDS `close_round_account` MUST LEAVE ALONE. The retention window, as a
 /// chain rule rather than a keeper's good manners.
 ///
-/// WHAT IT COSTS TO NOT HAVE THIS. A `Round` is 1,102 bytes, and 928 of them are
-/// `fighters: [Fighter; 16]` — sixteen slots rented forever by rounds that field four. Measured
-/// against v6 rounds #3 and #4: 0.008971 SOL per round all-in, of which 0.008561 (95.4%) is Round
-/// PDA rent that nothing ever reclaimed. (`delegate_round`'s 0.003221 is NOT in that figure: it
+/// WHAT IT COSTS TO NOT HAVE THIS. A `Round` is 3,248 bytes, and 3,072 of them are
+/// `fighters: [Fighter; 48]` — forty-eight slots rented forever by rounds that field four. Measured
+/// against v6 rounds #3 and #4, when the account was 1,102 bytes: 0.008971 SOL per round all-in, of
+/// which 0.008561 (95.4%) was Round PDA rent that nothing ever reclaimed. AT THIS CAP THE RENT IS
+/// 0.023497 AND THE RATIO IS WORSE, not better — 98.3% of a round's cost is now an account deposit,
+/// so the argument for reclaiming it is nearly three times stronger than when it was made. (`delegate_round`'s 0.003221 is NOT in that figure: it
 /// comes back at undelegation, so it is float, not cost.) Reclaiming the rent takes the per-round
 /// cost to ~0.00041, a factor of 22 — against the 1.919 SOL the payer held when this was measured,
 /// the difference between ~215 rounds of runway and ~4,700. That balance is named rather than
@@ -150,10 +167,12 @@ pub const TREASURY_SEED: &[u8] = b"treasury";
 /// WHY 20 AND NOT SOME OTHER NUMBER. It is the shortest window that is longer than every consumer
 /// of round history in this repo: the round log renders the newest handful, and a player who steps
 /// away for the length of a coffee comes back to a page whose entire visible history is still
-/// fetchable. It is also cheap, and BOUNDED, which is the property that matters: 20 rounds of
-/// retained rent is 20 × 0.008561 = 0.171 SOL of standing float — around 4% of the ~4.1 SOL the
-/// payer is left with after this deploy — and unlike the leak it replaces it does not grow with the
-/// number of rounds ever played. Twenty is a constant; "forever" was not.
+/// fetchable. It is also cheap, and BOUNDED — which is the property that matters. 20 rounds of
+/// retained rent is 20 × 0.023497 = 0.470 SOL of standing float, up from 0.171 at the old cap, and
+/// the one number in this comment that `MAX_FIGHTERS = 48` genuinely made worse. Bounded all the
+/// same: unlike the leak it replaces it does not grow with the number of rounds ever played. Twenty is a constant; "forever" was not. If the float ever
+/// becomes the binding constraint on the keeper's balance, this is the constant to lower — it costs
+/// history, not correctness.
 ///
 /// THE COROLLARY, WHICH IS NOT OPTIONAL. Round history is now a rolling window, so anything derived
 /// from the round LOG is a newest-N statistic and may not be labelled "all time". SPEC.md already
@@ -166,20 +185,74 @@ pub const MIN_RETAINED_ROUNDS: u64 = 20;
 /// Hard ceiling on fighters in one round. Sized so the whole round is ONE account and therefore one
 /// atomic commit.
 ///
-/// 40 was the first choice — well under the ER's 10 MiB ACCOUNT limit. It blew the 4 KB STACK
-/// instead: `Account<'info, Round>` deserialises onto the stack, and 40 fighters is a ~2.45 KB
-/// struct that overflows once Anchor's own frame is added. Devnet reported it as
-/// "Access violation reading 8 bytes at address 0x18", which names neither the stack nor the size.
+/// THE STACK NO LONGER DECIDES THIS, AND FOR THE WHOLE LIFE OF THIS PROGRAM IT DID. The old value
+/// was 16 because 40 had been tried and blew Solana's 4 KB stack: `Account<'info, Round>`
+/// deserialises ONTO THE STACK, so a ~2.45 KB struct overflowed once Anchor's frame was added, and
+/// devnet reported it as "Access violation reading 8 bytes at address 0x18" — a message naming
+/// neither the stack nor the size. That comment named the fix and this change is it: `Round` is
+/// `#[account(zero_copy)]` and every context holds an `AccountLoader`, which hands out a reference
+/// INTO the account buffer instead of copying it. `size_of::<Round>()` is now irrelevant to the
+/// frame; what sits on the stack is a pointer. `the_round_never_lands_on_the_stack` asserts it.
 ///
-/// 16 fits comfortably (~937 B) and matches what the live arena actually fields — the lobby-sizing
-/// work settled it at 10-17 per round. Going back above ~24 needs `zero_copy` + `AccountLoader`,
-/// which avoids the stack copy entirely; that is the right fix if the cap ever needs to rise, and
-/// it is a bigger change than this round-trip should carry.
+/// SO THE BINDING CONSTRAINT MOVED, AND IT IS NOW FIGHT DURATION. Measured (400 seeds per lineup,
+/// `advance_fight` itself, equal $10 stakes — the sweep in `tests/fight_length.rs`), the steps a
+/// fight needs before one side has nobody standing is ~`31 * n^1.5`, so at the round's pace of
+/// `2n` steps a second a fight lasts ~`15.5 * sqrt(n)` SECONDS. That grows without limit, and the
+/// bell (`FIGHT_TIMEOUT_SECONDS`) is what it eventually outgrows: past that point a round stops
+/// ending in a wipeout and starts being settled on who was ahead. The honest measure of "is this
+/// lineup still a fight" is therefore the FRACTION OF ROUNDS THAT REACH A CONCLUSION BEFORE THE
+/// BELL, and here it is, against the bell this program now rings:
 ///
-/// One account per fighter was the alternative. Rejected: 40 delegations and 40 commits per round,
-/// the round stops being atomic, and a partial commit leaves a round half-settled with no obvious
-/// way to tell which half is real.
-pub const MAX_FIGHTERS: usize = 16;
+/// ```text
+///  n  | median fight | concludes before a 180s bell   (equal $10 stakes, 400 seeds)
+/// -----+--------------+-----------------------------
+///  16  |    83s       |   87.8%      <- the OLD cap, under the OLD 120s bell: 74.2%
+///  32  |   111s       |   81.2%
+///  40  |   121s       |   76.0%
+///  48  |   124s       |   76.2%      <- this cap
+///  52  |   133s       |   70.0%
+///  60  |   133s       |   67.2%
+///  64  |   151s       |   62.5%
+/// ```
+///
+/// 48 IS THE LARGEST LINEUP THAT STILL BEATS WHAT THE LIVE GAME ALREADY SHIPS. That is the whole
+/// derivation: 16 fighters against the old 120-second bell concluded 74.2% of the time, so 74.2% is
+/// not a target invented for this change — it is the quality bar the deployed program already
+/// meets. 48 clears it (76.2%); 52 and above do not. 60 is reachable and nothing structural refuses
+/// it — see below — but it would need a 210-second bell to hold the same bar, and a three-and-a-half
+/// minute round is a different product, not a bigger board.
+///
+/// WHAT DOES *NOT* BIND, each checked rather than assumed, because the interesting result is that
+/// none of the three things anyone would have guessed is the limit:
+///   * THE 4 KB STACK — removed by `zero_copy`, above.
+///   * THE ACCOUNT SIZE — `Round::SIZE` is 3,248 B at this cap, against Solana's own
+///     `MAX_PERMITTED_DATA_LENGTH` of 10 MiB. Four orders of magnitude of room. It costs rent (see
+///     `Round::SIZE`), and rent is reclaimable by `close_round_account`, so it is float rather than
+///     cost. SAY WHAT IS ACTUALLY KNOWN, THOUGH: 10 MiB is the BASE LAYER's limit, and it is the
+///     only one anybody here has a source for. This repo has quoted "the ER's 10 MiB account limit"
+///     since ER_MIGRATION_PLAN.md and MAGICBLOCK_RESEARCH.md lists the runtime limits document as
+///     never read; whether MagicBlock imposes anything tighter on a DELEGATED account, or on the
+///     size of a commit, is unmeasured. Tripling the account is a much smaller step than the margin
+///     to 10 MiB suggests it is, because the margin is to the wrong number. What is known is that
+///     the round is committed as one account and this repo has never seen a size-related commit
+///     failure at 1,102 B; 3,248 B is the first real test of that.
+///   * COMPUTE — bounded by construction rather than by the lineup, and that IS a change this
+///     migration had to make. See `MAX_STEPS_PER_CALL`: no single instruction may advance the fight
+///     more than a measured number of steps, whatever the cap is. Before this, one constant did
+///     both jobs and the fight could not outgrow one transaction; the honest consequence of raising
+///     the cap is that a badly-neglected round now takes several transactions to settle rather than
+///     one, and `resolve` says so in its own comment.
+///
+/// One account per fighter was the alternative, and is still rejected: 48 delegations and 48 commits
+/// per round, the round stops being atomic, and a partial commit leaves a round half-settled with no
+/// obvious way to tell which half is real.
+///
+/// ARCHITECTURE-N-TEAM.md §7 says "not raise `MAX_FIGHTERS` above 16 — the scaling axis is more
+/// concurrent arenas". That recommendation is overruled by the owner, not refuted, and it is worth
+/// leaving standing: the two are not exclusive, and its argument (nine arenas of sixteen is nine
+/// independent failure domains, one arena of forty-eight is one) is untouched by anything measured
+/// here.
+pub const MAX_FIGHTERS: usize = 48;
 
 /// Basis points denominator, matching the off-chain engine's FEE = 0.002 (20 bps).
 pub const BPS: u64 = 10_000;
@@ -257,46 +330,126 @@ pub const DUST: u64 = 1_000;
 ///     16   | 32/s  | 40.1s ..  84.1s
 /// ```
 ///
+/// THAT TABLE IS STALE AND IS LEFT STANDING BECAUSE IT IS THE REASONING, NOT THE CURRENT NUMBERS.
+/// It was measured against the DEFENDER-basis damage rule that `min(ring_a, ring_d)` later replaced
+/// (see `advance_fight`) — under the shipped rule a minnow hitting a whale takes minnow-sized bites,
+/// so every fight runs longer, and the effect is large. Re-measured against `advance_fight` itself,
+/// 400 seeds per lineup, equal $10 stakes (`tests/fight_length.rs`):
+///
+/// ```text
+/// fighters | rate  | median fight | median lasts
+/// ---------+-------+--------------+--------------
+///      2   |  4/s  |   109 steps  |  27.2s
+///      4   |  8/s  |   368 steps  |  46.0s
+///      8   | 16/s  | 1,029 steps  |  64.3s
+///     16   | 32/s  | 2,663 steps  |  83.2s
+///     48   | 96/s  |11,931 steps  | 124.3s
+/// ```
+///
+/// So the per-fighter rate still does the job it was chosen for — every lineup lands in ONE BAND
+/// rather than spanning 0.4 seconds to ten minutes — but the band is 27s..124s rather than the
+/// 13s..84s that was measured. The residual growth is `sqrt(n)`, because dividing an `n^1.5` fight
+/// by `n` leaves `n^0.5`; that is inherent to a rate LINEAR in `n` and is the reason the bell had to
+/// move when the cap did (see `FIGHT_TIMEOUT_SECONDS` and `MAX_FIGHTERS`).
+///
+/// THE RATE ITSELF WAS DELIBERATELY NOT CHANGED, and that is a decision rather than an omission.
+/// Raising it to 3 would have put a 48-fighter fight at 83s — exactly today's sixteen-fighter median
+/// — and needed no change to the bell at all. It was rejected because it re-paces EVERY lineup,
+/// including the 10-17 the live arena actually fields, purely as a side effect of raising a cap: a
+/// sixteen-fighter fight would drop from 83s to 55s. Moving the bell instead is strictly
+/// non-regressive — no existing lineup runs at a different speed, and the only rounds affected at
+/// all are the ones that used to be cut short. If a future pass does want every lineup to last the
+/// same wall-clock time, the honest fix is a rate proportional to `n^1.5` (i.e. a table, as the
+/// penalty horizon already is), not a bigger integer here.
+///
 /// `fighter_count` is frozen at lobby close — before the seed exists — so the rate is not something a
 /// caller can move, and the security argument above is untouched by making it lineup-dependent.
 pub const STEPS_PER_FIGHTER_PER_SECOND: u64 = 2;
-/// Re-measured this session (task #15) after MAX_STEPS=7,000 — ER-030's number — turned out to have
-/// ZERO real margin against the CURRENT `resolve`: a round left open past ~40s failed on-chain with
-/// "1,399,850 of 1,399,850 CUs consumed, exceeded CUs meter" (devnet round #9, permanently stuck).
+/// THE MOST FIGHT ANY ONE TRANSACTION MAY RUN. A compute bound, and nothing else.
 ///
-/// ER-030's 187.4 CU/step was measured against an OLDER `resolve` — before this session's security
-/// fix restructured `steps` from a caller argument into a time-derived value — AND `bench_fight`
-/// itself had drifted from `run_fight` by then (see its own comment): one cheap `a % 2 == d % 2`
-/// check standing in for THREE real ones (side, wallet, dead), missing the 32-byte Pubkey compare
-/// `run_fight` always pays. Re-measured by fixing `bench_fight` to call `run_fight` directly (so it
-/// cannot drift again) and sweeping it on a local `solana-test-validator` running the current build
-/// — CU accounting is a deterministic property of the bytecode and inputs, not the cluster, so this
-/// is as real as a devnet number without spending devnet SOL to get it. Result: cost is NOT linear
-/// per step (it falls from ~271 to ~198 CU/step as fighters die and more steps hit the cheap
-/// early-`continue` path), and the measured total crosses the 1.4M ceiling between 6,800 steps
-/// (1,389,142 CU — the loop alone, 99.2% of the ceiling) and 6,900 (over) — confirming the reported
-/// failure at 7,000 was real, not a fluke, and that this bench path (once fixed) reproduces it.
+/// THIS REPLACES `MAX_STEPS`, WHICH WAS DOING TWO JOBS AND IS THE SINGLE REASON THE CAP COULD NOT
+/// RISE. That constant was both (a) the ceiling `canonical_cursor` saturated at — i.e. how long a
+/// fight may ever be — and (b) the ceiling on how much work one instruction could be handed, since
+/// every caller catches up to the cursor and no further. At sixteen fighters the two coincided
+/// harmlessly: the bell was 3,840 steps, the cap 4,000, and no real fight ever met either. They stop
+/// coinciding the moment the lineup grows. A 48-fighter fight needs ~11,900 steps to reach a
+/// conclusion (`MAX_FIGHTERS`), so under one constant the choice was between a cap high enough to
+/// let the fight finish — which no transaction could execute — and a cap low enough to execute,
+/// which freezes every large fight at 42 seconds with everyone still standing and leaves the extract
+/// penalty permanently above zero. HOUSE-LIFETIME.md §8 poses exactly that dilemma and calls both
+/// branches bad.
+/// Both branches ARE bad. The dilemma is an artifact of the conflation, not of the game.
 ///
-/// 4,000 steps measures at 864,996 CU for the loop alone (61.8% of the ceiling) — this constant
-/// covers only `run_fight`; the real `resolve` also pays for the `Round` account's borsh
-/// deserialise-in and serialise-out (~937 bytes), the `require!`/`Clock::get()` guards, the
-/// `RoundSettled` event, and the CPI to the Magic commit program, none of which `bench_fight`'s
-/// bare-signer context exercises. There is no verified number for that remainder — ER-030 guessed
-/// 30k CU for it and was wrong about the loop itself, so guessing again here would repeat the same
-/// mistake. Instead: 4,000 leaves 535,004 CU (38.2%) of headroom for it, which would have to be
-/// ~5x any prior guess before this stopped being real margin — and the actual total is checked for
-/// real in this session's regression test (a round resolved after the cap, with a real signature),
-/// not assumed from this comment.
+/// So the two jobs are two things now. How long a fight may be is `FIGHT_TIMEOUT_SECONDS` — the
+/// bell, which was always the real answer and which `canonical_cursor` now clamps against directly.
+/// How much work one call may do is this constant, and it is the one that has to be MEASURED.
 ///
-/// WHAT THIS CONSTANT IS FOR NOW (stepped fight, this session). It is no longer the thing that ends a
-/// round — `FIGHT_TIMEOUT_SECONDS` is. It is purely the ceiling on how much fight ANY SINGLE
-/// instruction can be made to run in one transaction: `canonical_cursor()` saturates here, and every
-/// caller catches the stored cursor up to that cursor and no further, so `tick`, `extract` and
-/// `resolve` all inherit this same measured bound whether the round was ticked diligently or ignored
-/// completely. With the per-fighter rate below, the largest legal lineup reaches
-/// 120s × 32/s = 3,840 steps at the bell — under this cap, so the cap never truncates a real fight;
-/// it exists only so an unattended round can never present a caller with unbounded work.
-pub const MAX_STEPS: u64 = 4_000;
+/// WHAT THAT COSTS, said plainly because it is the honest price of the cap: `resolve` may now need
+/// more than one transaction. A round left completely unticked to the bell has 180s × 96/s = 17,280
+/// steps of arithmetic waiting for whoever settles it, which is more than one transaction can
+/// execute at any CU price. `resolve` therefore grinds — each call advances what it can and settles
+/// the moment the fight is genuinely up to date — so it is still SELF-SUFFICIENT (it never requires
+/// anyone else to have ticked first, which is the property that keeps a round from becoming
+/// permanently stuck), it just may take up to six calls in the worst case. In the normal case,
+/// where any client at all is ticking, it settles on the first call having run a handful of steps.
+/// See `resolve` for the loop a caller has to write, and `extract` for the one place the bound is
+/// visible to a player.
+///
+/// THE MEASUREMENT, AND IT IS A TEST RATHER THAN THIS COMMENT. The last time this number lived only
+/// in prose it was wrong and it stranded devnet round #9 at "1,399,850 of 1,399,850 CUs consumed,
+/// exceeded CUs meter". `tests/compute.rs` runs the COMPILED SBF binary under `litesvm` against real
+/// account bytes and reads `compute_units_consumed` back — the real `tick` and the real `resolve` on
+/// a real 48-fighter round in `Phase::Fight`, not `bench_fight`'s bare loop, which by construction
+/// cannot see the account, the guards, the `Clock` read or the event.
+///
+/// At this cap and this budget:
+///
+/// ```text
+///   tick                645,685 CU   46.1% of the 1,400,000 ceiling
+///   resolve, grinding   647,926 CU   46.3%
+///   resolve, settling   667,940 CU   47.7%   (to the commit-CPI boundary)
+///   extract             651,018 CU   46.5%
+/// ```
+///
+/// `extract` is in that list because a review pointed out it was missing while the test's own doc
+/// claimed to cover "every instruction a caller can send". It is the one where hitting the ceiling
+/// means a player cannot get their money out, and it carries the session-token deserialise and a
+/// linear scan over 48 fighters that `tick` does not. The one number that is NOT comfortable is a
+/// `tick` and an `extract` bundled into ONE transaction — 1,278,833 CU, 91.3% — which is why
+/// `extract`'s doc now says to send them separately.
+///
+/// — leaving 52% for the commit CPI and the transaction's own overhead, which are the only terms not
+/// in those numbers. ER-030 guessed 30k CU for that remainder and was wrong about the loop as well,
+/// so what answers an unmeasured term here is headroom rather than a better guess: it would have to
+/// be twenty times that old guess before this stopped being safe.
+///
+/// The shape of the cost, `tick` at each lineup (`print_the_compute_profile`):
+///
+/// ```text
+///  steps |    n=2      n=4      n=8     n=16     n=32     n=48
+/// -------+---------------------------------------------------
+///      1 |   3,007    3,007    3,007    2,883    3,008    3,008
+///    100 |  28,362   26,214   24,861   24,489   24,243   24,361
+///    500 | 103,363  108,630  116,202  110,607  108,729  109,087
+///  1,000 | 144,610  196,207  213,061  218,619  216,710  214,337
+///  2,000 |    "     272,767  385,310  424,771  429,114  428,604
+///  3,000 |    "        "     536,131  609,419  643,265  645,685
+/// ```
+///
+/// ~3,000 CU fixed, ~214 CU/step marginal; the ceiling would arrive at ~6,500 steps.
+///
+/// THE REPEATED ENTRIES ARE NOT A PLATEAU IN COST, they are the CURSOR RUNNING OUT. A two-fighter
+/// fight reaches its bell at 720 steps and a four-fighter one at 1,440, so no caller can be handed
+/// more than that however much they ask for — which is worth seeing, because it means this bound
+/// binds only on the lineups big enough to need it.
+///
+/// IT IS MEASURED AT `MAX_FIGHTERS` RATHER THAN AT THE LINEUP THE ARENA FIELDS, and the table says
+/// why more honestly than an argument would. Cost per step rises from ~145 at n=2 to ~215 by n=8 —
+/// with more fighters standing, a larger share of steps reach the damage branch instead of the cheap
+/// early-`continue` — and then it FLATTENS rather than continuing to climb. So calibrating at four
+/// fighters would have been ~10% optimistic and calibrating at sixteen would have been fine; the
+/// reason to measure at the cap anyway is that neither of those was known until it was run.
+pub const MAX_STEPS_PER_CALL: u64 = 3_000;
 
 /// THE BELL. Once this much real time has passed since `Phase::Fight` began, anyone may settle the
 /// round even with fighters still standing. This is the guarantee that a round can never become
@@ -314,8 +467,46 @@ pub const MAX_STEPS: u64 = 4_000;
 /// always meant. Settle when the fight is genuinely OVER (one side has nobody left standing), or when
 /// the bell rings, whichever comes first.
 ///
-/// 120s clears the longest lineup in the table above (16 fighters, 84.1s worst case) with margin.
-pub const FIGHT_TIMEOUT_SECONDS: i64 = 120;
+/// IT IS ALSO THE CURSOR CEILING, which it was not before. `canonical_cursor` used to saturate at a
+/// separate constant (`MAX_STEPS`); it now clamps ELAPSED TIME to this, which is the same statement
+/// made where it belongs — a fight advances until the bell and then stops, rather than until an
+/// unrelated number that happened to sit near the bell for one lineup size. See `MAX_STEPS_PER_CALL`
+/// for why those two jobs had to come apart.
+///
+/// 180s, AND IT WAS 120s. THE OLD NUMBER'S JUSTIFICATION WAS ALREADY FALSE BEFORE THIS CHANGE, which
+/// is the part worth reading. It said "120s clears the longest lineup in the table above (16
+/// fighters, 84.1s worst case) with margin" — but that table was measured against the DEFENDER-basis
+/// damage rule, and `min(ring_a, ring_d)` made every fight longer (see
+/// `STEPS_PER_FIGHTER_PER_SECOND`). Re-measured against `advance_fight` itself, 400 seeds, equal $10
+/// stakes, the fraction of rounds that reach a conclusion before the bell rather than being settled
+/// on who was ahead:
+///
+/// ```text
+///  n  |  120s bell  |  180s bell        (equal $10 stakes, 400 seeds, tests/fight_length.rs)
+/// -----+-------------+-----------
+///  16  |   74.2%     |   87.8%
+///  32  |   57.8%     |   81.2%
+///  48  |   47.5%     |   76.2%
+/// ```
+///
+/// So the deployed program was already belling a quarter of its sixteen-fighter rounds, and the
+/// comment claiming otherwise was measuring a game that had since been changed. THAT is the number
+/// this constant is set against: 74.2% is the conclusion rate the live arena actually ships, and
+/// 180s is what it takes for a 48-fighter round to beat it (76.2%). It is not a round number chosen
+/// to look safe.
+///
+/// WHAT A LONGER BELL COSTS, and it is deliberately almost nothing. The bell is a BACKSTOP, not a
+/// duration: `resolve` fires on `fight_is_over` first, so a fight that finishes at 40 seconds
+/// settles at 40 seconds whatever this says. The only rounds that notice are the ones that would
+/// otherwise have been cut short — for those, a longer bell is the whole improvement — and the
+/// pathological round that can never end at all (one wallet holding both sides; see
+/// `a_fight_that_can_never_end_is_still_settleable_when_the_bell_rings`), which now waits three
+/// minutes instead of two to become settleable. No lineup runs at a different SPEED.
+///
+/// WHAT IT COSTS THE KEEPER IS REAL AND IS NOT A PROGRAM CONCERN: a round that runs longer is a
+/// round the arena holds fewer of per hour. That is an operating decision, it is visible in
+/// `Arena.round_counter` per unit time, and nothing on chain depends on the cadence.
+pub const FIGHT_TIMEOUT_SECONDS: i64 = 180;
 
 /// THE SHORTEST LOBBY THAT IS ACTUALLY ENTERABLE — the floor `open_round` clamps up to.
 ///
@@ -461,7 +652,7 @@ pub fn lobby_is_open(lobby_closes_at: i64, now: i64) -> bool {
 /// influence the seed (the VRF oracle produces it after this call, and nothing the caller supplies
 /// reaches it), and it cannot exclude an entrant, because a full lobby already excludes everyone —
 /// `enter` rejects on `RoundFull` before it reaches the top-up branch, so the LINEUP AND THE POT are
-/// both already frozen at sixteen whether this clause exists or not. That is the whole argument, and
+/// both already frozen at the cap whether this clause exists or not. That is the whole argument, and
 /// it does not rest on filling a lobby being expensive: `enter` requires only `stake > 0` and one
 /// wallet may hold both sides, so eight wallets can fill a round with dust for transaction fees. All
 /// such a griefer buys is choosing which SECOND the fight starts, and no quantity in this program is
@@ -597,24 +788,23 @@ pub const EXTRACT_PENALTY_START_BPS: u64 = 2_000;
 ///     without going and finding the transaction. Against the cursor they can do it from the event
 ///     alone, which is the standard the rest of this round already meets.
 ///   * The cursor is what actually happened to the player. Elapsed time is a proxy for it, and stops
-///     being one at `MAX_STEPS`, where the cursor saturates and the clock keeps running: a
-///     clock-based penalty would keep falling through a stretch of round in which the fight, by
-///     definition, is no longer moving.
+///     being one at the bell, where the cursor saturates and the clock keeps running: a clock-based
+///     penalty would keep falling through a stretch of round in which the fight, by definition, is
+///     no longer moving.
 ///   * It is the same quantity every other payout path is a function of (`catch_up`, `resolve`), so
 ///     there is one definition of "how far along are we" rather than two that agree by coincidence.
 ///
 /// THE HORIZON IS PER-LINEUP BECAUSE A FIGHT'S LENGTH IS. This is the same problem
 /// `STEPS_PER_FIGHTER_PER_SECOND` solves for pacing, and it does not solve it here: per-fighter pacing
 /// divides an ~n^1.5 fight length by n, which leaves ~n^0.5 — so at the rate this round actually runs,
-/// the median duel lasts 19.5 SECONDS and the median sixteen-way lasts 54.4. A flat horizon in seconds
+/// the median duel lasts 27 SECONDS, the median sixteen-way 83, and the median forty-eight-way 124. A flat horizon in seconds
 /// (i.e. a horizon linear in n) therefore misses by ~3x at the ends: pick 45s and a duel spends its
 /// entire life in the first third of the decay curve, never getting below a 12% rate — nerve
 /// unrewarded, in the most common lineup this demo runs. A flat horizon in STEPS is worse still (26x),
-/// and the two obvious "free" horizons are both far too long for the same reason: `MAX_STEPS` (4,000)
-/// leaves a duel paying 19.6% at its natural end, and the bell
-/// (`FIGHT_TIMEOUT_SECONDS × steps_per_second`) leaves it paying 17.1%.
+/// and the obvious "free" horizon — the bell, `FIGHT_TIMEOUT_SECONDS × steps_per_second` — is far too
+/// long for the same reason: it leaves a duel paying 17.1% at its natural end.
 ///
-/// MEASURED, this session, the same way the pacing table was — `engine/src/er-sim.ts`, equal stakes,
+/// MEASURED, originally, the same way the pacing table was — `engine/src/er-sim.ts`, equal stakes,
 /// 400 seeds per lineup size, counting steps until one side has nobody standing. Fitting `C × n^1.5`:
 ///
 /// ```text
@@ -630,6 +820,46 @@ pub const EXTRACT_PENALTY_START_BPS: u64 = 2_000;
 /// because an unbalanced book finishes faster. Real lobbies are matched but not perfectly, so the
 /// truth is between the rows: **C = 25**, tabulated below.
 ///
+/// C = 25 IS KEPT, AND EXTENDING THE TABLE TO 48 CHANGED NOT ONE OF THE FIFTEEN ENTRIES THAT WERE
+/// ALREADY THERE. That is worth stating as a fact rather than an intention: the rule really is
+/// `round(25 × n^1.5)`, re-derived from the formula and diffed against the deployed array, so every
+/// lineup the live arena currently fields is charged exactly what it is charged today. Only the
+/// entries above 16 are new.
+///
+/// AND C = 25 IS NOW MORE CONSERVATIVE THAN WHEN IT WAS CHOSEN, WHICH IS THE SAFE DIRECTION. The fit
+/// above predates `min(ring_a, ring_d)`; under the shipped damage rule fights run materially longer,
+/// and re-measuring against `advance_fight` itself (400 seeds, equal $10 stakes,
+/// `tests/fight_length.rs`) puts the balanced C at **35..46 across lineups 2..48**, against the
+/// 24.2..30.1 it was fitted at. So the table now sits at roughly 60-70% of the median fight rather
+/// than 92%, and the penalty reaches zero comfortably inside a real round at every legal lineup.
+/// That is "too short" in the sense this comment already calls the recoverable direction — the last
+/// stretch of a long fight is free — and it is checked rather than argued:
+/// `the_penalty_table_still_errs_short_of_the_measured_fight` re-runs the measurement and asserts
+/// the inequality, so if the fight is ever changed again in a way that shortens it, the test says so
+/// instead of a player quietly paying a penalty that never decays.
+///
+/// A FIGHT'S LENGTH DEPENDS ON THE STAKE AS WELL AS ON THE LINEUP, AND NOTHING ABOVE EVER SAID SO.
+/// Found by the test rather than by reading: damage is a percentage of the smaller ring, so hp decays
+/// geometrically and the number of blows needed to put someone under `DUST` goes as
+/// `log(stake / DUST)`. A lineup staking $1 each finishes in about three quarters of the steps a $10
+/// lineup needs. The horizon is in absolute STEPS and does not move, so a cheap round spends a larger
+/// fraction of itself paying the penalty — and at three fighters and $1 a side the horizon equals the
+/// whole median fight, which is the "never reaches zero" failure this comment calls fatal.
+///
+/// It is not reached in practice: the keeper's band is $5-$20 (`HOUSE_STAKE_MIN/MAX_USD`) and the
+/// property holds across all of it with room. But it was TRUE BY LUCK rather than by design, because
+/// the fit was taken at one stake and the dependence was never noticed, so
+/// `the_penalty_table_still_errs_short_of_the_measured_fight` now sweeps the band rather than
+/// checking a point. If the arena ever opens to much smaller stakes, this is the constant that
+/// notices first.
+///
+/// THE HORIZON HAS TO BE REACHABLE, AND AT THIS CAP THAT IS ONLY TRUE BECAUSE THE STEP BUDGET WAS
+/// FIXED. `round(25 × 48^1.5)` is 8,314 steps. Under the old conflated `MAX_STEPS = 4,000` that
+/// horizon was simply unreachable — the cursor saturated at 4,000 and a 48-fighter round would have
+/// charged a floor of ~10% forever, which is the "design goal fails outright" failure named two
+/// paragraphs down. Against the bell it is reached at 8,314 of 17,280 steps, i.e. 87 seconds into a
+/// 180-second round. See `MAX_STEPS_PER_CALL` for why those two ceilings had to come apart.
+///
 /// ERRING SHORT IS THE SAFE DIRECTION, which is why C=25 sits under the balanced median rather than
 /// on it. Too LONG and the penalty never reaches zero inside a real fight — the design goal fails
 /// outright. Too SHORT and the last stretch of a long fight is free, which is where the curve was
@@ -638,18 +868,35 @@ pub const EXTRACT_PENALTY_START_BPS: u64 = 2_000;
 /// alike) buys them nothing. One failure mode breaks the mechanic; the other lands on its intended
 /// endpoint slightly early.
 ///
-/// A TABLE RATHER THAN THE FORMULA, because `n` has fifteen legal values and `n^1.5` does not exist in
-/// integer arithmetic. The alternative is an integer square root, written out FOUR times — here and in
-/// each TypeScript mirror — to compute fifteen numbers that were never going to change. This repo has
-/// already been bitten twice by exactly that shape of duplication (the DUST floor, and `bench_fight`
-/// drifting from `run_fight`), and a table has the additional property that a player can read their
-/// own lineup's horizon straight off it. `parity_tests::the_typescript_mirrors_carry_the_same_penalty_curve`
-/// parses both mirrors and compares them to this array, so the copies cannot drift in silence.
+/// A TABLE RATHER THAN THE FORMULA, because `n^1.5` does not exist in integer arithmetic. The
+/// alternative is an integer square root, written out FOUR times — here and in each TypeScript mirror
+/// — to compute numbers that were never going to change. This repo has already been bitten twice by
+/// exactly that shape of duplication (the DUST floor, and `bench_fight` drifting from `run_fight`),
+/// and a table has the additional property that a player can read their own lineup's horizon straight
+/// off it. `parity_tests::the_typescript_mirrors_carry_the_same_penalty_curve` parses both mirrors and
+/// compares them to this array, so the copies cannot drift in silence.
+///
+/// THE "FIFTEEN NUMBERS" ARGUMENT IS WEAKER AT FORTY-SEVEN THAN IT WAS AT FIFTEEN, and it is worth
+/// saying so rather than quietly tripling a table on an argument sized for the old one. Forty-seven
+/// hand-written constants is a lot of places to make one typo, and no reader is going to verify them
+/// by eye. What replaces eyeballing is `the_penalty_table_is_exactly_its_generating_formula`, which
+/// recomputes every entry from `round(25 × n^1.5)` in floating point (inside `#[cfg(test)]`, so no
+/// float reaches the program) and asserts the array equals it. The table stays a table because the
+/// PROGRAM must not do that arithmetic; the derivation stops being prose because at this length prose
+/// is not checkable.
 const PENALTY_HORIZON_STEPS: [u16; MAX_FIGHTERS - 1] = [
-    /* n= 2 */    71, /* n= 3 */   130, /* n= 4 */   200, /* n= 5 */   280,
-    /* n= 6 */   367, /* n= 7 */   463, /* n= 8 */   566, /* n= 9 */   675,
-    /* n=10 */   791, /* n=11 */   912, /* n=12 */ 1_039, /* n=13 */ 1_172,
-    /* n=14 */ 1_310, /* n=15 */ 1_452, /* n=16 */ 1_600,
+    /* n= 2 */     71, /* n= 3 */    130, /* n= 4 */    200, /* n= 5 */    280,
+    /* n= 6 */    367, /* n= 7 */    463, /* n= 8 */    566, /* n= 9 */    675,
+    /* n=10 */    791, /* n=11 */    912, /* n=12 */  1_039, /* n=13 */  1_172,
+    /* n=14 */  1_310, /* n=15 */  1_452, /* n=16 */  1_600, /* n=17 */  1_752,
+    /* n=18 */  1_909, /* n=19 */  2_070, /* n=20 */  2_236, /* n=21 */  2_406,
+    /* n=22 */  2_580, /* n=23 */  2_758, /* n=24 */  2_939, /* n=25 */  3_125,
+    /* n=26 */  3_314, /* n=27 */  3_507, /* n=28 */  3_704, /* n=29 */  3_904,
+    /* n=30 */  4_108, /* n=31 */  4_315, /* n=32 */  4_525, /* n=33 */  4_739,
+    /* n=34 */  4_956, /* n=35 */  5_177, /* n=36 */  5_400, /* n=37 */  5_627,
+    /* n=38 */  5_856, /* n=39 */  6_089, /* n=40 */  6_325, /* n=41 */  6_563,
+    /* n=42 */  6_805, /* n=43 */  7_049, /* n=44 */  7_297, /* n=45 */  7_547,
+    /* n=46 */  7_800, /* n=47 */  8_055, /* n=48 */  8_314,
 ];
 
 /// The fight's pace for a given lineup — see `STEPS_PER_FIGHTER_PER_SECOND` for the measurements.
@@ -719,9 +966,42 @@ pub fn split_entry(stake: u64, fee_bps: u64) -> (u64, u64) {
 /// fight and get their stakes back — that is the free-undo bug this session exists to remove, and it
 /// would come straight back in a subtler form if any payout path trusted the stored cursor instead of
 /// this one.
+///
+/// THE CLAMP IS ON ELAPSED TIME, NOT ON THE PRODUCT, and that is the change that made a bigger cap
+/// possible. It used to be `.min(MAX_STEPS)` — a flat 4,000 — which is a statement about how much
+/// ARITHMETIC one caller may be handed, applied to a quantity that means how long a FIGHT is. The two
+/// only look alike while the largest legal lineup happens to reach the bell just under the flat
+/// number, which was true at sixteen fighters and false at anything larger. Clamping elapsed seconds
+/// to the bell says the thing that was actually meant — a fight advances until the bell and then
+/// stops — and it is now true at every lineup rather than by coincidence at one. The compute bound
+/// moved to where it belongs, on the CALLERS: see `MAX_STEPS_PER_CALL`.
 pub fn canonical_cursor(fight_started_at: i64, fighter_count: usize, now: i64) -> u64 {
     let elapsed = now.saturating_sub(fight_started_at).max(0) as u64;
-    elapsed.saturating_mul(steps_per_second(fighter_count)).min(MAX_STEPS)
+    elapsed
+        .min(FIGHT_TIMEOUT_SECONDS as u64)
+        .saturating_mul(steps_per_second(fighter_count))
+}
+
+/// THE LAST CURSOR A FIGHT OF THIS LINEUP CAN EVER REACH — the bell, in steps.
+///
+/// Named because three separate things need it and each would otherwise write out
+/// `FIGHT_TIMEOUT_SECONDS × steps_per_second(n)` itself: the horizon test (a penalty that is not
+/// reached by here never reaches zero at all), the compute test (this is the worst-case backlog a
+/// caller can be handed, and therefore what sets how many `resolve` calls a neglected round needs),
+/// and the browser, which draws the fight's progress as a fraction of it.
+pub fn final_cursor(fighter_count: usize) -> u64 {
+    (FIGHT_TIMEOUT_SECONDS as u64).saturating_mul(steps_per_second(fighter_count))
+}
+
+/// IS THE STORED FIGHT WHERE REAL TIME SAYS IT SHOULD BE? The precondition every payout depends on.
+///
+/// It exists because `catch_up` is now BOUNDED (`MAX_STEPS_PER_CALL`), so "I called catch_up" stopped
+/// being the same statement as "the fight is up to date". Before the bound they were identical and
+/// nothing had to ask. A payout computed at a cursor short of this one pays out a LARGER `hp` than
+/// the player actually still holds — the free-undo bug, arrived at from a new direction — so
+/// `extract` refuses rather than pays, and `resolve` grinds rather than settles.
+fn is_caught_up(r: &Round, now: i64) -> bool {
+    r.tick_count >= canonical_cursor(r.fight_started_at, r.fighter_count as usize, now)
 }
 
 /// WHO SWINGS AT WHOM this step: an attacker, and a defender who is never the attacker.
@@ -870,7 +1150,7 @@ fn draw_pair(h: &[u8; 32], n: usize) -> (usize, usize) {
 /// `DUST` per death, and a fighter can cross below `DUST` only once, so the whole-round exposure is
 /// at most `MAX_FIGHTERS * DUST = 16_000` units — about $0.016. That is the entire surviving
 /// remnant of a mechanism that used to move 660% of a minnow's stake per round.
-pub fn advance_fight(fighters: &mut [Fighter; MAX_FIGHTERS], n: usize, seed: &[u8; 32], cursor: u64, steps: u64) {
+pub fn advance_fight(fighters: &mut [Fighter], n: usize, seed: &[u8; 32], cursor: u64, steps: u64) {
     if n < 2 { return; }        // mirrors `if (n < 2) break;` in er-sim.ts; unreachable in Fight phase
     for step in cursor..cursor.saturating_add(steps) {
         let h = hashv(&[seed.as_ref(), step.to_le_bytes().as_ref()]).to_bytes();
@@ -901,7 +1181,7 @@ pub fn advance_fight(fighters: &mut [Fighter; MAX_FIGHTERS], n: usize, seed: &[u
 /// Note what it does NOT require: that the fight ran to a finish. Settling a fight still in progress
 /// is a well-defined question — who is holding more right now — which is what makes the bell in
 /// `FIGHT_TIMEOUT_SECONDS` a legitimate ending rather than an abandonment.
-pub fn settle_sides(fighters: &[Fighter; MAX_FIGHTERS], n: usize) -> u8 {
+pub fn settle_sides(fighters: &[Fighter], n: usize) -> u8 {
     let (mut va, mut vb) = (0u64, 0u64);
     for f in fighters[..n].iter() {
         let v = f.hp.saturating_add(f.banked);
@@ -917,7 +1197,7 @@ pub fn settle_sides(fighters: &[Fighter; MAX_FIGHTERS], n: usize) -> u8 {
 /// to raid. A lineup that is entirely on one side satisfies this from the first instant, which is
 /// also correct rather than a special case: same-side pairs never exchange, so such a round contains
 /// no fight at all and should be settleable immediately.
-pub fn fight_is_over(fighters: &[Fighter; MAX_FIGHTERS], n: usize) -> bool {
+pub fn fight_is_over(fighters: &[Fighter], n: usize) -> bool {
     let (mut a, mut b) = (0u32, 0u32);
     for f in fighters[..n].iter().filter(|f| f.dead == 0) {
         if f.side == 0 { a += 1 } else { b += 1 }
@@ -928,7 +1208,7 @@ pub fn fight_is_over(fighters: &[Fighter; MAX_FIGHTERS], n: usize) -> bool {
 /// The whole fight from a standing start, then the winner. Kept as one function because the parity
 /// fixture and the `bench` compute probe both describe the fight that way, and because it is the
 /// shape `engine/src/er-sim.ts`'s own tests use (`tick(round, steps)` then `settle(round)`).
-pub fn run_fight(fighters: &mut [Fighter; MAX_FIGHTERS], n: usize, seed: &[u8; 32], steps: u32) -> u8 {
+pub fn run_fight(fighters: &mut [Fighter], n: usize, seed: &[u8; 32], steps: u32) -> u8 {
     advance_fight(fighters, n, seed, 0, steps as u64);
     settle_sides(fighters, n)
 }
@@ -941,10 +1221,20 @@ pub fn run_fight(fighters: &mut [Fighter; MAX_FIGHTERS], n: usize, seed: &[u8; 3
 /// of real elapsed time, and any payout path that trusted the stored cursor instead could be starved
 /// into paying out a stale — i.e. larger — number simply by nobody ticking.
 ///
-/// Work is bounded by construction: `canonical_cursor` saturates at `MAX_STEPS`, so no single call can
-/// run more than MAX_STEPS steps however long a round has been left unattended. That is the same
-/// ceiling `resolve` was measured and devnet-verified against in task #15, not a new one to re-earn —
-/// and in the normal case, where anything at all is ticking, each call runs a handful of steps.
+/// `limit` IS NOW THE ONLY THING BOUNDING THE WORK, AND EVERY CALLER MUST PASS A REAL ONE. It used to
+/// be belt and braces: `canonical_cursor` saturated at a flat 4,000 steps, so `catch_up(r, now,
+/// u64::MAX)` — which is what `extract` and `resolve` both passed — was still bounded, by the cursor
+/// rather than by the argument. That is no longer true. The cursor now runs to the bell, which at the
+/// largest lineup is 17,280 steps, and no transaction can execute that. So `u64::MAX` has disappeared
+/// from every call site and the callers pass `MAX_STEPS_PER_CALL`; what changed for each of them is
+/// what they do when the limit BITES, which is the interesting part and is written up at `extract`
+/// (refuses) and `resolve` (grinds).
+///
+/// In the normal case the limit never binds, and the margin is worth stating as a number rather than
+/// as "a handful": a client ticking once a second leaves a backlog of `steps_per_second(n)` = `2n`,
+/// which is 96 steps at the cap against a limit of 3,000. Thirty times over, at the WORST lineup.
+/// (This comment used to say "single digits", which was wrong by an order of magnitude even at the
+/// 10-17 fighters the live arena fields — the conclusion survived the error, the number did not.)
 fn catch_up(r: &mut Round, now: i64, limit: u64) -> u64 {
     let n = r.fighter_count as usize;
     if n < 2 { return 0; }
@@ -990,7 +1280,7 @@ fn credit_entry(r: &mut Round, who: Pubkey, side: u8, stake: u64, fee_bps: u64) 
         f.hp = f.hp.checked_add(net).ok_or(ArenaError::MathOverflow)?;
     } else {
         let slot = r.fighters.get_mut(n).ok_or(ArenaError::RoundFull)?;
-        *slot = Fighter { wallet: who, side, stake: net, hp: net, banked: 0, dead: 0 };
+        *slot = Fighter { wallet: who, side, stake: net, hp: net, banked: 0, dead: 0, padding: [0u8; 6] };
         r.fighter_count += 1;
     }
     r.pot = r.pot.checked_add(net).ok_or(ArenaError::MathOverflow)?;
@@ -1016,8 +1306,8 @@ fn apply_sweep(r: &mut Round, t: &mut Treasury) -> Result<(u64, u64)> {
         r.phase == Phase::Settled as u8 || r.phase == Phase::Abandoned as u8,
         ArenaError::RoundNotTerminal
     );
-    require!(!r.house_swept, ArenaError::AlreadySwept);
-    r.house_swept = true;
+    require!(!r.is_swept(), ArenaError::AlreadySwept);
+    r.house_swept = 1;
 
     let (fees, penalties) = (r.fees_collected, r.penalties_collected);
     t.fees_accrued = t.fees_accrued.checked_add(fees).ok_or(ArenaError::MathOverflow)?;
@@ -1055,7 +1345,7 @@ fn check_close_permitted(r: &Round, arena_round_counter: u64) -> Result<()> {
     // say which round was missing, because the round is gone. Requiring the flag makes "the books
     // are aggregated before the record dies" an ordering the chain enforces rather than a step in a
     // keeper's loop that a crash can skip.
-    require!(r.house_swept, ArenaError::RoundNotSwept);
+    require!(r.is_swept(), ArenaError::RoundNotSwept);
 
     // THE RETENTION WINDOW. `round_counter` is the highest round_no ever opened (`open_round`
     // requires `round_no == round_counter + 1` and then assigns), so the newest
@@ -1164,7 +1454,12 @@ pub mod bulls_arena {
         let arena = &mut ctx.accounts.arena;
         require!(round_no == arena.round_counter + 1, ArenaError::RoundOutOfOrder);
 
-        let r = &mut ctx.accounts.round;
+        // `load_init` rather than `load_mut`, and it is not interchangeable: `init` creates the
+        // account with its discriminator still all-zero (anchor writes it in `exit`, after this
+        // body), so `load_mut` would refuse with `AccountDiscriminatorMismatch`. `load_init` is the
+        // one accessor that expects the zeroes — and it also refuses on an account that ALREADY has
+        // a discriminator, which is what stops this from being a re-initialise.
+        let r = &mut ctx.accounts.round.load_init()?;
         r.arena = arena.key();
         r.round_no = round_no;
         r.phase = Phase::Lobby as u8;
@@ -1174,20 +1469,17 @@ pub mod bulls_arena {
         r.pot = 0;
         r.penalties_collected = 0;
         r.fees_collected = 0;
-        r.house_swept = false;
+        r.house_swept = 0;
         r.fighter_count = 0;
         r.tick_count = 0;
+        r.padding = [0u8; 2];
         (r.lobby_opened_at, r.lobby_closes_at) = lobby_window(now, lobby_seconds);
         r.fight_started_at = 0;   // meaningful only from callback_seed onward
         r.bump = ctx.bumps.round;
+        let (lobby_opened_at, lobby_closes_at) = (r.lobby_opened_at, r.lobby_closes_at);
 
         arena.round_counter = round_no;
-        emit!(RoundOpened {
-            round_no,
-            seed_commit,
-            lobby_opened_at: r.lobby_opened_at,
-            lobby_closes_at: r.lobby_closes_at,
-        });
+        emit!(RoundOpened { round_no, seed_commit, lobby_opened_at, lobby_closes_at });
         Ok(())
     }
 
@@ -1252,22 +1544,32 @@ pub mod bulls_arena {
     pub fn enter(ctx: Context<Enter>, side: u8, stake: u64) -> Result<()> {
         let arena_fee = ctx.accounts.arena.fee_bps as u64;
         let now = Clock::get()?.unix_timestamp;
-        let r = &mut ctx.accounts.round;
-        require!(r.phase == Phase::Lobby as u8, ArenaError::NotInLobby);
-        require!(side == 0 || side == 1, ArenaError::BadSide);
-        require!(stake > 0, ArenaError::ZeroStake);
-        // Checked separately from the deadline, and before it, so a player who arrives at a full
-        // lobby is told the lobby is FULL rather than that they were too slow — two different things
-        // to be told, and only one of them is worth waiting for the next round over.
-        require!((r.fighter_count as usize) < MAX_FIGHTERS, ArenaError::RoundFull);
-        require!(lobby_is_open(r.lobby_closes_at, now), ArenaError::LobbyClosed);
-
-        // One entry per wallet per side — a repeat tops up rather than spawning a second fighter,
-        // mirroring the engine, where a duplicate id merges into the existing entry.
         let who = ctx.accounts.player.key();
-        let (_net, fee) = credit_entry(r, who, side, stake, arena_fee)?;
 
-        emit!(Entered { round_no: r.round_no, player: who, side, stake, fee });
+        // SCOPED, THOUGH NOTHING HERE CPIs YET — and that is the point. A zero-copy `RefMut` held
+        // across a CPI fails as `AccountBorrowFailed`, a runtime error no native test can reach, and
+        // ARCHITECTURE-N-TEAM.md §4.2 plans to give this exact instruction a token transfer. Leaving
+        // the borrow open to the end of the function would make that a trap set for whoever lands
+        // that work. Every handler in this program scopes its load for the same reason, so the rule
+        // is visible in the shape of the code rather than remembered.
+        let (round_no, net_fee) = {
+            let r = &mut ctx.accounts.round.load_mut()?;
+            require!(r.phase == Phase::Lobby as u8, ArenaError::NotInLobby);
+            require!(side == 0 || side == 1, ArenaError::BadSide);
+            require!(stake > 0, ArenaError::ZeroStake);
+            // Checked separately from the deadline, and before it, so a player who arrives at a full
+            // lobby is told the lobby is FULL rather than that they were too slow — two different
+            // things to be told, and only one of them is worth waiting for the next round over.
+            require!((r.fighter_count as usize) < MAX_FIGHTERS, ArenaError::RoundFull);
+            require!(lobby_is_open(r.lobby_closes_at, now), ArenaError::LobbyClosed);
+
+            // One entry per wallet per side — a repeat tops up rather than spawning a second fighter,
+            // mirroring the engine, where a duplicate id merges into the existing entry.
+            let (_net, fee) = credit_entry(r, who, side, stake, arena_fee)?;
+            (r.round_no, fee)
+        };
+
+        emit!(Entered { round_no, player: who, side, stake, fee: net_fee });
         Ok(())
     }
 
@@ -1310,15 +1612,25 @@ pub mod bulls_arena {
     pub fn tick(ctx: Context<Tick>, steps: u32) -> Result<()> {
         require!(steps > 0, ArenaError::BadStepCount);
         let now = Clock::get()?.unix_timestamp;
-        let r = &mut ctx.accounts.round;
-        require!(r.phase == Phase::Fight as u8, ArenaError::NotFighting);
-        require!(r.fighter_count >= 2, ArenaError::NotEnoughFighters);
+        // Scoped like every other handler here — see `enter` for why the rule is uniform rather than
+        // applied only where a CPI happens to exist today.
+        let (round_no, cursor, ran) = {
+            let r = &mut ctx.accounts.round.load_mut()?;
+            require!(r.phase == Phase::Fight as u8, ArenaError::NotFighting);
+            require!(r.fighter_count >= 2, ArenaError::NotEnoughFighters);
 
-        let ran = catch_up(r, now, steps as u64);
+            // The caller's hint is CLAMPED rather than rejected. `steps` has always been a hint — the
+            // call runs `min(steps, backlog)` and succeeds having done nothing when the fight is up
+            // to date — so a caller asking for more than one transaction can execute should get one
+            // transaction's worth, not `BadStepCount`. Rejecting would make a client that simply
+            // asked for "all of it" fail against a bound it has no way to know it crossed.
+            let ran = catch_up(r, now, (steps as u64).min(MAX_STEPS_PER_CALL));
+            (r.round_no, r.tick_count, ran)
+        };
         // The one on-chain artifact of a tick that is legible in an explorer. The account diff is the
         // real evidence, but a log line saying "advanced 4 steps to cursor 48" is what makes a stream
         // of these transactions self-evidently a live fight rather than a stream of no-ops.
-        emit!(Ticked { round_no: r.round_no, cursor: r.tick_count, steps: ran as u32 });
+        emit!(Ticked { round_no, cursor, steps: ran as u32 });
         Ok(())
     }
 
@@ -1331,8 +1643,37 @@ pub mod bulls_arena {
     /// somebody having done optional work, which is exactly how a round becomes permanently stuck.
     /// This repo already has two of those (task #15) and does not need a third failure mode. So
     /// `resolve` is self-sufficient: it can always finish the job alone, and ticking only ever makes
-    /// it cheaper. In the fully-unticked worst case it does precisely what the old one-shot `resolve`
-    /// did, against the same MAX_STEPS bound that was measured and devnet-verified for it.
+    /// it cheaper.
+    ///
+    /// IT MAY NOW NEED MORE THAN ONE TRANSACTION, AND THAT IS THE ONE REAL COST OF THE BIGGER CAP.
+    /// A neglected 48-fighter round has up to 17,280 steps of arithmetic waiting at the bell, and no
+    /// transaction can execute that at any CU price (see `MAX_STEPS_PER_CALL`). So this instruction
+    /// GRINDS: each call advances at most one transaction's worth, and settles on the call that
+    /// brings the fight genuinely up to date. **A caller loops until `phase == Settled`** — up to six
+    /// times in the pathological case, once in every normal one, where some client has been ticking
+    /// and the backlog is single digits.
+    ///
+    /// IT RETURNS `Ok` WITHOUT SETTLING, WHICH IS DELIBERATE AND IS THE WHOLE DESIGN. The obvious
+    /// alternative — return an error saying "not caught up, tick first" — is wrong in a way that
+    /// matters: an error REVERTS, so the steps that call just ran are thrown away and the round never
+    /// advances no matter how many times anyone calls. Grinding forward and reporting progress is the
+    /// only shape in which repeated calls converge. `Ticked` is emitted for exactly that reason: it
+    /// is how a caller sees the round moving under it rather than guessing.
+    ///
+    /// ONE BRANCH STILL REVERTS, and it is not that one. A call that catches the fight all the way
+    /// up, finds it NOT over, and finds the bell has not rung returns `FightNotOverYet` — discarding
+    /// the steps it just ran. It has to: you cannot know a fight is unfinished without running it.
+    /// That is not the failure the paragraph above is about, because it is not a non-convergence —
+    /// the round is by definition up to date at that point, and a later `tick` redoes the work once.
+    ///
+    /// AND IT DOES NOT COMMIT ON THOSE CALLS. Committing an unsettled round would pay for a
+    /// base-layer settlement per grind step, which is the cost the round is delegated to avoid.
+    ///
+    /// SELF-SUFFICIENCY IS THEREFORE INTACT, and that is the property worth checking rather than
+    /// assuming, because it is what stops a round becoming permanently stuck — this repo has two of
+    /// those already. Nothing here requires anyone ELSE to have done anything: whoever wants the
+    /// round settled can do every step of it themselves, from any wallet, with no cooperation. What
+    /// changed is the number of transactions that takes, not who can send them.
     ///
     /// WHEN IT MAY BE CALLED: once the fight is genuinely over (one side has nobody standing), or once
     /// the bell has rung (`FIGHT_TIMEOUT_SECONDS`), whichever comes first — see that constant for why
@@ -1342,6 +1683,14 @@ pub mod bulls_arena {
     /// The catch-up runs BEFORE that check on purpose: a fight that ends inside the very steps this
     /// call is about to run is over, and should settle now rather than making someone call twice.
     ///
+    /// A FINISHED FIGHT SETTLES EVEN WHEN THE CURSOR IS BEHIND, and that is a correctness statement
+    /// rather than a shortcut. `fight_is_over` is MONOTONE: steps only ever set `dead = 1`, never
+    /// clear it, and once one side has nobody standing no further exchange is possible at all
+    /// (`advance_fight` skips every pair with a dead party). So a fight that is over at the partial
+    /// cursor is over at the canonical one, holding exactly the same `hp` and `banked`. Grinding the
+    /// remaining steps would be arithmetic with a proven-empty result, and refusing to settle until
+    /// it was done would delay a decided round for no reason.
+    ///
     /// PER-HIT DATA STILL DOES NOT BELONG ON-CHAIN. Every blow is recomputable from the seed by
     /// anyone; storing them is publishing our own homework at a cost per byte. Only the inputs
     /// (seed, entries), the CURSOR, and the outcome (winner, final holdings) are recorded — which is
@@ -1349,28 +1698,44 @@ pub mod bulls_arena {
     pub fn resolve(ctx: Context<Resolve>) -> Result<()> {
         {
             let now = Clock::get()?.unix_timestamp;
-            let r = &mut ctx.accounts.round;
+            let r = &mut ctx.accounts.round.load_mut()?;
             require!(r.phase == Phase::Fight as u8, ArenaError::NotFighting);
 
             let n = r.fighter_count as usize;
             require!(n >= 2, ArenaError::NotEnoughFighters);
 
-            catch_up(r, now, u64::MAX);
+            let ran = catch_up(r, now, MAX_STEPS_PER_CALL);
+            // Read ONCE. Nothing below mutates `fighters`, and this is an O(n) scan inside the
+            // instruction whose entire design is a compute budget — the old shape called it twice on
+            // the settling path for an answer that cannot have changed between the two.
+            let over = fight_is_over(&r.fighters, n);
+
+            // Over, or up to date — either is enough to settle on. See the doc comment for why the
+            // first disjunct does not need the cursor to have arrived.
+            if !over && !is_caught_up(r, now) {
+                emit!(Ticked { round_no: r.round_no, cursor: r.tick_count, steps: ran as u32 });
+                return Ok(());
+            }
 
             let elapsed = now.saturating_sub(r.fight_started_at).max(0);
-            require!(
-                fight_is_over(&r.fighters, n) || elapsed >= FIGHT_TIMEOUT_SECONDS,
-                ArenaError::FightNotOverYet
-            );
+            require!(over || elapsed >= FIGHT_TIMEOUT_SECONDS, ArenaError::FightNotOverYet);
 
             r.winner = settle_sides(&r.fighters, n);
             r.phase = Phase::Settled as u8;
             emit!(RoundSettled { round_no: r.round_no, winner: r.winner, pot: r.pot });
         }
 
-        // Anchor serialises on return; the commit reads account info DURING the instruction. Without
-        // this the committed bytes are the PRE-fight state — a settled round that still says lobby.
-        ctx.accounts.round.exit(&crate::ID)?;
+        // THE `exit()` THAT USED TO BE HERE IS GONE, and its absence is the point. Under borsh,
+        // anchor serialised the account on RETURN, so the commit CPI — which reads the account's
+        // bytes DURING the instruction — would otherwise have committed the pre-fight state, and the
+        // manual `exit` was what forced the write early. Zero-copy has no deferred write to force:
+        // `load_mut` hands out a reference INTO the account's own data buffer, so `r.phase = Settled`
+        // above is already in the bytes the CPI is about to read. `AccountLoader::exit` writes only
+        // the discriminator, which `open_round` set and nothing has touched since.
+        //
+        // The block above is scoped for a reason that IS load-bearing: the `RefMut` must be dropped
+        // before the CPI. A live borrow makes the CPI fail with `AccountBorrowFailed` — an error
+        // about a `RefCell`, on the instruction that settles the round.
         MagicIntentBundleBuilder::new(
             ctx.accounts.payer.to_account_info(),
             ctx.accounts.magic_context.to_account_info(),
@@ -1408,11 +1773,32 @@ pub mod bulls_arena {
     /// held everything. That is the free-refund bug wearing a different hat. Settling the ring to the
     /// current time first makes the payout a function of the clock, not of anyone's diligence.
     ///
-    /// The cost of that is bounded, not unbounded: `catch_up` can never run more than `MAX_STEPS`
-    /// steps (see `canonical_cursor`), the same ceiling `resolve` is measured against. In the normal
-    /// case — anything at all ticking — it runs single digits, and this stays the cheap instruction it
-    /// needs to be. Clients should still request the CU ceiling on it, because the bound that makes
-    /// this safe is a worst case, not a typical one.
+    /// AND IF THE CATCH-UP CANNOT FINISH, THIS REFUSES RATHER THAN PAYS. `catch_up` is bounded now
+    /// (`MAX_STEPS_PER_CALL`), so on a badly-neglected round one call may not reach the cursor real
+    /// time is at. Paying out at the cursor it DID reach would hand the player a larger `hp` than
+    /// they actually still hold — the free-refund bug arriving from a new direction, and this time
+    /// bought by neglect rather than by declining to tick. So `FightBehind`, and the caller sends a
+    /// `tick` or two first. Two things keep that from being a real obstruction. The backlog is ~`2n`
+    /// steps whenever ANY client is ticking — 96 at the cap, against a 3,000-step budget, because the
+    /// browser ticks once a second from every open tab — so this refusal cannot fire on a round
+    /// anybody is watching. And `tick` is permissionless, so the player who wants to extract can
+    /// clear the backlog themselves without anyone's cooperation.
+    ///
+    /// SEND THE TICK AS ITS OWN TRANSACTION, NOT BUNDLED WITH THE EXTRACT, and that instruction is
+    /// measured rather than stylistic. Bundling is the obvious client move — it stops the backlog
+    /// growing between two round-trips — and it costs **~1,278,800 CU, 91.3% of the 1.4M ceiling**
+    /// (`the_tick_then_extract_bundle_fits_but_only_just`). It fits today. It fits by 8.7%, on the
+    /// one instruction where running out of budget means a player cannot get their money out, and
+    /// with no room for a fight state that sends more steps down the damage branch than the measured
+    /// one. Two transactions cost the same total work and are nowhere near any ceiling: the backlog
+    /// grows at `2n` = 96 steps a second while a single `tick` clears 3,000, so the second
+    /// transaction is never behind the first by anything that matters.
+    ///
+    /// The refusal REVERTS the catch-up this call did, which is the right trade here and the opposite
+    /// of the call `resolve` makes. `resolve` grinds because its job IS the arithmetic and reverting
+    /// would mean it never converges. This instruction's job is a payout at a particular instant; a
+    /// partial advance is not a partial payout, and succeeding-with-nothing-extracted would be a
+    /// worse answer to a player pressing a button than a clear refusal.
     ///
     /// IT IS NOT FREE, AND IT IS CHEAPEST LAST. What leaves the ring is split: the fighter keeps most
     /// of it, the house takes `extract_penalty_bps(fighter_count, cursor)` — 20% at the opening bell,
@@ -1447,49 +1833,63 @@ pub mod bulls_arena {
     pub fn extract(ctx: Context<Extract>) -> Result<()> {
         let who = ctx.accounts.player.key();
         let now = Clock::get()?.unix_timestamp;
-        let r = &mut ctx.accounts.round;
-        require!(r.phase == Phase::Fight as u8, ArenaError::NotFighting);
+        // Scoped like every other handler here — see `enter`. This one matters as much as that one:
+        // ARCHITECTURE-N-TEAM.md §4.2 has the penalty leaving the round as a real transfer, and a
+        // `RefMut` still open across that CPI is `AccountBorrowFailed` on the instruction a player
+        // presses under time pressure.
+        let (round_no, taken, penalty, cursor) = {
+            let r = &mut ctx.accounts.round.load_mut()?;
+            require!(r.phase == Phase::Fight as u8, ArenaError::NotFighting);
 
-        // Settle the ring up to THIS INSTANT before paying anyone out — see the doc comment above.
-        // Note the ordering consequence, which is correct and not an edge case: a fighter killed by
-        // one of the steps this call just ran is dead, and their extract fails with NothingToExtract.
-        // You cannot outrun a blow that has already landed in real time.
-        catch_up(r, now, u64::MAX);
+            // Settle the ring up to THIS INSTANT before paying anyone out — see the doc comment
+            // above. Note the ordering consequence, which is correct and not an edge case: a fighter
+            // killed by one of the steps this call just ran is dead, and their extract fails with
+            // NothingToExtract. You cannot outrun a blow that has already landed in real time.
+            catch_up(r, now, MAX_STEPS_PER_CALL);
+            require!(is_caught_up(r, now), ArenaError::FightBehind);
 
-        let n = r.fighter_count as usize;
-        // Read AFTER `catch_up`, so this is the cursor the fight has genuinely reached — the same
-        // number the payout itself is computed at, and the one the event publishes so anyone can
-        // re-derive the rate that was charged.
-        let cursor = r.tick_count;
-        let f = r.fighters[..n]
-            .iter_mut()
-            .find(|f| f.wallet == who && f.dead == 0 && f.hp > 0)
-            .ok_or(ArenaError::NothingToExtract)?;
+            let n = r.fighter_count as usize;
+            // Read AFTER `catch_up`, so this is the cursor the fight has genuinely reached — the same
+            // number the payout itself is computed at, and the one the event publishes so anyone can
+            // re-derive the rate that was charged.
+            let cursor = r.tick_count;
+            let round_no = r.round_no;
+            let f = r.fighters[..n]
+                .iter_mut()
+                .find(|f| f.wallet == who && f.dead == 0 && f.hp > 0)
+                .ok_or(ArenaError::NothingToExtract)?;
 
-        // Value MOVES: out of the ring, and then in two directions — most of it to the fighter's own
-        // bank (already safe from raids), a decaying slice of it out of the round entirely, to the
-        // house. That is the whole risk/reward decision: give up the chance to take more, pay for the
-        // privilege of being certain, and pay less the longer you were willing to stand there.
-        let taken = f.hp;
-        let (kept, penalty) = split_extraction(taken, n, cursor);
-        f.banked = f.banked.checked_add(kept).ok_or(ArenaError::MathOverflow)?;
-        f.hp = 0;
-        f.dead = 1;                     // out of the ring — no longer a valid target
+            // Value MOVES: out of the ring, and then in two directions — most of it to the fighter's
+            // own bank (already safe from raids), a decaying slice of it out of the round entirely,
+            // to the house. That is the whole risk/reward decision: give up the chance to take more,
+            // pay for the privilege of being certain, and pay less the longer you stood there.
+            let taken = f.hp;
+            let (kept, penalty) = split_extraction(taken, n, cursor);
+            f.banked = f.banked.checked_add(kept).ok_or(ArenaError::MathOverflow)?;
+            f.hp = 0;
+            f.dead = 1;                 // out of the ring — no longer a valid target
 
-        // The leak, recorded rather than merely subtracted — this is the term that keeps conservation
-        // provable now that a round can legitimately end holding less than its pot. See the field.
-        r.penalties_collected = r.penalties_collected.checked_add(penalty).ok_or(ArenaError::MathOverflow)?;
+            // The leak, recorded rather than merely subtracted — this is the term that keeps
+            // conservation provable now that a round can legitimately end holding less than its pot.
+            r.penalties_collected =
+                r.penalties_collected.checked_add(penalty).ok_or(ArenaError::MathOverflow)?;
+            (round_no, taken, penalty, cursor)
+        };
 
-        emit!(Extracted { round_no: r.round_no, player: who, amount: taken, penalty, cursor });
+        emit!(Extracted { round_no, player: who, amount: taken, penalty, cursor });
         Ok(())
     }
 
     /// COMPUTE PROBE — measures what a fight costs, and cannot change anything.
     ///
-    /// Needed because `resolve` refuses outside the Fight phase, so simulating it only ever measured
-    /// the guard (a flat 12,758 CU however many steps were requested — the giveaway that nothing was
-    /// running). Reaching Fight phase legitimately requires the VRF oracle, which is a dependency the
-    /// measurement should not need.
+    /// SUPERSEDED, AND KEPT ONLY AS A SPOT CHECK. Its premise was that `resolve` refuses outside the
+    /// Fight phase, so simulating it only ever measured the guard (a flat 12,758 CU however many
+    /// steps were requested), and that reaching Fight phase legitimately needs the VRF oracle.
+    /// `tests/compute.rs` falsified the second half: it builds a Fight-phase round's bytes directly
+    /// and measures the REAL `tick` and `resolve` under LiteSVM, including everything this probe
+    /// structurally cannot see — the account, the guards, the `Clock` read, the event. That is where
+    /// `MAX_STEPS_PER_CALL` now comes from. This remains only as a loop-only sanity check under
+    /// `--features bench`, and nothing depends on it.
     ///
     /// This runs the IDENTICAL inner loop over a local array and writes NOTHING — no account is
     /// mutable in its context, so it is a read-only probe rather than a test backdoor. It cannot
@@ -1500,7 +1900,7 @@ pub mod bulls_arena {
     /// has no reason to cost bytes in every deploy that isn't actively re-measuring.
     #[cfg(feature = "bench")]
     pub fn bench_fight(_ctx: Context<BenchFight>, steps: u32, fighters: u8) -> Result<()> {
-        require!(steps > 0 && steps <= 20_000, ArenaError::BadStepCount);
+        require!(steps > 0 && steps <= 40_000, ArenaError::BadStepCount);
         let n = (fighters as usize).clamp(2, MAX_FIGHTERS);
 
         // Found while re-measuring for the MAX_STEPS fix (this session): this probe used to be a
@@ -1514,17 +1914,22 @@ pub mod bulls_arena {
         // transaction on the real, current `resolve`. Calling `run_fight` directly — the same
         // function it's meant to describe, per its own doc comment — is the only way this cannot
         // drift again.
-        let mut arr = [Fighter::default(); MAX_FIGHTERS];
-        for (i, f) in arr.iter_mut().enumerate().take(n) {
-            *f = Fighter {
+        // ON THE HEAP, NOT THE STACK, and at this cap that is not a preference. `[Fighter;
+        // MAX_FIGHTERS]` is 3,072 bytes — three quarters of the whole 4 KB frame, in a probe whose
+        // entire purpose is to measure the program rather than to overflow it. A `Vec` also matches
+        // where the real fight's fighters actually live: inside the account buffer, which is not the
+        // stack either. See `MAX_FIGHTERS`.
+        let mut arr: Vec<Fighter> = (0..n)
+            .map(|i| Fighter {
                 wallet: Pubkey::new_from_array([(i as u8) + 1; 32]), // distinct per fighter, like real entries
                 side: (i % 2) as u8,                                  // alternating, like a real matched book
                 dead: 0,
                 stake: 1_000_000_000,
                 hp: 1_000_000_000,
                 banked: 0,
-            };
-        }
+                padding: [0u8; 6],
+            })
+            .collect();
         let seed = [7u8; 32];
         let winner = run_fight(&mut arr, n, &seed, steps);
         // consume the result so the optimiser cannot delete the loop and report a fictitious cost
@@ -1571,7 +1976,7 @@ pub mod bulls_arena {
                 ctx.accounts.authority.as_ref().map(|s| s.key()),
                 ctx.accounts.arena.authority,
             )?;
-            let r = &mut ctx.accounts.round;
+            let r = &mut ctx.accounts.round.load_mut()?;
             require!(r.phase == Phase::Lobby as u8, ArenaError::NotInLobby);
             require!(
                 draw_is_permitted(r.fighter_count, r.lobby_closes_at, now, by_authority),
@@ -1606,18 +2011,22 @@ pub mod bulls_arena {
     /// this — without it, anyone could hand us a seed of their choosing and the whole scheme is
     /// theatre.
     pub fn callback_seed(ctx: Context<CallbackSeed>, randomness: [u8; 32]) -> Result<()> {
-        let r = &mut ctx.accounts.round;
-        require!(r.phase == Phase::Drawing as u8, ArenaError::NotDrawing);
-        r.seed = randomness;
+        // Scoped like every other handler here — see `enter`.
+        let round_no = {
+            let r = &mut ctx.accounts.round.load_mut()?;
+            require!(r.phase == Phase::Drawing as u8, ArenaError::NotDrawing);
+            r.seed = randomness;
         // Publish sha256(seed) too. The seed is already public at this point, so this is not a
         // commitment any more — it keeps the browser replay and the anchor format unchanged, so the
         // client verifying a round does not need to know which scheme produced the seed.
-        r.seed_commit = hashv(&[randomness.as_ref()]).to_bytes();
-        r.phase = Phase::Fight as u8;
-        // The clock `resolve` later derives `steps` from — see the constants near DUST for why this
-        // has to be real on-chain time rather than a caller-supplied number.
-        r.fight_started_at = Clock::get()?.unix_timestamp;
-        emit!(SeedRevealed { round_no: r.round_no, seed: randomness });
+            r.seed_commit = hashv(&[randomness.as_ref()]).to_bytes();
+            r.phase = Phase::Fight as u8;
+            // The clock `resolve` later derives `steps` from — see the constants near DUST for why
+            // this has to be real on-chain time rather than a caller-supplied number.
+            r.fight_started_at = Clock::get()?.unix_timestamp;
+            r.round_no
+        };
+        emit!(SeedRevealed { round_no, seed: randomness });
         Ok(())
     }
 
@@ -1670,7 +2079,7 @@ pub mod bulls_arena {
     pub fn abandon_round(ctx: Context<Resolve>) -> Result<()> {
         {
             let now = Clock::get()?.unix_timestamp;
-            let r = &mut ctx.accounts.round;
+            let r = &mut ctx.accounts.round.load_mut()?;
             require!(r.phase == Phase::Lobby as u8, ArenaError::NotInLobby);
             require!(
                 lobby_is_dead(r.fighter_count, r.lobby_closes_at, now),
@@ -1680,9 +2089,9 @@ pub mod bulls_arena {
             emit!(RoundAbandoned { round_no: r.round_no, fighter_count: r.fighter_count });
         }
 
-        // Same reason as `resolve`: Anchor serialises on return, the commit reads account info DURING
-        // the instruction, so without this the committed bytes still say `Lobby`.
-        ctx.accounts.round.exit(&crate::ID)?;
+        // No `exit()` before the commit, for the reason written out at `resolve`: zero-copy writes go
+        // straight into the account buffer, so `Phase::Abandoned` is already in the bytes the CPI
+        // reads. The scope above still matters — the `RefMut` must be dropped before the CPI.
         MagicIntentBundleBuilder::new(
             ctx.accounts.payer.to_account_info(),
             ctx.accounts.magic_context.to_account_info(),
@@ -1695,8 +2104,11 @@ pub mod bulls_arena {
 
     /// Final commit + hand the account back to the base layer.
     pub fn close_round(ctx: Context<Resolve>) -> Result<()> {
-        require!(ctx.accounts.round.phase == Phase::Settled as u8, ArenaError::NotSettled);
-        ctx.accounts.round.exit(&crate::ID)?;
+        // Copied out rather than compared in place, so the shared borrow is unambiguously released
+        // before the CPI — `load()` takes the same `RefCell` the commit will need. Read-only here:
+        // this instruction changes nothing, it only publishes.
+        let phase = ctx.accounts.round.load()?.phase;
+        require!(phase == Phase::Settled as u8, ArenaError::NotSettled);
         MagicIntentBundleBuilder::new(
             ctx.accounts.payer.to_account_info(),
             ctx.accounts.magic_context.to_account_info(),
@@ -1738,11 +2150,13 @@ pub mod bulls_arena {
     /// silently change meaning the first time a round account was closed for rent.
     ///
     /// WHY IT CANNOT RUN ANY EARLIER. The round is delegated for its entire playable life, which
-    /// means its base-layer account is owned by the Delegation Program — and `Account<'info, Round>`
-    /// checks owner before anything else, so a delegated round cannot even be deserialised here.
-    /// That is not a guard someone remembered to write; it is the account model refusing. Only after
-    /// `close_round` (or `abandon_round`) commits and undelegates does this instruction become
-    /// callable at all.
+    /// means its base-layer account is owned by the Delegation Program — and `AccountLoader<'info,
+    /// Round>` checks owner before anything else (`account_loader.rs:123`, before the discriminator
+    /// on 128), so a delegated round cannot even be opened here. That is not a guard someone
+    /// remembered to write; it is the account model refusing, and it is the same refusal
+    /// `Account<'info, Round>` used to make — the zero-copy migration changed which type performs it,
+    /// not whether it happens or when. Only after `close_round` (or `abandon_round`) commits and
+    /// undelegates does this instruction become callable at all.
     ///
     /// PERMISSIONLESS, on exactly the argument `tick`, `resolve` and `abandon_round` already make:
     /// every precondition is chain truth (the phase, the swept flag) and NOTHING about the outcome
@@ -1786,8 +2200,15 @@ pub mod bulls_arena {
     ///     the flag, the permissionlessness and the seeds are all unchanged by that; only the
     ///     increment becomes a transfer.
     pub fn sweep_house_take(ctx: Context<SweepHouseTake>, _round_no: u64) -> Result<()> {
-        let round_no = ctx.accounts.round.round_no;
-        let (fees, penalties) = apply_sweep(&mut ctx.accounts.round, &mut ctx.accounts.treasury)?;
+        // Scoped like every other handler here — see `enter`. This one is named in
+        // ARCHITECTURE-N-TEAM.md §4.2 as gaining a token transfer out of the round's escrow, so the
+        // borrow must not still be open when that lands.
+        let (round_no, fees, penalties) = {
+            let r = &mut ctx.accounts.round.load_mut()?;
+            let round_no = r.round_no;
+            let (fees, penalties) = apply_sweep(r, &mut ctx.accounts.treasury)?;
+            (round_no, fees, penalties)
+        };
         let t = &ctx.accounts.treasury;
         emit!(HouseSwept {
             round_no,
@@ -1802,18 +2223,20 @@ pub mod bulls_arena {
     /// RECLAIM A FINISHED ROUND'S RENT — the last step of a round's life, and the only one that
     /// destroys something.
     ///
-    /// WHAT IT IS FOR, MEASURED. A `Round` is 1,102 bytes and its rent-exempt deposit is 0.008561
-    /// SOL, which is 95.4% of the 0.008971 SOL a whole round costs to run (v6 rounds #3 and #4).
-    /// Every round this arena has ever held is still paying it, forever, for sixteen fighter slots
-    /// on a fight that fielded four. Nothing reclaimed it because nothing could: until now there was
-    /// no instruction that closed a round account. With this, per-round cost falls to ~0.00041 and
-    /// the payer's runway goes from ~215 rounds to ~4,700.
+    /// WHAT IT IS FOR, MEASURED. A `Round` is 3,248 bytes and its rent-exempt deposit is 0.023497
+    /// SOL, which is 98.3% of what a whole round costs to run. Every round this arena has ever held
+    /// is still paying it, forever, for forty-eight fighter slots on a fight that fielded four.
+    /// Nothing reclaimed it because nothing could: until v7 there was no instruction that closed a
+    /// round account. With this, per-round cost falls to ~0.00041 — a factor of 58, against the
+    /// factor of 22 the same instruction bought at the old cap. Raising `MAX_FIGHTERS` made this
+    /// instruction more valuable, not less: the deposit it reclaims tripled and the residue it
+    /// leaves behind did not move.
     ///
     /// THE THREE REFUSALS ARE IN `check_close_permitted`, which is where the reasoning for each one
     /// is written and where the tests reach them. In short: terminal phase only, house take swept
     /// first, and older than `MIN_RETAINED_ROUNDS`. The fourth condition — that the caller is the
     /// arena's authority — is `has_one = authority` on the context, and the fifth — that the round
-    /// is not still delegated to a rollup — is `Account<'info, Round>` refusing an account the
+    /// is not still delegated to a rollup — is `AccountLoader<'info, Round>` refusing an account the
     /// Delegation Program owns. See `CloseRoundAccount` for both, including why neither is restated
     /// as a `require!` here.
     ///
@@ -1824,7 +2247,7 @@ pub mod bulls_arena {
     ///   * UNDELEGATED AND TERMINAL — `Settled` or `Abandoned`, back under this program. Sweepable
     ///     by anyone: `sweep_house_take` is permissionless, so the flag can be satisfied without the
     ///     operator, at any time, by whoever wants the close to proceed. Nothing is stranded.
-    ///   * STILL DELEGATED — owned by the Delegation Program, so it fails `Account<Round>`'s owner
+    ///   * STILL DELEGATED — owned by the Delegation Program, so it fails `AccountLoader<Round>`'s owner
     ///     check in BOTH instructions. Unsweepable and uncloseable together, so the sweep rule costs
     ///     it nothing that delegation was not already costing it. The `Phase::Drawing` hole that
     ///     `abandon_round` documents — a round whose VRF callback never lands, which therefore never
@@ -1858,14 +2281,20 @@ pub mod bulls_arena {
     /// rather than in the caller, "the newest `MIN_RETAINED_ROUNDS` rounds are always fetchable" is
     /// something a client may rely on.
     pub fn close_round_account(ctx: Context<CloseRoundAccount>, _round_no: u64) -> Result<()> {
-        let r = &ctx.accounts.round;
-        check_close_permitted(r, ctx.accounts.arena.round_counter)?;
+        // The lamports are read from the ACCOUNT INFO, not through the loader, and the round number
+        // out of the loaded struct — so the shared borrow ends before anchor's `close` runs in
+        // `exit`, which needs the data mutably to zero it.
+        let round_no = {
+            let r = &ctx.accounts.round.load()?;
+            check_close_permitted(r, ctx.accounts.arena.round_counter)?;
+            r.round_no
+        };
 
         // Read BEFORE returning: `close = authority` moves the lamports in Anchor's `exit`, after
         // this body, so this is the deposit that is about to go back rather than a guess at it.
         emit!(RoundAccountClosed {
-            round_no: r.round_no,
-            lamports_returned: r.to_account_info().lamports(),
+            round_no,
+            lamports_returned: ctx.accounts.round.to_account_info().lamports(),
         });
         Ok(())
     }
@@ -1878,16 +2307,41 @@ pub mod bulls_arena {
 // `Debug` only under `cfg(test)`: the cursor-invariance tests compare whole fighter arrays, and a
 // failure there is worth reading rather than guessing at. It costs the deployed binary nothing, which
 // matters here — this program is size-constrained on devnet (see MAX_FIGHTERS's doc comment).
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, PartialEq, Eq)]
-#[cfg_attr(test, derive(Debug))]
+/// ONE FIGHTER, LAID OUT SO THAT `repr(C)` AND BORSH PRODUCE THE SAME BYTES. That coincidence is not
+/// decoration; it is what keeps every client working, and it is the reason the field order changed.
+///
+/// `#[zero_copy]` puts `#[repr(C)]` on this struct and derives `bytemuck::Pod`, which REFUSES a type
+/// with padding — the derive fails to compile rather than silently reinterpreting uninitialised
+/// bytes. The old field order (`wallet, side, dead, stake, hp, banked`) has a six-byte hole between
+/// `dead` and `stake`, because `u64` wants an eight-byte boundary. So the eight-byte fields are
+/// hoisted above the single bytes and the remaining hole is written out as a field.
+///
+/// WHY IT MATTERS THAT THE HOLE IS EXPLICIT rather than left to the compiler. `@coral-xyz/anchor`
+/// 0.32.1 — the version the browser ships — decodes account data as flat borsh whatever the IDL's
+/// `serialization`/`repr` say; the bytemuck path exists in its *types* and not in its *coder*. Flat
+/// borsh writes fields in order with no gaps. So a `repr(C)` struct whose every gap is a declared
+/// `[u8; N]` field decodes correctly under a decoder that knows nothing about alignment, and one with
+/// an implicit gap does not — it desyncs at the first hole and every field after it is garbage.
+/// `the_account_layout_is_exactly_what_the_clients_decode` pins each field's byte offset so this
+/// cannot drift, and it is the test to read before changing anything here.
+///
+/// 64 B, up from 58. The six bytes are the hole, and they are the price of the account never touching
+/// the stack again — see `MAX_FIGHTERS`.
+#[zero_copy]
+#[derive(Default)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct Fighter {
     pub wallet: Pubkey, // 32
-    pub side: u8,       // 1
-    pub dead: u8,       // 1
     pub stake: u64,     // 8  — net of fee, what they put in
     pub hp: u64,        // 8  — value still in the ring
     pub banked: u64,    // 8  — value raided from the other side
-} // 58 B
+    pub side: u8,       // 1
+    pub dead: u8,       // 1
+    /// Alignment, declared rather than implied — see the struct's doc comment. Always zero; nothing
+    /// reads it. It exists so `bytemuck::Pod` will accept this type AND so a borsh-shaped decoder
+    /// lands on the same offsets the program does.
+    pub padding: [u8; 6],
+} // 64 B
 
 /// `Abandoned` is the terminal state of a lobby that reached its deadline without enough fighters to
 /// hold a fight — see `abandon_round`. It is a fifth PHASE rather than a flag on `Settled` because
@@ -1911,14 +2365,51 @@ pub struct Arena {
 }
 impl Arena { pub const SIZE: usize = 8 + 32 + 32 + 32 + 8 + 2 + 1; }
 
-#[account]
+/// THE ROUND, AND IT IS NO LONGER COPIED ANYWHERE. `#[account(zero_copy)]` rather than `#[account]`
+/// is the change that let `MAX_FIGHTERS` rise at all: a borsh `#[account]` is deserialised ONTO THE
+/// STACK by `Account<'info, T>`, and Solana's frame is 4 KB. See `MAX_FIGHTERS` for the failure that
+/// cost a debugging session, and `the_round_never_lands_on_the_stack` for the assertion that it
+/// cannot come back.
+///
+/// FOUR FIELDS MOVED AND TWO CHANGED TYPE, AND EVERY ONE OF THOSE EDITS IS ALIGNMENT. `repr(C)`
+/// inserts padding wherever a field's offset is not a multiple of its alignment, and
+/// `bytemuck::Pod`'s derive refuses a struct that has any — so the layout has to be arranged so that
+/// none is needed, and whatever is left over has to be a declared field. Concretely: `fighter_count`
+/// (a `u16`) sat at offset 43 behind three `u8`s and needed an even offset, so it swapped with
+/// `bump`; `house_swept` came up from below to fill the byte after it; and two bytes of `padding`
+/// carry the struct to the eight-byte boundary `tick_count` needs. Nothing was reordered for taste.
+///
+/// THE RESULT IS THAT `repr(C)` AND BORSH AGREE BYTE FOR BYTE, which is not a nicety — it is what
+/// keeps the browser reading this account. See `Fighter`, where the same argument is written out in
+/// full, and `the_account_layout_is_exactly_what_the_clients_decode`, which pins every offset.
+#[account(zero_copy)]
 pub struct Round {
     pub arena: Pubkey,
     pub round_no: u64,
     pub phase: u8,
     pub winner: u8,
-    pub bump: u8,
+    /// Moved ahead of `bump` for alignment — see the struct's doc comment. A `u16` at offset 43
+    /// would have made `repr(C)` insert a byte the clients' decoder does not know about.
     pub fighter_count: u16,
+    pub bump: u8,
+    /// Has `sweep_house_take` already taken this round's `fees_collected + penalties_collected` onto
+    /// the arena's `Treasury`? One byte, so a permissionless sweep cannot be run twice.
+    ///
+    /// `u8` RATHER THAN `bool`, AND NOT BY PREFERENCE. `bytemuck` does not implement `Pod` for
+    /// `bool` and is right not to: `bool` has exactly two valid bit patterns and a zero-copy cast
+    /// would happily hand out a `bool` holding 0x02, which is undefined behaviour rather than a
+    /// surprising value. A `u8` has no invalid pattern. Read it through `Round::is_swept()` so the
+    /// call sites still say what they mean; the only place the raw byte appears is where it is set.
+    ///
+    /// ON THE ROUND RATHER THAN INFERRED, because there is nothing to infer it from: the sweep moves
+    /// no value out of the round (the totals stay for auditing — zeroing them would destroy the very
+    /// record conservation is checked against), so after a sweep the account is byte-identical to
+    /// before it except for this flag. Without it the second call is indistinguishable from the
+    /// first and the house's total inflates by one round every time anyone presses the button.
+    pub house_swept: u8,
+    /// Alignment, declared rather than implied — see the struct's doc comment and `Fighter`'s.
+    /// Always zero; nothing reads it.
+    pub padding: [u8; 2],
     pub tick_count: u64,
     pub pot: u64,
     /// THE LEAK, NAMED. Extract penalties taken out of this round for the house, cumulative.
@@ -1994,15 +2485,6 @@ pub struct Round {
     /// (see the file header), so both are claims the off-chain treasury is settled against until
     /// ARCHITECTURE-N-TEAM.md §4 lands. See `sweep_house_take` for which half of that survives.
     pub fees_collected: u64,
-    /// Has `sweep_house_take` already taken this round's `fees_collected + penalties_collected` onto
-    /// the arena's `Treasury`? One bit, so a permissionless sweep cannot be run twice.
-    ///
-    /// ON THE ROUND RATHER THAN INFERRED, because there is nothing to infer it from: the sweep moves
-    /// no value out of the round (the totals stay for auditing — zeroing them would destroy the very
-    /// record conservation is checked against), so after a sweep the account is byte-identical to
-    /// before it except for this flag. Without it the second call is indistinguishable from the
-    /// first and the house's total inflates by one round every time anyone presses the button.
-    pub house_swept: bool,
     pub seed_commit: [u8; 32],
     pub seed: [u8; 32],
     /// WHEN THE LOBBY OPENED, AND WHEN IT STOPS TAKING ENTRIES — the countdown, as chain truth.
@@ -2099,26 +2581,36 @@ pub struct Round {
     pub fighters: [Fighter; MAX_FIGHTERS],
 }
 impl Round {
-    // 8 discriminator + 32 arena + 8 round_no + 1 phase + 1 winner + 1 bump + 2 count
-    // + 8 ticks + 8 pot + 8 penalties_collected + 8 fees_collected + 1 house_swept
+    // 8 discriminator + 32 arena + 8 round_no + 1 phase + 1 winner + 2 count + 1 bump
+    // + 1 house_swept + 2 padding + 8 ticks + 8 pot + 8 penalties_collected + 8 fees_collected
     // + 32 commit + 32 seed + 8 lobby_opened_at + 8 lobby_closes_at + 8 fight_started_at + fighters
     //
-    // 1,102 bytes, up from 1,093. The house's books cost nine of them — eight for `fees_collected`
-    // and one for `house_swept` — i.e. 62,640 more lamports of rent-exempt deposit per round
-    // (9 × 6,960 = 0.00006 SOL). Worth stating because this program's payer is a rate-limited
-    // faucet, and worth keeping in proportion: at 20 bps a single 1 SOL entry pays that back
-    // thirty times over, and it was previously paying it to nobody.
+    // 3,248 bytes, up from 1,102, and BOTH halves of that increase are worth separating because only
+    // one of them is the feature. The header grew by two bytes (the alignment `padding`); the rest is
+    // the fighter array going from 16x58 to 48x64 — three times the seats, plus six bytes per seat
+    // for `Fighter`'s own alignment hole.
     //
-    // NINE RATHER THAN THE EIGHT A NEW `u64` COSTS. The ninth is the double-claim guard, and the
-    // alternatives that cost zero bytes were both worse: a sweep watermark on the treasury couples
-    // every later round's fees to one round that can never be swept (see `sweep_house_take`), and a
-    // sixth `Phase` would have to be duplicated for the abandoned branch and would break every
-    // client that reads `phase == 3` as "settled, forever".
+    // WHAT IT COSTS: rent-exempt deposit goes 0.008561 -> 0.023497 SOL per round ((128 + size) x
+    // 6,960 lamports). That is float rather than cost — `close_round_account` returns every lamport
+    // of it once a round leaves the retention window — but it is float the keeper has to be FUNDED
+    // for, and the standing balance scales with `MIN_RETAINED_ROUNDS`: twenty retained rounds now
+    // hold 0.470 SOL against 0.171 before. The per-round unrecoverable cost is unchanged at
+    // ~0.00041 SOL, because none of this increase is consumed.
     //
-    // Checked rather than recited: `the_account_is_exactly_the_size_its_layout_needs` borsh-encodes a
-    // real `Round` and asserts the length, so a field added without touching this line fails a native
-    // test instead of failing on devnet as a serialisation error nobody can read.
-    pub const SIZE: usize = 8 + 32 + 8 + 1 + 1 + 1 + 2 + 8 + 8 + 8 + 8 + 1 + 32 + 32 + 8 + 8 + 8 + (58 * MAX_FIGHTERS);
+    // The ER's account ceiling is 10 MiB. This is 0.03% of it.
+    //
+    // WRITTEN OUT AS ARITHMETIC RATHER THAN AS `8 + size_of::<Round>()`, which would be shorter and
+    // could not be wrong. That is exactly why: `size_of` would make this line agree with the struct
+    // BY CONSTRUCTION, and the thing worth catching is a field added to the struct without anyone
+    // thinking about the account. `the_account_layout_is_exactly_what_the_clients_decode` asserts
+    // this tally against `size_of` and against every individual field offset, so the two have to be
+    // reconciled by a person once, and by the test forever after.
+    pub const SIZE: usize = 8 + 32 + 8 + 1 + 1 + 2 + 1 + 1 + 2 + 8 + 8 + 8 + 8 + 32 + 32 + 8 + 8 + 8
+        + (core::mem::size_of::<Fighter>() * MAX_FIGHTERS);
+
+    /// Has this round's house take already been swept? See `house_swept` for why the field is a
+    /// `u8` and this is a method.
+    pub fn is_swept(&self) -> bool { self.house_swept != 0 }
 }
 
 /// THE HOUSE'S BOOKS FOR ONE ARENA — where a finished round's take goes to be added up.
@@ -2206,37 +2698,46 @@ pub struct InitTreasury<'info> {
 ///     DESTINATION IS DERIVED, NOT SUPPLIED — there is no account a caller can pass that would send
 ///     the sweep anywhere else, which is the property that has to hold when this instruction starts
 ///     moving tokens rather than incrementing a counter.
-///   * `round` being an `Account<'info, Round>` is itself a guard: a delegated round is owned by the
-///     Delegation Program, so it fails the owner check before any of this is reached.
+///   * `round` being an `AccountLoader<'info, Round>` is itself a guard: a delegated round is owned
+///     by the Delegation Program, so it fails the owner check before any of this is reached.
 ///
-/// `Box`ED, AND THIS IS THE FOURTH-KNOWN-BY-NAME APPEARANCE OF THE SAME 4 KB STACK. `Account<'info,
-/// T>` deserialises onto the stack inside the generated `try_accounts`, and this is the first context
-/// in the program to name THREE of them at once. `cargo build-sbf` on the unboxed version:
+/// IT USED TO BE `Box`ED AND IT NO LONGER NEEDS TO BE, which is the clearest single illustration of
+/// what the zero-copy migration bought. The note that stood here is kept because it is the evidence:
 ///
-/// ```text
-/// Error: Function ...SweepHouseTake as anchor_lang::Accounts...::try_accounts overflows the maximum
-/// allowed frame space by accessing an offset 128 bytes greater than the maximum of 4096.
-/// Estimated function frame size: 4224 bytes.
-/// ```
+/// > `Account<'info, T>` deserialises onto the stack inside the generated `try_accounts`, and this
+/// > is the first context in the program to name THREE of them at once. `cargo build-sbf` on the
+/// > unboxed version:
+/// >
+/// > ```text
+/// > Error: Function ...SweepHouseTake as anchor_lang::Accounts...::try_accounts overflows the
+/// > maximum allowed frame space by accessing an offset 128 bytes greater than the maximum of 4096.
+/// > Estimated function frame size: 4224 bytes.
+/// > ```
+/// >
+/// > 128 bytes over. `Round` is 1,192 B on the stack and anchor materialises it more than once across
+/// > deserialise-and-move, so a context holding it alongside two others has no headroom left.
 ///
-/// 128 bytes over. `Round` is 1,192 B on the stack (measured in
-/// `the_account_is_exactly_the_size_its_layout_needs`) and anchor materialises it more than once
-/// across deserialise-and-move, so a context holding it alongside two others has no headroom left.
-/// Boxing moves the deserialised `Round` to the heap and the frame drops under the ceiling.
+/// THAT WAS AT 1,192 B. At this cap a `Round` is 3,240, so boxing would no longer have been a fix
+/// either — one such account is already most of the frame on its own. `AccountLoader` does not put it
+/// there at all: it holds an `AccountInfo` and hands out a reference into the account's own data
+/// buffer, so what `try_accounts` materialises is a pointer whatever the cap is. The `Box` came off
+/// because there is nothing left for it to move.
 ///
-/// SHIPPING IT UNBOXED WOULD NOT HAVE FAILED THE BUILD — `build-sbf` prints this and exits 0. It
-/// would have failed on devnet, as "Access violation reading 8 bytes at address 0x18": a message
-/// that names neither the stack nor the size, and which cost this repo a full debugging session at
-/// `MAX_FIGHTERS = 40` (see that constant). Checking the build output is the only reason this was
-/// caught here rather than there.
+/// THE READING OF THE BUILD OUTPUT IS STILL REQUIRED, and that has not changed. Shipping the unboxed
+/// version would not have failed the build — `build-sbf` prints this and exits 0 — it would have
+/// failed on devnet as "Access violation reading 8 bytes at address 0x18", a message naming neither
+/// the stack nor the size, which cost this repo a full debugging session at `MAX_FIGHTERS = 40`. The
+/// build for this change was checked the same way: sixteen frame warnings, every one of them inside
+/// `hybrid_array`/`crypto_common` generics that no path here calls, and none in any function of this
+/// program. That check is a step, not a property; nothing in `cargo test` can perform it.
 #[derive(Accounts)]
 #[instruction(round_no: u64)]
 pub struct SweepHouseTake<'info> {
     #[account(seeds = [ARENA_SEED], bump = arena.bump)]
     pub arena: Account<'info, Arena>,
     #[account(mut, has_one = arena,
-              seeds = [ROUND_SEED, arena.key().as_ref(), &round_no.to_le_bytes()], bump = round.bump)]
-    pub round: Box<Account<'info, Round>>,
+              seeds = [ROUND_SEED, arena.key().as_ref(), &round_no.to_le_bytes()], bump = round.load()?.bump)]
+    pub round: AccountLoader<'info, Round>,
     #[account(mut, has_one = arena,
               seeds = [TREASURY_SEED, arena.key().as_ref()], bump = treasury.bump)]
     pub treasury: Account<'info, Treasury>,
@@ -2266,18 +2767,23 @@ pub struct SweepHouseTake<'info> {
 ///
 /// THERE IS NO `is_delegated` CHECK HERE AND ONE MUST NOT BE ADDED. Not because delegation does not
 /// matter — closing a round the rollup is still writing is the worst thing this instruction could
-/// do — but because `round: Account<'info, Round>` already refuses it, EARLIER than a `require!`
-/// could, and a hand-written guard would be a strictly weaker copy of a check that has already run.
-/// This was verified against the vendored source rather than assumed, and the details are the point:
+/// do — but because `round: AccountLoader<'info, Round>` already refuses it, EARLIER than a
+/// `require!` could, and a hand-written guard would be a strictly weaker copy of a check that has
+/// already run. This was verified against the vendored source rather than assumed, and the details
+/// are the point — they moved with the zero-copy migration, so they are restated rather than
+/// inherited:
 ///
-///   * `Account::try_from` (anchor-lang 1.0.2, `src/accounts/account.rs:318`) compares `info.owner`
-///     against `T::owner()` — `crate::ID`, from `#[account]` — and returns
-///     `AccountOwnedByWrongProgram` (3007) BEFORE the first byte of data is read on line 322.
+///   * `AccountLoader::try_from` (anchor-lang 1.0.2, `src/accounts/account_loader.rs:123-126`)
+///     compares `info.owner` against `T::owner()` — `crate::ID`, from `#[account(zero_copy)]` — and
+///     returns `AccountOwnedByWrongProgram` (3007) BEFORE the discriminator is looked at on 128, let
+///     alone before any `load()` casts the bytes.
 ///   * Delegation reassigns the base-layer PDA to `DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh`
 ///     (`ephemeral-rollups-sdk` 0.16.2, `src/cpi.rs:130-140`), so a delegated round fails there.
-///   * No constraint can reorder that. `anchor-syn`'s codegen deserialises every non-`init`/`zero`
-///     field before it emits a single constraint (`codegen/accounts/try_accounts.rs:255-264`), so
-///     `mut`, `seeds`/`bump`, `has_one` and `close` all run after. `Box` forwards unchanged.
+///   * No constraint can reorder that. `anchor-syn`'s codegen builds every non-`init`/`zero` field —
+///     which for a loader means running `try_from`, i.e. the owner check — before it emits a single
+///     constraint, so `mut`, `seeds`/`bump`, `has_one` and `close` all run after. Note that the
+///     `bump = round.load()?.bump` and `has_one` on this very struct are themselves `load()`s, and
+///     they too are downstream of the owner check rather than a way around it.
 ///
 /// THE ORDERING IS THE LOAD-BEARING HALF, NOT THE OWNER CHECK ALONE, and this is the part that would
 /// be easy to get wrong twice. A committed-but-not-undelegated round is written back INTO its
@@ -2311,18 +2817,18 @@ pub struct SweepHouseTake<'info> {
 /// once round N is closed, no later `open_round` can ever be for round N, and the freed address
 /// stays dead forever. A closed round can never come back holding different numbers.
 ///
-/// `Box`ED FOR THE SAME 4 KB STACK `SweepHouseTake` hit — see that struct's note. This context names
-/// one fewer account than that one, so it may well fit unboxed; that is not a reason to find out on
-/// devnet, where the symptom is "Access violation reading 8 bytes at address 0x18" and `build-sbf`
-/// reports the real cause on stdout while exiting 0.
+/// THE `Box` IS GONE, for the reason written out at `SweepHouseTake`: `AccountLoader` never puts the
+/// round on the stack, so there is nothing left for a box to move to the heap. The old note said this
+/// context "may well fit unboxed" and that it was not worth finding out on devnet — that judgement
+/// was right and is now moot rather than resolved.
 #[derive(Accounts)]
 #[instruction(round_no: u64)]
 pub struct CloseRoundAccount<'info> {
     #[account(seeds = [ARENA_SEED], bump = arena.bump, has_one = authority)]
     pub arena: Account<'info, Arena>,
     #[account(mut, close = authority, has_one = arena,
-              seeds = [ROUND_SEED, arena.key().as_ref(), &round_no.to_le_bytes()], bump = round.bump)]
-    pub round: Box<Account<'info, Round>>,
+              seeds = [ROUND_SEED, arena.key().as_ref(), &round_no.to_le_bytes()], bump = round.load()?.bump)]
+    pub round: AccountLoader<'info, Round>,
     #[account(mut)]
     pub authority: Signer<'info>,
 }
@@ -2334,7 +2840,7 @@ pub struct OpenRound<'info> {
     pub arena: Account<'info, Arena>,
     #[account(init, payer = authority, space = Round::SIZE,
               seeds = [ROUND_SEED, arena.key().as_ref(), &round_no.to_le_bytes()], bump)]
-    pub round: Account<'info, Round>,
+    pub round: AccountLoader<'info, Round>,
     #[account(mut)]
     pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -2366,7 +2872,7 @@ pub struct DelegateRound<'info> {
 #[derive(Accounts, Session)]
 pub struct Extract<'info> {
     #[account(mut)]
-    pub round: Account<'info, Round>,
+    pub round: AccountLoader<'info, Round>,
     /// CHECK: the fighter identity pulling out — see the struct doc comment for why this is
     /// intentionally not required to sign directly. Nobody extracts on anyone else's behalf: the
     /// `#[session_auth_or]` guard on `extract()` still requires either `signer == player` directly,
@@ -2397,7 +2903,7 @@ pub struct BenchFight<'info> {
 #[derive(Accounts)]
 pub struct Tick<'info> {
     #[account(mut)]
-    pub round: Account<'info, Round>,
+    pub round: AccountLoader<'info, Round>,
 }
 
 /// `player`/`signer` split apart on purpose — this is the whole shape Session Keys forces: `player`
@@ -2414,7 +2920,7 @@ pub struct Enter<'info> {
     #[account(seeds = [ARENA_SEED], bump = arena.bump)]
     pub arena: Account<'info, Arena>,
     #[account(mut)]
-    pub round: Account<'info, Round>,
+    pub round: AccountLoader<'info, Round>,
     /// CHECK: the fighter identity credited by this instruction — see the struct doc comment for
     /// why this is intentionally not required to sign directly.
     pub player: UncheckedAccount<'info>,
@@ -2448,12 +2954,13 @@ pub struct Enter<'info> {
 /// current seeds, not an invariant anything enforces, and the failure it would allow — closing a
 /// round against some other arena's authority — is the one thing this context exists to prevent.
 ///
-/// `round` IS NOT BOXED, AND THAT WAS MEASURED RATHER THAN ASSUMED. `SweepHouseTake` had to be, so
-/// the tempting move is to box every context holding a `Round`. Adding a second `Account<'info, T>`
-/// here was checked against `cargo build-sbf` and produces no `Stack offset ... exceeded` — so a box
-/// would be weight carried for a failure that does not exist. If a future field on `Round` changes
-/// that, the build says so; the guard is reading that output, not boxing pre-emptively. See
-/// `SweepHouseTake` for what the failure looks like and why it must never be shipped unnoticed.
+/// THE BOXING QUESTION THIS NOTE USED TO ANSWER NO LONGER ARISES. It recorded that `round` was
+/// deliberately left unboxed here, measured against `cargo build-sbf`, while `SweepHouseTake` had to
+/// be boxed — a distinction that existed only because `Account<'info, Round>` put 1,192 B on the
+/// stack per context. `AccountLoader` puts a pointer there, so no context in this program has a
+/// stack-sized `Round` in it and none can be fixed or broken by a `Box`. What survives from that
+/// note is the discipline it was really about: `build-sbf` reports frame overflows on stdout and
+/// exits 0, so reading its output is a required step. See `SweepHouseTake`.
 #[vrf]
 #[derive(Accounts)]
 pub struct DrawSeed<'info> {
@@ -2462,7 +2969,7 @@ pub struct DrawSeed<'info> {
     #[account(seeds = [ARENA_SEED], bump = arena.bump)]
     pub arena: Account<'info, Arena>,
     #[account(mut, has_one = arena)]
-    pub round: Account<'info, Round>,
+    pub round: AccountLoader<'info, Round>,
     /// CHECK: validated against the known queues by the VRF program
     #[account(mut)]
     pub oracle_queue: UncheckedAccount<'info>,
@@ -2478,7 +2985,7 @@ pub struct DrawSeed<'info> {
 #[derive(Accounts)]
 pub struct CallbackSeed<'info> {
     #[account(mut)]
-    pub round: Account<'info, Round>,
+    pub round: AccountLoader<'info, Round>,
 }
 
 /// `#[commit]` supplies `magic_context` and `magic_program`.
@@ -2488,7 +2995,7 @@ pub struct Resolve<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(mut)]
-    pub round: Account<'info, Round>,
+    pub round: AccountLoader<'info, Round>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2572,6 +3079,8 @@ pub enum ArenaError {
     // Appended, same rule as above — `close_round_account`'s two refusals.
     #[msg("this round's house take has not been swept — sweep it before closing the account")] RoundNotSwept,
     #[msg("this round is inside the retention window and may not be closed yet")] RoundTooRecent,
+    // Appended, same rule as above — a client already matching on the codes above keeps its meanings.
+    #[msg("the fight has not been advanced to the present — tick it first, then extract")] FightBehind,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2595,10 +3104,10 @@ mod parity_tests {
         let seed: [u8; 32] = core::array::from_fn(|i| i as u8);   // bytes 0..32, same as the TS fixture
 
         let mut fighters = [Fighter::default(); MAX_FIGHTERS];
-        fighters[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake: 100_000, hp: 100_000, banked: 0 };
-        fighters[1] = Fighter { wallet: pk(2), side: 0, dead: 0, stake: 250_000, hp: 250_000, banked: 0 };
-        fighters[2] = Fighter { wallet: pk(3), side: 1, dead: 0, stake: 180_000, hp: 180_000, banked: 0 };
-        fighters[3] = Fighter { wallet: pk(4), side: 1, dead: 0, stake: 90_000, hp: 90_000, banked: 0 };
+        fighters[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake: 100_000, hp: 100_000, banked: 0, ..Default::default() };
+        fighters[1] = Fighter { wallet: pk(2), side: 0, dead: 0, stake: 250_000, hp: 250_000, banked: 0, ..Default::default() };
+        fighters[2] = Fighter { wallet: pk(3), side: 1, dead: 0, stake: 180_000, hp: 180_000, banked: 0, ..Default::default() };
+        fighters[3] = Fighter { wallet: pk(4), side: 1, dead: 0, stake: 90_000, hp: 90_000, banked: 0, ..Default::default() };
 
         let winner = run_fight(&mut fighters, 4, &seed, 50);
 
@@ -2697,10 +3206,10 @@ mod parity_tests {
         let seed: [u8; 32] = core::array::from_fn(|i| i as u8);
 
         let mut f = [Fighter::default(); MAX_FIGHTERS];
-        f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake: 50_000, hp: 50_000, banked: 0 };
-        f[1] = Fighter { wallet: pk(2), side: 0, dead: 0, stake:      3, hp:      3, banked: 0 };
-        f[2] = Fighter { wallet: pk(3), side: 1, dead: 0, stake: 40_000, hp: 40_000, banked: 0 };
-        f[3] = Fighter { wallet: pk(4), side: 1, dead: 0, stake:      7, hp:      7, banked: 0 };
+        f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake: 50_000, hp: 50_000, banked: 0, ..Default::default() };
+        f[1] = Fighter { wallet: pk(2), side: 0, dead: 0, stake:      3, hp:      3, banked: 0, ..Default::default() };
+        f[2] = Fighter { wallet: pk(3), side: 1, dead: 0, stake: 40_000, hp: 40_000, banked: 0, ..Default::default() };
+        f[3] = Fighter { wallet: pk(4), side: 1, dead: 0, stake:      7, hp:      7, banked: 0, ..Default::default() };
 
         let winner = run_fight(&mut f, 4, &seed, 400);
 
@@ -2722,10 +3231,10 @@ mod parity_tests {
 
     fn four_fighters() -> [Fighter; MAX_FIGHTERS] {
         let mut f = [Fighter::default(); MAX_FIGHTERS];
-        f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake: 100_000, hp: 100_000, banked: 0 };
-        f[1] = Fighter { wallet: pk(2), side: 0, dead: 0, stake: 250_000, hp: 250_000, banked: 0 };
-        f[2] = Fighter { wallet: pk(3), side: 1, dead: 0, stake: 180_000, hp: 180_000, banked: 0 };
-        f[3] = Fighter { wallet: pk(4), side: 1, dead: 0, stake:  90_000, hp:  90_000, banked: 0 };
+        f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake: 100_000, hp: 100_000, banked: 0, ..Default::default() };
+        f[1] = Fighter { wallet: pk(2), side: 0, dead: 0, stake: 250_000, hp: 250_000, banked: 0, ..Default::default() };
+        f[2] = Fighter { wallet: pk(3), side: 1, dead: 0, stake: 180_000, hp: 180_000, banked: 0, ..Default::default() };
+        f[3] = Fighter { wallet: pk(4), side: 1, dead: 0, stake:  90_000, hp:  90_000, banked: 0, ..Default::default() };
         f
     }
 
@@ -2801,7 +3310,7 @@ mod parity_tests {
 
         // Extracted fighters leave the ring: the rest of the fight must not touch them again.
         let banked_at_extract = f[0].banked;
-        advance_fight(&mut f, 4, &seed, 40, 160);
+        advance_fight(&mut f, 4, &seed, 40, final_cursor(4) - 40);
         assert_eq!(f[0].hp, 0);
         assert_eq!(f[0].banked, banked_at_extract);
         let total: u64 = f[..4].iter().map(|x| x.hp + x.banked).sum::<u64>() + penalty;
@@ -2821,10 +3330,10 @@ mod parity_tests {
     fn no_blow_can_move_more_than_the_attackers_own_ring() {
         let seed: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_add(3));
         let mut f = [Fighter::default(); MAX_FIGHTERS];
-        f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake:     100_000, hp:     100_000, banked: 0 };
-        f[1] = Fighter { wallet: pk(2), side: 0, dead: 0, stake:     100_000, hp:     100_000, banked: 0 };
-        f[2] = Fighter { wallet: pk(3), side: 1, dead: 0, stake: 100_000_000, hp: 100_000_000, banked: 0 };
-        f[3] = Fighter { wallet: pk(4), side: 1, dead: 0, stake: 100_000_000, hp: 100_000_000, banked: 0 };
+        f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake:     100_000, hp:     100_000, banked: 0, ..Default::default() };
+        f[1] = Fighter { wallet: pk(2), side: 0, dead: 0, stake:     100_000, hp:     100_000, banked: 0, ..Default::default() };
+        f[2] = Fighter { wallet: pk(3), side: 1, dead: 0, stake: 100_000_000, hp: 100_000_000, banked: 0, ..Default::default() };
+        f[3] = Fighter { wallet: pk(4), side: 1, dead: 0, stake: 100_000_000, hp: 100_000_000, banked: 0, ..Default::default() };
 
         let mut blows = 0u32;
         let mut bound_by_the_attacker = 0u32;
@@ -2893,8 +3402,8 @@ mod parity_tests {
         for s in 0..200u8 {
             let seed: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_mul(31).wrapping_add(s));
             let mut f = [Fighter::default(); MAX_FIGHTERS];
-            f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake: WHALE, hp: WHALE, banked: 0 };
-            f[1] = Fighter { wallet: pk(2), side: 1, dead: 0, stake: GNAT,  hp: GNAT,  banked: 0 };
+            f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake: WHALE, hp: WHALE, banked: 0, ..Default::default() };
+            f[1] = Fighter { wallet: pk(2), side: 1, dead: 0, stake: GNAT,  hp: GNAT,  banked: 0, ..Default::default() };
 
             advance_fight(&mut f, 2, &seed, 0, 500);
 
@@ -2926,7 +3435,7 @@ mod parity_tests {
         // At the horizon and beyond, free — nerve costs nothing.
         assert_eq!(extract_penalty_bps(n, horizon), 0);
         assert_eq!(extract_penalty_bps(n, horizon * 10), 0);
-        assert_eq!(extract_penalty_bps(n, MAX_STEPS), 0);
+        assert_eq!(extract_penalty_bps(n, final_cursor(n)), 0);
 
         // The same 1,000,000 held in the ring, banked at two different moments.
         let (kept_early, penalty_early) = split_extraction(1_000_000, n, 1);
@@ -2955,15 +3464,65 @@ mod parity_tests {
         }
     }
 
-    /// The horizon has to be reachable inside a real fight, or the penalty never decays to zero in
-    /// practice and the "hold your nerve" half of the design is decoration. Checked against the
-    /// pacing the round actually runs at, and against the two hard ceilings a fight can hit.
+    /// THE TABLE IS ITS OWN DERIVATION, CHECKED. Forty-seven hand-written constants is too many for
+    /// anyone to verify by eye, and the argument that justified writing them out by hand — "fifteen
+    /// numbers that were never going to change" — does not survive being tripled. So the generating
+    /// rule is executed here and compared to the array.
+    ///
+    /// `round(25 * n^1.5)`, in floating point, which is legal ONLY because this is inside
+    /// `#[cfg(test)]`: the program itself must stay integer-only or the fight stops being
+    /// reproducible, which is the entire fairness claim. That is also the reason the table exists at
+    /// all rather than the formula being evaluated on chain.
+    ///
+    /// It pins BOTH halves of the fit, and the first is the one that matters most for a change that
+    /// raises the cap: the fifteen entries the deployed program already charges are unchanged, so
+    /// every lineup the live arena fields is priced exactly as it is today.
     #[test]
-    fn every_lineups_horizon_is_reachable_before_the_bell_and_the_cap() {
+    fn the_penalty_table_is_exactly_its_generating_formula() {
+        const C: f64 = 25.0;
+        for n in 2..=MAX_FIGHTERS {
+            let expected = (C * (n as f64).powf(1.5)).round() as u64;
+            assert_eq!(
+                penalty_horizon_steps(n), expected,
+                "n = {}: the table says {} but round(25 * n^1.5) is {}",
+                n, penalty_horizon_steps(n), expected,
+            );
+        }
+
+        // THE DEPLOYED FIFTEEN, WRITTEN OUT SEPARATELY AND ON PURPOSE. Checking the table against
+        // its own formula would still pass if someone changed C and regenerated everything — which
+        // would silently re-price every round the live arena runs. These are the numbers the
+        // deployed program charges today, quoted from the program that is running right now.
+        let deployed: [u64; 15] = [
+            71, 130, 200, 280, 367, 463, 566, 675, 791, 912, 1_039, 1_172, 1_310, 1_452, 1_600,
+        ];
+        for (i, &h) in deployed.iter().enumerate() {
+            assert_eq!(
+                penalty_horizon_steps(i + 2), h,
+                "n = {}: raising the cap must not re-price a lineup the arena already fields",
+                i + 2,
+            );
+        }
+    }
+
+    /// The horizon has to be reachable inside a real fight, or the penalty never decays to zero in
+    /// practice and the "hold your nerve" half of the design is decoration.
+    ///
+    /// IT USED TO CHECK TWO CEILINGS AND THERE IS ONLY ONE NOW, which is the whole of what
+    /// `MAX_STEPS_PER_CALL` split apart: the second was `horizon <= MAX_STEPS`, a compute bound
+    /// standing in for a statement about how long a fight is. Against the flat 4,000 that assertion
+    /// would FAIL at every lineup above 29 — which is the failure HOUSE-LIFETIME.md §8 predicted, and
+    /// this is the test that would have caught it. It passes now because the cursor runs to the bell
+    /// rather than to a number chosen for a transaction's budget.
+    #[test]
+    fn every_lineups_horizon_is_reachable_before_the_bell() {
         for n in 2..=MAX_FIGHTERS {
             let horizon = penalty_horizon_steps(n);
-            assert!(horizon <= MAX_STEPS, "{} fighters: horizon {} past the step cap", n, horizon);
-            let at_the_bell = canonical_cursor(0, n, FIGHT_TIMEOUT_SECONDS);
+            let at_the_bell = final_cursor(n);
+            assert_eq!(
+                at_the_bell, canonical_cursor(0, n, FIGHT_TIMEOUT_SECONDS),
+                "{} fighters: the named bell cursor and the one the clock produces must agree", n,
+            );
             assert!(
                 horizon < at_the_bell,
                 "{} fighters: horizon {} is not reached by the bell ({} steps) — the penalty would \
@@ -2984,7 +3543,7 @@ mod parity_tests {
     fn the_penalty_can_never_exceed_what_was_taken() {
         for taken in [0u64, 1, 2, 999, 1_000, 4_999, u64::MAX / 2, u64::MAX] {
             for n in 2..=MAX_FIGHTERS {
-                for cursor in [0u64, 1, 37, 199, 200, 1_599, 1_600, MAX_STEPS, u64::MAX] {
+                for cursor in [0u64, 1, 37, 199, 200, 1_599, 1_600, 8_314, 20_000, u64::MAX] {
                     let (kept, penalty) = split_extraction(taken, n, cursor);
                     assert_eq!(kept.checked_add(penalty), Some(taken), "the split must be exact");
                     assert!(penalty <= taken / 5 + 1, "penalty {} over a fifth of {}", penalty, taken);
@@ -3035,7 +3594,7 @@ mod parity_tests {
 
         // And the rest of the fight cannot disturb it: an extracted fighter is out, and the penalty
         // already left.
-        advance_fight(&mut f, 4, &seed, 180, MAX_STEPS - 180);
+        advance_fight(&mut f, 4, &seed, 180, final_cursor(4) - 180);
         assert_eq!(ring(&f, penalties_collected), pot, "conservation to the end of the fight");
     }
 
@@ -3080,7 +3639,7 @@ mod parity_tests {
         // checking a comment rather than a value.
         for (name, expected) in [
             ("export const STEPS_PER_FIGHTER_PER_SECOND", STEPS_PER_FIGHTER_PER_SECOND),
-            ("export const MAX_STEPS", MAX_STEPS),
+            ("export const MAX_STEPS_PER_CALL", MAX_STEPS_PER_CALL),
             ("export const FIGHT_TIMEOUT_SECONDS", FIGHT_TIMEOUT_SECONDS as u64),
             ("export const MIN_LOBBY_SECONDS", MIN_LOBBY_SECONDS as u64),
             ("export const MAX_LOBBY_SECONDS", MAX_LOBBY_SECONDS as u64),
@@ -3207,14 +3766,34 @@ mod parity_tests {
         assert_eq!(canonical_cursor(start, 16, start + 10), 320);
         // Clock skew must never rewind the fight.
         assert_eq!(canonical_cursor(start, 4, start - 500), 0);
-        // The MAX_STEPS ceiling holds for every lineup, however long the round is left unattended —
-        // this is what bounds a single catch-up's compute cost.
+
+        // THE CURSOR STOPS AT THE BELL, for every lineup, however long the round is left unattended.
+        // This used to stop at a flat `MAX_STEPS` — a compute number — and the difference is the
+        // whole reason a bigger lineup is possible; see `MAX_STEPS_PER_CALL`.
         for n in 2..=MAX_FIGHTERS {
-            assert_eq!(canonical_cursor(start, n, start + 86_400), MAX_STEPS);
+            assert_eq!(canonical_cursor(start, n, start + 86_400), final_cursor(n));
+            assert_eq!(canonical_cursor(start, n, start + FIGHT_TIMEOUT_SECONDS), final_cursor(n));
+            // One second short of the bell is one second short of the ceiling — the clamp bites at
+            // the bell and not before, which is what makes "the fight advances until the bell" true
+            // rather than approximately true.
+            assert_eq!(
+                canonical_cursor(start, n, start + FIGHT_TIMEOUT_SECONDS - 1),
+                final_cursor(n) - steps_per_second(n),
+            );
         }
-        // The bell is reachable before the ceiling for the biggest legal lineup, so the cap never
-        // truncates a real fight.
-        assert!(canonical_cursor(start, MAX_FIGHTERS, start + FIGHT_TIMEOUT_SECONDS) < MAX_STEPS);
+
+        // AND NO SINGLE CALL IS HANDED THE WHOLE OF IT. The bound that used to be implicit in the
+        // cursor is now explicit in the callers, so this is the arithmetic that says how many
+        // transactions a completely neglected round costs to settle. Asserted rather than described
+        // because "a handful" is what the last version of this bound said before it stranded a round.
+        let worst = final_cursor(MAX_FIGHTERS);
+        let calls = worst.div_ceil(MAX_STEPS_PER_CALL);
+        assert!(
+            calls <= 6,
+            "a neglected {}-fighter round needs {} resolve calls ({} steps at {} a call) — more than \
+             a keeper loop should have to make",
+            MAX_FIGHTERS, calls, worst, MAX_STEPS_PER_CALL,
+        );
     }
 
     #[test]
@@ -3251,15 +3830,15 @@ mod parity_tests {
     /// The case here is one wallet holding BOTH sides, which `enter` explicitly allows (a repeat entry
     /// on the other side is a second fighter). No exchange is ever possible — `advance_fight` skips
     /// same-wallet pairs — so nobody ever dies, both sides always have someone standing, and
-    /// `fight_is_over` stays false for the entire MAX_STEPS. Only the clock can end it.
+    /// `fight_is_over` stays false all the way to the bell. Only the clock can end it.
     #[test]
     fn a_fight_that_can_never_end_is_still_settleable_when_the_bell_rings() {
         let seed: [u8; 32] = core::array::from_fn(|i| i as u8);
         let mut f = [Fighter::default(); MAX_FIGHTERS];
-        f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake: 100_000, hp: 100_000, banked: 0 };
-        f[1] = Fighter { wallet: pk(1), side: 1, dead: 0, stake: 100_000, hp: 100_000, banked: 0 };
+        f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake: 100_000, hp: 100_000, banked: 0, ..Default::default() };
+        f[1] = Fighter { wallet: pk(1), side: 1, dead: 0, stake: 100_000, hp: 100_000, banked: 0, ..Default::default() };
 
-        advance_fight(&mut f, 2, &seed, 0, MAX_STEPS);
+        advance_fight(&mut f, 2, &seed, 0, final_cursor(2));
         assert_eq!(f[0].hp, 100_000, "a wallet must never be able to raid itself");
         assert!(!fight_is_over(&f, 2), "both sides still standing after the whole fight");
 
@@ -3409,8 +3988,8 @@ mod lobby_tests {
         let full = MAX_FIGHTERS as u16;
 
         assert!(lobby_may_close(full, closes_at, OPENED), "a full lobby has nothing left to wait for");
-        // One short of full is NOT enough — the sixteenth entry is still possible, and cutting the
-        // lobby short there would be an operator excluding a player who was entitled to enter.
+        // One short of full is NOT enough — the last entry is still possible, and cutting the lobby
+        // short there would be an operator excluding a player who was entitled to enter.
         assert!(!lobby_may_close(full - 1, closes_at, OPENED));
         // And a full lobby is never dead — it has the most fighters a round can hold.
         assert!(!lobby_is_dead(full, closes_at, closes_at + 1));
@@ -3587,52 +4166,135 @@ mod lobby_tests {
         assert_eq!(closes_at, i64::MAX);
     }
 
-    /// `Round::SIZE` is what `#[account(init, space = ...)]` allocates. Get it wrong by the eight bytes
-    /// a new field costs and the account is a byte-for-byte plausible round that fails to serialise
-    /// the moment anything writes past the end — on devnet, as a runtime error nobody can read. So the
-    /// size is MEASURED off a real borsh encoding here rather than recited from the comment above it.
+    /// EVERY FIELD'S BYTE OFFSET, PINNED. The single most consequential test in this file, and it
+    /// replaces one that could no longer be written.
     ///
-    /// The second assertion is the 4 KB STACK, which this program has already been bitten by once:
-    /// `Account<'info, Round>` deserialises onto the stack, and at 40 fighters devnet reported the
-    /// overflow as "Access violation reading 8 bytes at address 0x18" — a message that names neither
-    /// the stack nor the size (see `MAX_FIGHTERS`). MEASURED with the house's books in: 1,192 B of a
-    /// 4,096 B frame, up from 1,184 — `fees_collected` and `house_swept` cost eight of those, the
-    /// ninth borsh byte disappearing into the `u64`'s alignment. The margin is recorded as a number
-    /// rather than asserted to be "plenty", and the bound is checked rather than remembered.
-    /// `cargo build-sbf` reports no `Stack offset ... exceeded` for this build.
+    /// WHAT IT REPLACES AND WHY. This used to borsh-encode a real `Round` and assert the length,
+    /// because borsh field order WAS the account layout. `#[account(zero_copy)]` has no borsh
+    /// encoder to call — the account IS the struct's `repr(C)` bytes — so that test cannot compile.
+    /// Deleting it and asserting only `size_of` would be a real loss: the size can be right while
+    /// every field sits somewhere the clients do not expect.
+    ///
+    /// AND THE CLIENTS ARE THE POINT. `@coral-xyz/anchor` 0.32.1, which the browser ships, decodes
+    /// account data as flat borsh no matter what the IDL says about `repr` — the bytemuck path exists
+    /// in its types and not in its coder. Flat borsh means "each field immediately after the last,
+    /// no gaps". So this program's `repr(C)` layout is readable by the browser if and ONLY IF it has
+    /// no implicit padding, which is exactly what these assertions state, field by field:
+    /// `offset_of!(f_k+1) == offset_of!(f_k) + size_of(f_k)`, all the way down. One hole anywhere and
+    /// every field after it decodes as garbage — silently, in a browser, against real money.
+    ///
+    /// Two other things fall out of the same list and are asserted alongside:
+    ///   * `Round::SIZE` is reconciled against BOTH the hand-written tally (which is what a reader
+    ///     checks) and `size_of` (which is what the runtime allocates against).
+    ///   * `er-demo/scripts/verify-session-extract.mjs` decodes these bytes by hand, offset by
+    ///     literal offset. The numbers it needs are the ones printed here.
     #[test]
-    fn the_account_is_exactly_the_size_its_layout_needs() {
-        let round = Round {
-            arena: Pubkey::default(),
-            round_no: 1,
-            phase: Phase::Lobby as u8,
-            winner: 0,
-            bump: 255,
-            fighter_count: 0,
-            tick_count: 0,
-            pot: 0,
-            penalties_collected: 0,
-            fees_collected: 0,
-            house_swept: false,
-            seed_commit: [0u8; 32],
-            seed: [0u8; 32],
-            lobby_opened_at: OPENED,
-            lobby_closes_at: OPENED + 60,
-            fight_started_at: 0,
-            fighters: [Fighter::default(); MAX_FIGHTERS],
-        };
-        // `AnchorSerialize::serialize` rather than a hand-added-up byte count: it is the SAME encoder
-        // `#[account]`'s own `exit` uses to write the account back, which is the only reason measuring
-        // it here proves anything about `space = Round::SIZE`.
-        let mut encoded = Vec::<u8>::new();
-        round.serialize(&mut encoded).expect("a Round must borsh-encode");
-        assert_eq!(
-            8 + encoded.len(), Round::SIZE,
-            "Round::SIZE ({}) does not match 8 + the real encoding ({})", Round::SIZE, 8 + encoded.len(),
-        );
+    fn the_account_layout_is_exactly_what_the_clients_decode() {
+        use core::mem::{offset_of, size_of};
 
-        let stack = core::mem::size_of::<Round>();
-        assert!(stack < 2_048, "Round is {} B on the stack — the frame is 4 KB, see MAX_FIGHTERS", stack);
+        // (name, offset, size) in declaration order. A field added to the struct and forgotten here
+        // shows up as the final total disagreeing with `size_of::<Round>()`.
+        let fields: &[(&str, usize, usize)] = &[
+            ("arena",               offset_of!(Round, arena),               32),
+            ("round_no",            offset_of!(Round, round_no),             8),
+            ("phase",               offset_of!(Round, phase),                1),
+            ("winner",              offset_of!(Round, winner),               1),
+            ("fighter_count",       offset_of!(Round, fighter_count),        2),
+            ("bump",                offset_of!(Round, bump),                 1),
+            ("house_swept",         offset_of!(Round, house_swept),          1),
+            ("padding",             offset_of!(Round, padding),              2),
+            ("tick_count",          offset_of!(Round, tick_count),           8),
+            ("pot",                 offset_of!(Round, pot),                  8),
+            ("penalties_collected", offset_of!(Round, penalties_collected),  8),
+            ("fees_collected",      offset_of!(Round, fees_collected),       8),
+            ("seed_commit",         offset_of!(Round, seed_commit),         32),
+            ("seed",                offset_of!(Round, seed),                32),
+            ("lobby_opened_at",     offset_of!(Round, lobby_opened_at),      8),
+            ("lobby_closes_at",     offset_of!(Round, lobby_closes_at),      8),
+            ("fight_started_at",    offset_of!(Round, fight_started_at),     8),
+            ("fighters",            offset_of!(Round, fighters),            64 * MAX_FIGHTERS),
+        ];
+
+        let mut expected = 0usize;
+        for &(name, offset, size) in fields {
+            assert_eq!(
+                offset, expected,
+                "`{}` sits at byte {} but a gapless layout puts it at {} — repr(C) inserted padding, \
+                 and every field after this one now decodes as garbage in the browser. Declare the \
+                 hole as a `[u8; N]` field instead of letting the compiler own it.",
+                name, offset, expected,
+            );
+            expected += size;
+        }
+        assert_eq!(
+            expected, size_of::<Round>(),
+            "the fields listed here total {} B but `Round` is {} B — either a field is missing from \
+             this list or there is trailing padding",
+            expected, size_of::<Round>(),
+        );
+        assert_eq!(size_of::<Round>(), 3_240, "the struct, without the 8-byte discriminator");
+        // ALIGNMENT, WHICH THE WALK ABOVE DOES NOT IMPLY. A gapless field list is also true of
+        // `repr(packed)`, and packed would break `load()` rather than the decoder:
+        // `bytemuck::from_bytes_mut(&mut data[8..])` requires the slice to satisfy the type's
+        // alignment, and the runtime hands out an account region aligned to 8. Put a `u128` in this
+        // struct and the failure is an abort on chain with no message, on a fresh program id.
+        assert_eq!(core::mem::align_of::<Round>(), 8, "Round must stay 8-aligned for `load()`");
+        assert_eq!(core::mem::align_of::<Fighter>(), 8);
+
+        // `Fighter` is the same argument one level down, and it is the one with a real hole in it:
+        // 32 + 8 + 8 + 8 + 1 + 1 = 58 bytes of content in a 64-byte struct.
+        assert_eq!(offset_of!(Fighter, wallet), 0);
+        assert_eq!(offset_of!(Fighter, stake), 32);
+        assert_eq!(offset_of!(Fighter, hp), 40);
+        assert_eq!(offset_of!(Fighter, banked), 48);
+        assert_eq!(offset_of!(Fighter, side), 56);
+        assert_eq!(offset_of!(Fighter, dead), 57);
+        assert_eq!(offset_of!(Fighter, padding), 58);
+        assert_eq!(size_of::<Fighter>(), 64, "a Fighter must be exactly its declared bytes");
+
+        // `Round::SIZE` is what `#[account(init, space = ...)]` allocates. Get it wrong and the
+        // account is a byte-for-byte plausible round that fails the moment anything writes past the
+        // end — on devnet, as a runtime error nobody can read.
+        assert_eq!(
+            Round::SIZE, 8 + size_of::<Round>(),
+            "Round::SIZE ({}) does not match 8 + the real struct ({})", Round::SIZE, 8 + size_of::<Round>(),
+        );
+        assert_eq!(Round::SIZE, 3_248, "the published account size, for the rent arithmetic");
+    }
+
+    /// THE 4 KB STACK, WHICH IS THE WHOLE REASON THIS MIGRATION EXISTS — as an assertion that the old
+    /// failure cannot come back.
+    ///
+    /// `Account<'info, Round>` deserialised onto the stack, and at 40 fighters devnet reported the
+    /// overflow as "Access violation reading 8 bytes at address 0x18" — a message naming neither the
+    /// stack nor the size (see `MAX_FIGHTERS`). At this cap a `Round` is 3,240 B, so the OLD
+    /// representation would not merely be tight, it would be hopeless: three quarters of the entire
+    /// frame for one account, before Anchor's own locals.
+    ///
+    /// What makes it safe is that nothing puts one there. `AccountLoader` holds an `AccountInfo` and
+    /// hands out references into the account's data buffer; the stack cost is a pointer. This test
+    /// asserts the shape of that claim in the only way a native test can — that the LOADER is small,
+    /// and that the struct it loads is the size the account is — and the claim it cannot make is
+    /// checked by the build instead: `cargo build-sbf` prints `Stack offset ... exceeded` on stdout
+    /// while exiting 0, so reading that output is a required step and not an optional one. It is the
+    /// reason `SweepHouseTake`'s 128-byte overflow was caught before devnet rather than after.
+    #[test]
+    fn the_round_never_lands_on_the_stack() {
+        use core::mem::size_of;
+        // The whole account is far past what a 4 KB frame could ever hold — which is the point: this
+        // number is now irrelevant to the stack rather than dangerously close to it.
+        assert!(
+            size_of::<Round>() > 2_048,
+            "this assertion is here to fail loudly if `Round` ever shrinks back to something that \
+             LOOKS stack-safe — the safety comes from AccountLoader, not from the size",
+        );
+        // And what a context actually carries is a pointer-sized handle, not the account.
+        assert!(
+            size_of::<AccountLoader<Round>>() <= 64,
+            "an AccountLoader is {} B — if this ever approaches the account size, something has \
+             started copying the round again",
+            size_of::<AccountLoader<Round>>(),
+        );
     }
 
     /// The same measurement for `Treasury`, for the same reason and before it can bite: this account
@@ -3694,7 +4356,8 @@ mod house_tests {
             pot: 0,
             penalties_collected: 0,
             fees_collected: 0,
-            house_swept: false,
+            house_swept: 0,
+            padding: [0u8; 2],
             seed_commit: [0u8; 32],
             seed: [0u8; 32],
             lobby_opened_at: 1_700_000_000,
@@ -3825,8 +4488,8 @@ mod house_tests {
         r.penalties_collected += penalty;
         check(&r, "after the late extract");
 
-        advance_fight(&mut r.fighters, n, &seed, 180, MAX_STEPS - 180);
-        r.tick_count = MAX_STEPS;
+        advance_fight(&mut r.fighters, n, &seed, 180, final_cursor(n) - 180);
+        r.tick_count = final_cursor(n);
         check(&r, "at the end of the fight");
 
         // BOTH terms carried weight. Without this the identity above could hold vacuously.
@@ -3839,6 +4502,85 @@ mod house_tests {
         let (players_hold, _, _) = books(&r);
         assert_eq!(players_hold + r.penalties_collected, r.pot, "the ring conserves against the pot");
         assert_eq!(r.pot + r.fees_collected, gross_charged, "the gross is the pot plus the fee");
+    }
+
+    /// THE BOUND ITSELF, EXECUTED. `catch_up` and `is_caught_up` are the whole of this session's
+    /// change — the compute bound, the grind trigger and the `FightBehind` trigger all live in those
+    /// two functions — and until this test nothing called either one. They were reachable only
+    /// through `tick`/`extract`/`resolve`, i.e. only from inside a `Context`, which is precisely the
+    /// shape that let a discarded entry fee survive for the life of this program.
+    ///
+    /// What it pins is the property the grind depends on: every call that is not yet caught up makes
+    /// STRICTLY POSITIVE progress. Without that, "call `resolve` until it settles" is an infinite
+    /// loop rather than a bounded one, and a round that cannot be settled is the failure this repo
+    /// has already paid for twice.
+    #[test]
+    fn a_bounded_catch_up_always_advances_and_says_when_it_is_short() {
+        const NOW: i64 = 1_700_000_000;
+        let n = MAX_FIGHTERS;
+
+        let fresh = || {
+            let mut r = fresh_round();
+            r.phase = Phase::Fight as u8;
+            r.fight_started_at = NOW;
+            r.seed = core::array::from_fn(|i| (i as u8).wrapping_mul(31).wrapping_add(7));
+            for i in 0..n {
+                credit_entry(&mut r, pk(i as u8 + 1), (i % 2) as u8, 10_000_000, FEE_BPS).unwrap();
+            }
+            r
+        };
+
+        // THE LIMIT IS OBEYED EXACTLY, and it is the argument that binds rather than the cursor.
+        let mut r = fresh();
+        let bell = NOW + FIGHT_TIMEOUT_SECONDS;
+        assert_eq!(catch_up(&mut r, bell, 7), 7, "a small limit must be honoured exactly");
+        assert_eq!(r.tick_count, 7);
+        assert!(!is_caught_up(&r, bell), "7 steps is nowhere near the bell cursor");
+
+        // GRINDING TERMINATES, and in the number of calls the doc comments promise. Each call must
+        // move the cursor or the loop below never ends — which is the assertion, not the count.
+        let mut r = fresh();
+        let mut calls = 0;
+        while !is_caught_up(&r, bell) {
+            let ran = catch_up(&mut r, bell, MAX_STEPS_PER_CALL);
+            assert!(ran > 0, "call {} advanced nothing while still behind — the grind cannot converge", calls);
+            assert!(ran <= MAX_STEPS_PER_CALL, "call {} ran {} steps, past the bound", calls, ran);
+            calls += 1;
+            assert!(calls <= 10, "the grind is not terminating");
+        }
+        assert_eq!(calls, final_cursor(n).div_ceil(MAX_STEPS_PER_CALL) as usize);
+        assert_eq!(r.tick_count, final_cursor(n), "it must land exactly on the bell, not past it");
+
+        // ...and once there, it is idle rather than wrong. A caught-up round must not advance again
+        // however long it is left, or the bell would not be a ceiling.
+        assert_eq!(catch_up(&mut r, bell + 86_400, MAX_STEPS_PER_CALL), 0);
+        assert_eq!(r.tick_count, final_cursor(n));
+        assert!(is_caught_up(&r, bell + 86_400));
+
+        // GRINDING AND ONE-SHOTTING AGREE. If they did not, how diligently a round was ticked would
+        // change its outcome — the property `ticking_in_chunks_is_identical_to_one_shot` asserts for
+        // `advance_fight`, restated for the function the instructions actually call.
+        let mut ground = fresh();
+        while !is_caught_up(&ground, bell) {
+            catch_up(&mut ground, bell, MAX_STEPS_PER_CALL);
+        }
+        let mut one_shot = fresh();
+        advance_fight(&mut one_shot.fighters, n, &one_shot.seed.clone(), 0, final_cursor(n));
+        assert_eq!(ground.fighters, one_shot.fighters, "the grind changed the fight");
+
+        // Clock skew cannot rewind it, and a round nobody has started is already up to date.
+        let mut r = fresh();
+        assert_eq!(catch_up(&mut r, NOW - 500, MAX_STEPS_PER_CALL), 0);
+        assert!(is_caught_up(&r, NOW - 500));
+        assert!(is_caught_up(&r, NOW), "at the opening instant the canonical cursor is 0");
+
+        // A lineup too small to fight is never behind, whatever the clock says — the guard that keeps
+        // the `n < 2` early return in `advance_fight` from being reachable through this path.
+        let mut lonely = fresh_round();
+        lonely.phase = Phase::Fight as u8;
+        lonely.fight_started_at = NOW;
+        credit_entry(&mut lonely, pk(1), 0, 10_000_000, FEE_BPS).unwrap();
+        assert_eq!(catch_up(&mut lonely, bell, MAX_STEPS_PER_CALL), 0);
     }
 
     /// THE SWEEP MOVES A ROUND'S TAKE ONCE — and the second attempt is refused rather than ignored.
@@ -3866,7 +4608,7 @@ mod house_tests {
         let (fees, penalties) = apply_sweep(&mut r, &mut t).unwrap();
         assert_eq!((fees, penalties), (4_000, 199_600));
         assert_eq!((t.fees_accrued, t.penalties_accrued, t.rounds_swept), (4_000, 199_600, 1));
-        assert!(r.house_swept);
+        assert!(r.is_swept());
 
         // Again, and it must refuse. Checked on the TOTALS as well as the error, because the failure
         // that matters is not "an error was not returned" — it is a treasury that grew twice.
@@ -3904,7 +4646,7 @@ mod house_tests {
 
             let mut t = fresh_treasury();
             assert!(apply_sweep(&mut r, &mut t).is_err(), "phase {} must not be sweepable", phase as u8);
-            assert!(!r.house_swept, "a refused sweep must not have set the flag");
+            assert!(!r.is_swept(), "a refused sweep must not have set the flag");
             assert_eq!((t.fees_accrued, t.rounds_swept), (0, 0));
         }
 
@@ -3938,7 +4680,7 @@ mod house_tests {
         let mut r = fresh_round();
         r.round_no = round_no;
         r.phase = Phase::Settled as u8;
-        r.house_swept = true;
+        r.house_swept = 1;
         r
     }
 
@@ -4028,14 +4770,14 @@ mod house_tests {
         for phase in [Phase::Settled, Phase::Abandoned] {
             let mut r = closeable_round(1);
             r.phase = phase as u8;
-            r.house_swept = false;
+            r.house_swept = 0;
             // It is terminal and far outside the window — the ONLY thing wrong with it is the flag.
             assert_eq!(
                 refusal(&r, counter), code(ArenaError::RoundNotSwept),
                 "phase {} unswept", phase as u8,
             );
 
-            r.house_swept = true;
+            r.house_swept = 1;
             check_close_permitted(&r, counter)
                 .expect("the same round, swept, must close — otherwise this test proves nothing");
         }

@@ -386,16 +386,57 @@ describe("runSigned — signing without a session", () => {
 // ---------------------------------------------------------------------------------------------
 
 describe("sessionNote — what the deploy and extract surfaces say", () => {
-  it("names the approval, the cost and the hour before the first one is asked for", () => {
+  it("names the approval and the cost before the first one is asked for", () => {
     const note = sessionNote({ kind: "open-then-session" }, NO_LIFE);
     expect(note).not.toBeNull();
-    // The three facts a player needs in order to read the Phantom dialog that is about to open and
+    // The facts a player needs in order to read the Phantom dialog that is about to open and
     // recognise it as the thing they just pressed a button for. Without them it looks like the
     // wrong transaction and gets cancelled.
     expect(note).toContain("one Phantom approval");
     expect(note).toContain(`${ASSUMED_SESSION_TOP_UP_SOL} SOL`);
-    expect(note).toContain("hour");
     expect(note).toContain("no prompt");
+  });
+
+  /**
+   * THIS TEST USED TO ASSERT THE DEFECT. It required this copy to contain the word "hour", which was
+   * true, checked, and wrong: a session's length is `SESSION_VALID_MINUTES`, a private const in
+   * `chain/session/useSessionKeyManager.ts` that this workstream cannot read and does not control.
+   * It moved from one hour to twenty-four, and every sentence naming the hour became false the
+   * moment it did — with a test standing guard over the falsehood.
+   *
+   * So the assertion is inverted rather than deleted. Copy on this path says WHAT HAPPENS ("when it
+   * runs out the next move replaces it") and never HOW LONG; the countdown in the rail is the one
+   * surface entitled to a number, because it derives it from the mirror in `sessionExpiry.ts` rather
+   * than asserting it in prose. This fails the day somebody writes a duration back in.
+   */
+  it("never states how long a session lasts, on any surface, because nothing here knows", () => {
+    const surfaces = [
+      sessionNote({ kind: "open-then-session" }, NO_LIFE),
+      // The one branch that carries a figure at all — and it is `minutesLeft` off the mirror, inside
+      // the lapsing window, not a statement about how long a session runs for.
+      sessionNote(
+        { kind: "session" },
+        { known: true, startedAtMs: 0, minutesLeft: 7, lapsing: true, lapsed: false },
+      ),
+      sessionNote({ kind: "wallet", reason: "stopped" }, NO_LIFE),
+      sessionNote({ kind: "wallet", reason: "unaffordable" }, NO_LIFE),
+      sessionPanelNote({ kind: "session" }),
+      sessionPanelNote({ kind: "open-then-session" }),
+      sessionPanelNote({ kind: "wallet", reason: "stopped" }),
+      sessionPanelNote({ kind: "wallet", reason: "burner" }),
+      sessionPanelNote({ kind: "wallet", reason: "unaffordable" }),
+      sessionPanelNote({ kind: "wallet", reason: "fixture" }),
+      sessionPanelNote({ kind: "wallet", reason: "blocked" }),
+    ];
+    // Both the literal periods and the spelled-out ones. `minutesLeft` is exempt by construction:
+    // `sessionNote` only renders it inside the lapsing window, where it is a live figure off the
+    // mirror rather than a claim about the session's length.
+    for (const copy of surfaces) {
+      if (copy === null) continue;
+      expect(copy).not.toMatch(/\bhours?\b/);
+      expect(copy).not.toMatch(/\bdays?\b/);
+      expect(copy).not.toMatch(/\b(60|1440)\b/);
+    }
   });
 
   it("says nothing at all once a session is live", () => {

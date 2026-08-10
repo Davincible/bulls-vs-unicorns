@@ -9,7 +9,6 @@ import { useEffect, useRef } from "react";
 import {
   EXTRACT_PENALTY_START_BPS,
   FIGHT_TIMEOUT_SECONDS,
-  MAX_STEPS,
   SIDE_TOKEN,
   UNITS_PER_USD,
   bpsPct,
@@ -162,9 +161,9 @@ export function IntroOverlay({ onClose }: { onClose(): void }) {
               <span title={feeNote(fee)}>{feePhrase(fee)}</span> from your stake on entry, and the
               extract penalty above takes its slice of anything you pull out early.
               Everything else only ever moves between fighters. A fight runs at two steps per second
-              per fighter and stops at {MAX_STEPS.toLocaleString("en-US")} steps; once one side has
-              nobody left standing — or the {FIGHT_TIMEOUT_SECONDS}-second bell rings — anyone may
-              settle the round.
+              per fighter, however many are in it, and ends the moment one side has nobody left
+              standing — or, at the latest, when the {FIGHT_TIMEOUT_SECONDS}-second bell rings —
+              at which point anyone may settle the round.
             </span>
           </li>
         </ul>

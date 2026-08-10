@@ -14,7 +14,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { stepsPerSecond } from "../../chain/constants.ts";
 import type { HitEvent } from "../../sim/hitEvents.ts";
-import { MAX_STEPS, sideTotals, type LiveRound, type PhaseName, type Side } from "../contract.ts";
+import { finalCursor, sideTotals, type LiveRound, type PhaseName, type Side } from "../contract.ts";
 import { extractTerms } from "./extractTerms.ts";
 import { fightPace } from "./fightPace.ts";
 import { MOCK_HIT_EVENTS, MOCK_SEED, mockFightersAt } from "./mockData.ts";
@@ -36,13 +36,14 @@ const FIXTURE_FIGHTERS = mockFightersAt(0);
 const RATE = stepsPerSecond(FIXTURE_FIGHTERS.length);
 
 /** Where the fight actually ends: the last exchange the replay produced. `runFullFight` runs to
- *  MAX_STEPS but stops emitting once one side has nobody left, so this IS the fight's real length —
- *  the same instant `fight_is_over()` would let anyone settle it on chain. */
+ *  `finalCursor(FIXTURE_FIGHTERS.length)` but stops emitting once one side has nobody left, so this
+ *  IS the fight's real length — the same instant `fight_is_over()` would let anyone settle it on
+ *  chain. */
 const LAST_EVENT_STEP = MOCK_HIT_EVENTS.length
   ? Number(MOCK_HIT_EVENTS[MOCK_HIT_EVENTS.length - 1].step)
-  : MAX_STEPS;
+  : finalCursor(FIXTURE_FIGHTERS.length);
 const FIGHT_SECONDS = LAST_EVENT_STEP / RATE;
-const SETTLE_STEP = Math.min(LAST_EVENT_STEP, MAX_STEPS);
+const SETTLE_STEP = Math.min(LAST_EVENT_STEP, finalCursor(FIXTURE_FIGHTERS.length));
 
 const CLOCK_MS = 250;
 

@@ -2,7 +2,7 @@
 // never scrolled away — so it carries exactly the facts a player must not have to hunt for while
 // they're reading a table: what the round is doing, and whether their key can sign.
 
-import { MAX_STEPS, SIDE_TOKEN, usdCompactSigned, type ViewId } from "../contract.ts";
+import { SIDE_TOKEN, finalCursor, usdCompactSigned, type ViewId } from "../contract.ts";
 import type { PlayBlock } from "../data/playGate.ts";
 import { useArena } from "../data/useArena.ts";
 import { RoundClockSlot } from "./RoundClockSlot.tsx";
@@ -66,10 +66,16 @@ function WinsTicker() {
   );
 }
 
-/** Twelve blocks of the fight's step budget. The chain's own ceiling is `MAX_STEPS`; this is how
- *  much of it the current round has spent, which is the real clock a mid-fight extract races. */
-function StepBlocks({ steps }: { steps: number }) {
-  const on = Math.round((Math.min(steps, MAX_STEPS) / MAX_STEPS) * 12);
+/** Twelve blocks of the fight's step budget. The chain's own ceiling is `finalCursor(fighterCount)` —
+ *  PER LINEUP, not a flat number — and this is how much of it the current round has spent, which is
+ *  the real clock a mid-fight extract races.
+ *
+ *  `fighterCount` is 0 with no round in scope (no wallet, no live round yet), which would otherwise
+ *  divide by a zero ceiling; that reads as zero blocks lit rather than as NaN blocks, which is the
+ *  same "nothing to show yet" the rest of the chrome already renders in that state. */
+function StepBlocks({ steps, fighterCount }: { steps: number; fighterCount: number }) {
+  const max = finalCursor(fighterCount);
+  const on = max > 0 ? Math.round((Math.min(steps, max) / max) * 12) : 0;
   return (
     <span className="blocks" aria-hidden="true">
       {Array.from({ length: 12 }, (_, i) => (
@@ -102,7 +108,7 @@ export function TopChrome() {
             shows the state when there is no clock and the clock when there is; the `<b>` stays because
             `.tele b` is what makes this cell white (shell.css), and the slot inherits it. */}
         <b><RoundClockSlot /></b>
-        <StepBlocks steps={live?.stepsNow ?? 0} />
+        <StepBlocks steps={live?.stepsNow ?? 0} fighterCount={live?.fighters.length ?? 0} />
       </div>
 
       {/* THREE DASHES ARE NOT A STATE. With no wallet connected these cells read `— / — / OFF`,

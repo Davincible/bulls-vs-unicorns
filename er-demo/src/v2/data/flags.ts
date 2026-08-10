@@ -21,15 +21,17 @@ export function parseRefFlag(search: string): boolean {
 }
 
 /** `?fighters=<n>` — how many fighters the FIXTURE fields, clamped to the range the program itself
- *  accepts (2..16, `MAX_FIGHTERS` in `programs/bulls-arena/src/lib.rs`). Ignored entirely off the
- *  fixture: a live round's lineup is whoever entered it, and no URL can add a sixteenth player to a
+ *  accepts (2..48, `MAX_FIGHTERS` in `programs/bulls-arena/src/lib.rs`). Ignored entirely off the
+ *  fixture: a live round's lineup is whoever entered it, and no URL can add a tenth player to a
  *  round the chain says has nine.
  *
  *  It exists because the page had only ever been run at the fixture's hand-written 9 while the
- *  program's ceiling is 16 — the canvas had been measured there, but the rosters, standings,
- *  leaderboard, history and the round poll had not. Opt-in rather than a new default so that a
- *  screenshot taken today still compares against one taken yesterday; the clamp and the builder are
- *  in `fixtureLineup.ts`, with tests. */
+ *  program's ceiling was higher — the canvas had been measured there, but the rosters, standings,
+ *  leaderboard, history and the round poll had not. That gap has since WIDENED rather than closed:
+ *  the ceiling moved 16 -> 48, so this flag is now the only way to see what the product does at three
+ *  times the lineup anyone has looked at. Opt-in rather than a new default so that a screenshot taken
+ *  today still compares against one taken yesterday; the clamp and the builder are in
+ *  `fixtureLineup.ts`, with tests. */
 export function parseFightersFlag(search: string): number {
   return clampLineup(new URLSearchParams(search).get("fighters"));
 }

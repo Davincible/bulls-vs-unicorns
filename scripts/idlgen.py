@@ -324,10 +324,22 @@ REGENERATED_FNS = {
     "set_fee_bps", "init_treasury", "sweep_house_take",
     # Reclaiming round rent, added on the run that adds it to the IDL — same rule as above.
     "close_round_account",
+    # The zero-copy migration rewrote both of these doc blocks — `resolve` for `MAX_STEPS_PER_CALL`
+    # and the 180s timeout, `extract` for the `FightBehind` refusal — so they join the set on the run
+    # that propagates them, not later. Left out, `verify` would hold the OLD prose in the IDL against
+    # the NEW prose in lib.rs the moment lib.rs is committed, and fail every `cargo test` from then
+    # on with the only tool that can fix it locked behind the failure. That is the trap this set
+    # exists to document, and these two are its third instance.
+    "resolve", "extract",
 }
 REGENERATED_EVENTS = {"RoundOpened", "RoundAbandoned", "Entered", "HouseSwept", "FeeBpsChanged",
                       "RoundAccountClosed"}
-REGENERATED_ROUND_FIELDS = {"lobby_opened_at", "fees_collected", "house_swept"}
+# `fighter_count` and `padding` arrived with the zero-copy layout (section 10) and are here for a
+# sharper reason than the others: HEAD's lib.rs has never heard of `Round.padding` at all, and
+# `verify` reads HEAD. Documented anyway rather than left blank — see section 10 for why prose about
+# two bytes nobody reads is still worth carrying to a client author decoding a round by hand.
+REGENERATED_ROUND_FIELDS = {"lobby_opened_at", "fees_collected", "house_swept",
+                            "fighter_count", "padding"}
 
 
 def declared_id():
@@ -340,6 +352,21 @@ def declared_id():
     if not m:
         raise SystemExit("no declare_id! found in lib.rs")
     return m.group(1)
+
+
+def declared_usize(name):
+    """A `pub const NAME: usize = N;` out of the CURRENT lib.rs.
+
+    Read rather than copied, for the same reason `declare_id!` is. `MAX_FIGHTERS` has already moved
+    once (16 -> 48) and is the length of the `fighters` array in the IDL — i.e. it is most of the
+    account's size, and therefore most of what every client's decoder does. A copy of it in this file
+    would be a second place for it to be true, and the day the two disagreed nothing would say so:
+    the IDL would simply describe a round of the wrong length and borsh would walk off the end of a
+    real account, which is the exact failure `round_layout`'s guard was built after."""
+    m = re.search(rf"pub const {name}: usize = ([\d_]+);", SRC.read_text(encoding="utf-8"))
+    if not m:
+        raise SystemExit(f"no `pub const {name}: usize = ...;` in lib.rs — the IDL's layout needs it")
+    return int(m.group(1).replace("_", ""))
 
 
 # ---- verification against the committed file ---------------------------------------------------
@@ -459,8 +486,10 @@ def patch(idl):
 
     retarget(idl)
 
-    # 1. every instruction whose doc comment changed picks the new text straight out of lib.rs
-    for name in ("open_round", "enter", "close_lobby_and_draw"):
+    # 1. every instruction whose doc comment changed picks the new text straight out of lib.rs.
+    #    `resolve` and `extract` joined on the zero-copy run — see REGENERATED_FNS for why that was
+    #    not optional.
+    for name in ("open_round", "enter", "close_lobby_and_draw", "resolve", "extract"):
         ix[name]["docs"] = fn_docs(name)
 
     # 2. open_round takes the lobby duration
@@ -616,7 +645,11 @@ def patch(idl):
         at = next(n for n, f in enumerate(fields) if f["name"] == "seed_commit")
         fields[at:at] = [
             {"name": "fees_collected", "type": "u64"},
-            {"name": "house_swept", "type": "bool"},
+            # `u8` rather than `bool` since the zero-copy migration — bytemuck implements no `Pod`
+            # for `bool` and is right not to. Same one byte either way, so the layout is unchanged;
+            # section 10 is where the type is decided, and this stays in step with it so that a run
+            # which does take this branch is correct on its own rather than corrected later.
+            {"name": "house_swept", "type": "u8"},
         ]
     for name in ("fees_collected", "house_swept"):
         next(f for f in fields if f["name"] == name)["docs"] = struct_field_docs("Round", name)
@@ -699,6 +732,135 @@ def patch(idl):
     for code, name, msg in (
         (6020, "RoundNotSwept", "this round's house take has not been swept — sweep it before closing the account"),
         (6021, "RoundTooRecent", "this round is inside the retention window and may not be closed yet"),
+    ):
+        if name not in have:
+            idl["errors"].append({"code": code, "name": name, "msg": msg})
+
+    # ---- 10. THE ROUND STOPS BEING BORSH ---------------------------------------------------------
+    #
+    # `Round` is `#[account(zero_copy)]` now and `Fighter` is `#[zero_copy]` — `#[repr(C)]` plus
+    # `bytemuck::Pod`, reached through an `AccountLoader` and never deserialised onto the stack. That
+    # is what let `MAX_FIGHTERS` rise from 16 to 48 at all: a borsh `#[account]` is decoded ONTO the
+    # 4 KB stack by `Account<'info, T>`, and a 3,240 B `Round` does not fit there. See `Round`'s own
+    # doc comment in lib.rs for the failure that cost a debugging session.
+    #
+    # THE IDL NOW HAS TO SAY THIS IN TWO LANGUAGES AT ONCE, AND BOTH READERS ARE REAL.
+    #
+    #   * `serialization: "bytemuck"` and `repr: {"kind": "c"}` are what `anchor idl build` emits for
+    #     those attributes — anchor-syn 1.0.2 reads the `derive`/`repr` the `zero_copy` expansion adds
+    #     and writes `IdlSerialization::Bytemuck` / `IdlRepr::C` (anchor-lang-idl-spec 0.1.0,
+    #     `IdlTypeDef`). A `repr(C)` with no `packed` and no `align` serialises as exactly
+    #     `{"kind": "c"}`; both modifiers are skipped at their defaults. This file's whole claim is
+    #     that it produces what anchor would have, and a client that HONOURS these — anchor's Rust
+    #     client, @coral-xyz/anchor 0.31+ — aligns fields by them.
+    #
+    #   * THE FIELD LIST IS STILL READ AS FLAT BORSH by the client actually in front of users.
+    #     `@coral-xyz/anchor` 0.32.1, the version the browser ships, carries bytemuck in its *types*
+    #     and not in its *coder*: it walks the fields in order with no alignment logic whatever
+    #     `serialization` says. So the order below must reproduce the `repr(C)` offsets when summed
+    #     flat — and it does, only because every alignment hole in lib.rs is a DECLARED `padding`
+    #     field rather than one the compiler inserted. `type_size`/`struct_size` sum the same flat
+    #     way; that is not a shortcut in them but the property being asserted, and if the two ever
+    #     disagree it is the padding in lib.rs that is wrong, not the arithmetic here.
+    #
+    # WRITTEN AS ONE DECLARED ORDER RATHER THAN AS A SEQUENCE OF MOVES, because this is a REORDER and
+    # not merely a resize: `fighter_count` moved ahead of `bump`, `house_swept` ahead of `tick_count`,
+    # `Fighter`'s two `u8`s to the end. Field order IS the account layout for every decoder involved,
+    # and a patch that produced the right SET of names in the wrong ORDER would satisfy every other
+    # check in this file — same names, same count, same total size — while handing the browser
+    # garbage from the first misplaced byte onward. An order that is written down cannot be wrong
+    # that way, so it is written down, beside the offsets it produces.
+    #
+    # `MAX_FIGHTERS` is read from lib.rs rather than typed here — see `declared_usize`.
+    max_fighters = declared_usize("MAX_FIGHTERS")
+    ROUND_LAYOUT = (                                    # offsets exclude the 8-byte discriminator
+        ("arena", "pubkey"),                            #   0
+        ("round_no", "u64"),                            #  32
+        ("phase", "u8"),                                #  40
+        ("winner", "u8"),                               #  41
+        ("fighter_count", "u16"),                       #  42  even offset — why it moved past `bump`
+        ("bump", "u8"),                                 #  44
+        ("house_swept", "u8"),                          #  45  `u8`: bytemuck has no `Pod` for `bool`
+        ("padding", {"array": ["u8", 2]}),              #  46
+        ("tick_count", "u64"),                          #  48  every 8-byte field from here is 8-aligned
+        ("pot", "u64"),                                 #  56
+        ("penalties_collected", "u64"),                 #  64
+        ("fees_collected", "u64"),                      #  72
+        ("seed_commit", {"array": ["u8", 32]}),         #  80
+        ("seed", {"array": ["u8", 32]}),                # 112
+        ("lobby_opened_at", "i64"),                     # 144
+        ("lobby_closes_at", "i64"),                     # 152
+        ("fight_started_at", "i64"),                    # 160
+        ("fighters", {"array": [{"defined": {"name": "Fighter"}}, max_fighters]}),   # 168, 64 B each
+    )                                                   # 3,240 B + 8 discriminator = 3,248 B
+    FIGHTER_LAYOUT = (
+        ("wallet", "pubkey"),                           #   0
+        ("stake", "u64"),                               #  32
+        ("hp", "u64"),                                  #  40
+        ("banked", "u64"),                              #  48
+        ("side", "u8"),                                 #  56
+        ("dead", "u8"),                                 #  57
+        ("padding", {"array": ["u8", 6]}),              #  58
+    )                                                   #  64 B
+
+    def as_zero_copy(entry, layout):
+        """Put `entry`'s fields in `layout`'s order and mark the type zero-copy.
+
+        Each field is CARRIED OVER whole and only its `type` restated, rather than rebuilt from the
+        table, because the sections above hang regenerated doc blocks on these dicts and a fresh
+        `{"name", "type"}` would drop that prose on the floor without saying so.
+
+        A field the layout does not name STOPS THE RUN. Dropping it silently is the whole failure
+        this block is shaped to prevent — a later change adds a field in lib.rs and in an earlier
+        section here, and the account every client decodes quietly loses it. The order below is the
+        layout; anything not in it is either a mistake or a line somebody forgot to add to it, and
+        neither should reach a file the live page fetches.
+
+        Keys are rewritten in anchor's own declaration order (name, docs, serialization, repr, type)
+        rather than appended after `type`, since serde emits a struct's fields in that order and this
+        file's claim is to be indistinguishable from its output. Mutated in place: `types` and
+        `idl["types"]` alias this dict."""
+        named = {name for name, _ in layout}
+        present = {f["name"]: f for f in entry["type"]["fields"]}
+        stray = [n for n in present if n not in named]
+        if stray:
+            raise SystemExit(
+                f"idlgen: {entry['name']} carries field(s) {stray} that section 10's layout does not "
+                f"name. Add them there, in their declared position — a field missing from that table "
+                f"is a field missing from the layout every client decodes by.")
+        entry["type"]["fields"] = [
+            dict(present.get(name, {"name": name}), type=ty) for name, ty in layout
+        ]
+        rebuilt = {"name": entry["name"]}
+        if entry.get("docs"):
+            rebuilt["docs"] = entry["docs"]
+        rebuilt["serialization"] = "bytemuck"
+        rebuilt["repr"] = {"kind": "c"}
+        rebuilt["type"] = entry["type"]
+        entry.clear()
+        entry.update(rebuilt)
+
+    as_zero_copy(types["Round"], ROUND_LAYOUT)
+    as_zero_copy(types["Fighter"], FIGHTER_LAYOUT)
+
+    # The three fields the new layout introduced carry their prose from lib.rs like every other
+    # documented field here. THE PADDING IS NOT DECORATION: a client author decoding a round meets
+    # two bytes with a name and no meaning, and lib.rs already explains that they are alignment made
+    # explicit so a decoder that knows nothing about alignment still lands on the right offsets —
+    # which is precisely what that author is doing. Refreshed on every run, and in
+    # REGENERATED_ROUND_FIELDS, because `verify` reads HEAD and HEAD has never heard of them.
+    for entry, struct, names in ((types["Round"], "Round", ("fighter_count", "padding")),
+                                 (types["Fighter"], "Fighter", ("padding",))):
+        for name in names:
+            next(f for f in entry["type"]["fields"] if f["name"] == name)["docs"] = \
+                struct_field_docs(struct, name)
+
+    # `extract` gained a refusal. Appended so every code above keeps the meaning a deployed client
+    # may already be matching on, and `have` re-derived for the reason section 9 gives.
+    have = {e["name"] for e in idl["errors"]}
+    for code, name, msg in (
+        (6022, "FightBehind",
+         "the fight has not been advanced to the present — tick it first, then extract"),
     ):
         if name not in have:
             idl["errors"].append({"code": code, "name": name, "msg": msg})

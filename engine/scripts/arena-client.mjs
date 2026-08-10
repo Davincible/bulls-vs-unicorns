@@ -19,6 +19,16 @@
 // comment PREDICTED the second failure, in writing, and it happened anyway. Predicting a bug twice is
 // not a defence, and a hand-decoder that is currently right is not a decoder that is right.
 //
+// THE LUCK HAS SINCE RUN OUT, and it is worth recording exactly how: `Round` moved to `zero_copy`
+// (MAX_FIGHTERS 16 -> 48, FIGHT_TIMEOUT_SECONDS 120 -> 180), and the migration reordered the struct —
+// `fighter_count` moved ahead of `bump`, `house_swept` came up beside it, and `Fighter` grew from 58
+// bytes to 64 with its own fields in a different order. Every one of `48/49/51/53` reads a different
+// field today than it did when that paragraph was written. This module noticed nothing, because it
+// never held an opinion about where those bytes lived — it decodes through the IDL, which regenerated
+// itself off the same struct and kept reading the right fields under new names and new offsets with
+// zero lines changed here. That is the whole argument this file's header was making, now settled by
+// the exact event it predicted rather than merely by reasoning about it in advance.
+//
 // So no ACCOUNT LAYOUT and no INSTRUCTION ENCODING is transcribed here. The IDL is the artifact
 // `anchor build` emits from the same source the program is compiled from, and Anchor's coder derives
 // both from it. A field added to `Round` tomorrow is picked up by regenerating the IDL — which the
@@ -27,7 +37,7 @@
 //
 // SAY WHAT THIS DOES NOT COVER, because the guarantee is narrower than "nothing is transcribed" and a
 // reader who believes the wider version will trust the wrong things. The pacing and phase values
-// re-exported below — MIN_LOBBY_SECONDS, FIGHT_TIMEOUT_SECONDS, MAX_STEPS, Phase, PHASE_NAME,
+// re-exported below — MIN_LOBBY_SECONDS, FIGHT_TIMEOUT_SECONDS, MAX_STEPS_PER_CALL, Phase, PHASE_NAME,
 // stepsPerSecond — are hand-mirrored from lib.rs into er-demo/src/chain/constants.ts, and this module
 // imports that mirror rather than a machine-generated fact. `Phase` cannot come from the IDL at all:
 // `#[repr(u8)] pub enum Phase` derives no Anchor traits, so it appears nowhere in the IDL's types.
@@ -86,8 +96,24 @@ export const SLOT_HASHES_SYSVAR = localKey(app.SLOT_HASHES_SYSVAR);
 // Only what these scripts actually use. constants.ts exports more (MAX_LOBBY_SECONDS,
 // DEFAULT_LOBBY_SECONDS, canonicalCursor, lobbyIsOpen); re-exporting those here would be a second
 // surface to keep in step for no caller's benefit.
+//
+// BOTH HALVES OF THE OLD `MAX_STEPS`, because the scripts need both and they are different numbers.
+// `MAX_STEPS_PER_CALL` is job (b), the per-call compute bound — what er-cu-bench.mjs measures against.
+// `finalCursor` is job (a), how far a fight of a given lineup can ever get, which is no longer the
+// same number at any lineup above a duel.
+//
+// `finalCursor` IS RE-EXPORTED RATHER THAN LEFT TO CALLERS, and that is a reversal worth explaining
+// because the previous revision of this comment argued the other way. It said a caller wanting the
+// fight's ceiling should reach for the app constants directly — which was right when no caller wanted
+// it, and stopped being right the moment two did. What actually happened is that er-roundtrip.mjs and
+// er-cu-bench.mjs each hand-wrote `FIGHT_TIMEOUT_SECONDS * stepsPerSecond(n)` instead: two copies of a
+// derivation that already exists, in a repo whose Rust constants carry a standing note about being
+// bitten twice by exactly that (the DUST floor, and `bench_fight` drifting from `run_fight`). The
+// rule this block is written to — "only what these scripts actually use" — is a rule about surface
+// area, not a reason to make callers re-derive arithmetic the mirror already exports.
 export const {
-  MIN_LOBBY_SECONDS, FIGHT_TIMEOUT_SECONDS, MAX_STEPS, PHASE_NAME, Phase, stepsPerSecond,
+  MIN_LOBBY_SECONDS, FIGHT_TIMEOUT_SECONDS, MAX_STEPS_PER_CALL, PHASE_NAME, Phase, stepsPerSecond,
+  finalCursor,
 } = app;
 
 /** Devnet's genesis hash. The cluster is proven by asking the node what chain it is on, not by

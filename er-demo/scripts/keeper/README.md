@@ -121,8 +121,9 @@ not a gap to be tidied up.
 
 ## The house's board
 
-`MAX_FIGHTERS` is 16. Live rounds #23, #27 and #28 each ran **four** fighters, two of them house — a
-quarter-full arena, which is most of why the rounds read as dead. The house now holds the board at ten.
+`MAX_FIGHTERS` is 48 (it was 16 when live rounds #23, #27 and #28 ran). Those rounds each ran **four**
+fighters, two of them house — a quarter-full arena at that old cap, which is most of why the rounds
+read as dead. The house now holds the board at ten.
 
 ```
 nobody real in the room   1 house fighter    the treasury rule; the chain will not draw this round
@@ -196,7 +197,7 @@ board size after the exposure above, and it moves in the house's favour.
 *It does **not** displace paying players here, though the same policy in a smaller room would.*
 `HOUSE-STRATEGY.md` §2.1 measures net house revenue collapsing from $8.56 to $3.09 as the house takes
 0 → 6 of **8** seats, "because six house seats mean two paying seats". That mechanism is seat scarcity,
-and it does not bind in a sixteen-seat arena holding a board of ten with four seats reserved: a real
+and it does not bind in a forty-eight-seat arena holding a board of ten with four seats reserved: a real
 player is never turned away, so no house fighter is standing where a paying one would have. That
 guarantee is `REAL_SEATS_RESERVED`, and it is the reason the reservation is an invariant rather than a
 knob. Shrink the arena, or raise the board target far enough that the reservation starts binding, and

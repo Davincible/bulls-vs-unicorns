@@ -563,7 +563,12 @@ export interface ImpactController {
     ink: InkMap;
   }): void;
   /** A fighter has just left the field — knocked out or extracted. Never throttled: there are at
-   *  most `MAX_FIGHTERS` of these in a whole round and each one is the end of somebody's game. */
+   *  most `MAX_FIGHTERS` of these in a whole round and each one is the end of somebody's game.
+   *
+   *  That budget tripled with the cap (16 -> 48) and the decision is unchanged, because the bound
+   *  that matters is per-ROUND rather than per-frame: deaths arrive spread across a fight the bell
+   *  gives 180 seconds, so even a full board cannot produce them faster than the effects expire. A
+   *  throttle here would drop the one event a player is entitled to see. */
   die(input: { nowMs: number; at: ImpactAnchor; r: number; unit: number }): void;
   /** Culls anything expired. Takes an absolute clock rather than a delta so cleanup is exact under
    *  frame jitter. */

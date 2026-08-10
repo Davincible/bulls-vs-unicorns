@@ -1,4 +1,13 @@
-// HOW THIS PAGE SIGNS — and why a player approves one thing an hour instead of one thing a move.
+// HOW THIS PAGE SIGNS — and why a player approves one thing a session instead of one thing a move.
+//
+// NO DURATION IS NAMED ANYWHERE BELOW, and that is deliberate rather than vague. A session's length
+// is `SESSION_VALID_MINUTES` in `chain/session/useSessionKeyManager.ts` — private, unexported, and
+// not ours to read; `sessionExpiry.ts` mirrors it by hand and is emphatic that everything derived
+// from the mirror is an inference. This copy therefore says WHAT HAPPENS ("when it runs out the next
+// move replaces it") and never HOW LONG, so that moving the constant cannot make a sentence here
+// false. It already moved once — from one hour to twenty-four — and every sentence that had named
+// the hour was wrong the moment it did, in the fixed chrome of a live site, with nobody re-reading
+// it. Say the mechanism; let the countdown in the rail say the number.
 //
 // THE COMPLAINT THIS MODULE EXISTS TO ANSWER, from somebody playing the live site: "I still need to
 // manually confirm every transaction, I thought with magicblock sessions we wouldn't have to." They
@@ -15,8 +24,8 @@
 //
 // THE ONE THING IT MUST NOT DO IS OVERSELL. Opening a session is a real transaction: it funds a
 // throwaway key with 0.02 SOL so that key can pay for `enter`/`extract` itself, and it needs one
-// signature from the real wallet. "No approvals" would be a lie. "One approval, then an hour of
-// play" is the truth and is a better story anyway.
+// signature from the real wallet. "No approvals" would be a lie. "One approval, then a session of
+// silent play" is the truth and is a better story anyway.
 //
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // WHEN THE SESSION IS OPENED, AND WHY IT IS NOT ON CONNECT.
@@ -172,8 +181,8 @@ export type RefusalPlan =
 /**
  * EXPIRY IS THE CASE THAT MATTERS MOST, and it is handled here rather than by the countdown.
  *
- * `sessionExpiry.ts` can only INFER when an hour is up (gum carries no timestamp and the hour is a
- * private const), and it is emphatic that the inference must never gate an action. This is the other
+ * `sessionExpiry.ts` can only INFER when a session is up (gum carries no timestamp and the length is
+ * a private const), and it is emphatic that the inference must never gate an action. This is the other
  * half it names: the AUTHORITATIVE signal, which is the chain itself refusing a session-signed
  * transaction with `InvalidToken` (`verify-session-base.mjs` step 5 proves an expired token fails
  * exactly that way). No constant, no clock, and it cannot be wrong.
@@ -274,7 +283,7 @@ export function sessionStatus(plan: SigningPlan): string {
 /**
  * WHAT THE DEPLOY AND EXTRACT SURFACES SAY ABOUT SIGNING, or null when there is nothing worth
  * saying — and null is the common case by design. Once a session is live this copy DISAPPEARS: it
- * describes a thing that happens once, and a page still explaining it an hour later is a page
+ * describes a thing that happens once, and a page still explaining it long afterwards is a page
  * charging rent on its own cleverness.
  *
  * `life` only ever adds the lapsing sentence, and it is written to survive the countdown being
@@ -285,15 +294,15 @@ export function sessionNote(plan: SigningPlan, life: SessionLife): string | null
     if (!life.known || !life.lapsing) return null;
     return (
       `About ${life.minutesLeft} ${life.minutesLeft === 1 ? "minute" : "minutes"} left on this play ` +
-      "session. When it runs out the next move renews it — two Phantom approvals, then another hour."
+      "session. When it runs out the next move renews it — two Phantom approvals, then a fresh one."
     );
   }
 
   if (plan.kind === "open-then-session") {
     return (
       `Your first move also opens a play session: one Phantom approval, ${ASSUMED_SESSION_TOP_UP_SOL} SOL to fund ` +
-      "the key that signs for you, good for an hour. Every deploy and extract after it goes through " +
-      "with no prompt at all."
+      "the key that signs for you. Every deploy and extract after it goes through with no prompt at " +
+      "all, for as long as the session lasts."
     );
   }
 
@@ -301,7 +310,7 @@ export function sessionNote(plan: SigningPlan, life: SessionLife): string | null
     case "stopped":
       return (
         "Play sessions are off, so every move asks Phantom to approve it. Start one in the wallet " +
-        "panel to go back to signing an hour at a time."
+        "panel to go back to signing without prompts."
       );
     case "unaffordable":
       return (
@@ -368,13 +377,13 @@ export function sessionPanelNote(plan: SigningPlan): string {
   if (plan.kind === "session") {
     return (
       "A session key is signing your deploys and extracts, so your wallet is not being asked to. It " +
-      `lasts an hour, and when it runs out the next move replaces it. ${whyItMatters}`
+      `runs until it expires, and when it runs out the next move replaces it. ${whyItMatters}`
     );
   }
   if (plan.kind === "open-then-session") {
     return (
       "A session key signs your deploys and extracts so your wallet does not have to. Your next move " +
-      `opens one — ${openingCost}, good for an hour — so you need not touch this panel at all. ${whyItMatters}`
+      `opens one — ${openingCost} — so you need not touch this panel at all. ${whyItMatters}`
     );
   }
 
@@ -382,7 +391,7 @@ export function sessionPanelNote(plan: SigningPlan): string {
     case "stopped":
       return (
         "Stopped, so every deploy and extract asks your wallet to approve it. Start opens a fresh " +
-        `session key — ${openingCost}, an hour of signing without prompts — and the page goes back to ` +
+        `session key — ${openingCost}, and signing without prompts for as long as it lasts — and the page goes back to ` +
         "opening one for you whenever there isn't one."
       );
     case "burner":
@@ -408,7 +417,7 @@ export function sessionPanelNote(plan: SigningPlan): string {
     case "blocked":
       return (
         "A session key signs your deploys and extracts so your wallet does not have to. Your first " +
-        `move opens one — ${openingCost}, good for an hour — so you need not touch this panel at ` +
+        `move opens one — ${openingCost} — so you need not touch this panel at ` +
         `all. ${whyItMatters}`
       );
   }

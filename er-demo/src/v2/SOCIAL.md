@@ -386,8 +386,14 @@ presence surface and only needs the face column and a lede that says who is here
 
 "Visible" means: before you commit, you can see who you would be fighting, by name and face, with
 their side and stake. And the lobby's share link (3.1) is a summons: "6 in, 4 slots, closes in 0:41".
-Scarcity is real here — `MAX_FIGHTERS = 16` is a chain constant, not a marketing number — and
+Scarcity is real here — `MAX_FIGHTERS = 48` is a chain constant, not a marketing number — and
 scarcity with named people in it is the most postable state this product has.
+
+> The cap was 16 when this was written and is now 48, so the scarcity is a third as tight. The claim
+> above still holds — the number is still the chain's and not ours — but "4 slots left" is a weaker
+> summons out of 48 than out of 16, and a lobby that never fills is not a scarce one. Whether the
+> share line should lead with slots remaining or with who is already in is now an open question
+> rather than a settled one.
 
 ### 3.4 — A face and a handle are what earn you a name on the board. *Enabler. Nearly free.*
 
@@ -759,7 +765,7 @@ Neither is needed for anything in §§1–4 or for model A.
   stake to fit. `resolveAmountUsd` already refuses to round its way down to a sendable figure and
   says why; the same principle, one level up. A rule that quietly deploys less than you told it to is
   the same lie as the $0.01 bug that function exists to prevent.
-- **Round full.** `MAX_FIGHTERS = 16`, chain-enforced, and `enter` returns `RoundFull` rather than
+- **Round full.** `MAX_FIGHTERS = 48`, chain-enforced, and `enter` returns `RoundFull` rather than
   "too slow" precisely so the two can be told apart. A missed round for this reason is not a failure
   and should not read as one — it is a full lobby, and the honest line is "round 418 was full".
 

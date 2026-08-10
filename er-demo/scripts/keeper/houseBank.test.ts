@@ -46,11 +46,11 @@ const players = (n: number, side: 0 | 1) =>
   Array.from({ length: n }, () => fighter(Keypair.generate().publicKey, side));
 
 /** A round account with just the fields `plannedHouseEntries` reads. The fighter array is padded to
- *  sixteen because the function derives the seat ceiling from `fighters.length` rather than from a
- *  restated MAX_FIGHTERS — so a short array here would quietly change the behaviour under test. */
+ *  forty-eight because the function derives the seat ceiling from `fighters.length` rather than from
+ *  a restated MAX_FIGHTERS — so a short array here would quietly change the behaviour under test. */
 function roundWith(fighters: RawFighter[]): RawRoundAccount {
   const padded = [...fighters];
-  while (padded.length < 16) padded.push(fighter(PublicKey.default, 0));
+  while (padded.length < 48) padded.push(fighter(PublicKey.default, 0));
   return {
     lobbyClosesAt: new BN(LOBBY_CLOSES_AT),
     fighterCount: fighters.length,
@@ -325,7 +325,7 @@ describe("the fill stage", () => {
     // The exception is deliberate and is the one case where an unenterable round beats an undrawable
     // one: down at the fightability floor the house is fielding the `cover` fighter that makes a
     // lopsided lobby legal at all, and the reservation yields to it.
-    for (let real = 1; real <= 16; real++) {
+    for (let real = 1; real <= 48; real++) {
       const round = roundWith(players(real, 0));
       const planned = entriesOf(round, FILL_TIME).length;
       const free = round.fighters.length - real - planned;
@@ -337,16 +337,16 @@ describe("the fill stage", () => {
   });
 
   it("never asks for a seat the program does not have", () => {
-    // Fifteen real fighters, all on one side, and one seat left. The cover rule still wants a house
-    // fighter on the empty side and there is exactly room for it.
-    const fifteen = Array.from({ length: 15 }, () => fighter(Keypair.generate().publicKey, 0));
-    expect(sidesOf(roundWith(fifteen), FILL_TIME)).toEqual([1]);
+    // Forty-seven real fighters (MAX_FIGHTERS - 1), all on one side, and one seat left. The cover rule
+    // still wants a house fighter on the empty side and there is exactly room for it.
+    const fortySeven = Array.from({ length: 47 }, () => fighter(Keypair.generate().publicKey, 0));
+    expect(sidesOf(roundWith(fortySeven), FILL_TIME)).toEqual([1]);
 
-    // Sixteen, still all on one side: the cover rule wants a fighter on side 1 just as much, and
-    // there is nowhere to put it. `enter` answers `RoundFull` past MAX_FIGHTERS, and a transaction
-    // guaranteed to fail is a fee spent to learn nothing.
-    const sixteen = [...fifteen, fighter(Keypair.generate().publicKey, 0)];
-    expect(entriesOf(roundWith(sixteen), FILL_TIME)).toEqual([]);
+    // Forty-eight (MAX_FIGHTERS), still all on one side: the cover rule wants a fighter on side 1 just
+    // as much, and there is nowhere to put it. `enter` answers `RoundFull` past MAX_FIGHTERS, and a
+    // transaction guaranteed to fail is a fee spent to learn nothing.
+    const fortyEight = [...fortySeven, fighter(Keypair.generate().publicKey, 0)];
+    expect(entriesOf(roundWith(fortyEight), FILL_TIME)).toEqual([]);
   });
 
   it("never reaches for a wallet that is already in the round", () => {
@@ -401,10 +401,10 @@ describe("classification", () => {
   });
 
   it("ignores the array's unused seats, which are zeroed defaults rather than fighters", () => {
-    // `fighter_count` is seats TAKEN; the array behind it is always sixteen long. Counting the tail
-    // would report a lobby of sixteen bots on side 0 in every round.
+    // `fighter_count` is seats TAKEN; the array behind it is always forty-eight long. Counting the
+    // tail would report a lobby of forty-eight bots on side 0 in every round.
     const round = roundWith([fighter(Keypair.generate().publicKey, 0)]);
-    expect(round.fighters).toHaveLength(16);
+    expect(round.fighters).toHaveLength(48);
     expect(bank.classify(round).realCount).toBe(1);
   });
 });
