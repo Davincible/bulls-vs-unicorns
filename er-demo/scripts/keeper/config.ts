@@ -550,15 +550,26 @@ export const HOUSE_WALLET_COUNT = envInt("KEEPER_HOUSE_WALLET_COUNT", 10, 2);
  *  thirty is ~0.30 SOL parked. Twice the round's seat count is enough rotation that the cast turns
  *  over completely every few rounds; more than that buys diminishing variety for linear cost.
  *
- *  THAT DERIVATION NO LONGER MATCHES ITS OWN NUMBER, AND THIS IS FLAGGED RATHER THAN SILENTLY FIXED.
- *  32 was chosen as exactly twice sixteen, the `MAX_FIGHTERS` of that session. `MAX_FIGHTERS` is now
- *  48 for the 16 -> 48 fighter cap, and "twice the round's seat count" by the SAME rule would be 96 —
- *  three times the standing capital (32 wallets at 0.01 SOL is ~0.32 SOL parked; 96 would be ~0.96
- *  SOL). Whether that trade is worth it is an operator call this file will not make unilaterally: the
- *  cast-rotation argument above still holds AT 32 (it turns over completely every few rounds; it is
- *  just now rotating through a smaller fraction of a bigger room than the rule that picked 32
- *  intended), so 32 is not WRONG, only no longer derived from the number that used to justify it. */
-const HOUSE_WALLET_COUNT_MAX = 32;
+ *  THE DERIVATION STOPPED MATCHING ITS NUMBER AT THE 16 -> 48 SEAT CAP, and the previous note flagged
+ *  that rather than deciding it, correctly — it is an operator call about standing capital. It has now
+ *  been made, and 32 became actively blocking rather than merely unmoored:
+ *
+ *  32 CANNOT STAFF A FULL BOARD. Peak house demand is `HOUSE_BOARD_TARGET - HOUSE_DISPLACEMENT`, so a
+ *  target of 48 needs 47 wallets beside one real player. The boot check below refuses that
+ *  configuration — and it refuses it by THROWING AT STARTUP, which on Fly means a machine that stays
+ *  stopped. Setting the target to 32 against a 30-wallet bank took the keeper down until the bank was
+ *  raised; the guard was right and the cost of learning it was an outage.
+ *
+ *  64 is "the seat count plus rotation headroom", which is the rule that picked 32 when a round held
+ *  sixteen. It is deliberately NOT 96: doubling the seat count made sense when the board was small and
+ *  the pool turned over every couple of rounds, but at 48 seats a 48-wallet pool already replaces the
+ *  entire cast every round, so the second 48 buys nothing a player could perceive. The ceiling sits
+ *  above the working number so the target can be tuned without moving this constant again.
+ *
+ *  Standing capital at 0.01 SOL a wallet: 48 wallets is ~0.48 SOL parked, against ~0.30 at thirty.
+ *  Funding is chunked at `FUNDING_CHUNK`, so the transaction-size limit that used to bound this
+ *  constant no longer does. */
+const HOUSE_WALLET_COUNT_MAX = 64;
 if (HOUSE_WALLET_COUNT > HOUSE_WALLET_COUNT_MAX) {
   throw new Error(
     `KEEPER_HOUSE_WALLET_COUNT=${HOUSE_WALLET_COUNT} is above the ceiling of ${HOUSE_WALLET_COUNT_MAX}. ` +

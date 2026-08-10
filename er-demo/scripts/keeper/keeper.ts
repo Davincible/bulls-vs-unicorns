@@ -1483,10 +1483,23 @@ async function main(): Promise<void> {
 
   await fundHouseBank(client, operator, bank, options.dryRun);
 
-  const [operatorBalance, ...houseBalances] = await Promise.all([
-    client.balance(operator.publicKey),
-    ...bank.active.map((w) => client.balance(w.keypair.publicKey)),
-  ]);
+  // ONE BATCHED READ, NOT ONE PER WALLET — the same defect `fundHouseBank` carried, in a second
+  // place, and it took the keeper down to find it. This was a `Promise.all` firing a `getBalance` per
+  // house wallet. At a pool of six that is invisible; at forty-eight it earns
+  // `429 Connection rate limits exceeded` from api.devnet.solana.com and the process dies with
+  // KEEPER FAILED TO START — before the HTTP server binds, so Fly reports it as "instance refused
+  // connection" and the actual cause is four lines further up the log.
+  //
+  // The boot BANNER is what needed these, which is the galling part: the keeper failed to start
+  // because it was trying to print a table. Batched through `getMultipleAccountsInfo` (100 keys per
+  // call, so any pool inside `HOUSE_WALLET_COUNT_MAX` is one call), with a null entry meaning an
+  // account that does not exist yet — zero lamports, which is exactly the state a freshly generated
+  // wallet is in on the boot that first funds it.
+  const operatorBalance = await client.balance(operator.publicKey);
+  const houseInfos = await client.base.getMultipleAccountsInfo(
+    bank.active.map((w) => w.keypair.publicKey),
+  );
+  const houseBalances = houseInfos.map((info) => info?.lamports ?? 0);
   heading(`ROUND KEEPER${options.dryRun ? `  ${c.y}(DRY RUN — no transactions will be sent)${c.x}` : ""}`);
   plain(`  program        ${PROGRAM_ID.toBase58()}`);
   plain(`  arena pda      ${client.arenaPda.toBase58()}${arena ? "" : `  ${c.y}(not initialised — the keeper will init_arena)${c.x}`}`);
