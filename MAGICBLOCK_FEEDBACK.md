@@ -12,47 +12,69 @@ documentation or capability), **[BUG]**, or **[FEATURE REQUEST]**.
 
 ## 2026-08-10 — A delegated account reads as VALID and WRONG from the base layer, with no error
 
-**[BUG, or at minimum the sharpest undocumented edge we have hit]** While an account is delegated to
-an ER, the base-layer copy still decodes cleanly under the owning program's own IDL and returns
-**stale field values**. Not an error, not a rejection, not a discriminator mismatch — a successful
-`fetch()` returning numbers that are simply not true.
+**[GAP — and the responsibility is split, so read the mechanism before assigning it]** While an
+account is delegated to an ER, the base-layer copy still decodes cleanly under the owning program's
+own IDL and returns **stale field values**. Not an error, not a rejection, not a discriminator
+mismatch — a successful `fetch()` returning numbers that are simply not true.
 
-Measured just now against our live arena, round #29, delegated and open on devnet:
+Full matrix, measured against our live devnet arena with one `anchor.Program` pointed at each
+endpoint in turn:
 
 ```
-                 owner                                          anchor fetch      pot
-BASE LAYER       DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh   DECODED OK        0
-ROUTER / ER      EpRY6fkv4RcazjYSJyk8rppeVTVMcWhCcVtTVrKkTLT4   DECODED OK        28,710,000
+                              base layer            router / ER           agree?
+ARENA      (never delegated)  roundCounter 29       roundCounter 29        yes
+ROUND #29  (delegated, open)  pot 0                 pot 28,710,000         NO
+ROUND #28  (settled, undel.)  pot 57,420,000        pot 57,420,000         yes
 ```
 
-Both are 1,102 bytes. Both decode. `program.account.round.fetch(pda)` — the single most ordinary
-read in Anchor — succeeds on both and disagrees about the money by the entire pot.
+So the divergence is exactly and only the delegation window, and the base layer **does** catch up
+once state is committed back. That is coherent behaviour, not corruption. The problem is that
+nothing tells you which of the three rows you are standing in.
 
-**Why this is not merely "you queried the wrong endpoint".** The base-layer account's owner IS the
-Delegation Program, so the information needed to reject the read is right there, and Anchor does not
-use it: it matches the discriminator, decodes, and returns. So the guard a developer would expect to
-protect them — Anchor's account-type checking — does not fire. The failure is silent by construction
-and there is nothing in the returned value that looks wrong. `pot: 0` on an open lobby is a
-completely plausible number.
+**The mechanism, verified rather than assumed — and half of it is Anchor's, not MagicBlock's.**
+Anchor 0.32.1's `AccountClient.fetch` validates the **discriminator only**. There is no owner check
+anywhere in `program/namespace/account.js` (`grep -c owner` returns 0), and its own doc comments say
+so: *"Accounts not found or with wrong discriminator are returned as null."* The delegated account
+keeps its discriminator and its length (1,102 bytes either way), so it decodes. The one field that
+would have given the game away — `owner`, which reads `DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh`
+on the base layer and the program id through the router — is fetched and then ignored by the client.
+On-chain `Account<'info, T>` *does* enforce owner; the client-side helper does not, and that
+asymmetry is where this lives.
 
-**What it would cost someone who did not catch it.** Any dashboard, indexer, analytics job, Solscan
-glance, or settlement check that reads through a normal RPC during a fight reports a pot of zero and
-a fighter count of zero. We only found it because we were auditing who was in a round and the house
-wallets we *knew* were seated did not appear in the base-layer bytes; reading the same PDA through
-the router showed them immediately. Anyone reconciling balances off base-layer reads would silently
-book wrong figures for the entire duration of every delegation — which for us, under hold-open, is
-essentially always.
+So this is not "MagicBlock returns bad data." It is that delegation produces an account which is
+**indistinguishable from a healthy one** through the most ordinary read path in the ecosystem, and
+neither library closes the gap.
 
-**Suggested fix, cheapest first.** (1) Document it prominently — "while delegated, base-layer reads
-are stale; route account reads through the router" belongs in the delegation quickstart, not in
-tribal knowledge. (2) Better: have the Delegation Program zero or poison the discriminator on
-delegation so a naive decode *fails loudly* instead of succeeding wrongly; a thrown error is a far
-better outcome than a plausible lie. (3) Best: a documented helper on `ConnectionMagicRouter` —
-`getAccountInfoAuthoritative(pubkey)` — that routes per-account the way transactions already do, so
-the correct thing is also the easy thing.
+**What it costs someone who does not catch it.** Any dashboard, indexer, analytics job, Solscan
+glance or settlement check reading through a normal RPC during a fight reports a pot of zero and no
+fighters. `pot: 0` on an open lobby is a completely plausible number, so nothing looks wrong. We
+found it only because we were auditing who was seated in a round and house wallets we *knew* were in
+it did not appear in the base-layer bytes. Anyone reconciling balances off base-layer reads books
+wrong figures for the whole delegation — which under our hold-open policy is essentially always.
 
-Reproduces in ~15 lines: fetch any delegated PDA through `api.devnet.solana.com` and through
-`devnet-router.magicblock.app` with the same `anchor.Program`, and compare.
+**The workaround, for anyone who finds this before MagicBlock fixes it.** Two lines, and it is
+reliable because it keys on the one field that is always truthful:
+
+```ts
+const info = await baseConn.getAccountInfo(pda);
+const delegated = info?.owner.equals(DELEGATION_PROGRAM_ID);  // DELeGGvXpW…
+// if delegated, read through the router instead — it is correct in ALL THREE rows above
+```
+
+Reading everything through `devnet-router.magicblock.app` is also safe blanket advice: it returned
+correct values for the never-delegated, delegated and undelegated cases alike. We could find nothing
+saying so, and it is the single most useful sentence that could be added to the delegation docs.
+
+**Suggested fix, cheapest first.** (1) Document it — "while delegated, base-layer account reads are
+frozen at delegation time; route reads through the router, which is correct in every case" belongs
+in the delegation quickstart rather than in tribal knowledge. (2) Better: have the Delegation Program
+poison the discriminator while it holds the account, so a naive decode *fails loudly* instead of
+succeeding wrongly. A thrown error is a far better outcome than a plausible lie, and it costs one
+byte. (3) Best: a documented `getAccountInfoAuthoritative(pubkey)` on `ConnectionMagicRouter` that
+routes per account the way transactions already do, so the correct thing is also the easy thing.
+
+Reproduces in ~15 lines: point one `anchor.Program` at a normal RPC and one at the router, fetch the
+same delegated PDA, compare.
 
 ---
 
