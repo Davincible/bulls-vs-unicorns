@@ -28,15 +28,29 @@
 //   Lobby, closing      a figure, and it DECREASES as time passes. A countdown that does not count
 //                       down is the defect wearing a different number.
 //   Drawing             no figure. `—`. There is no deadline on a VRF draw.
-//   Fight               a figure, and it INCREASES. This one counts up: it is how long the fight has
-//                       been running, which is what the step gauge beside it is measured against.
+//   Fight               a figure, and it DECREASES — the time left on the bell. IT USED TO COUNT UP
+//                       (elapsed time, which the step gauge is measured against) and that was the
+//                       second complaint against this slot: "the counter is currently counting up in
+//                       the round… we need a counter that counts down how much time is still
+//                       remaining." A clock is read as an answer to "how much longer", so it now
+//                       answers that; elapsed moved to 00-1's own tile, which is where the bell used
+//                       to be. The two swapped places.
 //   Settled             a figure, and it is STATIC — legitimately so. It is a completed duration
 //                       ("the fight ran for 1:34"), not a countdown, and `clockSlotFor` says so in
 //                       as many words. This test asserts it does not move, so that a future change
 //                       that made it live would have to come here and say why.
 //   Any phase           never `0:00`. That string is the whole incident.
 //
-// `Abandoned` is not covered: the fixture round never reaches it (`useFixtureRound.ts` runs
+// THE LAST LINE IS WHY THE COUNTDOWN NEEDED A STATE OF ITS OWN, and it is worth being explicit here
+// because this suite is what would catch it: a countdown reaches zero. `live.resolvable` is true the
+// moment `resolve()` would be accepted — one side wiped out, or the bell rung — and from that instant
+// the slot is the word `ENDING` rather than a number, so the figure can neither run down over a fight
+// that is already decided nor sit at `0:00` waiting for somebody to send the transaction. That branch
+// is held by `roundPhaseCopy.test.ts` and NOT here: the fixture goes Settled on its own last hit
+// event (`useFixtureRound.ts`), so the settleable window it passes through is close enough to
+// zero-width that a test built on it would be a flake rather than a guard.
+//
+// `Abandoned` is not covered either: the fixture round never reaches it (`useFixtureRound.ts` runs
 // Lobby → Drawing → Fight → Settled and stops), and there is no flag that produces one. Its branch —
 // `noClock()`, on the grounds that `elapsedSec` is 0 because no fight ever started — is held by
 // `roundPhaseCopy.test.ts` and by nothing here.
@@ -150,7 +164,7 @@ describe("the round clock", () => {
     }
   });
 
-  it("counts the fight up while it runs", async () => {
+  it("counts the fight's bell down while it runs, and never past zero", async () => {
     const s = await open(browser(), { keeper: keeperStates.silent() });
     try {
       await s.jump(DRAWING_ENDS_SEC + 2);
@@ -158,6 +172,10 @@ describe("the round clock", () => {
       expect(before.length).toBe(3);
       for (const slot of before) expect(slot).toMatch(CLOCK_FIGURE);
       expect(new Set(before).size, `slots disagreed: ${before.join(" / ")}`).toBe(1);
+      // A COUNTDOWN THAT STARTS AT THE BELL, not at zero and not at the elapsed time. Two seconds
+      // into a fight the figure is the whole timeout less a couple of seconds, which is the reading
+      // that would have been impossible before this changed and is the point of the change.
+      expect(seconds(before[0]), `bell countdown started at ${before[0]}`).toBeGreaterThan(60);
 
       await s.tick(5);
       await until(
@@ -165,10 +183,15 @@ describe("the round clock", () => {
         "the fight clock to advance",
       );
       const after = await clockSlots(s.page);
+      for (const slot of after) expect(slot).toMatch(CLOCK_FIGURE);
+      // Everything on screen still agrees — the fight is now inside the "one number, four surfaces"
+      // rule that only the lobby used to be in.
+      expect(new Set(after).size, `slots disagreed: ${after.join(" / ")}`).toBe(1);
       expect(
         seconds(after[0]),
-        `fight clock did not advance: ${before[0]} -> ${after[0]}`,
-      ).toBeGreaterThan(seconds(before[0]));
+        `fight clock did not count down: ${before[0]} -> ${after[0]}`,
+      ).toBeLessThan(seconds(before[0]));
+      expect(seconds(after[0]), "a countdown ran to or past zero").toBeGreaterThan(0);
 
       assertNoPageErrors(s, "fight");
     } finally {

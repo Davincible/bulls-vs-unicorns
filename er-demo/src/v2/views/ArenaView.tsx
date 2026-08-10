@@ -36,7 +36,6 @@ import {
   type ArenaMeta,
   type BoardStyle,
   type FighterView,
-  type LiveRound,
   type Mode,
   type Side,
 } from "../contract.ts";
@@ -134,11 +133,6 @@ function HouseShare({ fighters }: { fighters: FighterView[] }) {
   return <span className="u">{houseCount(fighters)} house</span>;
 }
 
-/** Time left on the bell — the outer bound on a fight, after which anyone may settle it. */
-function bellLeft(live: LiveRound): string {
-  return clock(Math.max(0, FIGHT_TIMEOUT_SECONDS - live.elapsedSec));
-}
-
 /** The pace THIS round runs at. It is per-fighter (`n * 2`), not a constant: a 2-fighter duel and a
  *  16-fighter brawl cannot share one rate, and a caption quoting a fixed number would be describing
  *  a fight the chain is not running. */
@@ -172,21 +166,51 @@ function Pnl({ value }: { value: bigint }) {
 
 function TheRound() {
   const { live, status } = useArena();
+  // THE SAME DECISION THE CLOCK ITSELF IS RENDERING, one line below — `RoundClockSlot` prints the
+  // figure, and this is the two-to-four words that say WHICH figure it is. Both come out of one
+  // `useRoundPhase()` object, so the label and the number it labels cannot end up describing
+  // different phases of the round. See `ClockSlot#caption`.
+  const { clockSlot } = useRoundPhase();
   const fighters = live?.fighters ?? [];
   const [aTot, bTot] = sideTotals(fighters);
   const alive = fighters.filter((f) => !f.dead).length;
 
-  // One slot, three different facts depending on where the round is: who won, that anyone may end
-  // it right now, or how long is left on the bell. All three answer the same question — how much
-  // longer is this open — which is why they share a cell instead of taking three.
+  // THE TILE AND THE BIG CLOCK SWAPPED CONTENTS, and this is the other half of that move.
+  //
+  // The clock above used to count the fight UP and this tile counted the bell DOWN. The clock now
+  // counts the bell down (Max: "we need a counter that counts down how much time is still
+  // remaining"), which would have put the identical figure on screen twice in one section — so the
+  // elapsed time the clock gave up lands here rather than being deleted. It is a real fact and the
+  // one the step cursor below is measured against; it is simply not the fact a person reads a clock
+  // to get.
+  //
+  // The two states that outrank a duration keep the cell, exactly as before: a settled round shows
+  // who won, and a settleable one shows that the extract race is on. That flag beats any number,
+  // because it IS the answer to "how much longer" — there is no longer, it can go at any moment.
   const settleKv =
     live?.phase === "Settled" && live.winner !== null
-      ? { value: SIDE_TOKEN[live.winner].name, label: "Winner" }
+      ? {
+          value: SIDE_TOKEN[live.winner].name,
+          label: "Winner",
+          title: `${SIDE_TOKEN[live.winner].name} took round ${live.roundNo.toString()}.`,
+        }
       : live?.resolvable
-        ? { value: "ANYONE MAY", label: "Settle now" }
+        ? {
+            value: "ANYONE MAY",
+            label: "Settle now",
+            title: `A round can be settled by anyone once one side has nobody left standing, or once the ${FIGHT_TIMEOUT_SECONDS}s bell rings. Both are true of this one now — that moment, not a fixed countdown, is the deadline an extract is racing.`,
+          }
         : live?.phase === "Fight"
-          ? { value: bellLeft(live), label: "Bell in" }
-          : { value: <Dash />, label: "Bell in" };
+          ? {
+              value: clock(live.elapsedSec),
+              label: "Fight time",
+              title: `How long this fight has been running. The clock above is the other half of it — the most it can still run before the ${FIGHT_TIMEOUT_SECONDS}s bell, which is a ceiling and not a forecast.`,
+            }
+          : {
+              value: <Dash />,
+              label: "Fight time",
+              title: "No fight has run in this round yet.",
+            };
 
   return (
     <Section
@@ -246,17 +270,29 @@ function TheRound() {
             </div>
             {/* NOT `clock(elapsedSec)` ANY MORE — see `RoundClockSlot`. This was the biggest of the
                 three `0:00`s: 19px of stopped clock directly under the word LOBBY, which is the
-                reading a visitor forms of the whole arena. */}
+                reading a visitor forms of the whole arena. During a fight it now counts the bell
+                DOWN rather than the fight up; the label under it is not decoration, it is what makes
+                a descending figure legible as a ceiling rather than a promise. */}
             <div style={{ marginTop: 8 }}>
               <RoundClockSlot className="num num--lg" />
             </div>
-            <div className="u" style={{ marginTop: 6 }}>
-              {/* The ceiling is per-lineup (`finalCursor(fighterCount)`), so with no round in scope
-                  there is no honest number to divide by — "0 / 0" would read as a fight already at
-                  its bell rather than as no fight existing yet. */}
-              {live
-                ? `${live.stepsNow.toLocaleString("en-US")} / ${finalCursor(fighters.length).toLocaleString("en-US")} steps`
-                : <><Dash /> steps</>}
+            {/* WHAT USED TO BE HERE, AND WHY IT IS NOT.
+                `0 / 15,840 steps`. Max: "we have the number of steps, which is currently 15,000,
+                which seems like a lot and very high." Both halves of that ratio are honest and
+                neither is legible: the ceiling is `finalCursor(n) = 360n`, so it is a function of how
+                many people happen to have joined — 15,840 at 44 fighters, 720 at a duel — and a
+                reader has no way to know that the number doubling means the room filled up rather
+                than the fight getting longer. It is the chain's own unit and it is the unit the
+                replay actually runs on, so it is not deleted: it keeps the field's own metadata
+                column (`.ovl--tl`, where it is labelled and has a title explaining the rate) and the
+                KV row below states the chain's settled `tick_count` verbatim. What it must not be is
+                the caption on the biggest clock on the page.
+                WHAT IS HERE INSTEAD is that clock's own label, from the same decision object the
+                figure came from. A number that counts down names an instant, and every reading of it
+                depends on which instant — so the words travel with the figure rather than being
+                written out at each of the surfaces that draw it. */}
+            <div className="u" style={{ marginTop: 6 }} title={clockSlot.title}>
+              {clockSlot.caption}
             </div>
           </div>
         </div>
@@ -291,13 +327,15 @@ function TheRound() {
           label="On-chain step count"
           title="What the chain itself has written. It stays 0 until a tick or a resolve advances the round on chain — the clock above is this browser's own read of the same fight."
         />
-        {/* Not a countdown. A round becomes settleable when one side has nobody left standing, or
-            when the bell rings — whichever comes first — so the honest readout is the flag plus,
-            during a fight, how long is left on the bell. */}
+        {/* THE FIGHT'S OWN DURATION, and the two states that outrank it — see `settleKv`. Deliberately
+            not a countdown in any of the three: the countdown is the clock in the hero, stated once,
+            and a round becomes settleable when one side has nobody left standing OR when the bell
+            rings, whichever comes first. A second countdown here would be the same ceiling implying a
+            second, different deadline. */}
         <KV
           value={<span className="num">{settleKv.value}</span>}
           label={settleKv.label}
-          title={`A round can be settled by anyone once one side has nobody left standing, or once the ${FIGHT_TIMEOUT_SECONDS}s bell rings. That moment — not a fixed countdown — is the deadline an extract is racing.`}
+          title={settleKv.title}
         />
       </KVs>
     </Section>
@@ -703,14 +741,37 @@ function TheArena() {
               phase, which round, how far through the steps, and who is ahead.
               The remaining slot on this screen is `.sr` beside the canvas — see it for why the count
               `e2e/clock.e2e.ts` asserts is still three. */}
+          {/* WHAT THE FIGURE IN THE MIDDLE OF THIS FIELD IS. The watermark clock is the largest mark
+              on the screen and it is the only one with no label attached to it — a `2:26` painted
+              across the top of a fight is legible as a number and ambiguous as a fact, and now that
+              it counts DOWN the ambiguity has a wrong reading available ("the fight ends in 2:26",
+              which is true of about a quarter of them). This column is where that label belongs: it
+              is already the metadata for the canvas, and `caption` comes off the same `ClockSlot` the
+              canvas is handed, so the words and the ink cannot describe different rounds. */}
           <div className="ovl-line">
-            {/* Same reasoning as 00-1's step readout: the ceiling is per-lineup
-                (`finalCursor(fighterCount)`), so with no round in scope there is no honest number to
-                divide by — printing a ceiling for a lineup of zero would claim a fight that isn't
-                there. */}
-            <span className="u">
+            <span className="u" title={phaseCopy.clockSlot.title}>
+              {phaseCopy.clockSlot.caption}
+            </span>
+          </div>
+          {/* THE STEP CURSOR, WHICH IS STILL WORTH PRINTING AND NO LONGER WORTH A HEADLINE.
+              It was also the caption under 00-1's hero clock, where a reader meeting this page for
+              the first time got `0 / 15,840 steps` as the second-largest fact about the round — a
+              five-digit ratio in a unit nothing had introduced, whose ceiling moves with the size of
+              the lobby rather than with anything about the fight. Max: "15,000 seems like a lot and
+              very high."
+              IT IS NOT DELETED, BECAUSE IT IS THE CHAIN'S OWN UNIT. `stepsNow` is the replay
+              playhead, the cursor the extract penalty decays against, and the quantity the settled
+              `tick_count` is checkable against — a real, verifiable fact, and the only one on this
+              page that is measured in what the program actually counts. So it keeps the field's
+              metadata column, where a reader who wants it can find it, with the noun attached and the
+              round's own rate on its title (`paceLine`) explaining where a ceiling of 15,840 comes
+              from. The ceiling stays per-lineup (`finalCursor(fighterCount)`): with no round in scope
+              there is nothing honest to divide by, and printing a ceiling for a lineup of zero would
+              claim a fight that isn't there. */}
+          <div className="ovl-line">
+            <span className="u" title={live ? paceLine(fighters.length) : undefined}>
               {live
-                ? `${live.stepsNow.toLocaleString("en-US")}/${finalCursor(fighters.length).toLocaleString("en-US")}`
+                ? `${live.stepsNow.toLocaleString("en-US")}/${finalCursor(fighters.length).toLocaleString("en-US")} steps`
                 : <Dash />}
             </span>
           </div>
@@ -1265,6 +1326,9 @@ function Deploy() {
 
 function Extract() {
   const { live, actions, session, toasts } = useArena();
+  // The bell, from the one place that decides what the bell is doing — see the note on the line that
+  // prints it, at the bottom of this panel.
+  const { clockSlot } = useRoundPhase();
   const eligible = actions.extractEligible;
   const terms = live?.extractTerms ?? null;
   const fighting = live?.phase === "Fight";
@@ -1323,11 +1387,29 @@ function Extract() {
               out of the round entirely, to the house. Nothing of yours stays on the field.
             </p>
           )}
+          {/* THE BELL, ON THE ONE CONTROL THAT IS RACING IT — and it no longer computes its own.
+              This line used to call a local `bellLeft(live)`, which was a second subtraction of
+              `elapsedSec` from the timeout in a file that already gets the same figure handed to it.
+              It now reads the round's own `ClockSlot` for the FIGURE — one bell on the page, quoted
+              everywhere, never re-derived.
+              BUT THE CLAIM STAYS ON `resolvable`, AND THAT SEPARATION IS THE WHOLE CORRECTNESS OF THIS
+              LINE. "Anyone can end this round at any moment" is a statement about the CHAIN, and the
+              only fact that supports it is `resolvable`. Deriving it from the slot instead — no
+              figure, therefore settleable — reads as equivalent and is not: `clockSlotFor` returns no
+              figure whenever the page cannot reach the program at all, short-circuiting before it
+              looks at the phase, so a fight on screen during an RPC failure would have printed
+              "anyone can end this round at any moment" directly above the Extract button on the
+              strength of the page having lost its connection. Three renderings, not two.
+              "AT MOST" IS NOT A HEDGE HERE, IT IS THE POINT. This is the surface where misreading the
+              bell as a forecast costs actual money: a player who believes they have 2:26 to decide
+              may have twenty seconds, because a fight ends the moment one side is wiped out. */}
           {fighting && live ? (
             <p className="u" style={{ marginTop: 12 }}>
               {live.resolvable
                 ? "Settleable now — anyone can end this round at any moment"
-                : `Bell in ${bellLeft(live)} · ${stepsPerSecond(live.fighters.length)} steps/sec`}
+                : clockSlot.kind === "clock"
+                  ? `Bell in ${clock(clockSlot.seconds)} at most · ${stepsPerSecond(live.fighters.length)} steps/sec`
+                  : `No bell time we can show · ${stepsPerSecond(live.fighters.length)} steps/sec`}
             </p>
           ) : null}
           {/* IT USED TO READ "A session key would sign this without a wallet prompt (panel, bottom

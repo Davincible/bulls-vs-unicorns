@@ -19,9 +19,10 @@
 // directly rather than building a status file — the mapping from file to kind is that module's suite.
 
 import { describe, expect, it } from "vitest";
-import { FIGHT_TIMEOUT_SECONDS, type FighterView, type LiveRound, type PhaseName } from "../contract.ts";
+import { FIGHT_TIMEOUT_SECONDS, clock, type FighterView, type LiveRound, type PhaseName } from "../contract.ts";
 import type { PlayBlock } from "../data/playGate.ts";
 import {
+  NO_CLOCK,
   asSentence,
   roundPhaseCopy,
   timingText,
@@ -579,15 +580,56 @@ describe("the compact clock slot", () => {
     expect(c.clockSlot.kind).toBe("state");
   });
 
-  it("keeps counting the fight UP, which is a different number from the bell counting down", () => {
-    // The slot has always shown elapsed time and should keep doing so — it is what the step gauge
-    // beside it in all three surfaces is measured against. The bell belongs to the sentence.
+  it("counts the fight's bell DOWN, on the same number the sentence beside it is counting", () => {
+    // IT USED TO COUNT UP, and that was the complaint: "the counter is currently counting up in the
+    // round… we need a counter that counts down how much time is still remaining." A clock is read as
+    // an answer to "how much longer", and the largest figure on the page was answering "how long so
+    // far". The elapsed figure is not lost — 00-1's own tile carries it now (`views/ArenaView.tsx`) —
+    // but it is not what a clock is for.
     const c = copy({ live: round({ phase: "Fight", elapsedSec: 12.4 }) });
-    expect(c.clockSlot).toMatchObject({ kind: "clock", seconds: 12.4 });
+    expect(c.clockSlot).toMatchObject({
+      kind: "clock",
+      seconds: Math.ceil(FIGHT_TIMEOUT_SECONDS - 12.4),
+    });
+    // ONE NUMBER, NOT TWO THAT AGREE. The slot takes the sentence's own seconds rather than
+    // subtracting `elapsedSec` from the timeout a second time, which is the whole reason the two
+    // cannot drift.
     expect(c.timing).toMatchObject({
       kind: "countdown",
       seconds: Math.ceil(FIGHT_TIMEOUT_SECONDS - 12.4),
     });
+    if (c.clockSlot.kind !== "clock" || c.timing.kind !== "countdown") throw new Error("unreachable");
+    expect(c.clockSlot.seconds).toBe(c.timing.seconds);
+  });
+
+  it("stops being a figure the instant the round is settleable, rather than counting to 0:00", () => {
+    // THE HONESTY PROBLEM A COUNTDOWN CREATES, and the place it is answered. Only about three
+    // quarters of fights at the 48-fighter cap reach the bell; the rest end early, when one side is
+    // wiped out. `resolvable` is true from that instant — and from the bell — so the two readings a
+    // countdown could otherwise produce are both unreachable: a figure counting 1:12 down over a
+    // fight that is already decided, and a figure parked at `0:00` after the bell while nobody has
+    // sent `resolve()`. Both would be the original `0:00` incident with a new cause.
+    for (const elapsedSec of [30, FIGHT_TIMEOUT_SECONDS]) {
+      const c = copy({ live: round({ phase: "Fight", elapsedSec, resolvable: true }) });
+      expect(c.clockSlot.kind, `at ${elapsedSec}s`).toBe("state");
+      if (c.clockSlot.kind !== "state") throw new Error("unreachable");
+      expect(c.clockSlot.word).toBe("ENDING");
+      // NOT "OVER". Extract is still live in this state and is racing exactly this moment; a word
+      // that read as finished would talk a player out of the one move still on the table.
+      expect(c.clockSlot.title).toMatch(/any second/i);
+    }
+  });
+
+  it("never hands a zero to a countdown, even where the phase has run past its own deadline", () => {
+    // `isResolvable` also requires two fighters (lib.rs's own guard, mirrored in `data/fightPace.ts`),
+    // so a Fight phase holding fewer would count past the bell into seconds `Math.max` floors at
+    // exactly the string this whole type exists to prevent. Constructed directly, because the round
+    // this describes is one the program should never produce — which is why nothing else would catch
+    // it.
+    const c = copy({
+      live: round({ phase: "Fight", elapsedSec: FIGHT_TIMEOUT_SECONDS + 40, resolvable: false }),
+    });
+    expect(c.clockSlot.kind).toBe("state");
   });
 
   it("keeps the length a settled round ran, and refuses one for a round that never fought", () => {
@@ -598,6 +640,52 @@ describe("the compact clock slot", () => {
       seconds: 44,
     });
     expect(copy({ live: round({ phase: "Abandoned" }) }).clockSlot.kind).toBe("state");
+  });
+
+  it("cannot produce the string 0:00 from any phase, at any deadline, at any cursor", () => {
+    // THE INCIDENT AS AN INVARIANT RATHER THAN AS A LIST OF CASES. Every test above pins one state;
+    // this one asserts the rule those states are instances of, over every phase crossed with every
+    // second that has ever produced the string — a deadline that has just passed, one that is about
+    // to, a fight past its own bell, and a settled round whose cursor floors to nothing.
+    //
+    // It is a sweep because the branches are not the risk. `clock()` FLOORS, so the numbers that
+    // render as `0:00` are a half-open interval and not a value, and a guard written against the
+    // obvious one (`seconds > 0`) passes every hand-picked case here while shipping `0.4`. What makes
+    // this hold is that `clockSlotFor` asks the formatter what it is about to draw.
+    const deadlines = [-5, -0.4, 0, 0.4, 0.9, 1];
+    for (const phase of ["Lobby", "Fight", "Settled", "Drawing", "Abandoned"] as const) {
+      for (const seconds of deadlines) {
+        for (const resolvable of [false, true]) {
+          const c = copy({
+            live: round({
+              phase,
+              resolvable,
+              elapsedSec: phase === "Fight" ? FIGHT_TIMEOUT_SECONDS - seconds : seconds,
+              lobbyClosesAtMs: NOW + seconds * 1000,
+            }),
+          });
+          const where = `${phase} @ ${seconds}s${resolvable ? " settleable" : ""}`;
+          if (c.clockSlot.kind === "clock") {
+            expect(clock(c.clockSlot.seconds), where).not.toBe("0:00");
+          } else {
+            expect(c.clockSlot.word, where).not.toMatch(/^\d+:\d\d$/);
+          }
+        }
+      }
+    }
+  });
+
+  it("refuses a length for a round that settled without advancing a single step", () => {
+    // REACHABLE, NOT HYPOTHETICAL. `resolve()` only asks that the fight be over, and `extract()` sets
+    // `dead = 1` — so the last fighter on a side leaving at step 0 empties it and the round settles
+    // with `tick_count` at zero. `elapsedSec` is derived from that cursor, so the slot would have
+    // printed `0:00`: a stopped clock, in five places at once, over a finished round. The same
+    // incident this whole type exists for, arriving through the one phase where a static figure is
+    // legitimate.
+    const c = copy({ live: round({ phase: "Settled", elapsedSec: 0 }) });
+    expect(c.clockSlot.kind).toBe("state");
+    if (c.clockSlot.kind !== "state") throw new Error("unreachable");
+    expect(c.clockSlot.word).toBe(NO_CLOCK);
   });
 
   it("shows nothing clock-shaped while the seed is being drawn, or with no round at all", () => {
@@ -611,12 +699,21 @@ describe("the compact clock slot", () => {
     }
   });
 
-  it("cannot disagree with the sentence beside it about whether a lobby has a number", () => {
+  it("cannot disagree with the sentence beside it about whether a round has a number", () => {
     // The two are one decision, taken once. If they were derived separately, the state that would
     // break first is precisely the one this whole module keeps re-litigating: a slot counting the
     // backstop down beside a sentence refusing to.
+    //
+    // FIGHT IS IN THIS SWEEP NOW, AND THAT IS THE CHANGE. It used to be Lobby-only, because the
+    // fight's slot counted `elapsedSec` up while its sentence counted the bell down — two facts, by
+    // design. Now that the slot counts the bell down too, "one number" is a rule the fight has to
+    // keep as well, and the bell is the number on this page with the most surfaces stating it.
+    //
+    // SETTLED IS EXCLUDED, DELIBERATELY. Its sentence counts down to the NEXT LOBBY while its slot
+    // holds the length THIS fight ran — genuinely two facts about two different rounds, and the one
+    // place where making them agree would be the error.
     for (const { name, input } of EVERY_STATE) {
-      if (input.live?.phase !== "Lobby") continue;
+      if (input.live?.phase !== "Lobby" && input.live?.phase !== "Fight") continue;
       const c = copy(input);
       if (c.timing.kind === "countdown") {
         expect(c.clockSlot, name).toMatchObject({ kind: "clock", seconds: c.timing.seconds });
@@ -624,6 +721,41 @@ describe("the compact clock slot", () => {
         expect(c.clockSlot.kind, name).toBe("state");
       }
     }
+  });
+
+  it("names its own figure in every state, in words no surface has to write for itself", () => {
+    // WHY A CAPTION EXISTS AT ALL. While the fight clock counted up, a bare figure under the word
+    // FIGHT was self-describing. A figure that counts DOWN names an instant instead, and a reader is
+    // owed which one — so the label travels with the decision rather than being written out at each
+    // of the four surfaces that draw it. `title` is the whole sentence; this is the version a hero
+    // column or an overlay line has room to print.
+    const seen = new Set<string>();
+    for (const { name, input } of EVERY_STATE) {
+      const { caption } = copy(input).clockSlot;
+      expect(caption.length, name).toBeGreaterThan(0);
+      // A LABEL, NOT A SECOND READING. Anything clock-shaped in here would put two figures in a slot
+      // built to hold one, and the page has already shipped that bug once.
+      expect(caption, name).not.toMatch(/\d+:\d\d/);
+      // Sentence case, no full stop: it is set in `.u` (10px uppercase, tracked), where a trailing
+      // period is a stray mark rather than punctuation.
+      expect(caption.endsWith("."), name).toBe(false);
+      seen.add(caption);
+    }
+    // NON-VACUITY. One caption reused for every state would pass every assertion above and label
+    // nothing — the states this page most needs told apart (a held-open lobby, a running bell, a
+    // settleable fight) are exactly the ones a constant would flatten.
+    expect(seen.size).toBeGreaterThan(3);
+  });
+
+  it("labels the bell as a ceiling rather than as a forecast", () => {
+    // THE ONE CAPTION WHOSE WORDING IS LOAD-BEARING. Roughly a quarter of fights at the 48-fighter
+    // cap reach the bell and the rest end early, so a descending figure labelled "time left" would be
+    // a promise this page has a 24% chance of keeping. "At most" is the disclosure, in two words, at
+    // the size a hero column has for it — and the full "or sooner if a side is wiped out" is one hover
+    // away in `title`, which is the same sentence `RoundPhaseNote` is printing at that instant.
+    const c = copy({ live: round({ phase: "Fight", elapsedSec: 12.4 }) });
+    expect(c.clockSlot.caption).toMatch(/at most/i);
+    expect(c.clockSlot.title).toMatch(/or sooner/i);
   });
 
   it("survives the player's gate untouched, exactly as the countdown does", () => {

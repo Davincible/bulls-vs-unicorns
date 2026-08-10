@@ -1,29 +1,39 @@
-// THE HOUSE WALLETS — the keys, their funding, and the two-stage entry that makes "seed early
+// THE HOUSE WALLETS — the keys, their funding, and the arrival schedule that makes "seed early
 // liquidity, throttle down as real players join" (README.md, ARENAS.md) an actual behaviour rather
 // than a sentence.
 //
-// HOW MUCH the house fields is not decided here. That is `./houseSizing.ts`, which is a pure function
-// of the real fighter counts and has its own tests. This file decides WHEN the house enters, WHICH
-// wallet enters which side, and what happens when an entry fails — the operational half.
+// HOW MUCH the house fields, and WHEN each fighter is due, are not decided here. That is
+// `./houseSizing.ts`, which is a pure function of the real fighter counts and the instant it is asked
+// about, and has its own tests. This file decides WHICH wallet takes which side, what happens when an
+// entry fails, and how a batch is sent — the operational half.
 //
-// THE TWO STAGES, AND WHY THEY ARE TWO — with one rule sitting above both of them:
+// THE THREE THINGS THE PLANNER ANSWERS, IN THE ORDER THEY OUTRANK EACH OTHER:
 //
 //   THE TREASURY RULE FIRST. A lobby holding no real fighter gets exactly ONE house fighter, at every
-//   stage and under every configuration, because one is below `enough_to_fight` and a round the chain
-//   refuses to draw is a round that cannot become a house-versus-house fight. See
+//   instant and under every configuration, because one is below `enough_to_fight` and a round the
+//   chain refuses to draw is a round that cannot become a house-versus-house fight. See
 //   `HOUSE_MAX_WITHOUT_REAL_PLAYER`. Everything below describes a room somebody real is standing in.
 //
-//   SEED, immediately after the first real player arrives. Exactly `MIN_FIGHTERS_TO_FIGHT` fighters,
-//   one per side. Two is not a sizing preference — it is `enough_to_fight` in lib.rs, the threshold
-//   `close_lobby_and_draw` requires and `abandon_round` requires the negation of. So the seed stage is
-//   the floor that guarantees the round can fight AT ALL, and it is also what stops a player who
-//   arrives ten seconds in from finding an empty room.
+//   FIGHTABILITY, from the first pass after a real player is seen. `MIN_FIGHTERS_TO_FIGHT` fighters,
+//   one per side, and never throttled by anything. Two is not a sizing preference — it is
+//   `enough_to_fight` in lib.rs, the threshold `close_lobby_and_draw` requires and `abandon_round`
+//   requires the negation of. It is what makes an early close SAFE while the rest of the house is
+//   still walking in, and it is what stops a player who arrives ten seconds in from finding an empty
+//   room.
 //
-//   FILL, `HOUSE_FILL_LEAD_SECONDS` before the deadline. Re-read the round, recount the REAL fighters,
-//   and top up to whatever the sizing policy now says. THE LATENESS IS THE MECHANISM: a house that had
-//   already committed its full roster at the opening bell would have nothing left to give up, and a
-//   real arrival would ADD to a full lobby rather than displace a bot from it. Entering late is the
-//   only thing that makes displacement real.
+//   THE BOARD, RAMPED. The rest of the roster is spread across the entry window on the arrival
+//   schedule in `houseSizing.ts`: each pass asks how many fighters are due by now and enters only
+//   those. There is no stage boundary and no step — the target is a function of the clock, and by the
+//   end of the window it is the full board, so nothing about the shortfall arithmetic below changes.
+//
+//   IT USED TO BE A TWO-STAGE STEP: the same seed, then a jump to the whole board at a fixed lead
+//   before the draw (`HOUSE_FILL_LEAD_SECONDS`, a constant that no longer exists and that the keeper
+//   now refuses to boot with). That lateness was the mechanism that made displacement
+//   real — a house committed at the opening bell has nothing left to give up. The ramp seats fighters
+//   earlier in the window than the step did, so some of that headroom is genuinely traded away; what
+//   is not traded is the hard guarantee, because `REAL_SEATS_RESERVED` is applied to the ceiling on
+//   every pass and is larger now than it was. Displacement was the aesthetic half of the policy; the
+//   reservation is the invariant.
 //
 // NO SESSION KEYS HERE, AND THAT IS A DELIBERATE DECLINE. The brief offered them; they buy nothing.
 // A session key exists to spare a HUMAN the wallet dialog per transaction — that is the entire
@@ -46,14 +56,14 @@ import type { BullsArenaProgram, RawRoundAccount } from "../../src/chain/program
 import { enter } from "../../src/chain/round.ts";
 import type { ChainClient } from "./chainClient.ts";
 import {
-  CLOCK_SKEW_MARGIN_SECONDS, HOUSE_FILL_LEAD_SECONDS, HOUSE_WALLET_COUNT, HOUSE_WALLET_MIN_SOL,
+  CLOCK_SKEW_MARGIN_SECONDS, HOUSE_WALLET_COUNT, HOUSE_WALLET_MIN_SOL,
   HOUSE_WALLET_TARGET_SOL, MIN_FIGHTERS_TO_FIGHT, REAL_SEATS_RESERVED,
 } from "./config.ts";
 import { c, describeError, info, ok, warn } from "./log.ts";
 import { asSecretKeyBytes, parseSecretJson, readSecretText, type SecretSource } from "./secrets.ts";
 import {
-  allocateHouseSides, houseFighterCount, HOUSE_FLOOR, HOUSE_MAX_WITHOUT_REAL_PLAYER, houseStake,
-  type SideCounts,
+  allocateHouseSides, arrivalFraction, arrivalsDueBy, houseFighterCount, HOUSE_FLOOR,
+  HOUSE_MAX_WITHOUT_REAL_PLAYER, houseStake, type SideCounts,
 } from "./houseSizing.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -131,7 +141,8 @@ export interface HouseEntry {
  *  outcome is a flag the next reader will assume still does. */
 export interface HouseLobbyView {
   /** The instant the lobby will actually be drawn — the keeper's own close when it has committed to
-   *  one, otherwise the chain's deadline. The fill stage is scheduled backwards from this. */
+   *  one, otherwise the chain's deadline. The house's whole arrival window is measured backwards from
+   *  this, so a compressed one compresses the arrivals with it. */
   drawAt: number;
 }
 
@@ -140,6 +151,15 @@ export interface HousePlan {
   /** The split the plan was computed from, handed back so the caller does not classify the same
    *  account a second time to log what it just decided. */
   split: FighterSplit;
+  /** HOW MANY HOUSE FIGHTERS THIS LOBBY IS WORKING TOWARDS, after the seat reservation has been
+   *  applied — the denominator in the keeper's "house fighter 7/38 going in" line.
+   *
+   *  Returned rather than recomputed by the caller because the ceiling arithmetic that produces it
+   *  needs the chain's own seat count, which only this function has read. A second copy of it in the
+   *  logging path would be a number that agreed with the plan right up until somebody changed one of
+   *  them. It is 0 on the plans that decline to enter anything at all for lack of lobby time, which is
+   *  the honest answer there: nothing is being worked towards. */
+  houseTarget: number;
 }
 
 export interface HouseEntryResult {
@@ -494,40 +514,58 @@ export function plannedHouseEntries(
   // entry planned inside the skew margin is a transaction that will be rejected with `LobbyClosed`
   // for a fee. Measured against `drawAt` rather than the deadline, because an entry sent into the
   // second before the KEEPER closes the lobby is just as wasted as one sent after the chain does.
-  // The fill stage makes this reachable rather than theoretical: it starts twelve seconds out and has
-  // up to eight confirmed round-trips to make, which at devnet's slower moments is most of that window
-  // even sent concurrently.
-  if (lobby.drawAt - nowSec <= CLOCK_SKEW_MARGIN_SECONDS) return { entries: [], split };
-
-  const fillDue = nowSec >= lobby.drawAt - HOUSE_FILL_LEAD_SECONDS;
+  // The arrival schedule keeps this reachable rather than theoretical: its last fighters are due at
+  // `drawAt - HOUSE_ARRIVAL_TAIL_SECONDS`, deliberately close to the bell, and that tail is required
+  // to clear this margin (`config.ts` refuses to boot otherwise).
+  if (lobby.drawAt - nowSec <= CLOCK_SKEW_MARGIN_SECONDS) return { entries: [], split, houseTarget: 0 };
 
   let target: number;
   if (split.realCount === 0) {
-    // NOBODY REAL IS HERE, AT ANY STAGE. One fighter — not a sizing preference, an invariant: at one
-    // the chain refuses to draw the round at all, so no house-versus-house fight is available to
-    // anyone, and `abandon_round` stays legal at the deadline so the round can still end. The full
-    // argument is on `HOUSE_MAX_WITHOUT_REAL_PLAYER`.
+    // NOBODY REAL IS HERE, AT ANY INSTANT IN THE WINDOW. One fighter — not a sizing preference, an
+    // invariant: at one the chain refuses to draw the round at all, so no house-versus-house fight is
+    // available to anyone, and `abandon_round` stays legal at the deadline so the round can still end.
+    // The full argument is on `HOUSE_MAX_WITHOUT_REAL_PLAYER`.
     //
-    // CHECKED FIRST, AND NO LONGER GATED ON HOLD-OPEN. It used to be the `lobby.heldOpen` branch, so
-    // with `KEEPER_HOLD_OPEN` off the seed stage below put two fighters into an empty room and the
-    // round fought itself at its deadline. Asking about the room rather than about a mode makes the
-    // guarantee hold in every configuration — and it makes the branch redundant with
-    // `houseFighterCount({0,0})` below, which returns the same 1, which is the point: the treasury
-    // rule has one answer and both stages give it.
+    // CHECKED FIRST, AND THE ARRIVAL SCHEDULE IS NEVER CONSULTED HERE. The treasury rule outranks the
+    // schedule exactly as it outranks everything else in this function. It is kept as its own early
+    // return rather than folded into the arithmetic below even though it could be: a ramp over a
+    // target of one can never ask for more than one, so a clamp would be correct today — and a clamp
+    // is a thing somebody widens by editing a number, where an early return has to be deleted on
+    // purpose. It also used to be gated on `lobby.heldOpen`, and with `KEEPER_HOLD_OPEN` off the seed
+    // below put two fighters into an empty room and the round fought itself at its deadline. Asking
+    // about the ROOM rather than about a mode is what made the guarantee hold in every configuration.
     target = HOUSE_MAX_WITHOUT_REAL_PLAYER;
-  } else if (fillDue) {
-    target = houseFighterCount(split.real);
-  } else if (split.realCount < MIN_FIGHTERS_TO_FIGHT) {
-    // SEED STAGE. `HOUSE_FLOOR` comes from the sizing policy, which owns how many fighters the house
-    // fields; `MIN_FIGHTERS_TO_FIGHT` is the chain's `enough_to_fight`, which owns whether a round can
-    // fight at all. They are both 2 and they are not the same number — the condition asks "does this
-    // round still need the house in order to be a round?", the target answers "then field the policy's
-    // floor". Skipped once two real fighters are in, exactly as specified: the round can already
-    // fight, so there is nothing for the floor to guarantee and the house should wait for the fill
-    // stage to size itself against who actually turned up.
-    target = HOUSE_FLOOR;
   } else {
-    target = 0;
+    // THE BOARD, THROTTLED BY THE CLOCK. `houseFighterCount` owns how many fighters this lobby should
+    // end up holding; `arrivalsDueBy` owns how many of them have walked in by now. The schedule's own
+    // guarantee is that at the end of the window everything is due, so this is the full board by the
+    // time the lobby is drawn — see `arrivalsDueBy` for why that is structural rather than likely.
+    const board = houseFighterCount(split.real);
+    const due = arrivalsDueBy(Number(roundNo), board, arrivalFraction(nowSec, lobby.drawAt));
+    // FIGHTABILITY IS NEVER RAMPED. `HOUSE_FLOOR` comes from the sizing policy, which owns how many
+    // fighters the house fields; `MIN_FIGHTERS_TO_FIGHT` is the chain's `enough_to_fight`, which owns
+    // whether a round can fight at all. They are both 2 and they are not the same number — the
+    // condition asks "does this round still need the house in order to be a round?", the floor answers
+    // "then field the policy's floor, this pass, whatever the schedule says". That is what makes an
+    // early close safe while the rest of the house is still trickling in: the round is drawable from
+    // its first second with a real player in it.
+    const fightability = split.realCount < MIN_FIGHTERS_TO_FIGHT ? HOUSE_FLOOR : 0;
+    // THE RAMP ONLY THROTTLES THE BOARD-SIZE PORTION. `fightability` here, and `coverFloor` further
+    // down, are floors it cannot reach past — both of them are about whether there is a round at all,
+    // and neither is a question of how the room LOOKS while it fills.
+    //
+    // AND THE RAMP NEVER REMOVES AN ENTRY; IT ONLY DECIDES HOW EARLY ONE MAY BE SENT. At the end of
+    // the window `due === board`, so the shortfall arithmetic below sees exactly what it saw before
+    // there was a schedule, and `enterHouseFighters`'s `dropped`/`failed` accounting — "every planned
+    // entry lands or is counted" — is untouched.
+    //
+    // ONE DELIBERATE DIFFERENCE FROM THE OLD STEP, at the end of the window and nowhere else: when
+    // `board < HOUSE_FLOOR` and the round still cannot fight on its own — reachable only at a
+    // degenerate `KEEPER_HOUSE_BOARD_TARGET` of 2 or less — the old fill stage stepped the target DOWN
+    // from the seed floor at the stage boundary, and this does not. That is a fix rather than a
+    // regression: nothing should make a lobby with somebody standing in it less able to fight as its
+    // deadline approaches.
+    target = Math.max(fightability, Math.min(board, due));
   }
 
   // Never ask the program for a seat that does not exist. `enter` refuses with `RoundFull` at
@@ -615,7 +653,7 @@ export function plannedHouseEntries(
   const ceilingRoom = Math.max(0, houseCeiling - split.houseCount);
   const freeSeats = Math.max(0, seats - split.realCount - split.houseCount);
   const shortfall = Math.min(Math.max(Math.min(grow, ceilingRoom), coverFloor), freeSeats);
-  if (shortfall <= 0) return { entries: [], split };
+  if (shortfall <= 0) return { entries: [], split, houseTarget: target };
 
   // ROTATED BY ROUND, and without it a bigger pool buys literally nothing.
   //
@@ -652,7 +690,7 @@ export function plannedHouseEntries(
     if (side === 0) { if (need0 <= 0) continue; need0 -= 1; } else { if (need1 <= 0) continue; need1 -= 1; }
     entries.push({ wallet, side, stake: houseStake(Number(roundNo), wallet.index) });
   }
-  return { entries, split };
+  return { entries, split, houseTarget: target };
 }
 
 /** Send the planned entries, ALL AT ONCE, and never let one failure end the process.
@@ -665,14 +703,18 @@ export function plannedHouseEntries(
  *  WHY THIS IS CONCURRENT, WHICH IT DID NOT USED TO BE
  *  ────────────────────────────────────────────────────────────────────────────────────────────────
  *
- *  It sent serially, and that was sound while the fill stage was at most FOUR entries: four confirmed
- *  round-trips fit inside `HOUSE_FILL_LEAD_SECONDS`, which is what that constant was measured against.
- *  The board target of ten makes the realistic batch SEVEN (a lobby holding the lone house fighter plus
- *  the seed pair, topping up to nine) and up to EIGHT for a player who arrives inside the fill lead and
- *  skips the seed stage entirely. At devnet's slower moments a confirmed round-trip is seconds, so a
- *  serial batch of eight simply does not fit in the window — and the window cannot be widened, because
- *  `HOUSE_FILL_LEAD_SECONDS` must stay under `MIN_LOBBY_SECONDS` and the grace after a real arrival is
- *  the same twenty seconds.
+ *  It sent serially, and that was sound while the fill was at most FOUR entries: four confirmed
+ *  round-trips fit inside the twelve-second fill lead that stage ran on. The board target of ten made
+ *  the realistic batch SEVEN, and up to EIGHT for a player who arrived inside the lead and skipped the
+ *  seed entirely. At devnet's slower moments a confirmed round-trip is seconds, so a serial batch of
+ *  eight simply did not fit.
+ *
+ *  THE ARRIVAL SCHEDULE HAS SINCE MADE THE TYPICAL BATCH SMALL AGAIN — one or two fighters per pass,
+ *  spread across `REAL_PLAYER_GRACE_SECONDS` — and that does NOT retire this argument, it just changes
+ *  which case it is load-bearing for. The batch that has to fit is now the CATCH-UP one: a keeper that
+ *  was backed off, restarting, or riding out a slow devnet arrives at a pass owing every fighter the
+ *  schedule has made due in the meantime, and at the end of the window that is the entire board in one
+ *  go. Concurrency is what keeps that case a single round-trip instead of forty.
  *
  *  The entries are independent by construction — distinct wallets, distinct signers, distinct fee
  *  payers, no ordering constraint, and `plannedHouseEntries` has already guaranteed no wallet appears

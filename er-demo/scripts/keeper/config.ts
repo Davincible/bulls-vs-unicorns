@@ -149,27 +149,88 @@ if (HOLD_OPEN_LOBBY_SECONDS < MIN_LOBBY_SECONDS || HOLD_OPEN_LOBBY_SECONDS > MAX
 }
 
 /** HOW LONG THE KEEPER KEEPS ENTRIES OPEN AFTER THE FIRST REAL PLAYER ARRIVES, before it signs the
- *  early close and the fight begins.
- *
- *  IT IS `MIN_LOBBY_SECONDS`, DELIBERATELY, and that is the whole argument — this is an
- *  already-settled number reused rather than a fresh one invented. 20 seconds is the floor the
- *  PROGRAM itself clamps up to, on the grounds that it is the shortest window in which a human can
- *  see a round and get into it, and it is the length the off-chain engine's online lobby actually ran
- *  at (`engine/src/round.ts`). Both of those are arguments about exactly this quantity: how long an
- *  entry window has to be to be real.
+ *  early close and the fight begins — and, because of what binds on either side of it, THE ENTIRE
+ *  RUNWAY THE HOUSE HAS TO ARRIVE IN.
  *
  *  CLOSING THE INSTANT THE FIRST PERSON LANDS WAS THE OBVIOUS DESIGN AND IT IS WRONG. It locks out
  *  the second player arriving a beat later — turning a two-player round into a one-player-plus-bots
  *  round for the sake of a second — and it gives the first player no time to size a stake, since they
- *  are already committed by the time they have arrived. Twenty seconds gives both a genuine chance
- *  while still making the fight feel like a consequence of somebody showing up rather than of a clock
+ *  are already committed by the time they have arrived. The window gives both a genuine chance while
+ *  still making the fight feel like a consequence of somebody showing up rather than of a clock
  *  running out.
  *
- *  IT MUST EXCEED `HOUSE_FILL_LEAD_SECONDS`, or the house never gets to size itself against the real
- *  arrivals and the displacement policy is dead code on every held-open round. That invariant is
- *  already enforced below, by the assertion that the fill lead is shorter than `MIN_LOBBY_SECONDS` —
- *  the same comparison, which is one more reason for this to be that constant and not a copy of it. */
-export const REAL_PLAYER_GRACE_SECONDS = MIN_LOBBY_SECONDS;
+ *  IT USED TO BE `MIN_LOBBY_SECONDS` ITSELF, AND THAT WAS A DEGENERATE-VALUE GUARD BEING READ AS A
+ *  PRODUCT TIMING. The program's own doc comment on `MIN_LOBBY_SECONDS` says so in as many words:
+ *  "The floor exists to make the degenerate value impossible, not to suggest a length; any real lobby
+ *  asks for more than this." And the instruction this window actually ends in is the AUTHORITY early
+ *  close, whose permission is `by_authority || lobby_may_close(...)` — no minimum-open-duration rule
+ *  applies to it at all. So nothing on chain ever asked these to be the same number. The coupling is
+ *  incidental as a CEILING and load-bearing only as a FLOOR, which is why this is now its own knob,
+ *  VALIDATED against `MIN_LOBBY_SECONDS` rather than equal to it.
+ *
+ *  WHY 45, AND IT IS AN ARRIVAL-RATE ARGUMENT RATHER THAN AN ENTRY-WINDOW ONE. The house physically
+ *  cannot trickle in before a real player arrives: `HOUSE_MAX_WITHOUT_REAL_PLAYER` holds an empty room
+ *  at one fighter under every configuration, so the room goes 1 -> N only after that moment and this
+ *  window is the ONLY place an arrival pattern can live. Peak house demand is ~47 fighters at the
+ *  production board of 48. A room that fills faster than about one and a half fighters a second stops
+ *  reading as individual people arriving and becomes a block appearing — which is the complaint this
+ *  number exists to answer — so ~47 arrivals want about forty seconds of window, plus
+ *  `HOUSE_ARRIVAL_TAIL_SECONDS` of quiet before the bell. Forty-five.
+ *
+ *  WHAT IT COSTS, HONESTLY: the first real player now waits 45 seconds rather than 20 before the fight
+ *  starts. The answer to that is not that 45 is small — it is that they are not waiting at NOTHING.
+ *  They are watching the room fill in around them, one fighter at a time, which is the thing this
+ *  whole change exists to build. A blank 45-second countdown would be a straightforwardly worse
+ *  product than a blank 20-second one.
+ *
+ *  WHAT IT BUYS BESIDES: a second real player gets 45 seconds to find the round and join it instead of
+ *  20. That is the same argument the old value was made of, more than twice as much of it. */
+export const REAL_PLAYER_GRACE_SECONDS = envNumber("KEEPER_REAL_PLAYER_GRACE_SECONDS", 45);
+
+/** THE QUIET AT THE END OF THE ARRIVAL WINDOW — the gap between the LAST house fighter's scheduled
+ *  arrival and the instant the lobby is drawn. A subdivision of the grace above, not a separate
+ *  concern, which is why it is declared beside it.
+ *
+ *  It pays for two things. First, confirmation: entries go through the ER on a delegated round, which
+ *  is sub-second in the normal case, so five seconds is headroom rather than an expectation. Second,
+ *  and this is the one it is really for, a beat of stillness before the bell. A fight that starts
+ *  while fighters are still walking in reads as a cut-off; a room that finishes filling and then holds
+ *  for a moment reads as a room that is ready.
+ *
+ *  CHECKED AGAINST `CLOCK_SKEW_MARGIN_SECONDS` rather than against zero, and that assertion lives
+ *  further down this file beside the margin itself, since the margin is declared after this point.
+ *  Below the margin, an entry scheduled at the very end of the window would be dropped unsent by
+ *  `enterHouseFighters`'s own per-entry clock check — a board that comes up short for a reason no
+ *  operator could see in this value. */
+export const HOUSE_ARRIVAL_TAIL_SECONDS = envNumber("KEEPER_HOUSE_ARRIVAL_TAIL_SECONDS", 5);
+
+if (REAL_PLAYER_GRACE_SECONDS < MIN_LOBBY_SECONDS) {
+  throw new Error(
+    `KEEPER_REAL_PLAYER_GRACE_SECONDS=${REAL_PLAYER_GRACE_SECONDS} is below the chain's own lobby floor ` +
+    `(MIN_LOBBY_SECONDS=${MIN_LOBBY_SECONDS}). That floor survives here as a FLOOR and only as one: 20 ` +
+    `seconds is the shortest window in which a human can see a round and get into it, which is the ` +
+    `argument the program makes for it and the length the off-chain engine's online lobby ran at. A ` +
+    `keeper that closed entries sooner would be locking out the second player to answer a question ` +
+    `nobody asked.`,
+  );
+}
+
+if (REAL_PLAYER_GRACE_SECONDS > MAX_LOBBY_SECONDS) {
+  throw new Error(
+    `KEEPER_REAL_PLAYER_GRACE_SECONDS=${REAL_PLAYER_GRACE_SECONDS} is longer than the longest lobby the ` +
+    `chain will stamp (MAX_LOBBY_SECONDS=${MAX_LOBBY_SECONDS}), so the grace could never run to its end ` +
+    `before the deadline cut it off. The keeper would be reasoning about a close time no round can have.`,
+  );
+}
+
+if (HOUSE_ARRIVAL_TAIL_SECONDS >= REAL_PLAYER_GRACE_SECONDS) {
+  throw new Error(
+    `KEEPER_HOUSE_ARRIVAL_TAIL_SECONDS=${HOUSE_ARRIVAL_TAIL_SECONDS} is not shorter than ` +
+    `KEEPER_REAL_PLAYER_GRACE_SECONDS=${REAL_PLAYER_GRACE_SECONDS}. The tail is carved out of the grace, ` +
+    `so the arrival window between them would be empty or negative and the house would arrive in one ` +
+    `burst at the bell — the exact behaviour the schedule replaces.`,
+  );
+}
 
 // ---- the Drawing wedge ---------------------------------------------------------------------------
 
@@ -425,6 +486,25 @@ export const CLOCK_OFFSET_WARN_SECONDS = 5;
  *  `LobbyStillOpen`. Same margin, same reasoning, same value as `verify-lifecycle.ts` and
  *  `verify-session-real.mjs` — this is not a third opinion. */
 export const CLOCK_SKEW_MARGIN_SECONDS = 2;
+
+// THE HOUSE'S ARRIVAL TAIL IS CHECKED HERE, WHERE THE MARGIN IT DEPENDS ON EXISTS. The tail is
+// declared with the grace it is carved out of — that is where an operator reads it and where its
+// argument lives — and this is the only place in the file where both halves of the comparison are in
+// scope. Moving one of the constants to put them together would file it under the wrong subject.
+//
+// The failure it prevents is invisible in the log and visible on screen: the last arrival in the
+// schedule lands at `drawAt - HOUSE_ARRIVAL_TAIL_SECONDS`, and `enterHouseFighters` re-checks the
+// clock immediately before every send and DROPS anything inside the skew margin of `drawAt`. Set the
+// tail below the margin and the tail of the schedule is planned, counted, and then quietly never
+// sent — a board that draws short with nothing but a `dropped` counter to say why.
+if (HOUSE_ARRIVAL_TAIL_SECONDS <= CLOCK_SKEW_MARGIN_SECONDS) {
+  throw new Error(
+    `KEEPER_HOUSE_ARRIVAL_TAIL_SECONDS=${HOUSE_ARRIVAL_TAIL_SECONDS} is not greater than ` +
+    `CLOCK_SKEW_MARGIN_SECONDS=${CLOCK_SKEW_MARGIN_SECONDS}. The last house fighters in the arrival ` +
+    `schedule would be planned inside the margin and dropped unsent rather than entered, so the board ` +
+    `would draw short every round and the reason would not be in this value.`,
+  );
+}
 
 /** How long to wait for `delegate_round` to actually flip the round PDA's owner to the Delegation
  *  Program. Ten one-second polls, matching `admin-open-round.mjs` — which is where that script gives
@@ -727,45 +807,56 @@ if (PEAK_HOUSE_FIGHTERS > HOUSE_WALLET_COUNT) {
  *  real player `RoundFull` — the arena's own liquidity locking out the only participant it exists to
  *  attract, which is a strictly worse failure than an empty board.
  *
- *  FOUR because that is a full lobby's worth of arrivals inside one grace window — an estimate of
- *  ARRIVAL RATE, not of room size, so the 16 -> 48 fighter cap does not disturb it — and because with
- *  the defaults it never binds: `HOUSE_BOARD_TARGET` of 10 against `MAX_FIGHTERS` (48, was 16) leaves
- *  38 free seats rather than six, more slack than before rather than less. It is a backstop against a
- *  misconfigured target, not part of the normal arithmetic — which is exactly why it is applied in
- *  `plannedHouseEntries` against the chain's own `fighters.length` rather than against a copy of
- *  `MAX_FIGHTERS` restated here. See this file's header on why program constants are not mirrored
- *  into it. */
-export const REAL_SEATS_RESERVED = 4;
-
-/** How long before the lobby deadline the house tops up to its full target.
+ *  IT IS AN ARRIVAL RATE, NOT A ROOM SIZE, and that is what makes it derived rather than written down.
+ *  The estimate has always been "four people may turn up inside one grace window" — which is why the
+ *  16 -> 48 fighter cap did not disturb it. But the grace window is now a knob and its default has
+ *  more than doubled, so the same estimate is `4 per 20 seconds` scaled to whatever window is actually
+ *  in force. Leaving the literal 4 in place while lengthening the grace would have quietly weakened a
+ *  documented promise by exactly the factor the grace grew by, and nothing would have failed.
  *
- *  THIS LATENESS IS THE ENTIRE MECHANISM, not a scheduling detail. "Seed early liquidity, throttle
- *  down as real players join" only means anything if the throttling happens after the real players
- *  have had their chance to arrive — a house that committed its full roster at the opening bell would
- *  have nothing left to give up, and a real arrival would ADD to a full lobby rather than displace a
- *  bot from it. Entering late is what makes displacement real.
+ *  THE FLOOR OF 4 KEEPS THE OLD VALUE AS A MINIMUM, so no configuration of the grace can reserve less
+ *  than this always did. At the default grace of 45 the derived value is 9.
  *
- *  12 seconds is the smallest window that still fits the work: the fill batch plus the recount that
- *  precedes it. It was measured against FOUR serial `enter` transactions, which is what the board
- *  target of four produced; at a target of ten the batch is seven or eight, and it still fits because
- *  `enterHouseFighters` now sends them CONCURRENTLY rather than one at a time. That is the change that
- *  keeps this number honest — read its doc comment before raising the board target further, because
- *  this window cannot grow (it must stay under `MIN_LOBBY_SECONDS`, and the grace after a real arrival
- *  is the same twenty seconds). Later than this and a slow
- *  devnet leaves the lobby short; earlier and real players arriving in the last quarter of a
- *  60-second lobby can no longer displace anybody. */
-export const HOUSE_FILL_LEAD_SECONDS = envNumber("KEEPER_HOUSE_FILL_LEAD_SECONDS", 12);
+ *  IT IS A WHOLE-WINDOW QUANTITY AND NOT A PER-PASS ONE, which is the reason the scaling is the right
+ *  shape rather than a rough one: once the house is at its ceiling it cannot un-seat, so this number
+ *  is exactly "how many real players may still arrive after that moment" — and that moment is roughly
+ *  the start of the window, whatever the arrival ramp is doing inside it.
+ *
+ *  WHAT IT COSTS at the production board of 48 seats: the house holds at most 38 of them rather than
+ *  43. Five bots out of a board of forty-eight is invisible on screen, and it buys back the promise
+ *  the reservation exists for — that a person who clicks Enter finds a seat.
+ *
+ *  NOT env-configurable even so, and that is the difference between a preference and an invariant. It
+ *  is a backstop against a misconfigured target rather than part of the normal arithmetic — which is
+ *  exactly why it is applied in `plannedHouseEntries` against the chain's own `fighters.length` rather
+ *  than against a copy of `MAX_FIGHTERS` restated here. See this file's header on why program
+ *  constants are not mirrored into it. */
+export const REAL_SEATS_RESERVED = Math.max(4, Math.ceil(4 * REAL_PLAYER_GRACE_SECONDS / MIN_LOBBY_SECONDS));
 
-// It has to fit INSIDE the shortest lobby the chain will ever stamp, or the fill stage is due from
-// the first pass of every round and the seed stage — the two-stage design's whole point — never runs
-// at all. Checked here rather than left as a comment because the value is env-configurable, and the
-// symptom of getting it wrong is not an error, it is a subtly different product with no bots early in
-// the lobby and no displacement later.
-if (HOUSE_FILL_LEAD_SECONDS >= MIN_LOBBY_SECONDS) {
+// `KEEPER_HOUSE_FILL_LEAD_SECONDS` IS GONE, AND A KEEPER THAT IS STILL BEING GIVEN IT REFUSES TO BOOT.
+//
+// It named the instant the house jumped from its seed to its full board — "commit late, so a real
+// arrival displaces a bot rather than joining a room that is already full". That job now belongs to
+// `REAL_PLAYER_GRACE_SECONDS`, which anchors the arrival ramp: the house is planned against the
+// instant the lobby will actually be drawn, and the ramp runs backwards from there.
+//
+// BE HONEST ABOUT WHAT THAT TRADED. The ramp seats house fighters EARLIER in the window than the old
+// step did — that is the entire point of a ramp — so some displacement headroom really is gone. What
+// is NOT gone is the guarantee: `REAL_SEATS_RESERVED` is applied to the house ceiling on every pass,
+// so there are always at least that many seats standing free for people who have not arrived yet.
+// Displacement was the soft, aesthetic half of the policy; the reservation is the invariant, and it is
+// untouched — and it is bigger now than it was.
+//
+// The refusal is loud rather than silent because the alternative is worse than a wrong value: a live
+// keeper reading a tuning knob that no longer exists, behaving differently from the deployment its
+// operator believes they configured, with nothing in the log to say so.
+if (process.env.KEEPER_HOUSE_FILL_LEAD_SECONDS !== undefined && process.env.KEEPER_HOUSE_FILL_LEAD_SECONDS !== "") {
   throw new Error(
-    `KEEPER_HOUSE_FILL_LEAD_SECONDS=${HOUSE_FILL_LEAD_SECONDS} is not shorter than the shortest lobby the ` +
-    `chain will stamp (MIN_LOBBY_SECONDS=${MIN_LOBBY_SECONDS}). The fill stage would be due immediately ` +
-    `and the seed stage would never run.`,
+    `KEEPER_HOUSE_FILL_LEAD_SECONDS is set ("${process.env.KEEPER_HOUSE_FILL_LEAD_SECONDS}") and no longer ` +
+    `exists. The house no longer steps up to its full board at a fixed lead — it arrives on a schedule ` +
+    `spread across the whole entry window. The two knobs that shape that window are ` +
+    `KEEPER_REAL_PLAYER_GRACE_SECONDS (how long the window is) and KEEPER_HOUSE_ARRIVAL_TAIL_SECONDS ` +
+    `(how much quiet is left at the end of it). Unset this one.`,
   );
 }
 
@@ -806,8 +897,10 @@ export const HOUSE_WALLET_TARGET_SOL = envNumber("KEEPER_HOUSE_WALLET_TARGET_SOL
  *  round, forever, at 1Hz, with `consecutiveErrors` never rising because nothing throws.
  *
  *  Three seconds is long enough to stop that being a flood and short enough that a genuine blip still
- *  gets several attempts inside a 60-second lobby. It is deliberately much shorter than the fill
- *  window, so a transient failure during the fill stage is still recoverable before the deadline. */
+ *  gets several attempts inside a 60-second lobby. It is deliberately much shorter than the arrival
+ *  window, so a transient failure partway through the house's arrival is recoverable long before the
+ *  bell — and the window it has to recover inside is now `REAL_PLAYER_GRACE_SECONDS`, more than three
+ *  times what the old twelve-second fill stage gave it. */
 export const HOUSE_ENTRY_RETRY_SECONDS = 3;
 
 // ---- the house's books -----------------------------------------------------------------------

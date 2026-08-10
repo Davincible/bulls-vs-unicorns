@@ -43,10 +43,11 @@ describe("holding a lobby open", () => {
     expect(planLobby(view({ nowSec: BACKSTOP - 60 })).heldOpen).toBe(true);
   });
 
-  it("points the house's fill stage at the backstop while nobody real is in", () => {
-    // `drawAt` is what `plannedHouseEntries` sizes against. With nobody in the room the lobby really
-    // will run to its deadline, so that is the honest answer, and the fill stage stays an hour away —
-    // which is why the hold-open target is a single fighter rather than a filled room.
+  it("points the house's arrival window at the backstop while nobody real is in", () => {
+    // `drawAt` is what `plannedHouseEntries` sizes and schedules against. With nobody in the room the
+    // lobby really will run to its deadline, so that is the honest answer, and the arrival window
+    // stays an hour away — which is why the hold-open target is a single fighter rather than a filled
+    // room.
     expect(planLobby(view()).drawAt).toBe(BACKSTOP);
   });
 });
@@ -61,11 +62,11 @@ describe("a real player arriving", () => {
     expect(plan.step).toEqual({ kind: "wait" });
   });
 
-  it("moves the house's fill stage onto that close time rather than the backstop", () => {
-    // THE BUG THIS PREVENTS IS SILENT. Sized against the backstop, the fill stage would be due an
-    // hour after the fight had already been fought — so the house would field its seed and nothing
-    // else, and "seed early liquidity, throttle down as real players join" would be dead code on
-    // precisely the rounds a real player played.
+  it("moves the house's arrival window onto that close time rather than the backstop", () => {
+    // THE BUG THIS PREVENTS IS SILENT. Anchored to the backstop, the whole arrival window would sit an
+    // hour after the fight had already been fought — so the house would field its fightability floor
+    // and nothing else, and "seed early liquidity, throttle down as real players join" would be dead
+    // code on precisely the rounds a real player played.
     const plan = planLobby(view({ ...arrived }));
     expect(plan.drawAt).toBe(plan.entriesCloseAt);
     expect(plan.drawAt).toBeLessThan(BACKSTOP);

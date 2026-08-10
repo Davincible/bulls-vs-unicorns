@@ -1,5 +1,5 @@
-// SENDING THE HOUSE'S ENTRIES — the half of the fill stage that touches the network, and the half
-// where a board can come up short without anybody being told.
+// SENDING THE HOUSE'S ENTRIES — the half of the house's arrival that touches the network, and the
+// half where a board can come up short without anybody being told.
 //
 // `houseBank.test.ts` decides WHICH entries to send and `houseInvariants.test.ts` proves the policy
 // holds at every lobby shape. Neither of them sends anything. This file is about `enterHouseFighters`:
@@ -76,9 +76,14 @@ beforeEach(() => vi.clearAllMocks());
 describe("enterHouseFighters", () => {
   it("sends the whole batch at once rather than one after another", () => {
     // THE REASON THE BOARD TARGET OF TEN IS AFFORDABLE AT ALL. Serially, eight confirmed router
-    // round-trips do not fit in `HOUSE_FILL_LEAD_SECONDS`, and the window cannot be widened — it has
-    // to stay under `MIN_LOBBY_SECONDS`, and the grace after a real arrival is the same twenty
-    // seconds. Concurrency is what turns "eight entries" from impossible back into one round-trip.
+    // round-trips did not fit in the twelve-second fill lead the house used to top up inside.
+    //
+    // The house now arrives on a schedule spread across the whole entry window, so the TYPICAL batch
+    // is one or two — and that does not retire this test, it moves which case it defends. The batch
+    // that has to fit is now the catch-up: a keeper that was backed off, restarting or riding out a
+    // slow devnet arrives at a pass owing every fighter that has come due since, and at the end of the
+    // window that is the entire board at once. Concurrency is what keeps that a single round-trip
+    // rather than forty.
     //
     // Asserted as "all eight were in flight together" rather than by timing the whole call, which
     // would be a stopwatch test that fails on a loaded machine.

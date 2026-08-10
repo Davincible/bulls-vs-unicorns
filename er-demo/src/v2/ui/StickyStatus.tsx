@@ -20,10 +20,12 @@
 // winner and the length the fight ran once Settled) rather than `0:00` next to a live-looking rule.
 
 import { useEffect, useRef, useState } from "react";
-import { FIGHT_TIMEOUT_SECONDS, SIDE_TOKEN, clock, finalCursor, sideTotals, usdCompact } from "../contract.ts";
+import { SIDE_TOKEN, clock, finalCursor, sideTotals, usdCompact } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
 import { Bar } from "./primitives.tsx";
+import { NO_CLOCK } from "./roundPhaseCopy.ts";
 import { useShell } from "./shell.ts";
+import { useRoundPhase } from "./useRoundPhase.ts";
 
 /** One label/figure pair in the right-hand group. The label is what keeps the bar honest — a bare
  *  `1:23` beside a clock-shaped `0:37` is two different facts wearing the same clothes. */
@@ -38,6 +40,10 @@ function F({ name, value }: { name: string; value: string }) {
 
 export function StickyStatus() {
   const { live, status } = useArena();
+  // THE BELL, FROM THE ONE PLACE THAT DECIDES WHAT THE BELL IS DOING — see the field that prints it.
+  // This strip is pinned above 00-1, so it and the hero clock are on screen together for the whole of
+  // a fight and any disagreement between them is visible without scrolling.
+  const { clockSlot } = useRoundPhase();
   const { view } = useShell();
   const [scrolledPast, setScrolledPast] = useState(false);
 
@@ -189,20 +195,46 @@ export function StickyStatus() {
           <span className="sbar-prog">
             {phase === "Fight" && live ? (
               <>
-                <F name="Clock" value={clock(live.elapsedSec)} />
+                {/* `CLOCK` UNTIL THE PAGE'S CLOCK STARTED MEANING SOMETHING ELSE. This field is
+                    elapsed time, and while the hero's clock was elapsed time too the name was
+                    accurate. The hero now counts the bell DOWN, so a strip pinned above it reading
+                    `CLOCK 1:10` beside a hero reading `1:50` is one word claiming two numbers —
+                    which is how a reader concludes one of them is broken. `FIGHT` is the name this
+                    strip already gives the same quantity in its Lobby row (`FIGHT / NOT STARTED`),
+                    it is the same width, and it says which of the two facts this is. */}
+                <F name="Fight" value={clock(live.elapsedSec)} />
+                {/* `maxSteps`, not a second `finalCursor(live.fighters.length)` — it is the same
+                    call on the same lineup, and the bar at the bottom of this strip is already drawn
+                    against the one computed at the top. Two of them is two things to keep in step for
+                    no reason. */}
                 <F
                   name="Step"
-                  value={`${steps.toLocaleString("en-US")}/${finalCursor(live.fighters.length).toLocaleString("en-US")}`}
+                  value={`${steps.toLocaleString("en-US")}/${maxSteps.toLocaleString("en-US")}`}
                 />
                 {/* Not a countdown to the end of the fight — the round can be settled the moment one
                     side has nobody standing. The bell is the outer bound, and `resolvable` is the
-                    fact that beats it. */}
+                    fact that beats it.
+                    THE FIGURE IS THE ROUND'S OWN, NOT A SECOND SUBTRACTION. This used to compute
+                    `FIGHT_TIMEOUT_SECONDS - elapsedSec` here, which is the same arithmetic
+                    `roundPhaseCopy.ts` does — and not the same rounding, so the strip and the hero
+                    printed `1:49` and `1:50` one above the other on a 390px phone. Reading the slot
+                    means there is one bell on this page and every surface is quoting it.
+                    THE CLAIM AND THE FIGURE COME FROM DIFFERENT FACTS, AND MUST. `resolvable` is the
+                    only thing that may say "anyone may settle this"; the slot only says whether there
+                    is a number to print. Reading the CLAIM off the slot — `kind !== "clock" ⇒ ANYONE
+                    MAY` — looks equivalent and is not, because `clockSlotFor` returns no figure for
+                    reasons that have nothing to do with settleability: a program error with a fight
+                    still on screen short-circuits it before the phase is even examined, and this cell
+                    would then have told a reader the round was settleable on the strength of the page
+                    having lost its connection. Hence three renderings, not two. */}
                 <F
                   name={live.resolvable ? "Settle" : "Bell"}
                   value={
                     live.resolvable
                       ? "ANYONE MAY"
-                      : clock(Math.max(0, FIGHT_TIMEOUT_SECONDS - live.elapsedSec))
+                      : clockSlot.kind === "clock"
+                        ? clock(clockSlot.seconds)
+                        : NO_CLOCK
                   }
                 />
               </>

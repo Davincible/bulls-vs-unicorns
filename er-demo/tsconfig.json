@@ -14,10 +14,22 @@
 // of a stale `.tsbuildinfo`, which is a second way to get a green result that means nothing.
 {
   "files": [],
+  // `tsconfig.scripts.json` EXISTED FOR A LONG TIME WITHOUT THIS LINE, which meant `tsc -b` never
+  // built it and NOTHING under `scripts/` was type-checked by the gate — the entire keeper, the
+  // verification scripts, the admin tools. That is precisely the failure this file's header
+  // describes, one layer deeper: the header warns that `--noEmit` checks nothing because
+  // `references` is ignored without `-b`, and the same blindness applied to a project that `-b`
+  // would have followed if anyone had listed it. A missing reference is silent by construction —
+  // there is no error for a project nobody asked about.
+  //
+  // Adding it surfaced exactly two errors across the whole directory, both the `Bun` global in
+  // `verify-wallet-states.ts`, now declared locally. If a future project is added here and the gate
+  // goes red on someone else's file, that is the reference working rather than a reason to remove it.
   "references": [
     { "path": "./tsconfig.app.json" },
     { "path": "./tsconfig.node.json" },
     { "path": "./tsconfig.e2e.json" },
-    { "path": "./tsconfig.api.json" }
+    { "path": "./tsconfig.api.json" },
+    { "path": "./tsconfig.scripts.json" }
   ]
 }

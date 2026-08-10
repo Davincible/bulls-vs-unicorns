@@ -17,16 +17,20 @@
 import { describe, expect, it } from "vitest";
 import { MIN_STAKE_USD, STAKE_CAP_USD, STAKE_PRESETS, UNITS_PER_USD, unitsToUsd } from "../../src/v2/contract.ts";
 import {
+  HOUSE_ARRIVAL_TAIL_SECONDS,
   HOUSE_BOARD_TARGET,
   HOUSE_DISPLACEMENT,
   HOUSE_STAKE_MAX_USD,
   HOUSE_STAKE_MIN_USD,
   HOUSE_WALLET_COUNT,
   MIN_FIGHTERS_TO_FIGHT,
+  REAL_PLAYER_GRACE_SECONDS,
 } from "./config.ts";
 import {
   HOUSE_MAX_WITHOUT_REAL_PLAYER,
   allocateHouseSides,
+  arrivalFraction,
+  arrivalsDueBy,
   houseFighterCount,
   houseStake,
   type SideCounts,
@@ -178,6 +182,208 @@ describe("houseFighterCount", () => {
     const busiestHouseBoard = Math.max(...everyLobby().map(houseFighterCount));
     expect(busiestHouseBoard).toBe(HOUSE_BOARD_TARGET - HOUSE_DISPLACEMENT);
     expect(busiestHouseBoard * HOUSE_STAKE_MAX_USD).toBeLessThanOrEqual(180);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// WHEN THE HOUSE ARRIVES
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+//
+// Two questions, and only one of them is a judgement call. `arrivalFraction` is arithmetic — where in
+// the window are we — and what it needs pinning against is the two ends and the clamps. `arrivalsDueBy`
+// is the policy, and the properties below are split into the ones that keep the arena WHOLE (nobody is
+// ever left unplanned, the board is never short) and the one that makes it look like people
+// (arrivals cluster rather than march). The first set are safety; the second is the entire reason the
+// change was made, and it would be quietly possible to keep the first while losing the second.
+
+/** THE ARRIVAL INSTANTS THEMSELVES, recovered from the only thing the module exposes — how many are
+ *  due by a given fraction. `a_k` is by definition the smallest fraction at which `k` arrivals are
+ *  due, so bisecting that monotone step function thirty times pins each one to about 1e-9, which is
+ *  four orders of magnitude finer than the smallest gap any of these schedules produces.
+ *
+ *  RECOVERED RATHER THAN RECOMPUTED, deliberately. A test that rebuilt the schedule from the same hash
+ *  would agree with the implementation no matter what either of them did — the classic test that
+ *  passes because it is a copy. This one only ever asks the question the keeper asks.
+ *
+ *  MEMOISED because bisection is the expensive thing in this file — forty questions per fighter — and
+ *  three separate properties below ask about the same schedules. Sound to cache precisely because the
+ *  function under test is pure, which is the property the file's header opens with. */
+const recovered = new Map<string, number[]>();
+function scheduleOf(roundNo: number, target: number): number[] {
+  const key = `${roundNo}:${target}`;
+  const cached = recovered.get(key);
+  if (cached !== undefined) return cached;
+  const instants: number[] = [];
+  for (let k = 1; k <= target; k++) {
+    let below = 0;
+    let atOrAbove = 1;
+    for (let i = 0; i < 30; i++) {
+      const mid = (below + atOrAbove) / 2;
+      if (arrivalsDueBy(roundNo, target, mid) >= k) atOrAbove = mid; else below = mid;
+    }
+    instants.push(atOrAbove);
+  }
+  recovered.set(key, instants);
+  return instants;
+}
+
+describe("arrivalFraction", () => {
+  const DRAW_AT = 1_800_000_000;
+  const WINDOW_OPENS = DRAW_AT - REAL_PLAYER_GRACE_SECONDS;
+  const WINDOW_CLOSES = DRAW_AT - HOUSE_ARRIVAL_TAIL_SECONDS;
+
+  it("runs from the first real arrival's instant to the quiet before the bell", () => {
+    // The two ends are the whole definition, and both are anchored to `drawAt` rather than to the
+    // player's arrival — see the function's own comment for why that is what makes a compressed lobby
+    // degrade into a single burst rather than into a half-empty room.
+    expect(arrivalFraction(WINDOW_OPENS, DRAW_AT)).toBe(0);
+    expect(arrivalFraction(WINDOW_CLOSES, DRAW_AT)).toBe(1);
+    expect(arrivalFraction((WINDOW_OPENS + WINDOW_CLOSES) / 2, DRAW_AT)).toBeCloseTo(0.5, 12);
+  });
+
+  it("clamps outside the window rather than running negative or past one", () => {
+    // Both ends are reachable in production and neither is an error. Before the window: a
+    // non-held-open round, where `drawAt` is the chain's deadline and a real player may enter minutes
+    // early. After it: the tail, where the schedule is finished and the planner should be asking for
+    // the full board, not for a fraction above one that `arrivalsDueBy` would have to defend against.
+    expect(arrivalFraction(WINDOW_OPENS - 3_600, DRAW_AT)).toBe(0);
+    expect(arrivalFraction(WINDOW_CLOSES + 1, DRAW_AT)).toBe(1);
+    expect(arrivalFraction(DRAW_AT, DRAW_AT)).toBe(1);
+  });
+});
+
+describe("the house's arrival schedule", () => {
+  /** Round numbers to ask the question of. A schedule is a function of the round, so a property
+   *  checked on one round is a claim about that round; these are the sample the claims are made over. */
+  const ROUNDS = Array.from({ length: 50 }, (_, i) => i + 1);
+  /** The subset the schedule-RECOVERY properties are checked over. Bisecting 47 arrival instants is
+   *  thirty questions each and it is the only expensive thing in this file, which is meant to run in
+   *  milliseconds so that nobody is ever tempted to skip it. Twenty rounds is a sample; the properties
+   *  it checks are structural rather than statistical, so a larger one would buy confidence in
+   *  something that is not in doubt. */
+  const SAMPLED_ROUNDS = ROUNDS.slice(0, 20);
+  /** The board sizes that actually occur: two is the fightability floor, ten the default board, 47 the
+   *  production peak (a board of 48 with one real player in it). */
+  const BOARDS = [2, 3, 9, 10, 16, 47];
+
+  it("gives the same schedule every time it is asked, because a retry must not reshuffle the queue", () => {
+    // The keeper holds no memory and re-derives every decision from the chain, so two passes over one
+    // round must agree about who is due. `Math.random()` here would make a retry after a failed send
+    // ask for a different number of fighters than the pass it was retrying, and the shortfall
+    // arithmetic downstream would be chasing a target that moved underneath it.
+    for (const roundNo of ROUNDS) {
+      for (const target of BOARDS) {
+        for (const fraction of [0, 0.13, 0.5, 0.87, 1]) {
+          const first = arrivalsDueBy(roundNo, target, fraction);
+          expect(arrivalsDueBy(roundNo, target, fraction), `round ${roundNo}, board ${target}`).toBe(first);
+        }
+      }
+    }
+  });
+
+  it("has somebody arriving at the opening instant and everybody arrived by the end", () => {
+    // THE TWO PROPERTIES THE AFFINE RESCALE EXISTS TO MAKE STRUCTURAL, and the ones every safety claim
+    // downstream rests on. `a_1 = 0` is the room starting to fill the moment the player is standing in
+    // it rather than after an awkward pause. `a_target = 1` is the guarantee that no configuration and
+    // no round number can leave a planned entry that never becomes due — the board is whole by the
+    // time the lobby is drawn, which is what makes the ramp a scheduling change rather than a policy
+    // one.
+    for (const roundNo of ROUNDS) {
+      for (const target of BOARDS) {
+        expect(arrivalsDueBy(roundNo, target, 0), `round ${roundNo}, board ${target}`).toBeGreaterThanOrEqual(1);
+        expect(arrivalsDueBy(roundNo, target, 1), `round ${roundNo}, board ${target}`).toBe(target);
+      }
+    }
+  });
+
+  it("never goes backwards as the window runs, and never asks for more than the board", () => {
+    // Monotonicity is not cosmetic: the planner subtracts what is already standing from what is due,
+    // so a schedule that fell back would produce a negative shortfall on some pass and — depending on
+    // how the arithmetic below it clamped — either silence when fighters were owed, or an attempt to
+    // un-enter a fighter that cannot be un-entered.
+    // COLLECTED AND ASSERTED ONCE, because this walks thirty thousand points and an `expect` per point
+    // costs more than the thing under test by an order of magnitude — a slow test is a test somebody
+    // eventually stops running. The failure message carries the same detail an inline assertion would.
+    const violations: string[] = [];
+    for (const roundNo of ROUNDS) {
+      for (const target of BOARDS) {
+        let previous = 0;
+        for (let step = 0; step <= 100; step++) {
+          const due = arrivalsDueBy(roundNo, target, step / 100);
+          const where = `round ${roundNo}, board ${target}, ${step}%`;
+          if (due < previous) violations.push(`${where}: went backwards, ${previous} -> ${due}`);
+          if (due > target) violations.push(`${where}: ${due} due, past the board of ${target}`);
+          previous = due;
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("answers the degenerate board sizes without a special case at the call site", () => {
+    // A target of 0 happens whenever the crowd has filled the board on its own; 1 whenever the seat
+    // reservation or the wallet count has squeezed the house down to a single cover fighter. Both are
+    // ordinary states, and both would be a division by zero in the rescale if the function did not
+    // answer them first.
+    for (const roundNo of ROUNDS) {
+      expect(arrivalsDueBy(roundNo, 0, 0)).toBe(0);
+      expect(arrivalsDueBy(roundNo, 0, 1)).toBe(0);
+      expect(arrivalsDueBy(roundNo, 1, 0)).toBe(1);
+      expect(arrivalsDueBy(roundNo, 1, 1)).toBe(1);
+      // Two is the fightability floor, and the smallest schedule with a gap in it at all: one at each
+      // end of the window, nothing in between to be wrong about.
+      expect(arrivalsDueBy(roundNo, 2, 0)).toBe(1);
+      expect(arrivalsDueBy(roundNo, 2, 0.999)).toBeGreaterThanOrEqual(1);
+      expect(arrivalsDueBy(roundNo, 2, 1)).toBe(2);
+    }
+  });
+
+  it("CLUSTERS rather than marching, which is the difference between a room and a metronome", () => {
+    // THE PROPERTY THE WHOLE CHANGE IS FOR, and the one that every other test here would happily pass
+    // without. A fighter every 0.85 seconds is not what a room filling up looks like — it is what a
+    // machine looks like, and it would read as a bot swarm just as clearly as the single burst it
+    // replaced, only slower. Uniform order statistics are a Poisson process conditioned on its count,
+    // so the gaps come out exponential: many short ones, the occasional long one.
+    //
+    // A metronome scores EXACTLY 1 on this ratio. Two is a floor low enough that it is a claim about
+    // clustering rather than about a particular hash; the observed values across this sample are two
+    // orders of magnitude above it, which is what a genuine exponential tail looks like.
+    for (const roundNo of SAMPLED_ROUNDS) {
+      const instants = scheduleOf(roundNo, 47);
+      const gaps = instants.slice(1).map((instant, i) => instant - instants[i]!);
+      const longest = Math.max(...gaps);
+      const shortest = Math.min(...gaps);
+      expect(longest / shortest, `round ${roundNo} gap spread`).toBeGreaterThan(2);
+    }
+  });
+
+  it("gives consecutive rounds different schedules, so the arena is not the same film twice", () => {
+    // The stakes already rotate by round and the wallets already rotate by round; an arrival ORDER
+    // that did not would be the remaining tell — the same shape of crowd walking in at the same
+    // moments, every round, forever.
+    for (const roundNo of SAMPLED_ROUNDS) {
+      const here = scheduleOf(roundNo, 16);
+      const next = scheduleOf(roundNo + 1, 16);
+      expect(here, `rounds ${roundNo} and ${roundNo + 1}`).not.toEqual(next);
+    }
+  });
+
+  it("keeps the whole board inside the window it was given, at the production board size", () => {
+    // THE ARITHMETIC THE GRACE WINDOW WAS CHOSEN AGAINST, checked rather than asserted in a comment.
+    // 47 fighters is the production peak, and the claim `REAL_PLAYER_GRACE_SECONDS` is derived from is
+    // that they arrive at an average of well under a fighter and a half per second — past that the
+    // room stops reading as individual people and becomes a block appearing.
+    const span = REAL_PLAYER_GRACE_SECONDS - HOUSE_ARRIVAL_TAIL_SECONDS;
+    expect(47 / span).toBeLessThan(1.5);
+    // Asserted at the PROBE's resolution rather than at equality: `scheduleOf` bisects thirty times,
+    // so it can only ever place an instant to within 2^-30. The exact endpoints are pinned exactly,
+    // and without a probe in the way, by the property test above.
+    const resolution = 2 ** -30;
+    for (const roundNo of SAMPLED_ROUNDS) {
+      const instants = scheduleOf(roundNo, 47);
+      expect(instants[0]!, `round ${roundNo}`).toBeLessThanOrEqual(resolution);
+      expect(instants.at(-1)!, `round ${roundNo}`).toBeGreaterThan(1 - resolution);
+    }
   });
 });
 

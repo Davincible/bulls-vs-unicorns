@@ -1,10 +1,13 @@
-// KEEPER POLICY: how many house fighters to field, which sides they take, and what they stake.
+// KEEPER POLICY: how many house fighters to field, WHEN each of them arrives, which sides they take,
+// and what they stake.
 //
-// PURE FUNCTIONS ONLY — no chain, no I/O, no wall clock, no `Math.random()`. Everything in this file
-// is a judgement call about what the arena looks like to somebody reading it, and a judgement call
-// you cannot run on its own is one nobody will ever argue with. `houseSizing.test.ts` walks the
-// entire policy in milliseconds, which leaves the keeper itself with nothing to decide: it asks
-// these three functions and sends the transactions they describe.
+// PURE FUNCTIONS ONLY — no chain, no I/O, no `Math.random()`, and no clock READ anywhere in the file.
+// Instants arrive as arguments the same way `roundNo` does, so "what does the house look like eleven
+// seconds into the window" is a question that can be asked in a test rather than waited for.
+// Everything in this file is a judgement call about what the arena looks like to somebody reading it,
+// and a judgement call you cannot run on its own is one nobody will ever argue with.
+// `houseSizing.test.ts` walks the entire policy in milliseconds, which leaves the keeper itself with
+// nothing to decide: it asks these functions and sends the transactions they describe.
 //
 // THE FACT THAT REFRAMES THE WHOLE PROBLEM: `enter` RECORDS A STAKE. IT NEVER MOVES LAMPORTS.
 //
@@ -54,7 +57,8 @@
 
 import { usdToUnits } from "../../src/v2/contract.ts";
 import {
-  HOUSE_BOARD_TARGET, HOUSE_DISPLACEMENT, HOUSE_STAKE_MAX_USD, HOUSE_STAKE_MIN_USD, HOUSE_WALLET_COUNT,
+  HOUSE_ARRIVAL_TAIL_SECONDS, HOUSE_BOARD_TARGET, HOUSE_DISPLACEMENT, HOUSE_STAKE_MAX_USD,
+  HOUSE_STAKE_MIN_USD, HOUSE_WALLET_COUNT, REAL_PLAYER_GRACE_SECONDS,
 } from "./config.ts";
 
 export interface SideCounts {
@@ -181,6 +185,144 @@ export function houseFighterCount(real: SideCounts): number {
   return Math.max(0, Math.min(HOUSE_WALLET_COUNT, Math.max(throttled, cover)));
 }
 
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// WHEN THE HOUSE ARRIVES, WHICH IS A SEPARATE QUESTION FROM HOW MANY OF IT THERE ARE
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+//
+// THE COMPLAINT THIS ANSWERS, in one sentence: at the production board of forty-eight, a real player's
+// arrival used to be followed about eight seconds later by forty-two house fighters materialising in
+// a single frame. Every one of them is a legitimate seat under the policy above. Arriving together is
+// what makes them read as a swarm rather than as a room.
+//
+// THE FIX IS A TIME-VARYING TARGET, NOT A DELAY. Nothing in this keeper sleeps: it re-derives every
+// decision from the chain at 1 Hz, and `plannedHouseEntries` is already a pure function of the instant
+// it is asked about. So the arrival pattern is expressed as a schedule — each pass plans only the
+// fighters whose scheduled instant has already passed, and sends that small batch down exactly the
+// same concurrent, fault-tolerant path a whole batch used to take. The trickle is an EMERGENT property
+// of asking for less early on, which means it inherits every retry and accounting guarantee that path
+// already had, and adds no new failure mode of its own.
+//
+// WHERE THE TIME COMES FROM, AND WHY THERE IS ONLY ONE PLACE IT COULD. `HOUSE_MAX_WITHOUT_REAL_PLAYER`
+// binds whenever the room holds nobody real, so the house CANNOT trickle in ahead of the first real
+// player — the room must go from one fighter to N after that moment, and the moment is the start of
+// the grace window. `REAL_PLAYER_GRACE_SECONDS` is therefore the entire runway, which is why it is now
+// a knob of its own rather than the chain's degenerate-lobby floor borrowed for the purpose.
+//
+// THE DISTRIBUTION IS UNIFORM ORDER STATISTICS, WHICH IS A POISSON PROCESS CONDITIONED ON ITS COUNT.
+// A metronome — one fighter every 0.85 seconds — is not what a room filling up looks like; it is what
+// a machine looks like. The canonical model of natural arrivals is a Poisson process, and a Poisson
+// process conditioned on having produced N arrivals in a window is EXACTLY N independent uniform
+// points on that window, sorted. That identity is the whole design: drawing N uniforms and sorting
+// them gives exponential inter-arrival gaps for free — many short ones, the occasional long one —
+// which is what clustering means and what a metronome cannot produce at any rate.
+//
+// ORDER AND STAKE ARE INDEPENDENT, DELIBERATELY. The stake is `houseStake(roundNo, wallet.index)` and
+// the arrival slot is keyed on the ORDINAL, so the pairing between them is deterministic but
+// unpatterned — which is what a real lobby looks like. The tempting alternative is "whales arrive
+// late", and it is a real phenomenon in markets that have price discovery. This lobby has none: return
+// is size- and seat-neutral (HOUSE-EDGE-STUDY.md §0), so there is nothing for a late entrant to have
+// learned. Simulating a behaviour whose cause does not exist is a fiction that eventually reads as
+// fake, and a correlation is a signature — an independent pairing announces nothing.
+
+/** HOW FAR THROUGH THE ARRIVAL WINDOW THIS INSTANT IS, in [0, 1].
+ *
+ *  The window is `[drawAt - REAL_PLAYER_GRACE_SECONDS, drawAt - HOUSE_ARRIVAL_TAIL_SECONDS]`, and both
+ *  ends are measured from `drawAt` rather than from the first real entry. Two reasons, and the second
+ *  is the one that matters:
+ *
+ *    1. `drawAt` is the only instant `plannedHouseEntries` is given. The first real arrival is latched
+ *       in the keeper's own timeline, not on the round account — a `Fighter` row carries no entry
+ *       time — so anchoring to it would mean threading a second clock through a pure function to
+ *       compute a quantity the first one already determines.
+ *    2. IT DEGRADES IN THE RIGHT DIRECTION. `drawAt` is the grace window CAPPED at the chain's own
+ *       `lobbyClosesAt`, so a player who arrives ten seconds before the deadline gets a `drawAt` ten
+ *       seconds out — and the ramp compresses with it automatically, back towards the single burst
+ *       this replaced, rather than politely trickling past a bell that has already rung and leaving
+ *       the board short.
+ *
+ *  ON A NON-HELD-OPEN ROUND `drawAt` IS THE DEADLINE, so the ramp runs in the last `grace` seconds of
+ *  the lobby and everything before that is flat. That is the old "commit late so displacement is real"
+ *  behaviour, preserved on exactly the rounds it was written for.
+ *
+ *  A non-positive span is a configuration `config.ts` refuses at boot. It returns 1 rather than
+ *  throwing anyway, because the honest degradation of "there is no window" is today's behaviour — the
+ *  whole board, at once — and not an empty arena. */
+export function arrivalFraction(nowSec: number, drawAt: number): number {
+  const windowStart = drawAt - REAL_PLAYER_GRACE_SECONDS;
+  const windowEnd = drawAt - HOUSE_ARRIVAL_TAIL_SECONDS;
+  const span = windowEnd - windowStart;
+  if (span <= 0) return 1;
+  const fraction = (nowSec - windowStart) / span;
+  return fraction < 0 ? 0 : fraction > 1 ? 1 : fraction;
+}
+
+/**
+ * HOW MANY HOUSE FIGHTERS ARE DUE TO HAVE ARRIVED BY THIS POINT IN THE WINDOW.
+ *
+ * The schedule is `target` uniform draws on [0, 1], sorted, then AFFINELY RESCALED so the first sits
+ * exactly at 0 and the last exactly at 1:
+ *
+ *     a_k = (u_(k) - u_(1)) / (u_(target) - u_(1))
+ *
+ * THE RESCALE IS THE SAFETY ARGUMENT AND IT IS WHY IT IS NOT JUST THE RAW DRAWS. It turns two
+ * properties from probabilistic into STRUCTURAL:
+ *
+ *   * the room starts filling the instant the player arrives — `a_1 = 0`, always, rather than
+ *     "usually within a second or two";
+ *   * the schedule provably cannot run past the end of the window — `a_target = 1`, always. There is
+ *     no configuration, and no round number, in which a planned entry never becomes due.
+ *
+ * Raw draws would give both of those with high probability and neither with certainty, and the failure
+ * mode of the second one is a board that draws short for a reason no log line would ever explain.
+ *
+ * DETERMINISTIC, NEVER `Math.random()`, for the same reason `houseStake` is: a round's lineup and the
+ * order it walked in has to be re-derivable from the round number alone, months later, after the
+ * accounts have been closed. It also has to survive a retry — the keeper holds no memory, so two
+ * passes over the same round must agree about who is due.
+ *
+ * THE LENGTH IS THE CURRENT BOARD TARGET, RECOMPUTED EVERY PASS, not a pool fixed when the window
+ * opened. If real players have arrived and displaced house seats, the same number of arrivals spreads
+ * across the same window rather than the schedule finishing early and leaving a dead lull before the
+ * bell.
+ */
+export function arrivalsDueBy(roundNo: number, target: number, fraction: number): number {
+  const n = Math.floor(target);
+  if (n <= 0) return 0;
+  // AT THE END OF THE WINDOW, EVERYTHING IS DUE — AS A STATEMENT RATHER THAN AS AN ARITHMETIC RESULT.
+  // This is the load-bearing property of the whole ramp: at `fraction >= 1` it is a no-op, the planner
+  // asks for the full shortfall in one batch exactly as it did before there was a schedule, and
+  // "every planned entry lands or is counted" is preserved by construction. Stated as an early return
+  // because `u_(1) + 1 * (u_(target) - u_(1))` is NOT exactly `u_(target)` in binary floating point,
+  // and a board that silently draws one fighter short in some rounds and not others is precisely the
+  // kind of bug that survives review.
+  if (fraction >= 1) return n;
+  // One arrival is due at the window's opening by construction (`a_1 = 0`), which also covers the
+  // single-fighter schedule without a division.
+  if (n === 1) return 1;
+
+  const draws: number[] = [];
+  // Keyed on the ORDINAL (1..target), not on a wallet index: the schedule is about the shape of the
+  // arrivals, and which wallet takes which slot is decided elsewhere and independently. `2 ** 32` is
+  // the width of `mix`'s output, so this is a uniform in [0, 1).
+  for (let k = 1; k <= n; k++) draws.push(mix(roundNo, k) / 2 ** 32);
+  draws.sort((a, b) => a - b);
+
+  const first = draws[0]!;
+  const spread = draws[n - 1]! - first;
+  // Every draw collided, which needs the hash to produce one value for `n` distinct inputs. The affine
+  // rescale is undefined there and the honest reading is that the whole schedule sits at one instant,
+  // so everything is due at once. Degrading to "all of them now" rather than "none of them ever" keeps
+  // the guarantee above true even in a case that cannot happen.
+  if (spread <= 0) return n;
+
+  // `a_k <= fraction` rearranges to `u_(k) <= first + fraction * spread`, so the count is a scan over
+  // an already-sorted array rather than a second array of rescaled instants.
+  const threshold = first + fraction * spread;
+  let due = 0;
+  while (due < n && draws[due]! <= threshold) due++;
+  return due;
+}
+
 /**
  * WHICH SIDE EACH HOUSE FIGHTER STANDS ON — greedily, onto whichever side is currently smaller,
  * counting the ones this call has already placed.
@@ -248,7 +390,14 @@ export function houseStake(roundNo: number, walletIndex: number): bigint {
  *  It is a hash, not a PRNG: no state, no seeding, no sequence. Cryptographic strength is beside the
  *  point — nothing is being protected here, the outputs are published in the same breath as the
  *  wallets that post them, and the only property required is that the result looks unpatterned to a
- *  reader and is identical on every machine that computes it. */
+ *  reader and is identical on every machine that computes it.
+ *
+ *  TWO CALLERS, ONE HASH, AND IT STAYS MODULE-PRIVATE. `houseStake` keys it on (round, wallet index)
+ *  and `arrivalsDueBy` on (round, arrival ordinal); both live in this file because both are the same
+ *  kind of judgement, so nothing outside needs it and a second copy of a hash is the surest way to end
+ *  up with two that disagree. The two key spaces being different is also what keeps a wallet's stake
+ *  and its place in the queue unrelated — see the arrival block above for why that independence is
+ *  deliberate rather than incidental. */
 function mix(roundNo: number, walletIndex: number): number {
   const combined = (avalanche(roundNo) ^ (avalanche(walletIndex) + 0x9e3779b9)) >>> 0;
   return avalanche(combined);

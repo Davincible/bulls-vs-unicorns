@@ -335,13 +335,22 @@ function recordCaption(settled: number): string {
  *  THREE CASES, AND THE THIRD IS THE ONE THIS FUNCTION EXISTS FOR:
  *
  *    a figure   `clock()`, untracked, tabular — set exactly like the money figures two bands down,
- *               because it is the same kind of mark: a number to be read off the field.
- *    a word     `OPEN`, the state a held-open lobby is genuinely in — and TRACKED, which is the whole
- *               difference. `RoundClockSlot`'s rule is that a state must never be dressed as a
- *               figure, since `0:00` was misread precisely because it wore a figure's clothes. On a
- *               canvas there is no `.num` class to stay out of, so the distinction has to be drawn:
- *               `.u`'s 0.14em tracking is how this page sets a WORD, and at this size a tracked
- *               `O P E N` cannot be mistaken for a reading of anything.
+ *               because it is the same kind of mark: a number to be read off the field. It COUNTS
+ *               DOWN in every phase that has a deadline, and the one phase where it does not is the
+ *               one where it is a finished duration (a settled round's length). Which of the two it
+ *               is is not this file's question and never was; the caption naming it is DOM, in the
+ *               overlay column at the frame's top-left.
+ *    a word     `OPEN` over a held-open lobby, `ENDING` over a fight that can be settled this
+ *               instant — and TRACKED, which is the whole difference. `RoundClockSlot`'s rule is that
+ *               a state must never be dressed as a figure, since `0:00` was misread precisely because
+ *               it wore a figure's clothes. On a canvas there is no `.num` class to stay out of, so
+ *               the distinction has to be drawn: `.u`'s 0.14em tracking is how this page sets a WORD,
+ *               and at this size a tracked `O P E N` cannot be mistaken for a reading of anything.
+ *               THE WORD CASE IS ALSO WHAT KEEPS THE COUNTDOWN HONEST AT ITS OWN ZERO. A fight is
+ *               settleable the moment one side is wiped out, which is usually well before the bell,
+ *               and from that instant `roundPhaseCopy.ts` sends a word rather than a number — so this
+ *               row can neither count down over a fight that is already decided nor sit at `0:00`
+ *               after the bell waiting for somebody to send the transaction.
  *    nothing    `NO_CLOCK`. A fixed slot must print `—`, because a blank cell reads as broken; a
  *               watermark has no cell, so the honest rendering of "no clock is running" is no clock.
  *               A metre-wide em dash over the fight would be an assertion, and the thing it would
@@ -685,6 +694,16 @@ export function drawScoreboard(
     // both rare and harmless. It is NOT padded out to disc width the way `SHARE_SEPARATOR` is: a
     // clock spaced `1 : 2 3` to survive a circle would stop reading as a clock, which trades a rare
     // partial loss for a permanent one.
+    //
+    // THE WORD CASES ARE WIDER AND THEREFORE SAFER, which is the argument for keeping them short
+    // rather than a reason to relax. Both are set TRACKED (`clockMark`), so against the 4 untracked
+    // glyphs of `1:23` — `monoWidth(4, s)` — they measure `monoWidth(4, s, 0.14s)` and
+    // `monoWidth(6, s, 0.14s)`, i.e. 1.17x for `OPEN` and 1.79x for `ENDING`, at any size. The first
+    // is only just past a widest-disc and the second is comfortably clear of one.
+    // That 1.79x is also why `ENDING` is six letters and not a phrase: this row CLAIMS its width out
+    // of the ink map for as long as the state lasts, a settleable fight can sit there for as long as
+    // it takes somebody to send `resolve()`, and every extra glyph is fighter labels evicted from the
+    // top strip for the whole of it.
     if (mark !== null) {
       const yClock = rowMiddle(clockSize * CAP_H, caption === null ? 0 : recordSize * CLOCK_GAP_SHARE);
       ctx.fillStyle = palette.ink;

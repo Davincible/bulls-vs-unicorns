@@ -94,13 +94,27 @@ export function timingText(timing: PhaseTiming): string {
  * tabular, a word is not, and a caller holding `{ text: "0:00" }` has no way to tell them apart. The
  * whole answer travels alongside as `title`, because the sentence still has to be reachable from a
  * slot too small to print it.
+ *
+ * THE THIRD FIELD IS `caption`, AND IT EXISTS BECAUSE THE FIGURE STARTED COUNTING DOWN. While the
+ * fight clock counted UP, a bare `1:46` under the word FIGHT was self-describing — time since
+ * something, and the only something on offer was the start of the fight. A figure that counts DOWN
+ * makes a claim instead: it names an instant, and a reader is owed which one. Worse, the instant this
+ * page counts to is an UPPER BOUND and not a prediction — measured at the 48-fighter cap only about
+ * three quarters of fights survive to the bell — so a descending figure with no label attached is the
+ * page promising something it has a 24% chance of keeping.
+ *
+ * So every slot now carries the two-to-four words that name its own figure, and they come from HERE,
+ * beside the decision, rather than from the surface drawing it. `title` is the whole sentence and
+ * wants a tooltip or a paragraph; `caption` is the label a hero column or an overlay line has room to
+ * PRINT. Two lengths of one answer, never two answers — the same arrangement `timingText` already
+ * makes for the sentence.
  */
 export type ClockSlot =
-  /** Seconds to render through `clock()`: a fight that is running, the length one ran, or a deadline
-   *  something is genuinely counting down to. */
-  | { kind: "clock"; seconds: number; title: string }
+  /** Seconds to render through `clock()`: a deadline something is genuinely counting down to, or the
+   *  length a finished fight ran. */
+  | { kind: "clock"; seconds: number; caption: string; title: string }
   /** No clock is running. `word` IS the state, and it must never be dressed as a figure. */
-  | { kind: "state"; word: string; title: string };
+  | { kind: "state"; word: string; caption: string; title: string };
 
 /** THE WORD A HELD-OPEN LOBBY PUTS WHERE A CLOCK WOULD BE.
  *
@@ -110,6 +124,46 @@ export type ClockSlot =
  *  already gave a visitor. What it is waiting FOR is in the `title` and in the sentence the hero,
  *  the plate and the dock all print in full. */
 const HELD_OPEN_WORD = "OPEN";
+
+/** THE WORD A FIGHT PUTS WHERE ITS COUNTDOWN WAS, once there is nothing left to count.
+ *
+ *  `live.resolvable` is true from the instant `resolve()` would be accepted — one side has nobody
+ *  standing, OR the bell has rung — and it is the reason the countdown below can never be read as a
+ *  promise. The moment a fight is DECIDED the figure stops being a figure, so the two readings this
+ *  page must never produce are both unreachable: a clock counting 1:12 down over a fight that is
+ *  already over, and a clock parked at `0:00` after the bell while nobody has sent the transaction.
+ *  The first is a lie, the second is the original incident wearing the fight's clothes.
+ *
+ *  WHY `ENDING` AND NOT `OVER`. Extract is still live in this state — it is exactly the moment it is
+ *  racing (see `resolvable` in contract.ts) — and a word that reads as "finished" would talk a player
+ *  out of the one move still on the table. `ENDING` is the true tense: the round is in the act of
+ *  ending, and has not ended. It is also six glyphs, which matters more than it looks: `scoreboard.ts`
+ *  draws this word TRACKED at up to 78px across the top of the field and claims the row it occupies
+ *  out of the ink map, so a longer phrase would evict fighter labels for as long as the state lasts.
+ *
+ *  Deliberately NOT the same word as `label` ("Fighting") — unlike `HELD_OPEN_WORD`, which is the same
+ *  word as its label because there the slot and the plate name one state. Here the phase and the clock
+ *  are genuinely saying two different things: the round is still Fighting, and the clock has stopped
+ *  having a number. */
+const ENDING_WORD = "ENDING";
+
+/** THE FEW WORDS THAT NAME EACH FIGURE — see `caption` on `ClockSlot` for why a countdown needs one
+ *  where a count-up did not. Written as a set rather than inline so that the six of them can be read
+ *  against each other in one place: they have to be the same length, the same register and the same
+ *  grammar, or a hero column that swaps one for another between phases reads as a layout glitch.
+ *
+ *  `BELL` IS THE ONE THAT CARRIES THE HONESTY. "At most" is the whole disclosure — the figure above it
+ *  is a ceiling on the round, not a forecast of it — and it is two words rather than the sentence's
+ *  full "or sooner if a side is wiped out" because the sentence itself is on screen beside it in the
+ *  hero (`RoundPhaseNote detail="timing"`) and reachable from the slot's own `title` everywhere else. */
+const CAPTIONS = {
+  bell: "Left on the bell, at most",
+  ending: "This can end any second",
+  fought: "How long the fight ran",
+  entries: "Until entries close",
+  heldOpen: "Nothing is counting down",
+  none: "No clock is running",
+} as const;
 
 /** Every other clockless state. This page's standing rule for a slot with no figure in it — a
  *  no-data cell reads `—`, never `0` (styles/base.css).
@@ -124,6 +178,11 @@ const HELD_OPEN_WORD = "OPEN";
  *  must be made against THIS constant and never against a `"—"` typed out over there: two spellings
  *  of one mark is how a surface ends up drawing the dash it meant to suppress. */
 export const NO_CLOCK = "—";
+
+/** THE STRING THIS FILE EXISTS TO KEEP OFF THE SCREEN, taken from the formatter rather than typed
+ *  out — the check is about what `clock()` is going to draw, so a literal `"0:00"` here would be a
+ *  second opinion about the formatter's output and would go stale the day it changed. */
+const ZERO_CLOCK = clock(0);
 
 export interface RoundPhaseCopy {
   /** Which body a control surface should show: the deploy buttons, the extract button, or neither.
@@ -442,10 +501,20 @@ function phaseCopy(input: RoundPhaseInput): Omit<RoundPhaseCopy, "blocked" | "cl
  * `state.timing` and does not look at `lobbyClosesAtMs` at all: if the sentence has a number, the
  * slot shows that number; if the sentence has none, the slot must not invent one.
  *
- * THE FIGHT IS THE ONE CASE THAT IS NOT `timing`, and deliberately. The fight clock counts UP — it is
- * what the step gauge beside it in all three surfaces is measured against, and what `elapsedSec`
- * means — while `timing` there counts the bell DOWN. Two different facts; the slot keeps the one it
- * has always shown, and the bell stays in the sentence and in 00-1's own `Bell in` tile.
+ * THE FIGHT USED TO BE THE ONE CASE THAT WAS NOT `timing`, AND THAT WAS THE COMPLAINT. It showed
+ * `elapsedSec` — the fight clock, counting UP — while the sentence six inches away counted the bell
+ * DOWN. Max: "the counter is currently counting up in the round… we need a counter that counts down
+ * how much time is still remaining." A clock is read as an answer to "how much longer", and this one
+ * was answering "how long so far" in the largest figure on the page.
+ *
+ * SO THE FIGHT NOW READS `timing` TOO, and every branch in this function is finally the same rule:
+ * whatever number the sentence has, the slot shows; where the sentence has no number, the slot shows
+ * a word. That is what makes the bell impossible to state twice and get wrong once.
+ *
+ * WHAT HAPPENED TO THE COUNT-UP. It is not deleted — a fight's elapsed time is a real fact and the
+ * one the step cursor is measured against — it moved to 00-1's own tile, which is where the bell used
+ * to be. The two swapped places, because the big figure should carry the question people are actually
+ * asking. See `TheRound` in `views/ArenaView.tsx`.
  *
  * THE BACKSTOP IS STILL NEVER SURFACED, in any branch. `Round.lobby_closes_at` under the hold-open
  * policy is an hour out and the only thing that happens at it is the keeper abandoning the round; a
@@ -464,7 +533,37 @@ function clockSlotFor(
   // below, where "Round 23 is fighting" is already the word printed beside the slot and what a reader
   // hovering actually wants to know is what the number IS.
   const said = (lead?: string) => `${lead ?? state.now} ${timingText(state.timing)}`;
-  const noClock = (): ClockSlot => ({ kind: "state", word: NO_CLOCK, title: said() });
+  const noClock = (): ClockSlot => ({
+    kind: "state",
+    word: NO_CLOCK,
+    caption: CAPTIONS.none,
+    title: said(),
+  });
+
+  /**
+   * THE ONLY PLACE A NUMBER BECOMES A CLOCK, and the last line of defence against the one string
+   * this module exists to keep off the screen.
+   *
+   * EVERY BRANCH BELOW USED TO BUILD ITS OWN `{ kind: "clock" }`, and each was correct about its own
+   * source: the lobby's seconds are `Math.ceil`ed by `entrySecondsLeft` and `keeperCountdown`, the
+   * bell's by `phaseCopy`. "Correct about its own source" is exactly the property that does not
+   * survive a new branch, a new producer, or a rounding change three files away — and the failure it
+   * produces is not a slightly wrong figure, it is `0:00`, which reads as a stopped timer and is the
+   * incident this whole type was written after.
+   *
+   * SO THE TEST IS THE RENDERED STRING, NOT THE NUMBER. `clock()` floors, so `0.4` seconds and `0`
+   * seconds and `-3` seconds all print the same thing; a guard written as `seconds > 0` catches the
+   * last two and ships the first (a round that settled having advanced forty of its 15,840 steps
+   * reads `0:00` for a fight that really happened). Asking the formatter what it is about to draw
+   * cannot drift from the formatter, which is the only version of this check that stays true.
+   *
+   * The fallback is `noClock()` and not a zero: a duration too short to state is not a clock, and `—`
+   * with "no clock is running" beside it is the honest rendering of that.
+   */
+  const figure = (seconds: number, caption: string, lead?: string): ClockSlot =>
+    clock(seconds) === ZERO_CLOCK
+      ? noClock()
+      : { kind: "clock", seconds, caption, title: said(lead) };
 
   // Offline, loading, no round: `state.now` already says which, and none of the three has a clock.
   if (live === null || input.programError) return noClock();
@@ -477,11 +576,16 @@ function clockSlotFor(
       // THE STATE THIS WHOLE TYPE EXISTS FOR. Nothing is counting down because nothing is waiting on a
       // clock, so the slot says what IS true instead of what the fight clock happens to read.
       if (cadence.kind === "waiting-for-players") {
-        return { kind: "state", word: HELD_OPEN_WORD, title: said() };
+        return {
+          kind: "state",
+          word: HELD_OPEN_WORD,
+          caption: CAPTIONS.heldOpen,
+          title: said(),
+        };
       }
       // A real deadline, from whichever authority `lobbyTiming` decided was the honest one.
       if (state.timing.kind === "countdown") {
-        return { kind: "clock", seconds: state.timing.seconds, title: said() };
+        return figure(state.timing.seconds, CAPTIONS.entries);
       }
       return noClock();
     }
@@ -489,19 +593,59 @@ function clockSlotFor(
     case "Drawing":
       return noClock();
 
-    case "Fight":
+    case "Fight": {
+      // THE SENTENCE'S OWN NUMBER, and the guard that keeps it from ever being counted to zero.
+      //
+      // `phaseCopy` above has already made both decisions this needs: it counts the bell down while
+      // there is a bell to count, and it drops to "It can end any second now" the instant
+      // `live.resolvable` says `resolve()` would be accepted. Reading `timing` rather than
+      // re-deriving means the largest figure on the page cannot disagree with the sentence under the
+      // Deploy button about how long a round has left — the same guarantee the Lobby branch has had
+      // since the backstop incident.
+      //
+      // THE ZERO CHECK IS NOT DEFENSIVE PADDING, and it does not go through `figure()` — this is the
+      // one branch whose empty case is a STATE rather than an absence. `resolvable` is computed from
+      // the same `elapsedSec` this countdown is, so at the bell the two flip together and the figure
+      // becomes a word rather than reaching `0:00`; but `isResolvable` also requires two fighters
+      // (`data/fightPace.ts`, mirroring lib.rs's own guard), and a Fight phase holding fewer would
+      // count past the bell into seconds `Math.max` floors at exactly the string this whole type
+      // exists to prevent. A fight with no time left on it is ENDING whatever the reason, so both
+      // roads meet here rather than one of them arriving at `—` over a live fight.
+      if (
+        state.timing.kind === "countdown" &&
+        clock(state.timing.seconds) !== ZERO_CLOCK
+      ) {
+        return figure(
+          state.timing.seconds,
+          CAPTIONS.bell,
+          // NOT "how long is left", which is what a countdown looks like it means. The bell is a
+          // CEILING — roughly a quarter of fights at the 48-fighter cap reach it and the rest end
+          // early, when a side is wiped out — so the first thing a reader who goes looking for what
+          // the figure means has to be told is which of the two it is.
+          "The longest this round can still run.",
+        );
+      }
       return {
-        kind: "clock",
-        seconds: live.elapsedSec,
-        title: said("How long this fight has been running."),
+        kind: "state",
+        word: ENDING_WORD,
+        caption: CAPTIONS.ending,
+        title: said(),
       };
+    }
 
     case "Settled":
-      return {
-        kind: "clock",
-        seconds: live.elapsedSec,
-        title: said("How long the fight ran before it settled."),
-      };
+      // A PATH TO `0:00` THAT IS REACHABLE IN PRODUCTION, and the reason `figure()` tests the string
+      // rather than the number. A settled round's clock is the chain's own `tick_count` over the rate
+      // (`data/fightPace.ts`), and that cursor can be zero or nearly so: `resolve()` only asks that
+      // the fight be over, and a side is emptied the moment its last fighter extracts — `extract()`
+      // sets `dead = 1`, which is `fight_is_over` on the spot. A round settled at step 0, or at forty
+      // of a 48-fighter lineup's 15,840, has an elapsed time that floors to zero. `figure()` sends
+      // both to `—`, which says there is no length to report rather than claiming a fight of none.
+      return figure(
+        live.elapsedSec,
+        CAPTIONS.fought,
+        "How long the fight ran before it settled.",
+      );
 
     case "Abandoned":
       // No fight ever started here, so `elapsedSec` is 0 and printing it would say the fight ran for

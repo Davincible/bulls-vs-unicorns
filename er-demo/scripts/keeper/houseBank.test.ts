@@ -20,8 +20,8 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 
 import type { RawFighter, RawRoundAccount } from "../../src/chain/program.ts";
 import {
-  CLOCK_SKEW_MARGIN_SECONDS, HOUSE_BOARD_TARGET, HOUSE_FILL_LEAD_SECONDS, HOUSE_WALLET_COUNT,
-  MIN_FIGHTERS_TO_FIGHT, REAL_SEATS_RESERVED,
+  CLOCK_SKEW_MARGIN_SECONDS, HOUSE_ARRIVAL_TAIL_SECONDS, HOUSE_BOARD_TARGET, HOUSE_WALLET_COUNT,
+  MIN_FIGHTERS_TO_FIGHT, REAL_PLAYER_GRACE_SECONDS, REAL_SEATS_RESERVED,
 } from "./config.ts";
 import { HOUSE_FLOOR, HOUSE_MAX_WITHOUT_REAL_PLAYER } from "./houseSizing.ts";
 import { houseBankFrom, plannedHouseEntries } from "./houseBank.ts";
@@ -31,10 +31,16 @@ const bank = houseBankFrom(Array.from({ length: HOUSE_WALLET_COUNT }, () => Keyp
 const houseKey = (index: number) => bank.active[index]!.keypair.publicKey;
 
 const LOBBY_CLOSES_AT = 1_800_000_000;
-/** Comfortably before the fill stage is due — the seed stage's window. */
-const EARLY = LOBBY_CLOSES_AT - HOUSE_FILL_LEAD_SECONDS - 20;
-/** Inside the fill lead, where the house tops up to the policy's target. */
-const FILL_TIME = LOBBY_CLOSES_AT - HOUSE_FILL_LEAD_SECONDS;
+/** THE OPENING OF THE ARRIVAL WINDOW, and everything before it is the same instant as far as the
+ *  planner is concerned — `arrivalFraction` clamps at 0. One house fighter is due there by
+ *  construction (the schedule's first arrival sits exactly at the start), so this is where the house
+ *  is at its thinnest with somebody real in the room. */
+const EARLY = LOBBY_CLOSES_AT - REAL_PLAYER_GRACE_SECONDS;
+/** THE END OF THE ARRIVAL WINDOW, where every fighter in the schedule is due and the planner asks for
+ *  the whole remaining board in one batch. Named for what it is rather than for a stage that no longer
+ *  exists: this is the instant the old fill lead used to define, and the numbers below are the board
+ *  the round is actually drawn with. */
+const FILL_TIME = LOBBY_CLOSES_AT - HOUSE_ARRIVAL_TAIL_SECONDS;
 
 function fighter(wallet: PublicKey, side: 0 | 1): RawFighter {
   return { wallet, side, dead: 0, stake: new BN(1), hp: new BN(1), banked: new BN(0) };
@@ -136,11 +142,12 @@ describe("a lobby with nobody real in it", () => {
     expect(HOUSE_MAX_WITHOUT_REAL_PLAYER).toBeLessThan(MIN_FIGHTERS_TO_FIGHT);
   });
 
-  it("gives the same answer at the fill stage, where the board policy would otherwise want ten", () => {
-    // THE HOLE THIS CLOSES, AND THE REASON IT IS WORTH A TEST OF ITS OWN. The fill stage is the one
-    // that reads `HOUSE_BOARD_TARGET`, so it is the stage a raised board target would have flowed
-    // through into an empty room. Both stages now answer the treasury rule and neither consults the
-    // board policy until somebody real is standing there.
+  it("gives the same answer at the end of the window, where the board policy would otherwise want ten", () => {
+    // THE HOLE THIS CLOSES, AND THE REASON IT IS WORTH A TEST OF ITS OWN. The end of the arrival
+    // window is where the full `HOUSE_BOARD_TARGET` comes due, so it is the moment a raised board
+    // target would have flowed through into an empty room. The treasury rule is answered before the
+    // schedule is consulted at all, at every instant, and this is the instant it would cost the most
+    // to get wrong.
     expect(HOUSE_BOARD_TARGET).toBeGreaterThan(MIN_FIGHTERS_TO_FIGHT);
     expect(entriesOf(roundWith([]), FILL_TIME)).toHaveLength(HOUSE_MAX_WITHOUT_REAL_PLAYER);
   });
@@ -202,13 +209,14 @@ describe("a lobby with nobody real in it", () => {
   });
 
   it("sizes the fill against the keeper's own close, not the backstop an hour away", () => {
-    // THE SILENT FAILURE THIS PINS. A real player is in and the keeper will close entries in twenty
-    // seconds; the fill stage has to be due against THAT, or it would come due an hour after the
-    // fight had already been fought, and the house would never throttle against real arrivals at all.
+    // THE SILENT FAILURE THIS PINS. A real player is in and the keeper will close entries in one grace
+    // window; the arrival schedule has to run against THAT, or its whole window would sit an hour
+    // after the fight had already been fought, and the house would never throttle against real
+    // arrivals at all.
     const withPlayer = roundWith([fighter(houseKey(0), 0), fighter(Keypair.generate().publicKey, 1)]);
     const closingSoon = { drawAt: LOBBY_CLOSES_AT - 3_580 };
-    const fillDue = closingSoon.drawAt - HOUSE_FILL_LEAD_SECONDS;
-    expect(entriesOf(withPlayer, fillDue, closingSoon).length).toBeGreaterThan(0);
+    const windowEnd = closingSoon.drawAt - HOUSE_ARRIVAL_TAIL_SECONDS;
+    expect(entriesOf(withPlayer, windowEnd, closingSoon).length).toBeGreaterThan(0);
   });
 
   it("plans nothing into the last moments before the keeper's own close", () => {
@@ -219,24 +227,56 @@ describe("a lobby with nobody real in it", () => {
   });
 });
 
-describe("the seed stage", () => {
-  it("seeds the moment one real player is in, because one player cannot fight", () => {
-    // The floor exists to make the round CAPABLE of fighting, which only becomes a goal worth having
-    // once somebody real is in the room to fight. One per side, so the round is drawable rather than
-    // merely populated.
+describe("the fightability floor, at the opening of the arrival window", () => {
+  it("puts both floor fighters in at once the moment one real player is in, because one player cannot fight", () => {
+    // THE ONE THING THE RAMP IS NOT ALLOWED TO THROTTLE. The floor exists to make the round CAPABLE
+    // of fighting, which only becomes a goal worth having once somebody real is in the room to fight —
+    // and it has to be satisfied on the FIRST pass that sees them, not on the schedule's timetable,
+    // because that is what makes the keeper's early close safe while the rest of the house is still
+    // walking in. One per side, so the round is drawable rather than merely populated.
     const round = roundWith([fighter(Keypair.generate().publicKey, 0)]);
     const entries = entriesOf(round, EARLY);
     expect(entries).toHaveLength(HOUSE_FLOOR);
     expect(entries.map((e) => e.side).sort()).toEqual([0, 1]);
   });
 
-  it("stands down once the round can already fight without it", () => {
+  it("stands down to the schedule's first arrival once the round can already fight without it", () => {
+    // Two real players, one a side: the round is drawable on its own, so the floor has nothing to
+    // guarantee and stops asking. What is left is the arrival schedule alone, and at the opening of
+    // the window that is exactly ONE fighter — the schedule's first arrival sits at the very start by
+    // construction, so the room begins filling the instant the player arrives rather than a beat
+    // later.
+    //
+    // IT USED TO BE ZERO HERE, and that difference is the whole change: the house waited out the
+    // lobby and then arrived all together. One is the first frame of a room filling up.
     const round = roundWith([
       fighter(Keypair.generate().publicKey, 0),
       fighter(Keypair.generate().publicKey, 1),
     ]);
     expect(round.fighterCount).toBeGreaterThanOrEqual(MIN_FIGHTERS_TO_FIGHT);
-    expect(entriesOf(round, EARLY)).toEqual([]);
+    expect(entriesOf(round, EARLY)).toHaveLength(1);
+  });
+
+  it("fills the room gradually rather than in one frame, which is the whole point", () => {
+    // THE COMPLAINT THIS POLICY ANSWERS, AS AN ASSERTION. One real player arrives into a room holding
+    // the lone hold-open fighter, and the house is asked for its plan at five points across the entry
+    // window. The count standing must RISE at least twice on the way — a schedule that put everybody
+    // in at the first or the last of them would satisfy every other test in this file and would be the
+    // bot swarm this replaces.
+    //
+    // Asserted as "it grows in steps", not as a shape: which fighter lands in which second is the
+    // hash's business, and pinning it would make the schedule unchangeable rather than tested.
+    const span = REAL_PLAYER_GRACE_SECONDS - HOUSE_ARRIVAL_TAIL_SECONDS;
+    const standing = [0, 0.25, 0.5, 0.75, 1].map((fraction) => {
+      const arrived = roundWith([fighter(houseKey(0), 1), ...players(1, 0)]);
+      return arrived.fighterCount + entriesOf(arrived, EARLY + fraction * span).length;
+    });
+    for (let i = 1; i < standing.length; i++) {
+      expect(standing[i]!, `board at ramp position ${i}`).toBeGreaterThanOrEqual(standing[i - 1]!);
+    }
+    expect(new Set(standing).size, `distinct board sizes across the window: ${standing.join(", ")}`)
+      .toBeGreaterThanOrEqual(3);
+    expect(standing.at(-1)).toBe(HOUSE_BOARD_TARGET);
   });
 
   it("does not enter twice for fighters it has already seated", () => {
@@ -259,12 +299,16 @@ describe("the seed stage", () => {
   });
 });
 
-describe("the fill stage", () => {
+describe("the end of the arrival window", () => {
   it("fills the board out around the one real player who turned up, evenly, on both sides", () => {
     // THE ROUND THE OWNER ASKED FOR, IN NUMBERS. The lobby held one house fighter while it waited;
-    // somebody arrived; the fill stage brings the room to `HOUSE_BOARD_TARGET` and splits it 5-5 so
+    // somebody arrived; by the end of the window the room is at `HOUSE_BOARD_TARGET`, split 5-5 so
     // neither side is a queue. Live rounds #23, #27 and #28 ran four fighters in this same
     // sixteen-seat arena, which is the shape this replaces.
+    //
+    // ASKED AT THE END OF THE WINDOW BECAUSE THAT IS WHERE THE BOARD IS SETTLED. The ramp decides how
+    // early each of these eight may go in; it never decides whether they go in, and this is the test
+    // that pins that distinction.
     const arrived = roundWith([fighter(houseKey(0), 1), ...players(1, 0)]);
     const entries = entriesOf(arrived, FILL_TIME);
     expect(entries).toHaveLength(8);
@@ -366,8 +410,9 @@ describe("the fill stage", () => {
 
   it("stops planning entries once the deadline is too close to land one", () => {
     // `enter` refuses at or past `lobby_closes_at` against the ER's clock, so an entry planned inside
-    // the skew margin is a fee spent on a `LobbyClosed`. Reachable rather than theoretical: the fill
-    // stage starts twelve seconds out with up to four confirmed round-trips to make.
+    // the skew margin is a fee spent on a `LobbyClosed`. Reachable rather than theoretical: the
+    // arrival schedule deliberately runs its last fighters up to `HOUSE_ARRIVAL_TAIL_SECONDS` of the
+    // bell, and that tail is only a few seconds wider than this margin.
     expect(entriesOf(roundWith([]), LOBBY_CLOSES_AT - CLOCK_SKEW_MARGIN_SECONDS)).toEqual([]);
     expect(entriesOf(roundWith([]), LOBBY_CLOSES_AT + 5)).toEqual([]);
     // One second earlier there is still room, so the guard is a boundary rather than a blanket.

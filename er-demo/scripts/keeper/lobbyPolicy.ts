@@ -132,11 +132,12 @@ export interface LobbyPlan {
    *  when it has no such intention (nobody has arrived, or there is no early close to make). */
   entriesCloseAt: number | null;
   /** THE INSTANT THIS LOBBY WILL ACTUALLY BE DRAWN, which is what the house has to size itself
-   *  against. It used to be the chain's deadline because the deadline was the only way a lobby ever
-   *  ended; now it is the keeper's own close whenever the keeper has committed to one. Feeding
-   *  `plannedHouseEntries` the deadline instead would put the fill stage an hour after the fight had
-   *  already started — i.e. never — and the house would field its seed and nothing else, silently
-   *  retiring the displacement policy on every round a real player actually played. */
+   *  against AND what its arrival schedule is anchored to. It used to be the chain's deadline because
+   *  the deadline was the only way a lobby ever ended; now it is the keeper's own close whenever the
+   *  keeper has committed to one. Feeding `plannedHouseEntries` the deadline instead would put the
+   *  whole arrival window an hour after the fight had already started — i.e. never — and the house
+   *  would field its fightability floor and nothing else, silently retiring the board policy on every
+   *  round a real player actually played. */
   drawAt: number;
 }
 

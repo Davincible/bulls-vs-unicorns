@@ -67,7 +67,7 @@ connection is constructed.
 
 Every number it runs on is in `config.ts` with the argument for it, and the ones worth changing are
 env-overridable (`KEEPER_RESULT_HOLD_SECONDS`, `KEEPER_DRAW_TIMEOUT_SECONDS`,
-`KEEPER_HOUSE_FILL_LEAD_SECONDS`, …). The lobby length is **not** one of them: that is
+`KEEPER_REAL_PLAYER_GRACE_SECONDS`, …). The lobby length is **not** one of them: that is
 `DEFAULT_LOBBY_SECONDS` in `src/chain/constants.ts`, which already argues the choice at length.
 
 ## Two lobby policies
@@ -83,7 +83,7 @@ deadline and held until a real player arrives:
 open ONE round, backstop deadline HOLD_OPEN_LOBBY_SECONDS away
 ONE house fighter goes in, so the room is not an empty page
 hold ─────────────────────────────  nothing sent, nothing spent, for as long as it takes
-first REAL player enters  →  house fills in around them  →  20s grace  →  authority close  →  fight
+first REAL player enters  →  45s grace, house arriving through it  →  authority close  →  fight
 ```
 
 One rent payment instead of one per cycle, and the fight starts because a person showed up.
@@ -136,6 +136,68 @@ nobody real in the room   1 house fighter    the treasury rule; the chain will n
 One sentence: **the board stays at `KEEPER_HOUSE_BOARD_TARGET` fighters and turns human as people
 arrive.** The house gives up one seat per real entrant, and `allocateHouseSides` places each fighter
 on whichever side is currently smaller, so neither side is ever a queue.
+
+### When they arrive, which is a separate question from how many
+
+The house used to arrive in one step, twelve seconds before the draw. At the production board of 48
+that meant a real player's arrival was followed about eight seconds later by forty-two fighters
+appearing in a single frame — every one of them legitimate under the policy above, and all of them
+together reading as a bot swarm rather than as a room.
+
+They now arrive on a **schedule spread across the entry window**:
+
+```
+real player enters                                                        authority close
+│                                                                                       │
+├───────────────── KEEPER_REAL_PLAYER_GRACE_SECONDS (45s) ──────────────────────────────┤
+├──────────── arrivals (40s) ─────────────┤─ KEEPER_HOUSE_ARRIVAL_TAIL_SECONDS (5s) ────┤
+▲   ▲▲    ▲        ▲   ▲▲▲  ▲      ▲   ▲▲▲▲
+```
+
+**The grace window is the only runway there is**, which is why it is now a knob of its own and why it
+is 45 seconds rather than the 20 it borrowed from the chain's minimum lobby. A room with nobody real
+in it holds exactly one house fighter (the treasury rule), so the house physically cannot trickle in
+ahead of the first player — the room goes from one fighter to N *after* that moment, and the grace is
+that moment to the bell. Peak demand is ~47 fighters, and a room filling faster than about 1.5
+fighters a second stops reading as people arriving, so the window needs ~40 seconds plus a tail.
+
+The honest price is that the first player waits 45 seconds instead of 20 — and they are not waiting at
+nothing, they are watching the room fill around them, which is the thing being built. The other half
+of the trade is that a second real player now gets 45 seconds to find the round instead of 20.
+
+**The arrivals are derived, never random.** For each ordinal `k` the schedule takes a uniform draw
+from the same deterministic hash `houseStake` uses, sorts them, and rescales so the first sits exactly
+at the window's start and the last exactly at its end. That is not decoration:
+
+- **it is a Poisson process, conditioned on its count.** N independent uniform points on a window,
+  sorted, is *exactly* what a Poisson process looks like given that it produced N arrivals — so the
+  gaps come out exponential, many short with the occasional long one. A metronome at one fighter every
+  0.85 seconds would read as a machine just as clearly as the single burst did, only slower.
+- **it is reproducible.** A round's lineup, its stakes and now its arrival order can all be
+  re-derived from the round number alone, months later, after the accounts have been closed. It also
+  means a retry after a failed send asks for the same thing the attempt it is retrying asked for —
+  the keeper holds no memory and re-derives every decision from the chain each pass.
+- **the rescale makes two things structural rather than likely.** The room starts filling the instant
+  the player arrives, and the schedule provably cannot run past the window: by the end of it every
+  fighter is due, so the board is whole by the time the lobby is drawn and a ramp can never cause a
+  short board.
+
+**Arrival order and stake size are independent**, deliberately. "Whales arrive late" is a real
+phenomenon in markets with price discovery; this one has none — return is size- and seat-neutral
+(`HOUSE-EDGE-STUDY.md` §0) — so simulating a behaviour whose cause does not exist is a fiction that
+eventually reads as fake, and a correlation is a signature.
+
+**Two things the schedule never throttles**, because they are about whether there is a round at all
+rather than about how the room looks while it fills: the fightability floor (two fighters, one a side,
+on the first pass a real player is seen — which is what makes the early close safe while the rest of
+the house is still walking in) and the `cover` fighter that keeps a one-sided lobby drawable.
+
+**What it traded away, honestly.** The old lateness was the mechanism that made *displacement* real: a
+house that has already committed its whole roster has nothing left to give up when somebody arrives.
+The ramp seats fighters earlier in the window than the step did, so some of that headroom is genuinely
+gone. What is not gone is the guarantee — `REAL_SEATS_RESERVED` is applied to the house's ceiling on
+every pass, and it is now larger than it was. Displacement was the aesthetic half of the policy; the
+reservation is the invariant.
 
 This reverses the previous policy, which is worth saying plainly. That one targeted four and displaced
 *two*: the house was scaffolding that left entirely once two real players could fight each other, so
@@ -197,7 +259,7 @@ board size after the exposure above, and it moves in the house's favour.
 *It does **not** displace paying players here, though the same policy in a smaller room would.*
 `HOUSE-STRATEGY.md` §2.1 measures net house revenue collapsing from $8.56 to $3.09 as the house takes
 0 → 6 of **8** seats, "because six house seats mean two paying seats". That mechanism is seat scarcity,
-and it does not bind in a forty-eight-seat arena holding a board of ten with four seats reserved: a real
+and it does not bind in a forty-eight-seat arena holding a board of ten with nine seats reserved: a real
 player is never turned away, so no house fighter is standing where a paying one would have. That
 guarantee is `REAL_SEATS_RESERVED`, and it is the reason the reservation is an invariant rather than a
 knob. Shrink the arena, or raise the board target far enough that the reservation starts binding, and
@@ -226,10 +288,18 @@ shortfall itself would fund four wallets and lose them on every restart, while t
 disclosure changed underneath the rounds it describes. The keeper throws with that arithmetic in the
 message rather than doing it.
 
-**The house must never be able to fill the room.** `REAL_SEATS_RESERVED` (4, deliberately not an env
-knob) holds seats back against the chain's own `fighters.length`, so a raised board target cannot hand
-an arriving player `RoundFull`. It yields only to the `cover` fighter that makes a lopsided lobby
-drawable at all — an unenterable round is bad, an undrawable one is worse.
+**The house must never be able to fill the room.** `REAL_SEATS_RESERVED` holds seats back against the
+chain's own `fighters.length`, so a raised board target cannot hand an arriving player `RoundFull`. It
+yields only to the `cover` fighter that makes a lopsided lobby drawable at all — an unenterable round
+is bad, an undrawable one is worse.
+
+It is **derived and deliberately not an env knob**: `max(4, ceil(4 x grace / 20s))`, which is **9** at
+the default grace of 45 seconds. The estimate behind it has always been an *arrival rate* — four people
+may turn up inside one grace window — so lengthening the grace without scaling it would have quietly
+weakened a documented promise by exactly the factor the window grew by, with nothing failing to say so.
+The floor of 4 keeps the old value as a minimum. At the production board of 48 seats the cost is that
+the house holds at most 38 of them rather than 43: invisible on screen, and it buys back the promise
+that a person who clicks Enter finds a seat.
 
 ## What it costs
 
@@ -583,6 +653,8 @@ Configuration — safe in `fly.toml`'s `[env]`, except where noted.
 | `KEEPER_BASE_RPC` | `https://api.devnet.solana.com` | base-layer Solana RPC. A paid endpoint carrying an API key is a **secret**, not an `[env]` line |
 | `KEEPER_ROUTER_URL` | `https://devnet-router.magicblock.app` | the MagicBlock Magic Router |
 | `KEEPER_HOLD_OPEN` | `0` (`1` in `fly.toml`) | the hold-open lobby policy — see "Two lobby policies" and the arithmetic below |
+| `KEEPER_REAL_PLAYER_GRACE_SECONDS` | `45` | how long entries stay open after the first real player arrives, and therefore the whole window the house arrives across — see "When they arrive". Refused below the chain's `MIN_LOBBY_SECONDS` (20) or above `MAX_LOBBY_SECONDS` |
+| `KEEPER_HOUSE_ARRIVAL_TAIL_SECONDS` | `5` | the quiet between the last scheduled house arrival and the draw: time for the final entries to confirm, and a beat of stillness before the bell. Must be shorter than the grace and longer than the clock-skew margin |
 | `KEEPER_HOUSE_WALLET_COUNT` | `10` | how many wallets the bank holds, and the ceiling on the roster. Raising it is a **two-step** — see "Raising the wallet count". Costs 0.01 SOL parked per wallet |
 | `KEEPER_HOUSE_BOARD_TARGET` | `10` | total fighters the house holds the board at, counting real players. Must not exceed the wallet count; refused at boot if it does |
 | `KEEPER_HOUSE_DISPLACEMENT` | `1` | house seats given up per real entrant. `0` means the house never withdraws; `2` restores the old "leaves at two real players" policy |
@@ -602,7 +674,13 @@ no cluster in the hostname is refused too: use the provider's devnet hostname
 (`devnet.helius-rpc.com`), so the URL states its own cluster.
 
 Every knob in `config.ts` is still available (`KEEPER_RESULT_HOLD_SECONDS`, `KEEPER_DRAW_TIMEOUT_SECONDS`,
-`KEEPER_HOUSE_FILL_LEAD_SECONDS`, …), each with the argument for its value beside it.
+`KEEPER_CLOSE_RETRY_SECONDS`, …), each with the argument for its value beside it.
+
+`KEEPER_HOUSE_FILL_LEAD_SECONDS` is **gone**, and a keeper that is still being given it **refuses to
+boot** rather than ignoring it. It named the instant the house stepped up to its full board; that job
+now belongs to `KEEPER_REAL_PLAYER_GRACE_SECONDS` and `KEEPER_HOUSE_ARRIVAL_TAIL_SECONDS`, which
+between them define the window the house arrives across. A silently-ignored knob on a live keeper is a
+deployment behaving differently from the one its operator believes they configured.
 
 ### `VITE_BASE_RPC` and `KEEPER_BASE_RPC` hold different keys, on purpose
 

@@ -33,6 +33,27 @@
 // presented as one. The IDL is served from `public/` by Vite, so `programReady` is true within a
 // frame and the `no-program` block never masks the wallet states we came to look at.
 
+/** THE `Bun` GLOBAL, DECLARED RATHER THAN INSTALLED — and the reason is that this file was invisible
+ *  to the type-checker until now.
+ *
+ *  `tsconfig.scripts.json` existed but the root solution file never referenced it, so `tsc -b` never
+ *  built it and NOTHING under `scripts/` — the whole keeper included — was covered by
+ *  `npm run typecheck`. That is the same trap the root `tsconfig.json` header documents at length,
+ *  one layer deeper: a gate that passes because it never looked. Adding the reference surfaced
+ *  exactly two errors in the entire directory, both of them this global.
+ *
+ *  Declared locally instead of adding `@types/bun`: a dependency for two call sites is the wrong
+ *  trade, and the shape below is only as wide as what this file actually uses. `bun` strips types
+ *  without checking them, so this declaration constrains the type-checker and never the runtime. */
+declare const Bun: {
+  spawn(cmd: string[], opts: { cwd: string; stdout: "pipe"; stderr: "pipe" }): {
+    exited: Promise<number>;
+    stdout: ReadableStream<Uint8Array>;
+    stderr: ReadableStream<Uint8Array>;
+    kill(): void;
+  };
+};
+
 import { chromium, type Browser, type ConsoleMessage, type Page } from "playwright-core";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";

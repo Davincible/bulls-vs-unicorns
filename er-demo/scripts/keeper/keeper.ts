@@ -105,6 +105,9 @@ import {
 } from "../../src/chain/constants.ts";
 import { bnOr0, type RawRoundAccount } from "../../src/chain/program.ts";
 import * as roundIx from "../../src/chain/round.ts";
+// Whole dollars, because `houseStake` only ever produces whole dollars — the log line reads as a
+// roster of stakes a person might have chosen, which is the point of the band it draws from.
+import { unitsToUsd } from "../../src/v2/contract.ts";
 
 import {
   ABANDON_HOLD_SECONDS, ARENA_FEE_BPS, CLOCK_SKEW_MARGIN_SECONDS, DEFAULT_LOBBY_SECONDS,
@@ -196,7 +199,7 @@ interface RoundTimeline {
    *  `lobby_opened_at`, `lobby_closes_at` and `fight_started_at` — not one of which moves when
    *  somebody enters. The `Entered` event carries the fact but not a timestamp, and it is emitted
    *  inside the rollup, where scanning transaction history for a block time would be a new dependency
-   *  on the least reliable thing in the system to answer a question worth twenty seconds.
+   *  on the least reliable thing in the system to answer a question worth one grace window.
    *
    *  So it is stamped when this process first SEES a real fighter standing in the round, and never
    *  re-stamped while that round number stands. A restart mid-grace re-stamps it to now, which
@@ -484,18 +487,38 @@ async function fieldHouseFighters(
 ): Promise<void> {
   if (state.nowSec < ctx.timeline.houseRetryAfterSec) return;
 
-  const { entries, split } = plannedHouseEntries(
+  const { entries, split, houseTarget } = plannedHouseEntries(
     ctx.bank, round, state.roundCounter, state.nowSec, { drawAt: plan.drawAt },
   );
   if (entries.length === 0) return;
 
-  info(
-    `fielding ${entries.length} house fighter(s) with ${plan.drawAt - state.nowSec}s until the lobby is drawn ` +
-    `(currently ${split.realCount} real, ${split.houseCount} house)`,
-  );
-  // ONE STEP, not one per pass. Bringing the house up to target is a single logical action, and
-  // splitting it across passes would stretch the fill stage past the deadline it exists to sit
-  // inside. Each entry is individually fault-tolerant — see `enterHouseFighters`.
+  // ONE LINE PER PASS, AND THERE ARE NOW MANY PASSES. The house arrives on a schedule spread across
+  // the whole entry window, so this fires up to forty times in a round that fights instead of once or
+  // twice. It is not silenced for that: a round that actually fights is rare, and the trickle — who
+  // went in, on which side, at what stake, how long before the bell — is exactly the forensics wanted
+  // when a board turns out to have drawn short or lopsided. What it is is SHORT, because forty long
+  // lines is a log nobody reads and forty short ones is a picture of the room filling up.
+  const bell = plan.drawAt - state.nowSec;
+  const first = split.houseCount + 1;
+  const last = split.houseCount + entries.length;
+  // The `cover` fighter outranks the target — a one-sided lobby gets a bot on the empty side even when
+  // the board policy wants no house fighters at all — so the denominator is whichever is larger, or
+  // that entirely correct plan would log itself as "house fighter 1/0".
+  const board = Math.max(houseTarget, last);
+  info(entries.length === 1
+    ? `house fighter ${first}/${board} going in ${c.d}(side ${entries[0]!.side}, $${unitsToUsd(entries[0]!.stake)}) — ${bell}s to the bell${c.x}`
+    : `house fighters ${first}-${last}/${board} going in ${c.d}(${entries.length} at once, ${split.realCount} real in the room) — ${bell}s to the bell${c.x}`);
+  // SPREAD ACROSS PASSES, DELIBERATELY, WHICH IS THE OPPOSITE OF WHAT THIS USED TO SAY. Bringing the
+  // house up to its board was one logical action stepped in at a fixed lead; it is now an arrival
+  // schedule, and each pass sends only what has just come due. What has NOT changed is that whatever
+  // this pass owes goes out CONCURRENTLY and each entry is individually fault-tolerant — see
+  // `enterHouseFighters`, which is also where the catch-up case after a stall is argued.
+  //
+  // THE RETRY BACKOFF NOW STALLS THE TRICKLE FOR THREE SECONDS RATHER THAN THE WHOLE FILL, and it
+  // SELF-HEALS, because the schedule is in absolute time rather than in "how many have I sent". Three
+  // seconds of backoff means the next pass finds three seconds' worth of arrivals due and sends them
+  // together: a stall COMPRESSES the next batch instead of shifting every later arrival back. The
+  // longer window also gives a transient failure many more attempts than the old twelve-second fill did.
   const result = await enterHouseFighters(
     ctx.client,
     ctx.client.program,
@@ -1415,8 +1438,9 @@ async function main(): Promise<void> {
   // the instruction cannot even be ENCODED, and that answer is worth refusing to start on. Anchor
   // builds account lists by walking the IDL, so an `authority` the IDL has never heard of is silently
   // dropped: the keeper would hold a lobby open, send what it believed was an early close, and get
-  // `LobbyStillOpen` — an error about the clock — every twenty seconds, with a real player standing
-  // in the room waiting for a fight that could not start. Better to say so before the first round.
+  // `LobbyStillOpen` — an error about the clock — once the grace had run and on every pass after it,
+  // with a real player standing in the room waiting for a fight that could not start. Better to say so
+  // before the first round.
   const features = await readProgramFeatures();
   if (options.holdOpen && !features.authorityEarlyClose) {
     throw new Error(
