@@ -17,5 +17,8 @@
     "xlink:seed": "bun run scripts/xlink-seed.ts",
     "xlink:ingest": "bun run scripts/xlink-ingest.ts",
     "xlink:suppress": "bun run scripts/xlink-suppress.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.6"
   }
 }
