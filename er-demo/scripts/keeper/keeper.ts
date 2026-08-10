@@ -106,7 +106,8 @@ import * as roundIx from "../../src/chain/round.ts";
 import {
   ABANDON_HOLD_SECONDS, ARENA_FEE_BPS, CLOCK_SKEW_MARGIN_SECONDS, DEFAULT_LOBBY_SECONDS,
   DELEGATION_WAIT_SECONDS, DRAW_TIMEOUT_SECONDS, ERROR_BACKOFF_BASE_SECONDS, ERROR_BACKOFF_MAX_SECONDS,
-  HEARTBEAT_INTERVAL_SECONDS, HOLD_OPEN_LOBBY_SECONDS, HOUSE_ENTRY_RETRY_SECONDS,
+  HEARTBEAT_INTERVAL_SECONDS, HOLD_OPEN_LOBBY_SECONDS, HOUSE_BOARD_TARGET, HOUSE_DISPLACEMENT,
+  HOUSE_ENTRY_RETRY_SECONDS, HOUSE_STAKE_MAX_USD, HOUSE_STAKE_MIN_USD, HOUSE_WALLET_COUNT,
   LOOP_INTERVAL_SECONDS, REAL_PLAYER_GRACE_SECONDS, RESOLVE_RETRY_ATTEMPTS,
   RESOLVE_RETRY_WAIT_SECONDS, RESULT_HOLD_SECONDS, STALE_AFTER_SECONDS,
   STALL_AFTER_CONSECUTIVE_FAILURES, SWEEP_RETRY_SECONDS, UNDELEGATE_WAIT_SECONDS,
@@ -119,7 +120,7 @@ import {
   BIND_HOSTNAME, HEALTH_PATH, STATUS_PATH, originPolicyWarnings, resolveAllowedOrigins,
   startStatusServer,
 } from "./statusServer.ts";
-import { HOLD_OPEN_HOUSE_FIGHTERS } from "./houseSizing.ts";
+import { HOUSE_MAX_WITHOUT_REAL_PLAYER } from "./houseSizing.ts";
 import { lobbyIsHeldOpen, planLobby, type LobbyPlan } from "./lobbyPolicy.ts";
 import { decideClose, housekeepingIsWelcome, isPastRetention } from "./roundCloser.ts";
 import { readProgramFeatures, type ProgramFeatures } from "./programFeatures.ts";
@@ -481,7 +482,7 @@ async function fieldHouseFighters(
   if (state.nowSec < ctx.timeline.houseRetryAfterSec) return;
 
   const { entries, split } = plannedHouseEntries(
-    ctx.bank, round, state.roundCounter, state.nowSec, { drawAt: plan.drawAt, heldOpen: plan.heldOpen },
+    ctx.bank, round, state.roundCounter, state.nowSec, { drawAt: plan.drawAt },
   );
   if (entries.length === 0) return;
 
@@ -498,16 +499,29 @@ async function fieldHouseFighters(
     { arenaPda: ctx.client.arenaPda, roundPda, drawAt: plan.drawAt },
     entries,
   );
-  if (result.failed > 0) {
-    ctx.timeline.houseRetryAfterSec = state.nowSec + HOUSE_ENTRY_RETRY_SECONDS;
+  // A SHORT BOARD IS AN ERROR, HOWEVER IT CAME UP SHORT. `failed` means a transaction was rejected;
+  // `dropped` means the lobby will be drawn before the entry could land, so nothing was sent. They have
+  // different causes and the same symptom — an arena thinner than the policy asked for — and only one
+  // of them used to be reported. `dropped` was invisible: it warned, `lastError` stayed null, and the
+  // status file showed a healthy keeper next to a board that had drawn at six instead of ten, which is
+  // indistinguishable from the empty-arena complaint this whole policy exists to answer.
+  const short = result.failed + result.dropped;
+  if (short > 0) {
+    // The retry backoff is keyed on `failed` alone. A dropped entry is not a wallet that has run dry —
+    // it is a lobby that ran out of clock — and backing off would only make the NEXT round's fill late
+    // as well, for a condition that has already resolved itself by then.
+    if (result.failed > 0) ctx.timeline.houseRetryAfterSec = state.nowSec + HOUSE_ENTRY_RETRY_SECONDS;
     // Surfaced to the status file, not just the log. A house wallet that has run dry fails every entry
     // of every round without throwing, so `lastError` would otherwise stay null while the arena
     // quietly emptied and every lobby died under-subscribed — the exact 3am failure this file's
     // design is meant to make impossible to have silently.
+    const how = result.dropped === 0 ? "failed"
+      : result.failed === 0 ? "ran out of lobby time"
+      : `failed (${result.failed}) or ran out of lobby time (${result.dropped})`;
     ctx.publisher.setLastError({
       at: state.nowSec,
       context: "house-enter",
-      message: `${result.failed} of ${entries.length} house entries failed on round #${round.roundNo}`,
+      message: `${short} of ${entries.length} house entries ${how} on round #${round.roundNo}`,
     });
   }
 }
@@ -1474,8 +1488,19 @@ async function main(): Promise<void> {
   // reading the log without knowing which one is in force is guesswork. The hold-open line states the
   // three numbers that decide everything about it; the other states the one that always did.
   plain(options.holdOpen
-    ? `  lobby policy   ${c.g}HOLD OPEN${c.x} — one lobby, held for players; ${HOLD_OPEN_LOBBY_SECONDS}s backstop · ${REAL_PLAYER_GRACE_SECONDS}s grace after the first real entry · ${HOLD_OPEN_HOUSE_FIGHTERS} house fighter while holding`
+    ? `  lobby policy   ${c.g}HOLD OPEN${c.x} — one lobby, held for players; ${HOLD_OPEN_LOBBY_SECONDS}s backstop · ${REAL_PLAYER_GRACE_SECONDS}s grace after the first real entry`
     : `  lobby policy   fixed cadence — a fresh ${DEFAULT_LOBBY_SECONDS}s lobby every round ${c.d}(--hold-open is off; each round permanently locks ~0.0085 SOL of rent whether or not anyone plays)${c.x}`);
+  // THE HOUSE'S SHAPE AND WHAT IT PUTS AT RISK, on its own line and printed under BOTH policies —
+  // because the treasury rule no longer depends on which one is running, and because these five
+  // numbers are the ones an operator retunes. Mean stake is the midpoint of the band, so the exposure
+  // figure is the honest expected total rather than a worst case: it is what the house has on the
+  // board in a round with one real player in it, which is the shape almost every live round has had.
+  plain(
+    `  house          board of ${HOUSE_BOARD_TARGET} · ${HOUSE_WALLET_COUNT} wallets · ${HOUSE_DISPLACEMENT} seat(s) yielded per real entrant · ` +
+    `$${HOUSE_STAKE_MIN_USD}-$${HOUSE_STAKE_MAX_USD} stakes ` +
+    `${c.d}(~$${((HOUSE_BOARD_TARGET - 1) * (HOUSE_STAKE_MIN_USD + HOUSE_STAKE_MAX_USD) / 2).toFixed(0)} of house stake on the board against a lone real player; ` +
+    `${HOUSE_MAX_WITHOUT_REAL_PLAYER} fighter and no fight when nobody is)${c.x}`,
+  );
   plain(`  cadence        result hold ${RESULT_HOLD_SECONDS}s · draw timeout ${DRAW_TIMEOUT_SECONDS}s · heartbeat ${HEARTBEAT_INTERVAL_SECONDS}s/stale ${STALE_AFTER_SECONDS}s`);
   plain(`  house sweep    ${features.houseTakeSweep
     ? "on — each finished round's fees and penalties are swept onto the arena's Treasury"

@@ -88,13 +88,20 @@ first REAL player enters  →  house fills in around them  →  20s grace  →  
 
 One rent payment instead of one per cycle, and the fight starts because a person showed up.
 
-**Exactly one house fighter while holding, and that number is the load-bearing part.** At one fighter
-`enough_to_fight` fails, so `close_lobby_and_draw` is refused *for everyone* — not just for a keeper
-that declines to call it, but for a permissionless caller racing us at the deadline. "No
-house-versus-house fights" stops being a policy and becomes something the program enforces. It also
-keeps `lobby_is_dead` true, so a held lobby nobody joined can still be **abandoned** at its backstop
-and the round always reaches a terminal state. Seeding the usual four would have inverted both: the
-lobby could be drawn by anyone the moment the deadline passed, and it could never be abandoned.
+**Exactly one house fighter while nobody real is in the room, and that number is the load-bearing
+part.** At one fighter `enough_to_fight` fails, so `close_lobby_and_draw` is refused *for everyone* —
+not just for a keeper that declines to call it, but for a permissionless caller racing us at the
+deadline. "No house-versus-house fights" stops being a policy and becomes something the program
+enforces. It also keeps `lobby_is_dead` true, so a lobby nobody joined can still be **abandoned** at
+its deadline and the round always reaches a terminal state. Seeding the board's full complement would
+have inverted both: the lobby could be drawn by anyone the moment the deadline passed, and it could
+never be abandoned.
+
+**This rule is no longer conditional on hold-open.** It used to live in the hold-open branch, so with
+`KEEPER_HOLD_OPEN=0` the seed stage put two fighters into an empty room and the round fought itself at
+its deadline — survivable at a board of four, and two and a half times the size at a board of ten. It
+is now the first thing `houseFighterCount` answers, before any board policy is read, so it holds under
+every configuration. See "The house's board" below.
 
 **It is off by default and it is not auto-detected.** The policy needs the authority-signed early
 close in `close_lobby_and_draw`, which exists in `lib.rs` and **is not deployed**. The only local
@@ -111,6 +118,117 @@ standing in the lobby.
 **Real vs house is a private list.** Anyone not in the keeper's own house-wallet set counts as real.
 There is deliberately no on-chain registry and no flag on the round — that is an operator decision,
 not a gap to be tidied up.
+
+## The house's board
+
+`MAX_FIGHTERS` is 16. Live rounds #23, #27 and #28 each ran **four** fighters, two of them house — a
+quarter-full arena, which is most of why the rounds read as dead. The house now holds the board at ten.
+
+```
+nobody real in the room   1 house fighter    the treasury rule; the chain will not draw this round
+1 real player             9 house            board of 10, split 5-5
+2 real players            8 house            board of 10
+5 real players            5 house            board of 10
+10+ real players          0 house            the house is gone
+```
+
+One sentence: **the board stays at `KEEPER_HOUSE_BOARD_TARGET` fighters and turns human as people
+arrive.** The house gives up one seat per real entrant, and `allocateHouseSides` places each fighter
+on whichever side is currently smaller, so neither side is ever a queue.
+
+This reverses the previous policy, which is worth saying plainly. That one targeted four and displaced
+*two*: the house was scaffolding that left entirely once two real players could fight each other, so
+the board **shrank** as the arena got busier. `KEEPER_HOUSE_BOARD_TARGET=4` with
+`KEEPER_HOUSE_DISPLACEMENT=2` restores it exactly, without a deploy.
+
+### What it puts at risk, which is the part to argue with
+
+`enter` records a stake; it never moves lamports. But `Treasury.fees_accrued` is, in
+`sweep_house_take`'s own words, "a ledger the off-chain treasury is paid against", and the fight is a
+zero-sum exchange over the recorded stakes. Conservation gives two bounds:
+
+```
+house profit on a round  <=  total REAL stake in it
+house LOSS   on a round  <=  total HOUSE stake in it
+```
+
+and the house's expected revenue is `fee_bps` on **real** entries only — the fee its own wallets pay is
+charged by the house to the house, which nets to nothing. Since `advance_fight` began reading
+`min(ring_a, ring_d)`, return is size- and seat-neutral to within noise (`HOUSE-EDGE-STUDY.md` §0), so
+expected P&L on the house's own seats is ~0 and what scales with the board is the **tail**, not the
+edge.
+
+That splits the problem, and the split is why the stake ceiling came *down* in the same change that
+tripled the board:
+
+- **seats** are what make the arena look alive. One signature each, no edge to anyone.
+- **stake** is the entire downside tail, and buys nothing a seat did not already buy.
+
+```
+                       fighters   mean stake   house stake on the board
+before  (1 real)          2         $27.50        ~$55
+now     (1 real)          9         $12.50       ~$113     band narrowed to $5-$20
+"full board, old band"    9         $27.50       ~$248     what raising the count alone would have cost
+worst case now            9         $20          ~$180
+```
+
+Against a fee ledger entry of about **$0.20** on a $20 real entry at 1% — a counter, not cash, until
+custody ships. The house is not paid for carrying this; it carries it to have an arena worth walking
+into. If the edge study in flight says the tail is worth less than the liveliness,
+`KEEPER_HOUSE_STAKE_MAX_USD=50` takes the old band back and roughly doubles the number.
+
+**Two second-order effects a bigger board has, recorded so nobody has to rediscover them.**
+
+*The extract penalty window gets longer in wall-clock terms.* `PENALTY_HORIZON_STEPS` is indexed by
+`fighter_count` and `steps_per_second` is `2 x fighter_count`, so the time until extracting is free is
+`horizon / (2n)` seconds:
+
+```
+4 fighters    200 steps /  8 steps/s  =  25.0 s
+10 fighters   791 steps / 20 steps/s  =  39.6 s     +58%
+```
+
+Every fighter in a ten-handed round therefore pays the early-extract penalty for over half as long
+again as they would have in a four-handed one. `HOUSE-STRATEGY.md` §4 puts the extract penalty at ~60%
+of modelled revenue, so this is not a rounding effect — it is the largest economic consequence of the
+board size after the exposure above, and it moves in the house's favour.
+
+*It does **not** displace paying players here, though the same policy in a smaller room would.*
+`HOUSE-STRATEGY.md` §2.1 measures net house revenue collapsing from $8.56 to $3.09 as the house takes
+0 → 6 of **8** seats, "because six house seats mean two paying seats". That mechanism is seat scarcity,
+and it does not bind in a sixteen-seat arena holding a board of ten with four seats reserved: a real
+player is never turned away, so no house fighter is standing where a paying one would have. That
+guarantee is `REAL_SEATS_RESERVED`, and it is the reason the reservation is an invariant rather than a
+knob. Shrink the arena, or raise the board target far enough that the reservation starts binding, and
+§2.1's collapse becomes the governing effect instead.
+
+### Raising the wallet count
+
+`KEEPER_HOUSE_WALLET_COUNT` is both the size of the bank and the ceiling on the roster — a policy that
+asked for an eleventh fighter would be asking for a wallet that does not exist. On a deployment it is a
+**two-step**, and `loadOrCreateHouseBank` refuses rather than guesses if you do only the first:
+
+```
+# 1. locally, where .devnet/ is writable. The bank is extended during boot, before the first pass, so
+#    starting the keeper and stopping it once the banner has printed is enough. It EXTENDS the file —
+#    every existing key keeps its index and its pubkey, so the published disclosure list stays valid
+#    for the rounds it already describes. Do NOT use --dry-run here: it generates in memory and
+#    deliberately writes nothing, which is the opposite of what this step is for.
+bun run scripts/keeper/keeper.ts     # Ctrl-C once the boot banner shows the new wallet count
+
+# 2. re-issue the secret with ALL of them, then deploy
+fly secrets set KEEPER_HOUSE_WALLETS="$(cat ../.devnet/keeper-house-wallets.json)"
+```
+
+Keys that arrive from the environment are never written back, so a container that generated the
+shortfall itself would fund four wallets and lose them on every restart, while the published bot
+disclosure changed underneath the rounds it describes. The keeper throws with that arithmetic in the
+message rather than doing it.
+
+**The house must never be able to fill the room.** `REAL_SEATS_RESERVED` (4, deliberately not an env
+knob) holds seats back against the chain's own `fighters.length`, so a raised board target cannot hand
+an arriving player `RoundFull`. It yields only to the `cover` fighter that makes a lopsided lobby
+drawable at all — an unenterable round is bad, an undrawable one is worse.
 
 ## What it costs
 
@@ -142,8 +260,17 @@ At roughly two minutes a round that is about **0.26 SOL an hour**, almost all of
 fork payer accordingly, and read the per-round `operator spent` line in the log as a measured balance
 delta rather than an estimate — it includes the rent.
 
+**The bigger board adds signatures and nothing else.** A house `enter` is one signature at 5,000
+lamports, so going from two house fighters a round to nine costs **+0.000035 SOL per round that
+actually fights** — under a tenth of the ~0.00041 SOL a round costs once `close_round_account` is
+reclaiming rent. Rounds only complete when a real player turns up, so the daily figure tracks traffic
+rather than the keeper: **+0.0035 SOL/day at 100 rounds, +0.035 SOL/day at 1,000**. The one-time cost
+is parking `KEEPER_HOUSE_WALLET_TARGET_SOL` in four more wallets: **+0.04 SOL**, taking the bank from
+0.06 to 0.10 SOL. At 0.01 SOL each and 5,000 lamports a round, a wallet reaches its 0.002 SOL refill
+floor after ~1,600 rounds. None of this is the cost worth watching; the exposure above is.
+
 **Reconciled across 28 real rounds the all-in figure is 0.00981 SOL per round** (net of a one-time
-0.06 SOL house-wallet funding), of which `open_round`'s 0.008503160 SOL is permanent and
+0.06 SOL house-wallet funding, now 0.10), of which `open_round`'s 0.008503160 SOL is permanent and
 `delegate_round`'s 0.003220520 SOL comes back when undelegation closes the delegation accounts. That
 every round PDA keeps its deposit forever is verified rather than inferred: rounds #4 to #18 all still
 hold exactly 0.008498 SOL.
@@ -455,6 +582,11 @@ Configuration — safe in `fly.toml`'s `[env]`, except where noted.
 | `KEEPER_BASE_RPC` | `https://api.devnet.solana.com` | base-layer Solana RPC. A paid endpoint carrying an API key is a **secret**, not an `[env]` line |
 | `KEEPER_ROUTER_URL` | `https://devnet-router.magicblock.app` | the MagicBlock Magic Router |
 | `KEEPER_HOLD_OPEN` | `0` (`1` in `fly.toml`) | the hold-open lobby policy — see "Two lobby policies" and the arithmetic below |
+| `KEEPER_HOUSE_WALLET_COUNT` | `10` | how many wallets the bank holds, and the ceiling on the roster. Raising it is a **two-step** — see "Raising the wallet count". Costs 0.01 SOL parked per wallet |
+| `KEEPER_HOUSE_BOARD_TARGET` | `10` | total fighters the house holds the board at, counting real players. Must not exceed the wallet count; refused at boot if it does |
+| `KEEPER_HOUSE_DISPLACEMENT` | `1` | house seats given up per real entrant. `0` means the house never withdraws; `2` restores the old "leaves at two real players" policy |
+| `KEEPER_HOUSE_STAKE_MIN_USD` | `5` | floor of the band house stakes are drawn from. The smallest preset a real player is offered |
+| `KEEPER_HOUSE_STAKE_MAX_USD` | `20` | ceiling of that band, and **the single number that decides house exposure per round** — see "What it puts at risk". `50` restores the old band and roughly doubles it |
 | `KEEPER_CLOSE_ROUNDS` | `1` (**on**) | reclaim finished rounds' rent (~0.0086 SOL each, 95% of a round's cost). `0` or `--no-close-rounds` disables it — see "Reclaiming the rent" |
 | `KEEPER_ROUND_RETENTION` | `20` (the chain's `MIN_RETAINED_ROUNDS`) | how many newest rounds are never closed. Can be **raised**, never lowered — a lower value is refused at boot |
 | `KEEPER_MIN_BALANCE_SOL` | `0.05` | below this the keeper opens no new rounds, while finishing any round in flight — see "The funding floor" |

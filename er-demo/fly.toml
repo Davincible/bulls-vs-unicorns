@@ -147,6 +147,38 @@ primary_region = "fra"
   KEEPER_BASE_RPC = "https://api.devnet.solana.com"
   KEEPER_ROUTER_URL = "https://devnet-router.magicblock.app"
 
+  # THE HOUSE'S BOARD IS DELIBERATELY ABSENT FROM THIS FILE, and that absence is the feature.
+  #
+  # Five knobs decide how many house fighters a round holds and what they stake:
+  #
+  #     KEEPER_HOUSE_WALLET_COUNT   10     wallets banked, and the ceiling on the roster
+  #     KEEPER_HOUSE_BOARD_TARGET   10     total fighters the board is held at, real players included
+  #     KEEPER_HOUSE_DISPLACEMENT    1     house seats given up per real entrant
+  #     KEEPER_HOUSE_STAKE_MIN_USD   5     floor of the stake band
+  #     KEEPER_HOUSE_STAKE_MAX_USD  20     ceiling — the number that sets house exposure per round
+  #
+  # The defaults ARE the intended production values, so nothing needs to be written here — and that is
+  # the point. An `[env]` line is only changeable by `fly deploy`, and the one number in this set that
+  # will genuinely need retuning is the stake ceiling, once the house-edge measurement lands. Putting
+  # these here would tie an economics decision to a code deploy. Retune them without one:
+  #
+  #     fly secrets set KEEPER_HOUSE_STAKE_MAX_USD=50     # restarts the machine, no image rebuild
+  #
+  # (`fly secrets` is the no-deploy path even for values that are not secret. That is a slightly odd
+  # use of the word and it is the mechanism Fly actually provides.)
+  #
+  # WHAT DOES *NOT* HAVE A KNOB, on purpose: the count of house fighters allowed in a room with no real
+  # player in it. That is fixed at ONE, in `houseSizing.ts`, because one is below the program's
+  # `enough_to_fight` — so a house-only lobby cannot be drawn by us OR by a permissionless caller, and
+  # `abandon_round` stays legal so the round still terminates. It is the operator's "no runs on only
+  # house players" instruction expressed as something the chain enforces rather than something this
+  # process promises, and a knob whose only safe value is 1 is a way to lose that by typo.
+  #
+  # KEEPER_HOUSE_WALLET_COUNT IS THE ONE THAT IS NOT SELF-SERVICE. Raising it needs new keys generated
+  # locally and `KEEPER_HOUSE_WALLETS` re-issued with all of them, in that order; the keeper refuses to
+  # boot rather than generating wallets it would fund and then lose on the next restart. See
+  # "Raising the wallet count" in scripts/keeper/README.md.
+
   # KEEPER_CORS_ORIGIN is intentionally NOT set here, and this deployment is not finished until it
   # is. It is a comma-separated list of EXACT browser origins allowed to read /keeper-status.json —
   # the Vercel origin serving the arena, e.g. "https://<project>.vercel.app". Never "*": the status

@@ -453,6 +453,246 @@ export const UNDELEGATE_WAIT_SECONDS = 30;
  *  observation reached from the other direction, not a number copied from it.) */
 export const MIN_FIGHTERS_TO_FIGHT = 2;
 
+// ---- how big the house's board is, and what it is exposed to ---------------------------------------
+//
+// THE FIVE NUMBERS BELOW ARE THE ONLY THINGS THAT DECIDE HOW MUCH THE HOUSE HAS AT RISK IN A ROUND,
+// and they are env-configurable for one reason: the number they should be is a MEASUREMENT nobody has
+// finished taking yet. A policy that can only be retuned by a deploy is a policy that will not be
+// retuned.
+//
+// WHAT "AT RISK" MEANS HERE, because this program moves no lamports and the phrase is easy to
+// dismiss. `enter` records a stake; `Treasury.fees_accrued` is "a ledger the off-chain treasury is
+// paid against" (lib.rs, `sweep_house_take`). So nothing debits a house wallet beyond its signature
+// fee — but the fight is a zero-sum exchange over those recorded stakes, and the ledger it writes is
+// settled for real somewhere else. Two bounds fall straight out of conservation:
+//
+//     house profit on a round  <=  total REAL stake in it        (they cannot lose more than they brought)
+//     house LOSS   on a round  <=  total HOUSE stake in it       (we cannot lose more than we brought)
+//
+// And the house's expected revenue is `fee_bps` on REAL entries only — the fee its own wallets pay is
+// charged by the house to the house. So the asymmetry to keep in view while reading these constants:
+//
+//     SEATS are what make the arena look alive, and they cost a signature each.
+//     STAKE is what creates the downside tail, and it buys nothing that seats do not already buy.
+//
+// Since `advance_fight`'s `min(ring_a, ring_d)` basis, return is size-neutral AND seat-count-neutral
+// to within noise (HOUSE-EDGE-STUDY.md §0: whale -0.31% +- 0.27, minnow +0.51% +- 0.57; an
+// eight-wallet split worth $0.30/round). That is what makes the split above legitimate: a $5 house
+// fighter is exactly as much of a fighter on screen as a $50 one, and exactly as fair a one to play
+// against. THE DEFAULTS THEREFORE BUY THE FULL BOARD WITH SMALL STAKES rather than a full board with
+// the old ones — see `HOUSE_STAKE_MAX_USD`.
+//
+// (That measurement covered eight fighters of comparable size. A board of nine house fighters against
+// one real player is outside the regime it sampled. If the edge study now in flight says otherwise,
+// these are the five values to move, and none of them needs a deploy.)
+
+/** Read a positive integer from the environment, or fall back. Separate from `envNumber` because
+ *  every value below is a COUNT OF FIGHTERS or a COUNT OF DOLLARS: `KEEPER_HOUSE_BOARD_TARGET=7.5`
+ *  would otherwise sail through and produce a target the allocator silently floors, and a stake of
+ *  $12.50 would break the whole-dollar property `houseStake` is built on. `min` is explicit per knob
+ *  because zero is meaningful for one of them (a house that never withdraws) and meaningless for the
+ *  rest. */
+function envInt(name: string, fallback: number, min: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < min) {
+    throw new Error(`${name}="${raw}" is not a whole number of at least ${min}. Unset it or give it a real value.`);
+  }
+  return parsed;
+}
+
+/** HOW MANY WALLETS THE HOUSE BANKS, and therefore the most fighters it could ever field at once.
+ *
+ *  TEN, RAISED FROM SIX, and the raise is the whole point of this section. `MAX_FIGHTERS` is 16 and
+ *  live rounds #23, #27 and #28 each ran FOUR fighters — a quarter-full board, which is most of why
+ *  the arena read as dead. Ten house wallets plus real arrivals is a board that looks like an arena.
+ *
+ *  NOT SIXTEEN, and that gap is deliberate rather than timid: the house must never be able to fill
+ *  the room, or a real player arrives to `RoundFull` and the arena's own liquidity is what shut them
+ *  out. `plannedHouseEntries` enforces the reservation against the chain's own seat count; this
+ *  number just has no business approaching it.
+ *
+ *  RAISING IT COSTS THE OPERATOR TWO THINGS AND BOTH ARE SMALL. A new wallet is funded to
+ *  `HOUSE_WALLET_TARGET_SOL` once (0.01 SOL) and spends 5,000 lamports per round it enters. Going
+ *  6 -> 10 parks an extra 0.04 SOL. See `HOUSE_WALLET_TARGET_SOL` for the per-round arithmetic.
+ *
+ *  RAISING IT ON A DEPLOYMENT IS A TWO-STEP, and `loadOrCreateHouseBank` refuses rather than guesses
+ *  if you do only the first: the keeper generates the shortfall locally, then the operator re-issues
+ *  `KEEPER_HOUSE_WALLETS` with all of them. Keys from the environment are never written back, so a
+ *  container that generated four wallets would fund them and lose them on every restart. */
+export const HOUSE_WALLET_COUNT = envInt("KEEPER_HOUSE_WALLET_COUNT", 10, 2);
+
+/** AND A CEILING ON IT, which the fixed pool of six never needed.
+ *
+ *  `fundHouseBank` tops the whole bank up in ONE transaction, one `SystemProgram.transfer` per wallet
+ *  that is short — and its doc comment names "well inside a single transaction" as the reason it does
+ *  not chunk. A legacy transaction holds roughly twenty transfers. So a first boot with the count set
+ *  to 25 would not fail in a way that mentions the count: it would fail inside `fundHouseBank` with a
+ *  transaction-size error, at the one moment every wallet is short at once.
+ *
+ *  Sixteen rather than twenty, because the program's `MAX_FIGHTERS` is sixteen and a bank larger than
+ *  the room is wallets that can never enter. That is a fact about lib.rs, which this file does not
+ *  mirror (see the header) — so it is not asserted here, only used as the argument for a number that
+ *  is comfortably under the transaction limit either way. `plannedHouseEntries` enforces the real seat
+ *  arithmetic against the chain's own count. */
+const HOUSE_WALLET_COUNT_MAX = 16;
+if (HOUSE_WALLET_COUNT > HOUSE_WALLET_COUNT_MAX) {
+  throw new Error(
+    `KEEPER_HOUSE_WALLET_COUNT=${HOUSE_WALLET_COUNT} is above the ceiling of ${HOUSE_WALLET_COUNT_MAX}. ` +
+    `The bank is funded in a single transaction, which holds about twenty transfers, and a bank bigger ` +
+    `than the round's sixteen seats is wallets that can never enter a fight anyway.`,
+  );
+}
+
+/** HOW MANY FIGHTERS THE HOUSE HOLDS THE BOARD AT, counting real players.
+ *
+ *  Read it with `HOUSE_DISPLACEMENT` = 1, which is what makes the name honest: the house fields
+ *  `HOUSE_BOARD_TARGET - realTotal` fighters, so the board sits at this many all through the lobby
+ *  and its composition shifts from house to human as people arrive. Ten, one real player, nine bots;
+ *  ten real players, none.
+ *
+ *  THE PREVIOUS POLICY WAS THE OPPOSITE SHAPE AND IT IS WORTH NAMING, because this reverses it. It
+ *  targeted FOUR and displaced TWO — the house was scaffolding that left completely once two real
+ *  players could fight each other, so the board SHRANK as the arena got busier (0 real: 4 fighters;
+ *  2 real: 2 fighters). The operator's judgement is that a market maker that withdraws at the first
+ *  sign of a crowd is why the rounds looked empty, and this is that judgement expressed as a number.
+ *  `KEEPER_HOUSE_BOARD_TARGET=4` with `KEEPER_HOUSE_DISPLACEMENT=2` restores the old ladder exactly.
+ *
+ *  ────────────────────────────────────────────────────────────────────────────────────────────────
+ *  WHAT EACH SETTING COSTS. MEASURED. DO NOT MOVE THIS NUMBER WITHOUT READING THE ROW.
+ *  ────────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ *  Measured over 20,000-round samples against the shipped fight, at `KEEPER_HOUSE_DISPLACEMENT = 1`
+ *  and the default $5-$20 band, in a round with ONE real player — the shape almost every live round
+ *  has had. "Circular" is the share of treasury intake that is the house paying its own 1% entry fee
+ *  to itself: `H / (H + R)`, against a real stake `R` of about $32, the sampled mean.
+ *
+ *      target   house fighters   capital at risk   worst case   circular fee   house `enter`s/round
+ *         4            3              ~$37            $60           54%            3   (0.000015 SOL)
+ *         6            5              ~$63           $100           66%            5   (0.000025 SOL)
+ *         8            7              ~$88           $140           73%            7   (0.000035 SOL)
+ *        10            9             ~$113           $180           78%            9   (0.000045 SOL)  <- default
+ *        12           11             ~$138           $220           81%           11   (0.000055 SOL)
+ *
+ *  THE GAS COLUMN IS NOT THE CONSTRAINT AT ANY OF THESE, and it is worth saying so plainly so nobody
+ *  optimises the wrong number: even the largest row is 0.000055 SOL a round against ~0.00041 SOL of
+ *  marginal round cost once `close_round_account` is reclaiming rent. The first two columns are the
+ *  constraint.
+ *
+ *  THE THREE THINGS THIS ROW DOES NOT BUY, all measured rather than argued:
+ *
+ *    * NO EXPECTED REVENUE. Zero, at every setting. Since `advance_fight` reads
+ *      `basis = min(ring_a, ring_d)` every exchange is symmetric and the fight is a martingale for
+ *      every fighter, so house-wallet P&L came out at −$0.18 to −$0.49 per round — which is exactly
+ *      minus the fee those wallets paid, and that fee returns to the treasury the house owns. Net
+ *      contribution: nothing. There is no farming edge here to be captured by seating more bots, and
+ *      anyone reaching for this dial as a strategy has misread it.
+ *    * MORE LOSING ROUNDS. The share of rounds where the house is down went 21% -> 39% moving from
+ *      the old policy to this one. Same expectation, fatter tails: the house has more of its own
+ *      money on the table and the real player's stake is the only thing it can win.
+ *    * A LESS MEANINGFUL TREASURY NUMBER. At 78% circular, four fifths of `fees_accrued` is the house
+ *      billing itself, so treasury growth stops being a proxy for revenue. `HOUSE-STRATEGY.md`'s
+ *      consolidated form — net house revenue is exactly what real players lose, and nothing else — is
+ *      the one to read instead.
+ *
+ *  So this is a number bought for how the board LOOKS, priced as a cost. That is a legitimate thing to
+ *  buy — an arena that reads as dead has no real players to earn from, and sixteen seats running at
+ *  four was the complaint that started this. It is 10 because that is where the room reads as full
+ *  while the reservation still leaves six seats for arrivals. It is the OWNER'S dial, not this file's,
+ *  which is the whole reason it reads from the environment. */
+export const HOUSE_BOARD_TARGET = envInt("KEEPER_HOUSE_BOARD_TARGET", 10, 1);
+
+/** HOW MANY HOUSE FIGHTERS EACH REAL ENTRANT DISPLACES.
+ *
+ *  One, so the board holds its size and the house's share of it falls one-for-one — which is exactly
+ *  what a market maker seeding a book does, and exactly what "hold the board at `HOUSE_BOARD_TARGET`"
+ *  means arithmetically.
+ *
+ *  Zero is permitted and means the house never withdraws: the board grows past the target as people
+ *  arrive, capped by `HOUSE_WALLET_COUNT` and the seat reservation. It is allowed because it is a
+ *  coherent thing to want for a launch weekend, and it is not the default because the house should
+ *  become a smaller part of a busy arena rather than a constant one.
+ *
+ *  WHAT IT COSTS, WHICH IS THE SAME CURRENCY `HOUSE_BOARD_TARGET` IS PRICED IN. Read the table on that
+ *  constant with `house fighters = HOUSE_BOARD_TARGET - HOUSE_DISPLACEMENT * realPlayers`: raising the
+ *  displacement is the cheap way to keep a full board at ONE real player while shedding the house
+ *  faster as a crowd builds, and lowering it to 0 means the house never stops paying the capital-at-
+ *  risk column no matter how busy the arena gets. At the default of 1 the measured shape is 8 house
+ *  fighters at two real players, where the previous policy fielded 0 — that single row is most of the
+ *  21% -> 39% rise in losing rounds, and it is the row to move first if the tail turns out to be
+ *  unaffordable. `KEEPER_HOUSE_DISPLACEMENT=2` halves the house's presence at every crowd size above
+ *  one without touching how a lone arrival's round looks. */
+export const HOUSE_DISPLACEMENT = envInt("KEEPER_HOUSE_DISPLACEMENT", 1, 0);
+
+/** The band house stakes are drawn from, in whole dollars — and, multiplied by the board size, the
+ *  entire downside tail this arena carries per round.
+ *
+ *  THE CEILING CAME DOWN FROM $50 TO $20 IN THE SAME CHANGE THAT TRIPLED THE BOARD, and that pairing
+ *  is the argument. Exposure is `fighters x mean stake`, so a board of nine drawn from $5-$50 would
+ *  put ~$248 of house stake behind a round whose expected fee revenue, at one real player staking
+ *  $20, is twenty cents. Nine drawn from $5-$20 is ~$113 — about twice what today's two-bot rounds
+ *  risk (~$55), for four and a half times the fighters. The liveliness is bought with seats; the
+ *  ceiling is what stops it being bought with exposure.
+ *
+ *  BOTH EDGES STILL SIT ON THE LADDER REAL PLAYERS ARE OFFERED (`STAKE_PRESETS` = $5/$20/$50/$100),
+ *  which is the property `houseSizing.test.ts` pins: a house fighter must neither be dwarfed by a
+ *  player at the smallest preset nor dwarf one. $5 is that smallest preset and $20 is the next rung.
+ *
+ *  To take the old band back: `KEEPER_HOUSE_STAKE_MAX_USD=50`. Nothing else needs to move, and the
+ *  round-by-round exposure roughly doubles. */
+export const HOUSE_STAKE_MIN_USD = envInt("KEEPER_HOUSE_STAKE_MIN_USD", 5, 1);
+export const HOUSE_STAKE_MAX_USD = envInt("KEEPER_HOUSE_STAKE_MAX_USD", 20, 1);
+
+// Checked here rather than left to `houseStake` to produce nonsense, because the symptom of an
+// inverted band is not an error — `mix() % span` with a negative span returns NaN, `usdToUnits` turns
+// that into a `BigInt` throw deep inside a house entry, and the operator sees a failing bot rather
+// than the typo they made.
+if (HOUSE_STAKE_MIN_USD > HOUSE_STAKE_MAX_USD) {
+  throw new Error(
+    `KEEPER_HOUSE_STAKE_MIN_USD=${HOUSE_STAKE_MIN_USD} is above KEEPER_HOUSE_STAKE_MAX_USD=${HOUSE_STAKE_MAX_USD}. ` +
+    `The band is a range a stake is drawn from, so the floor has to be the smaller of the two.`,
+  );
+}
+
+// A target the bank cannot staff is not a target, it is a permanent shortfall: `plannedHouseEntries`
+// would ask for fighters every pass, find no free wallet, and quietly field fewer than the policy
+// says forever. Refusing at boot makes the operator's arithmetic mistake loud at the one moment they
+// are looking at it.
+// PEAK HOUSE DEMAND, NOT THE BOARD TARGET, and the difference is a whole fighter. The target counts
+// REAL players too, and the house never fields it in full — the busiest it ever gets is one real
+// player already in the room, which is `HOUSE_BOARD_TARGET - HOUSE_DISPLACEMENT`. Comparing the raw
+// target against the bank refused configurations that are perfectly staffable: at the default
+// displacement of 1, a target of 11 needs ten house fighters beside one player, which ten wallets
+// staff exactly. `MIN_FIGHTERS_TO_FIGHT` is the other end — the house seeds that many while a lone
+// player waits, whatever the target says.
+const PEAK_HOUSE_FIGHTERS = Math.max(MIN_FIGHTERS_TO_FIGHT, HOUSE_BOARD_TARGET - HOUSE_DISPLACEMENT);
+if (PEAK_HOUSE_FIGHTERS > HOUSE_WALLET_COUNT) {
+  throw new Error(
+    `KEEPER_HOUSE_BOARD_TARGET=${HOUSE_BOARD_TARGET} with KEEPER_HOUSE_DISPLACEMENT=${HOUSE_DISPLACEMENT} ` +
+    `needs up to ${PEAK_HOUSE_FIGHTERS} house fighters, but KEEPER_HOUSE_WALLET_COUNT banks only ` +
+    `${HOUSE_WALLET_COUNT}. The house would ask for a wallet that does not exist on every pass and ` +
+    `quietly field fewer fighters than the policy says, forever. Raise the wallet count (and re-issue ` +
+    `KEEPER_HOUSE_WALLETS with the new keys) or lower the target.`,
+  );
+}
+
+/** SEATS THE HOUSE MAY NEVER TAKE, held for real players who have not arrived yet.
+ *
+ *  NOT env-configurable, and that is the difference between a preference and an invariant. Every
+ *  other number in this section is a judgement about how the arena should look; this one is the
+ *  promise that a person who clicks Enter finds a seat. A house that filled the room would hand a
+ *  real player `RoundFull` — the arena's own liquidity locking out the only participant it exists to
+ *  attract, which is a strictly worse failure than an empty board.
+ *
+ *  FOUR because that is a full lobby's worth of arrivals inside one grace window, and because with
+ *  the defaults it never binds: `HOUSE_BOARD_TARGET` of 10 against 16 seats already leaves six. It is
+ *  a backstop against a misconfigured target, not part of the normal arithmetic — which is exactly
+ *  why it is applied in `plannedHouseEntries` against the chain's own `fighters.length` rather than
+ *  against a copy of `MAX_FIGHTERS` restated here. See this file's header on why program constants
+ *  are not mirrored into it. */
+export const REAL_SEATS_RESERVED = 4;
+
 /** How long before the lobby deadline the house tops up to its full target.
  *
  *  THIS LATENESS IS THE ENTIRE MECHANISM, not a scheduling detail. "Seed early liquidity, throttle
@@ -461,8 +701,13 @@ export const MIN_FIGHTERS_TO_FIGHT = 2;
  *  have nothing left to give up, and a real arrival would ADD to a full lobby rather than displace a
  *  bot from it. Entering late is what makes displacement real.
  *
- *  12 seconds is the smallest window that still fits the work: up to four `enter` transactions, each
- *  a confirmed router round-trip, plus the recount that precedes them. Later than this and a slow
+ *  12 seconds is the smallest window that still fits the work: the fill batch plus the recount that
+ *  precedes it. It was measured against FOUR serial `enter` transactions, which is what the board
+ *  target of four produced; at a target of ten the batch is seven or eight, and it still fits because
+ *  `enterHouseFighters` now sends them CONCURRENTLY rather than one at a time. That is the change that
+ *  keeps this number honest — read its doc comment before raising the board target further, because
+ *  this window cannot grow (it must stay under `MIN_LOBBY_SECONDS`, and the grace after a real arrival
+ *  is the same twenty seconds). Later than this and a slow
  *  devnet leaves the lobby short; earlier and real players arriving in the last quarter of a
  *  60-second lobby can no longer displace anybody. */
 export const HOUSE_FILL_LEAD_SECONDS = envNumber("KEEPER_HOUSE_FILL_LEAD_SECONDS", 12);
@@ -490,7 +735,21 @@ if (HOUSE_FILL_LEAD_SECONDS >= MIN_LOBBY_SECONDS) {
  *  debits the wallet that entered it.
  *
  *  The floor is 0.002 SOL rather than "empty" so a wallet is refilled while it can still pay for the
- *  round in progress, not after it has already failed one. */
+ *  round in progress, not after it has already failed one.
+ *
+ *  WHAT THE WHOLE BANK COSTS, since `HOUSE_WALLET_COUNT` is now a knob and the operator has to fund
+ *  whatever they set it to. At the defaults (10 wallets, board of 10):
+ *
+ *      parked      10 x 0.01 SOL              = 0.10  SOL, once      (6 wallets was 0.06)
+ *      per round   up to 10 x 5,000 lamports  = 0.00005 SOL          (2 entries was 0.00001)
+ *      refill      (0.01 - 0.002) / 0.000005  = 1,600 rounds per wallet before it drops to the floor
+ *
+ *  So the added spend is ~0.00004 SOL per round that actually fights, against the ~0.00041 SOL a
+ *  round already costs once `close_round_account` is reclaiming rent — a tenth more per round. Rounds
+ *  only complete when a real player turns up (see `KEEPER_HOLD_OPEN`), so the daily figure is a
+ *  function of traffic rather than of the keeper: 100 rounds/day is +0.004 SOL/day, 1,000 is
+ *  +0.04 SOL/day. Against the operator's ~3.6 SOL, the bank is not the cost worth watching. The
+ *  exposure in `HOUSE_STAKE_MAX_USD` is. */
 export const HOUSE_WALLET_MIN_SOL = envNumber("KEEPER_HOUSE_WALLET_MIN_SOL", 0.002);
 export const HOUSE_WALLET_TARGET_SOL = envNumber("KEEPER_HOUSE_WALLET_TARGET_SOL", 0.01);
 
