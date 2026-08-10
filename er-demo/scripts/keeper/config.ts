@@ -525,23 +525,34 @@ export const HOUSE_WALLET_COUNT = envInt("KEEPER_HOUSE_WALLET_COUNT", 10, 2);
 
 /** AND A CEILING ON IT, which the fixed pool of six never needed.
  *
- *  `fundHouseBank` tops the whole bank up in ONE transaction, one `SystemProgram.transfer` per wallet
- *  that is short — and its doc comment names "well inside a single transaction" as the reason it does
- *  not chunk. A legacy transaction holds roughly twenty transfers. So a first boot with the count set
- *  to 25 would not fail in a way that mentions the count: it would fail inside `fundHouseBank` with a
- *  transaction-size error, at the one moment every wallet is short at once.
+ *  IT WAS SIXTEEN, ON TWO ARGUMENTS, AND BOTH HAVE BEEN ANSWERED RATHER THAN OVERRULED.
  *
- *  Sixteen rather than twenty, because the program's `MAX_FIGHTERS` is sixteen and a bank larger than
- *  the room is wallets that can never enter. That is a fact about lib.rs, which this file does not
- *  mirror (see the header) — so it is not asserted here, only used as the argument for a number that
- *  is comfortably under the transaction limit either way. `plannedHouseEntries` enforces the real seat
- *  arithmetic against the chain's own count. */
-const HOUSE_WALLET_COUNT_MAX = 16;
+ *  The first was a packet limit: `fundHouseBank` built ONE transaction from every shortfall, and a
+ *  legacy transaction holds roughly twenty transfers, so a count of 25 would have failed at first
+ *  boot — the one moment every wallet is short at once — with a transaction-size error that named
+ *  nothing about the count. That is now chunked at `FUNDING_CHUNK`, with the payer pre-flight
+ *  charging one signature per chunk, so the ceiling no longer encodes a packet size.
+ *
+ *  The second was that `MAX_FIGHTERS` is sixteen, so "a bank larger than the room is wallets that can
+ *  never enter". True of a bank read in index order, which is what it was: `plannedHouseEntries` took
+ *  the lowest-numbered free wallets, so wallets past the board size genuinely never played. It now
+ *  rotates the starting point by round number, and THAT is what a pool larger than the board is for —
+ *  not more fighters per round, which the chain caps at sixteen regardless, but a different cast
+ *  between rounds. Nine regulars every round reads as a fixture; thirty wallets seating nine of them
+ *  reads as a population.
+ *
+ *  THIRTY-TWO is therefore about funding cost and disclosure, not mechanics. Every wallet in the pool
+ *  is published in the keeper's status file and marked on the leaderboard, and each one holds
+ *  `HOUSE_WALLET_TARGET_SOL`, so the pool is a standing capital commitment: at 0.01 SOL a wallet,
+ *  thirty is ~0.30 SOL parked. Twice the round's seat count is enough rotation that the cast turns
+ *  over completely every few rounds; more than that buys diminishing variety for linear cost. */
+const HOUSE_WALLET_COUNT_MAX = 32;
 if (HOUSE_WALLET_COUNT > HOUSE_WALLET_COUNT_MAX) {
   throw new Error(
     `KEEPER_HOUSE_WALLET_COUNT=${HOUSE_WALLET_COUNT} is above the ceiling of ${HOUSE_WALLET_COUNT_MAX}. ` +
-    `The bank is funded in a single transaction, which holds about twenty transfers, and a bank bigger ` +
-    `than the round's sixteen seats is wallets that can never enter a fight anyway.`,
+    `Every wallet in the pool is published as house and holds KEEPER_HOUSE_WALLET_TARGET_SOL, so the ` +
+    `pool is standing capital, not free variety. Past roughly twice the board size the cast already ` +
+    `turns over completely every few rounds and more wallets buy diminishing variety for linear cost.`,
   );
 }
 

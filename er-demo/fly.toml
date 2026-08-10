@@ -157,8 +157,20 @@ primary_region = "fra"
   #     KEEPER_HOUSE_STAKE_MIN_USD   5     floor of the stake band
   #     KEEPER_HOUSE_STAKE_MAX_USD  20     ceiling — the number that sets house exposure per round
   #
-  # The defaults ARE the intended production values, so nothing needs to be written here — and that is
-  # the point. An `[env]` line is only changeable by `fly deploy`, and the one number in this set that
+  # ONE OF THEM IS NOW SET IN PRODUCTION AND DIFFERS FROM ITS DEFAULT, so read this before trusting
+  # the table above. `KEEPER_HOUSE_WALLET_COUNT` is set to **30** as a fly secret, against a code
+  # default of 10, and the pool file holds thirty funded keys to match.
+  #
+  # Thirty wallets do NOT put thirty fighters in a round — the program caps a round at sixteen and the
+  # board target is ten. What a pool larger than the board buys is that the CAST CHANGES between
+  # rounds: `plannedHouseEntries` rotates its starting point by round number, so the nine or so house
+  # fighters in any given round are drawn from a roster of thirty rather than being the same nine
+  # every time. Nine regulars reads as a fixture; thirty wallets seating nine of them reads as a
+  # population. Before that rotation existed, a pool this size would have been twenty-one funded keys
+  # that never entered a fight.
+  #
+  # The rest of the defaults ARE the intended production values, so nothing else needs to be written
+  # here — and that is the point. An `[env]` line is only changeable by `fly deploy`, and the one number in this set that
   # will genuinely need retuning is the stake ceiling, once the house-edge measurement lands. Putting
   # these here would tie an economics decision to a code deploy. Retune them without one:
   #

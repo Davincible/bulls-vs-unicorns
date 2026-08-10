@@ -361,6 +361,20 @@ const SIGNATURE_FEE_LAMPORTS = 5_000;
  *  balance reads a couple of minutes and removes that entirely.
  *
  *  Returns true when it moved money, so a caller can say so rather than logging on every round. */
+/** HOW MANY TRANSFERS GO IN ONE FUNDING TRANSACTION.
+ *
+ *  `fundHouseBank` used to build a single transaction from every shortfall, and the pool ceiling was
+ *  pinned at 16 largely to keep that safe. That coupling failed in the worst possible place: FIRST
+ *  BOOT, when every wallet is short at once, with a transaction-size error that names nothing about
+ *  the wallet count that caused it. Chunking removes the coupling, so the ceiling can be argued on
+ *  its own merits rather than on a packet limit.
+ *
+ *  FIFTEEN, not the ~20 a legacy transaction is usually quoted as holding. That figure is for a
+ *  transfer-only transaction and leaves no room for the fee payer's signature or a future
+ *  compute-budget instruction. Being wrong costs a failed boot; being conservative costs one extra
+ *  signature per fifteen wallets, once. */
+const FUNDING_CHUNK = 15;
+
 export async function fundHouseBank(
   client: ChainClient,
   forkPayer: Keypair,
@@ -371,7 +385,20 @@ export async function fundHouseBank(
   const minLamports = Math.round(HOUSE_WALLET_MIN_SOL * LAMPORTS_PER_SOL);
   const targetLamports = Math.round(HOUSE_WALLET_TARGET_SOL * LAMPORTS_PER_SOL);
 
-  const balances = await Promise.all(bank.active.map((w) => client.balance(w.keypair.publicKey)));
+  // ONE RPC CALL, NOT ONE PER WALLET. This was `Promise.all(bank.active.map(client.balance))`, which
+  // is a concurrent `getBalance` per wallet. At a pool of six that is invisible; at thirty it earns
+  // an immediate `429 Connection rate limits exceeded` from api.devnet.solana.com and the process
+  // dies before it has funded anything — measured, not predicted, on the first run at thirty.
+  //
+  // Worse, it would fail at BOOT on the deployed keeper, which is the one place a crash loop is
+  // expensive. The batch endpoint takes up to 100 keys, so a pool inside `HOUSE_WALLET_COUNT_MAX` is
+  // always one call.
+  //
+  // A NULL ENTRY IS ZERO, NOT AN ERROR: a wallet that has never been funded does not exist as an
+  // account yet, which is exactly the state every wallet is in on a first boot — the case this
+  // function exists to fix.
+  const infos = await client.base.getMultipleAccountsInfo(bank.active.map((w) => w.keypair.publicKey));
+  const balances = infos.map((info) => info?.lamports ?? 0);
   const shortfalls = bank.active
     .map((wallet, i) => ({ wallet, lamports: targetLamports - balances[i]! }))
     .filter((_, i) => balances[i]! < minLamports);
@@ -385,7 +412,13 @@ export async function fundHouseBank(
   // The payer must keep its own rent-exempt floor as well as cover the transfers and the fee, or the
   // System Program refuses the debit — asked of the chain rather than restated as a constant.
   const payerFloor = await client.base.getMinimumBalanceForRentExemption(0);
-  const needed = total + SIGNATURE_FEE_LAMPORTS + payerFloor;
+  // ONE FEE PER CHUNK, not one per top-up. The send below batches at `CHUNK` transfers per
+  // transaction, so a thirty-wallet first boot pays two signatures, not one. Charging for one here
+  // would let the pre-flight pass on a balance the send then cannot cover — and it would fail on the
+  // LAST chunk, after the earlier ones had already moved money, which is the worst place to discover
+  // it. The two constants are deliberately adjacent to the loop that uses them.
+  const chunkCount = Math.max(1, Math.ceil(shortfalls.length / FUNDING_CHUNK));
+  const needed = total + SIGNATURE_FEE_LAMPORTS * chunkCount + payerFloor;
   if (payerBalance < needed) {
     throw new Error(
       `fork payer holds ${(payerBalance / LAMPORTS_PER_SOL).toFixed(4)} SOL but topping up ` +
@@ -399,24 +432,40 @@ export async function fundHouseBank(
     return false;
   }
 
-  const tx = new Transaction().add(
-    ...shortfalls.map((s) => SystemProgram.transfer({
-      fromPubkey: forkPayer.publicKey,
-      toPubkey: s.wallet.keypair.publicKey,
-      lamports: s.lamports,
-    })),
-  );
-  // Confirmed against a BLOCKHASH, not the deprecated signature-and-commitment overload. That one has
-  // no `lastValidBlockHeight`, so a dropped transaction is only noticed by an internal 60-second
-  // timeout and then reported as `TransactionExpiredTimeoutError` — a minute of unexplained silence
-  // during boot, with an error that says nothing about house funding. This is the same shape
-  // `src/chain/sendTx.ts` uses for every other transaction in this project.
-  const { blockhash, lastValidBlockHeight } = await client.base.getLatestBlockhash("confirmed");
-  tx.feePayer = forkPayer.publicKey;
-  tx.recentBlockhash = blockhash;
-  const signature = await client.base.sendTransaction(tx, [forkPayer]);
-  await client.base.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
-  ok(`topped up ${shortfalls.length} house wallet(s) with ${(total / LAMPORTS_PER_SOL).toFixed(4)} SOL  ${c.d}${signature}${c.x}`);
+  const chunks: typeof shortfalls[] = [];
+  for (let i = 0; i < shortfalls.length; i += FUNDING_CHUNK) {
+    chunks.push(shortfalls.slice(i, i + FUNDING_CHUNK));
+  }
+
+  const signatures: string[] = [];
+  for (const chunk of chunks) {
+    const tx = new Transaction().add(
+      ...chunk.map((s) => SystemProgram.transfer({
+        fromPubkey: forkPayer.publicKey,
+        toPubkey: s.wallet.keypair.publicKey,
+        lamports: s.lamports,
+      })),
+    );
+    // Confirmed against a BLOCKHASH, not the deprecated signature-and-commitment overload. That one
+    // has no `lastValidBlockHeight`, so a dropped transaction is only noticed by an internal
+    // 60-second timeout and then reported as `TransactionExpiredTimeoutError` — a minute of
+    // unexplained silence during boot, with an error that says nothing about house funding. This is
+    // the same shape `src/chain/sendTx.ts` uses for every other transaction in this project.
+    //
+    // A fresh blockhash PER CHUNK rather than one for all of them: chunks are sent in sequence and
+    // each confirmation costs a slot or two, so a blockhash taken once could expire partway through a
+    // thirty-wallet boot — which would fail the tail while the head had already spent.
+    const { blockhash, lastValidBlockHeight } = await client.base.getLatestBlockhash("confirmed");
+    tx.feePayer = forkPayer.publicKey;
+    tx.recentBlockhash = blockhash;
+    const signature = await client.base.sendTransaction(tx, [forkPayer]);
+    await client.base.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
+    signatures.push(signature);
+  }
+  const where = signatures.length === 1
+    ? signatures[0]
+    : `${signatures.length} transactions, first ${signatures[0]}`;
+  ok(`topped up ${shortfalls.length} house wallet(s) with ${(total / LAMPORTS_PER_SOL).toFixed(4)} SOL  ${c.d}${where}${c.x}`);
   return true;
 }
 
@@ -567,9 +616,34 @@ export function plannedHouseEntries(
   const shortfall = Math.min(Math.max(Math.min(grow, ceilingRoom), coverFloor), freeSeats);
   if (shortfall <= 0) return { entries: [], split };
 
+  // ROTATED BY ROUND, and without it a bigger pool buys literally nothing.
+  //
+  // This iterated `free` in index order, so it always took the lowest-numbered wallets that were not
+  // already seated. With a pool of ten and a board of ten that was invisible — every wallet played
+  // every round because every wallet was needed. At a pool of thirty it stops being invisible and
+  // becomes the whole problem: wallets 0-8 would play every single round and 9-29 would never enter a
+  // fight, so the arena would show the same nine names forever while paying rent on twenty-one keys
+  // that do nothing.
+  //
+  // The point of a pool larger than the board is that the CAST CHANGES between rounds — an arena with
+  // a population rather than nine regulars. That only happens if the starting point moves, so it
+  // moves with the round number.
+  //
+  // DERIVED FROM `roundNo`, NOT SHUFFLED, for the reason the rest of this file is written the way it
+  // is: the keeper re-derives every decision from the chain on every pass and holds no memory, so a
+  // pass that runs twice on the same round must plan the same entries. `Math.random()` here would
+  // make a retry seat a different wallet than the attempt it was retrying, and `houseStake` already
+  // takes `roundNo` and `wallet.index` for exactly this reason.
+  //
+  // The modulo is over `free.length`, which shrinks as the house takes seats within a round, so the
+  // offset is not a stable cursor across passes of the SAME round — it does not need to be. What it
+  // guarantees is that consecutive ROUNDS start from different places in the pool, which is the
+  // property being bought.
   const free = bank.active.filter((w) => !split.houseIn.has(w.keypair.publicKey.toBase58()));
+  const offset = free.length > 0 ? Number(BigInt(roundNo) % BigInt(free.length)) : 0;
+  const rotated = [...free.slice(offset), ...free.slice(0, offset)];
   const entries: HouseEntry[] = [];
-  for (const wallet of free) {
+  for (const wallet of rotated) {
     if (entries.length >= shortfall) break;
     // Fill the bigger deficit first, so a shortfall that cannot be met in full still lands on the side
     // that is furthest from where the policy wants it.

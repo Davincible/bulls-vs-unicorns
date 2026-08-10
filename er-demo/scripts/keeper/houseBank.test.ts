@@ -70,6 +70,54 @@ const sidesOf = (round: RawRoundAccount, now: number) => entriesOf(round, now).m
 
 const walletsOf = (round: RawRoundAccount, now: number) => entriesOf(round, now).map((e) => e.wallet.index);
 
+/** The same view, at a chosen round number — which is the only input rotation reads. */
+const walletsAtRound = (round: RawRoundAccount, now: number, roundNo: bigint) =>
+  plannedHouseEntries(bank, round, roundNo, now, runningToDeadline).entries.map((e) => e.wallet.index);
+
+describe("the pool rotates between rounds", () => {
+  // WITHOUT THIS THE POOL SIZE IS DECORATION. The planner used to walk `free` in index order, so it
+  // always seated the lowest-numbered wallets that were not already in. At a pool the same size as
+  // the board that is invisible — every wallet plays every round because every wallet is needed. At a
+  // pool of thirty it means wallets 0-8 play forever and 9-29 never enter a fight, so the arena shows
+  // the same nine names while paying rent on twenty-one keys that do nothing.
+  //
+  // These tests are about the CAST CHANGING, not about which wallet is picked. Asserting a specific
+  // index would pin the arithmetic rather than the property, and the arithmetic is allowed to change.
+
+  const oneReal = () => roundWith(players(1, 0));
+
+  it("seats a different set of wallets on consecutive rounds", () => {
+    const a = walletsAtRound(oneReal(), FILL_TIME, 7n);
+    const b = walletsAtRound(oneReal(), FILL_TIME, 8n);
+    expect(a.length).toBeGreaterThan(0);
+    expect(a).not.toEqual(b);
+  });
+
+  it("reaches every wallet in the pool across enough rounds, so none is dead weight", () => {
+    const seen = new Set<number>();
+    for (let r = 0n; r < BigInt(HOUSE_WALLET_COUNT) * 4n; r += 1n) {
+      for (const i of walletsAtRound(oneReal(), FILL_TIME, r)) seen.add(i);
+    }
+    expect(seen.size).toBe(HOUSE_WALLET_COUNT);
+  });
+
+  it("plans the same entries twice for the same round, because a retry must not reseat", () => {
+    // The keeper re-derives every decision from the chain on every pass and holds no memory, so a
+    // pass that runs twice on one round has to agree with itself. `Math.random()` here would make a
+    // retry seat a different wallet than the attempt it was retrying.
+    const round = oneReal();
+    expect(walletsAtRound(round, FILL_TIME, 12n)).toEqual(walletsAtRound(round, FILL_TIME, 12n));
+  });
+
+  it("still seats the right NUMBER of fighters whatever the offset", () => {
+    // Rotation moves who plays, never how many — that is the sizing policy's decision and it must
+    // survive the reordering untouched.
+    const counts = new Set<number>();
+    for (let r = 0n; r < 40n; r += 1n) counts.add(walletsAtRound(oneReal(), FILL_TIME, r).length);
+    expect(counts.size).toBe(1);
+  });
+});
+
 describe("a lobby with nobody real in it", () => {
   // THE TREASURY RULE, AT THE ONE LAYER THAT ACTUALLY SENDS TRANSACTIONS. `houseSizing.test.ts` checks
   // the policy; this checks that no stage, clock or configuration of `plannedHouseEntries` can route
