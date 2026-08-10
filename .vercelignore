@@ -24,7 +24,19 @@ scripts/
 target/
 pitch/
 
-er-demo/scripts/
+# er-demo/scripts/ IS UPLOADED, and it is the one entry here that ships something the site does not
+# run. 1.1 MB across 45 files, and the reason is divergence rather than size.
+#
+# `npm run build` is `tsc -b && vite build`, and `tsc -b` builds every project the root
+# `tsconfig.json` references. When `tsconfig.scripts.json` was added to that list — closing a gap
+# where the entire keeper had never been type-checked — the next deploy failed with
+# `TS18003: No inputs were found in config file 'tsconfig.scripts.json'`, because this file was
+# hiding the directory it points at. The build box and the developer's machine were type-checking
+# different trees, which is precisely the class of bug that had just been fixed one layer up.
+#
+# The alternative was to narrow the build's project list so it checks only what deploys. That
+# re-creates the divergence deliberately: a change that compiles on Vercel and not locally, or the
+# reverse, and nothing to say which is authoritative. One tree, one answer, 1.1 MB.
 er-demo/design/
 er-demo/dist/
 
