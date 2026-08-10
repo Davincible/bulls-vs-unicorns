@@ -9,6 +9,12 @@ target/
 .anchor/
 test-ledger/
 package-lock.json
+# ...EXCEPT the repo-root one, which is a deploy input rather than a stray artefact.
+# `vercel.json`'s installCommand runs `npm ci` here to install the dependencies of the Vercel
+# Functions in `/api`, and `npm ci` fails outright without a lockfile. Ignored everywhere else
+# because `er-demo/` and `engine/` are bun and npm-install respectively and a stray lock there is
+# noise. See `er-demo/api/README.md`.
+!/package-lock.json
 .devnet/
 
 # Build toolchains and vendored SDKs — enormous, machine-specific, and never source.

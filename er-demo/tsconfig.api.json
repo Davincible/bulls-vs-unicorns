@@ -1,0 +1,47 @@
+// TYPE-CHECKING FOR THE SERVERLESS HALF — a fourth project in the solution, for exactly the reason
+// `tsconfig.e2e.json` is the third and `tsconfig.scripts.json` exists at all.
+//
+// It covers TWO directories, which is unusual and is the whole point:
+//
+//   `api`      — `er-demo/api/**`, the implementation and its tests. Reachable by `npm test` because
+//                vitest's default `include` sweeps everything under this directory.
+//   `../api`   — the repo-root `/api/**` Vercel entry points. They live outside `er-demo/` because
+//                Vercel only turns files under `/api` AT THE PROJECT ROOT into Functions — the
+//                `functions` key in `vercel.json` configures functions that were already detected and
+//                cannot create one from a file elsewhere. Without this second include they would be
+//                the one directory in the repo that can type-error in silence, which is precisely
+//                what this repo's root `tsconfig.json` header spends twenty lines warning about.
+//
+// Referenced from `tsconfig.json`, so `npm run typecheck` (`tsc -b --force`) covers both. There is
+// no separate command to remember and no way to report "typecheck clean" over unchecked code.
+//
+// `lib` is ES2023 with NO DOM, deliberately: this code runs on a server, and `document` or `window`
+// compiling here would be a bug that only shows up at 3am. Everything web-standard it does use —
+// `Request`, `Response`, `fetch`, `atob`, `TextEncoder`, `AbortController` — comes from `@types/node`,
+// which declares them as globals. If one of them ever fails to resolve, the fix is a narrower
+// `types` entry and not `"DOM"`.
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.api.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "skipLibCheck": true,
+
+    /* Bundler mode — matching tsconfig.app.json, because `.ts` extensions in relative imports are
+       the house style and the shared modules under src/v2/data/ are written that way. */
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* Linting */
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["api", "../api"]
+}

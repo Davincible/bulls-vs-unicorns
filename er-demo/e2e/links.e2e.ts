@@ -43,6 +43,7 @@ import {
   phaseWord,
   until,
   useBrowser,
+  type Session,
 } from "./harness.ts";
 
 /** `xLink.ts`'s `AVATAR_PATH_RE`, mirrored rather than imported for this suite's standing reason:
@@ -52,9 +53,9 @@ import {
  *  this shape is what forbids it. */
 const AVATAR_PATH = /^\/api\/avatar\/[0-9]{1,20}\/[0-9a-f]{64}\.webp$/;
 
-/** The page-time budget, spent in 50ms slices so the page's own rAF frames actually run — the clock
- *  is faked, so the canvas paints only when this test says so. Six is comfortably inside the lobby's
- *  eight, which is the property the whole test rests on (see the header). */
+/** Page time the second test spends proving an ABSENCE, in 50ms slices so the page's own rAF frames
+ *  actually run — the clock is faked, so the canvas paints only when this test says so. Six is
+ *  comfortably inside the lobby's eight, which is the property both tests rest on (see the header). */
 const LOBBY_SECONDS_TO_SPEND = 6;
 
 function avatarPaths(requests: readonly string[]): string[] {
@@ -63,57 +64,140 @@ function avatarPaths(requests: readonly string[]): string[] {
     .map((u) => u.slice(BASE_URL.length));
 }
 
+/** AVATAR PATHS THE PAGE ASKED FOR THAT NO `<img>` IN THE DOCUMENT IS POINTING AT — i.e. the ones
+ *  the CANVAS asked for.
+ *
+ *  THIS DISTINCTION IS THE TEST. `ui/ConnectPanel.tsx` renders the local player's own linked identity
+ *  as an ordinary DOM `<img>`, so `you`'s avatar is fetched by React whether or not the canvas ever
+ *  asks for anything at all. An earlier draft of this file asserted only that SOME avatar had been
+ *  requested — and passed with the fix reverted, on the strength of that one `<img>`, which is the
+ *  same false green in miniature as the defect it was written for.
+ *
+ *  `faces.ts` fetches through `new Image()`, which is never attached to the document. So a path that
+ *  was requested and that no element claims is a path the canvas asked for and nothing else could
+ *  have. The fixture links three fighters and only one of them is the local player, which is what
+ *  leaves something for this to find; if a DOM surface ever renders EVERY fighter's avatar too, this
+ *  returns empty and the test fails rather than quietly proving nothing — at which point it needs a
+ *  new discriminator, not a looser assertion. */
+async function canvasAvatarPaths(s: Session): Promise<string[]> {
+  const claimed = new Set(
+    await s.page.evaluate(() =>
+      Array.from(document.querySelectorAll("img"), (i) => i.getAttribute("src") ?? ""),
+    ),
+  );
+  return avatarPaths(s.requests).filter((p) => !claimed.has(p));
+}
+
+/** One rAF frame of page time per poll. */
+const FRAME_MS = 16;
+
+/** THE PAGE-TIME CEILING FOR THE WHOLE TEST, and it is an assertion in disguise. Everything below
+ *  has to happen while the fixture is still in its lobby: at second eight `fightStartedAtMs` flips,
+ *  `lineupChanged` goes true, and the field is rebuilt through `createField` — which copies
+ *  `avatarSrc` itself and would hand this test a pass with the defect fully present. Four seconds is
+ *  half the lobby and roughly two hundred and fifty frames, which is two orders of magnitude more
+ *  than the canvas needs. */
+const PAGE_TIME_BUDGET_MS = 4000;
+
+/** Advance the page one frame at a time until `condition` holds, spending from a budget shared
+ *  across the test.
+ *
+ *  SEPARATE FROM `until` BECAUSE THE TWO WAIT ON DIFFERENT THINGS. `until` polls in real time and is
+ *  right for anything the network owes us; this one polls a page that cannot make progress unless it
+ *  is given frames. Mixing them — spending page time to wait for the network — is what makes a test
+ *  like this flaky, and it is bounded here precisely so that it cannot. */
+async function tickUntil(
+  s: Session,
+  condition: () => Promise<boolean>,
+  what: string,
+): Promise<void> {
+  let spentMs = 0;
+  await until(async () => {
+    if (await condition()) return true;
+    if (spentMs + FRAME_MS > PAGE_TIME_BUDGET_MS) {
+      throw new Error(`spent the whole ${PAGE_TIME_BUDGET_MS}ms page-time budget`);
+    }
+    await s.tick(FRAME_MS / 1000);
+    spentMs += FRAME_MS;
+    return await condition();
+  }, what);
+}
+
 describe("a linked fighter's avatar, on the assembled page", () => {
   const browser = useBrowser();
 
-  it("is requested from our own origin while the round is already on screen", async () => {
+  it("is requested from our own origin when the link lands after the field was built", async () => {
+    // THE ORDERING IS THE TEST, so it is established rather than waited for. The identity fixture is
+    // HELD at the route until this test has watched the canvas paint a field with nobody linked on
+    // it; only then is it released. Without that hold the page is free to resolve the links before
+    // the first frame, in which case `ensureWorld` builds the field through `createField` — which
+    // copies `avatarSrc` itself — and the defect is completely masked. That is not a hypothetical:
+    // an earlier draft of this test waited for the fixture first, and it passed with the fix
+    // reverted. A test for a race that does not pin the race proves nothing.
+    let releaseLinks = (): void => {};
+    const linksHeld = new Promise<void>((resolve) => {
+      releaseLinks = resolve;
+    });
+
     const s = await open(browser(), {
       query: "fixture=1&links=mock",
       keeper: keeperStates.heldOpenLobby(),
+      routes: async (page) => {
+        await page.route("**/links.mock.json", async (route) => {
+          await linksHeld;
+          await route.continue();
+        });
+      },
     });
     try {
       await assertRendered(s.page, "the arena under ?links=mock");
 
-      // TWO CLOCKS, AND NEITHER MAY BE SLEPT ON. The link pipeline runs in REAL time — fetch the
-      // fixture, fetch the signing chunk `useLinks` imports dynamically, derive the key, sign every
-      // record, verify every signature, re-render — while the canvas paints only when this test
-      // advances PAGE time. So each poll advances a few frames and then asks whether the avatar has
-      // been requested yet.
-      //
-      // A FIXED RUN OF TICKS IS THE WRONG SHAPE HERE, and it is worth naming because it looked
-      // right: `for (i = 0; i < 6; i++) await s.tick(1)` spends the whole lobby in about fifty
-      // milliseconds of REAL time, so it can comfortably outrun the fetch it is waiting for. That
-      // version of this test passed twice and then failed on the third run with nothing underneath
-      // it having changed — a false green for the same reason the harness header gives for banning
-      // `waitForTimeout`.
-      const TICK_MS = 50;
-      const BUDGET_MS = LOBBY_SECONDS_TO_SPEND * 1000;
-      let spentMs = 0;
-      const t0 = Date.now();
-      let polls = 0;
-      await until(async () => {
-        polls += 1;
-        if (avatarPaths(s.requests).length > 0) return true;
-        // Bounded, and bounded INSIDE the lobby. Crossing second eight flips `fightStartedAtMs`,
-        // rebuilds the field, and hands the bodies their avatars through `createField` — which would
-        // make this test pass with the defect fully present. The budget is what stops that.
-        if (spentMs + TICK_MS > BUDGET_MS) return false;
-        await s.tick(TICK_MS / 1000);
-        spentMs += TICK_MS;
-        return avatarPaths(s.requests).length > 0;
-      }, "the canvas to request a linked fighter's avatar");
-      console.log(`MEASURE polls=${polls} pageMs=${spentMs} realMs=${Date.now() - t0}`);
-      const paths = avatarPaths(s.requests);
+      // TWO CLOCKS, AND NEITHER MAY BE SLEPT ON. The canvas paints only when this test advances PAGE
+      // time (the clock is faked, so `requestAnimationFrame` is too); the identity pipeline runs in
+      // REAL time. Page time is the scarce one — there are eight seconds of lobby and then the field
+      // rebuilds — so it is spent deliberately, in single frames, and never as a way of waiting for
+      // the network.
 
-      // Still in the lobby, therefore the field was never rebuilt, therefore the only way a path
-      // reached a body is the in-place sync. This assertion is load-bearing — see the file header.
+      // STEP ONE — THE FIELD EXISTS AND NOBODY IS LINKED. The canvas's own `aria-label` is written
+      // by the loop's `frame()` out of `field.bodies`, so a label naming a fighter count is proof
+      // that `ensureWorld` has run and built the world. Until it says so, the defect has nothing to
+      // be a defect about.
+      // `arenaLoop`'s `updateLabel` composes this out of `field.bodies`; the canvas ships with a bare
+      // "Arena field" until the loop has run at least once with a world in it.
+      const painted = async (): Promise<boolean> =>
+        /\d+ of \d+ fighters? in play/.test(
+          (await s.page.locator("canvas").getAttribute("aria-label")) ?? "",
+        );
+      expect(PAGE_TIME_BUDGET_MS / 1000).toBeLessThan(LOBBY_ENDS_SEC);
+      await tickUntil(s, painted, "the canvas to paint a field with fighters on it");
+
+      // Guaranteed, not hoped for: the fixture response is still held at the route.
+      expect(await canvasAvatarPaths(s)).toEqual([]);
+
+      // STEP TWO — THE LINK LANDS, mid-round, on a field that is already up. This is the whole
+      // scenario, and `TWITTER-CONNECT.md` §8.4 asks for it by name.
+      releaseLinks();
+
+      // Costs no page time at all, so it can wait out a loaded machine without eating the lobby.
+      await until(
+        async () => s.requests.some((u) => u.includes("mockLinks-")),
+        "the mock link fixture to be fetched and its signer to load",
+      );
+
+      // STEP THREE — PAINT AGAIN. Nothing about the cast changed, so `lineupChanged` is false and
+      // `createField` will not run: the only route left for a path to reach a body is the in-place
+      // sync. THE DEFECT, AS A NUMBER — this wait times out if the canvas never asks for a face.
+      await tickUntil(
+        s,
+        async () => (await canvasAvatarPaths(s)).length > 0,
+        "the canvas to request a linked fighter's avatar",
+      );
+      const paths = await canvasAvatarPaths(s);
+
+      // Still in the lobby, therefore the field was never rebuilt out from under the assertion.
       // Uppercase because `phaseWord` reads `innerText` and the top bar is `text-transform`d — the
       // same spelling `clock.e2e.ts` asserts, deliberately, so both read the word a player sees.
       expect(await phaseWord(s.page)).toBe("LOBBY");
-      expect(LOBBY_SECONDS_TO_SPEND).toBeLessThan(LOBBY_ENDS_SEC);
-
-      // THE DEFECT, AS A NUMBER. Zero here is the bug: the canvas never asked for a face.
-      expect(paths.length).toBeGreaterThan(0);
 
       // Every one is the proxy path and nothing else — no host, no query, no cache-buster. A size
       // parameter would miss the proxy's content-hash key; an absolute URL would fetch off-origin

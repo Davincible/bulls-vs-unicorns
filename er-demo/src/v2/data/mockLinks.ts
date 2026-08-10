@@ -59,20 +59,21 @@ export function parseMockFixture(raw: unknown): readonly MockIdentity[] {
   return out;
 }
 
-/** The same 32-bit string hash `contract.ts#nameFor` uses. Deliberately the same function: the mock
- *  assigns faces to the same wallets that already got memorable pseudonyms, so a reviewer looking at
- *  a screenshot sees a consistent cast rather than two unrelated hashings of one list. */
-function hash32(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i += 1) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return h;
-}
-
-/** Roughly one wallet in three gets a face. NOT all of them, and not two of them — a MIXED board is
- *  the layout that actually needs reviewing (`TWITTER-CONNECT.md` §8.3: "the mix is where a row
- *  layout that silently assumed an avatar column falls apart"), and it is also the honest picture of
- *  what a real board will look like, because most players never link. */
-const MOCK_LINK_RATE = 3;
+/** EVERY OTHER ELIGIBLE WALLET gets a face — by position in the sorted list, not by hashing the
+ *  wallet.
+ *
+ *  A MIXED board is the layout that actually needs reviewing (`TWITTER-CONNECT.md` §8.3: "the mix is
+ *  where a row layout that silently assumed an avatar column falls apart"), and it is the honest
+ *  picture of a real board, because most players never link.
+ *
+ *  IT USED TO BE `hash32(wallet) % 3 === 0`, AND THAT FAILED IN THE ONE PLACE IT MATTERED. A hash
+ *  filter only approximates its rate over a large pool. The fixture's eligible pool is small — two
+ *  thirds of the lineup is house, and the house can never wear a face — so at nine fighters there
+ *  were three eligible wallets and the hash happened to select none of them. The fixture rendered
+ *  exactly one face, the player's own, and looked like a broken feature while every guard beneath it
+ *  worked perfectly. Position is exact at every size: 3 eligible gives 2, 48 gives 24, and it can
+ *  never round down to nothing. */
+const MOCK_LINK_STRIDE = 2;
 
 /**
  * Decide who wears which identity.
@@ -102,10 +103,9 @@ export function assignMockIdentities(
   // Sorted, so the assignment does not depend on the order the round happened to list its fighters
   // in — the roster is re-sorted by several views and the fixture should not shuffle underneath them.
   const others = [...wallets].filter((w) => w !== you).sort();
-  for (const wallet of others) {
+  for (let i = 0; i < others.length; i += MOCK_LINK_STRIDE) {
     if (remaining.length === 0) break;
-    if (hash32(wallet) % MOCK_LINK_RATE !== 0) continue;
-    out.set(wallet, remaining.shift() as MockIdentity);
+    out.set(others[i], remaining.shift() as MockIdentity);
   }
   return out;
 }

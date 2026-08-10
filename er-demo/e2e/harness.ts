@@ -184,6 +184,16 @@ export interface OpenOptions {
   /** Dismiss the first-visit takeover before handing the page back. Every test that is not ABOUT the
    *  takeover wants this — it covers the page and traps the keyboard. */
   dismissIntro?: boolean;
+  /** EXTRA ROUTES, INSTALLED BEFORE `goto` — which is the only moment at which a response the page
+   *  fetches on mount can be delayed, rewritten or failed. `page.route` called after navigation is
+   *  too late for every one of them.
+   *
+   *  It exists because ORDERING IS SOMETIMES THE THING UNDER TEST. `links.e2e.ts` has to prove the
+   *  canvas picks up an identity that arrives AFTER the field was built, and the only way to know
+   *  the field was built first is to hold the identity response until the test has seen it happen.
+   *  Waiting and hoping would have been a test that passes whichever order the machine happened to
+   *  produce — which is precisely the false green this suite exists not to produce. */
+  routes?(page: Page): Promise<void>;
 }
 
 export interface Session {
@@ -229,6 +239,9 @@ export async function open(browser: Browser, options: OpenOptions = {}): Promise
           body: JSON.stringify(keeper),
         }),
   );
+
+  // After the keeper's, so a caller can override it, and still before `goto` — see `OpenOptions`.
+  if (options.routes) await options.routes(page);
 
   // BEFORE `goto` as well, and this one is load-bearing: `data/flags.ts` reads the query string at
   // MODULE LOAD, and `useFixtureRound` seeds its start time from `Date.now()` on first render.

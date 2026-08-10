@@ -47,9 +47,111 @@ interface Entry {
   /** Decode finished or failed. Either way we stop caring — a failed asset must not be retried on
    *  the next frame, sixty times a second, forever. */
   settled: boolean;
+  /** `useClock` at the last `lookup`. The recency half of the eviction policy below. */
+  usedAt: number;
 }
 
+// ================================================================================================
+// EVICTION — added when a face stopped being one of two fixed images and became per-player.
+//
+// This cache was unbounded for its whole life and that was correct: the only keys it could ever hold
+// were the two coin icons, so "never evict" was a policy over a set of size two. An avatar makes the
+// key space the set of PLAYERS, and this page is designed to be left open across continuous rounds
+// with a rotating cast. Each successful entry holds a decoded `HTMLImageElement` AND an offscreen
+// canvas of up to `SPENT_MAX_PX`² — a few hundred distinct faces over an evening is tens of
+// megabytes that can never be reclaimed, on a tab also running a 60fps canvas. It is a leak whose
+// only symptom is jank, which is the hardest kind to attribute to its cause.
+//
+// THE TWO POPULATIONS ARE SPLIT, and that is the design rather than an optimisation. A SUCCESSFUL
+// entry is expensive (an image plus a canvas). A FAILED one is almost free: `settle` builds no face,
+// the `{ once: true }` listeners have both been removed, and the `decode()` promise has resolved, so
+// nothing references the `Image` any more and what is left is a two-field object. Putting them in
+// one budget would mean either evicting cheap failures to make room — which is how a 404 turns back
+// into a request — or letting them consume the budget that expensive artwork needs. So:
+//
+//   `cache`  — pending and successful entries. Bounded, LRU, coins exempt.
+//   `failed` — srcs not worth asking about again. Bounded far higher, because remembering one is
+//              what stops the retry, and each memory is a string.
+// ================================================================================================
+
+/** How many decoded faces are held at once. The program's cap is 16 fighters and the fixture's
+ *  widest lineup is 48, so this is more than two complete rosters of history — eviction is genuinely
+ *  rare, and when it happens the cost is one re-decode of a face nobody has looked at in two rounds. */
+export const MAX_CACHED_FACES = 128;
+
+/** How many failed srcs are remembered. Deliberately much larger than `MAX_CACHED_FACES`, because
+ *  the whole value of the memory is that it prevents a request and the memory costs a string. It is
+ *  bounded at all only so that "skip failures" cannot become a second unbounded map. */
+export const MAX_REMEMBERED_FAILURES = 512;
+
 const cache = new Map<string, Entry>();
+const failed = new Set<string>();
+
+/** The answer for anything in `failed` — one shared, frozen object rather than one per lookup, since
+ *  this is returned from inside the paint loop. Frozen so that a future edit that tries to settle
+ *  through it fails loudly instead of corrupting every failed src at once. It is never in `cache`,
+ *  so nothing ever writes its `usedAt`. */
+const FAILED: Entry = Object.freeze({ face: null, settled: true, usedAt: 0 });
+
+/** Monotonic, incremented on every cache hit and every insertion. A counter rather than the usual
+ *  `delete`+`set` LRU dance: this is written from inside the painter, up to 48 times a frame, and an
+ *  integer store is free where mutating a `Map`'s iteration order 2,880 times a second is not. The
+ *  ordering it encodes is only ever READ when something is actually being evicted, which is rare. */
+let useClock = 0;
+
+/** Srcs that must never be evicted: the two coins.
+ *
+ *  AN EXPLICIT EXEMPTION RATHER THAN A CONSEQUENCE OF THE POLICY, and the difference is a real round.
+ *  It is tempting to reason that the coins are touched every frame by some unlinked fighter and so
+ *  can never be the least-recently-used — but a round in which EVERY fighter has linked touches
+ *  neither of them, and they would then age out and be re-decoded mid-fight, which is a visible pop
+ *  on the next fighter to draw one. They are two entries; they stay. */
+const PERMANENT: ReadonlySet<string> = new Set(
+  SIDE_TOKEN.map((t) => t.icon).filter((icon): icon is string => icon !== null),
+);
+
+/** Drop least-recently-used artwork until the cache is back inside its cap.
+ *
+ *  CALLED FROM `settle`, NOT FROM `lookup` — i.e. once per src, at the moment the memory is actually
+ *  allocated, and never from the painter's path. The scan is O(cache) and runs on an event that
+ *  happens a few dozen times a round.
+ *
+ *  PENDING ENTRIES ARE NOT VICTIMS. They hold no artwork, so evicting one reclaims nothing, and it
+ *  would drop the record of a fetch that is still in flight — the next frame would start a second
+ *  request for bytes already on their way. */
+function evictOverflow(): void {
+  // COUNTED OVER FACES, NOT OVER `cache.size`, and the difference is not pedantic. The budget exists
+  // to bound decoded ARTWORK; a pending entry holds none. Capping on the map's size instead means a
+  // lobby that asks for forty-eight faces at once sits above the cap while every one of them is
+  // still in flight — so the first face to finish decoding is immediately the only eviction
+  // candidate there is, and every face is thrown away on the frame it becomes usable.
+  let held = 0;
+  for (const entry of cache.values()) if (entry.face !== null) held += 1;
+
+  while (held > MAX_CACHED_FACES) {
+    let victim: string | null = null;
+    let oldest = Infinity;
+    for (const [src, entry] of cache) {
+      if (entry.face === null || PERMANENT.has(src)) continue;
+      if (entry.usedAt < oldest) {
+        oldest = entry.usedAt;
+        victim = src;
+      }
+    }
+    if (victim === null) return;
+    cache.delete(victim);
+    held -= 1;
+  }
+}
+
+/** Remember that this src is not a picture, and forget the oldest such memory if we are holding too
+ *  many. `Set` iterates in insertion order, so the first one out is the one longest ago. */
+function rememberFailure(src: string): void {
+  failed.add(src);
+  if (failed.size <= MAX_REMEMBERED_FAILURES) return;
+  const stalest = failed.values().next();
+  if (!stalest.done) failed.delete(stalest.value);
+}
 
 /** Cap on the desaturated copy's size. The largest a disc can get is `BASE_RADIUS_RANGE[1]` ×
  *  `MAX_SCALE` ≈ 100px radius, i.e. ~400 device px across at DPR 2 — but the spent variant is drawn
@@ -77,9 +179,17 @@ function desaturate(img: HTMLImageElement): CanvasImageSource {
 
 function lookup(src: string): Entry {
   const existing = cache.get(src);
-  if (existing) return existing;
+  if (existing) {
+    // The whole cost of LRU on the hot path: one integer store. See `useClock`.
+    existing.usedAt = ++useClock;
+    return existing;
+  }
+  // Asked and answered — no picture there. Checked AFTER the cache because a live face is the
+  // common case and this one is the rare one, and returning here is what stops the retry storm
+  // whether or not the entry that recorded the failure has since been evicted.
+  if (failed.has(src)) return FAILED;
 
-  const entry: Entry = { face: null, settled: false };
+  const entry: Entry = { face: null, settled: false, usedAt: ++useClock };
   cache.set(src, entry);
 
   const img = new Image();
@@ -94,7 +204,17 @@ function lookup(src: string): Entry {
     entry.settled = true;
     // `naturalWidth` is the honest test of "did this actually decode" — it is 0 for a 404, for a
     // corrupt file, and in a browser with images turned off, all of which land here.
-    if (img.naturalWidth > 0) entry.face = { art: img, spent: desaturate(img) };
+    if (img.naturalWidth > 0) {
+      entry.face = { art: img, spent: desaturate(img) };
+      // Here rather than in `lookup`, because this is the moment the memory exists.
+      evictOverflow();
+      return;
+    }
+    // Out of the expensive population and into the cheap one. The entry object itself stays alive in
+    // this closure with `settled` already true, so a late `load` after an `error` still finds a
+    // settled entry and does not rebuild the face — see the guard above.
+    cache.delete(src);
+    rememberFailure(src);
   };
   img.addEventListener("error", settle, { once: true });
   img.addEventListener("load", settle, { once: true });

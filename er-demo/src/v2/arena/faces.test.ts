@@ -215,7 +215,13 @@ async function loadFaces(mode: ContextMode = "colour") {
   // The SAME module instance `faces.ts` just imported: `resetModules` cleared the registry, loading
   // `faces.ts` repopulated it, and this hits that cache rather than making a third copy.
   const contract = await import("../contract.ts");
-  return { faceFor: faces.faceFor, primeFaces: faces.primeFaces, contract };
+  return {
+    faceFor: faces.faceFor,
+    primeFaces: faces.primeFaces,
+    maxFaces: faces.MAX_CACHED_FACES,
+    maxFailures: faces.MAX_REMEMBERED_FAILURES,
+    contract,
+  };
 }
 
 /** Drains the microtask queue, so a `decode()` that has resolved has actually run `settle`. */
@@ -674,5 +680,135 @@ describe("desaturation, when the browser will not do it", () => {
     // what stands between us and a full-colour copy shipped under the name `spent`.
     expect(dom.getContextCalls).toBe(1);
     expect(dom.drawImageCalls).toBe(0);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+
+/** A distinct, well-formed proxy path per index — distinct in the xId, which is the part the proxy
+ *  actually keys on. */
+function avatarN(i: number): string {
+  return avatarFor(`${1_000_000 + i}`, "d4");
+}
+
+/** Land every image that has not settled yet. Already-settled ones are no-ops: their `{once:true}`
+ *  listener is gone and `settle`'s own guard would turn it away regardless. */
+async function settleAllPending(): Promise<void> {
+  for (const img of dom.images) img.arrive();
+  await flush();
+}
+
+describe("eviction — the cache stopped being a fixed set of two the day faces became per-player", () => {
+  // THE DEFECT: every distinct avatar used to be held forever, along with the offscreen canvas
+  // `desaturate` built for it. A tab left open across an evening of rounds with a rotating cast is
+  // the design intent of this page, and a few hundred faces at an image plus a 256² canvas each is
+  // tens of megabytes that can never come back — on a tab also running a 60fps canvas. The only
+  // symptom is jank hours later, which is the hardest kind of fault to attribute to its cause, and
+  // nothing in the browser will ever point at this Map.
+
+  it("never evicts the coins, however much avatar traffic passes through", async () => {
+    const { faceFor, primeFaces, maxFaces, contract } = await loadFaces();
+    const coin = contract.SIDE_TOKEN[0].icon;
+    primeFaces();
+    await settleAllPending();
+    const coinFace = faceFor(body({ side: 0 }));
+    expect(coinFace).not.toBeNull();
+
+    // A cast several times the cap, ALL of them linked — so nothing in this stretch ever asks for a
+    // coin. That is the case an implicit "the coins are always the most recently used" argument gets
+    // wrong, and the reason the exemption is written down rather than reasoned about.
+    for (let i = 0; i < maxFaces * 3; i++) faceFor(body({ avatarSrc: avatarN(i) }));
+    await settleAllPending();
+
+    // The SAME Face object: not re-decoded, not re-requested. A coin re-decoding mid-fight is a
+    // visible pop on the next fighter to draw one.
+    expect(faceFor(body({ side: 0 }))).toBe(coinFace);
+    expect(dom.images.filter((i) => i.src === coin)).toHaveLength(1);
+  });
+
+  it("holds a bounded number of faces, dropping the least recently used", async () => {
+    const { faceFor, maxFaces } = await loadFaces();
+    for (let i = 0; i < maxFaces + 50; i++) faceFor(body({ avatarSrc: avatarN(i) }));
+    await settleAllPending();
+
+    const before = dom.images.length;
+    // The newest is still held — no second Image.
+    faceFor(body({ avatarSrc: avatarN(maxFaces + 49) }));
+    expect(dom.images).toHaveLength(before);
+
+    // The oldest is gone, and asking again is a fresh request rather than a silent null. Re-decoding
+    // a face nobody has looked at in two rounds is exactly what the budget is buying.
+    faceFor(body({ avatarSrc: avatarN(0) }));
+    expect(dom.images).toHaveLength(before + 1);
+    expect(dom.images[dom.images.length - 1].src).toBe(avatarN(0));
+  });
+
+  it("measures recency by USE, so a fighter still on the field keeps its face", async () => {
+    // The distinction between this and insertion-order FIFO is a real player: someone who entered
+    // early and is still standing is the OLDEST entry and the one being painted every frame. Evicting
+    // them mid-fight to make room for a newcomer is precisely backwards.
+    const { faceFor, maxFaces } = await loadFaces();
+    for (let i = 0; i < maxFaces; i++) faceFor(body({ avatarSrc: avatarN(i) }));
+    await settleAllPending();
+
+    // The painter touches the oldest entry, as it does every frame for a fighter still in the ring.
+    faceFor(body({ avatarSrc: avatarN(0) }));
+
+    // One more face arrives, so exactly one must go.
+    faceFor(body({ avatarSrc: avatarN(maxFaces) }));
+    await settleAllPending();
+
+    const before = dom.images.length;
+    faceFor(body({ avatarSrc: avatarN(0) }));
+    expect(dom.images).toHaveLength(before); // touched, therefore kept
+    faceFor(body({ avatarSrc: avatarN(1) }));
+    expect(dom.images).toHaveLength(before + 1); // untouched, therefore the victim
+  });
+
+  it("does not turn a failed avatar back into a request once the cache has churned", async () => {
+    // THE ONE THING EVICTION MUST NOT BREAK. `settled` exists so a 404 is asked for once rather than
+    // sixty times a second forever; an eviction policy that forgets failures would reinstate exactly
+    // that storm, one round later, for every fighter whose avatar is missing.
+    const { faceFor, maxFaces } = await loadFaces();
+    const broken = avatarN(99_999);
+    faceFor(body({ avatarSrc: broken }));
+    dom.images[0].fail();
+    await flush();
+
+    // Three rosters' worth of unrelated faces — far past the cap, so everything evictable has been
+    // evicted several times over.
+    for (let i = 0; i < maxFaces * 3; i++) faceFor(body({ avatarSrc: avatarN(i) }));
+    await settleAllPending();
+
+    const before = dom.images.length;
+    for (let frame = 0; frame < ONE_SECOND_OF_FRAMES; frame++) {
+      expect(faceFor(body({ avatarSrc: broken }))).toBeNull();
+    }
+    expect(dom.images).toHaveLength(before); // not sixty retries, and not even one
+  });
+
+  it("bounds what it remembers about failures too", async () => {
+    // Otherwise "failures are never evicted" is just a second unbounded map with a friendlier name.
+    // The bound is deliberately loose — a remembered failure is a string, and forgetting one costs a
+    // single request — so this pins that the bound EXISTS, not where it sits.
+    const { faceFor, maxFailures } = await loadFaces();
+
+    const first = avatarN(0);
+    faceFor(body({ avatarSrc: first }));
+    dom.images[0].fail();
+    await flush();
+
+    for (let i = 1; i <= maxFailures; i++) {
+      faceFor(body({ avatarSrc: avatarN(i) }));
+      dom.images[dom.images.length - 1].fail();
+    }
+    await flush();
+
+    // The oldest memory has been dropped, so this one src is asked about once more. Once.
+    const before = dom.images.length;
+    faceFor(body({ avatarSrc: first }));
+    expect(dom.images).toHaveLength(before + 1);
+    faceFor(body({ avatarSrc: first }));
+    expect(dom.images).toHaveLength(before + 1);
   });
 });
