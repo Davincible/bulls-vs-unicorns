@@ -47,6 +47,7 @@ import {
   type Side,
 } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
+import { pendingNote, sessionNote } from "../data/autoSession.ts";
 import { feeNote, feePhrase } from "../views/feeCopy.ts";
 import { ConnectPanel } from "./ConnectPanel.tsx";
 import { Seg } from "./primitives.tsx";
@@ -160,7 +161,7 @@ function useDockHeight(): (el: HTMLElement | null) => void {
 // ---------------------------------------------------------------------------------------------
 
 function DeployBody() {
-  const { actions, fee, toasts } = useArena();
+  const { actions, fee, session, toasts } = useArena();
   // Deliberately NOT shared with 00-3's stake state. Two controls that silently rewrote each other's
   // amount across four screens of scroll would be a worse surprise than two independent ones, and
   // there is no chain state here to keep in sync — `enter()` takes the amount at the moment it is
@@ -168,6 +169,7 @@ function DeployBody() {
   const [stake, setStake] = useState(20);
   const stakeUnits = usdToUnits(stake);
   const feeUnits = feeOn(stakeUnits, fee);
+  const signingNote = sessionNote(session.plan, session.life);
 
   const deploy = useCallback(
     async (side: Side) => {
@@ -234,13 +236,22 @@ function DeployBody() {
         </button>
       </div>
 
+      {/* WHAT THE FIRST APPROVAL IS FOR, ON THE CONTROL THAT TRIGGERS IT — and gone the moment it is
+          no longer true. A player who presses Deploy and gets a Phantom dialog about a session key
+          they have never heard of reads it as the wrong transaction and cancels; this is the whole
+          difference between "one approval, then an hour of silence" and a rejected deploy. Above the
+          `entering` line rather than folded into it, because it has to be readable BEFORE the press,
+          which is the only time it can do its job. */}
+      {signingNote !== null ? <p className="lede dock-note">{signingNote}</p> : null}
+
       {/* `.lede`, not `.u`: a tracked-out uppercase sentence is the house voice for a LABEL, and
           three lines of it is a wall. Sentences on this page are sentence case.
           The `entering` case is the one moment these buttons are disabled, so it says why they are
-          and what ends it — "Sending…" said neither. */}
+          and what ends it — "Sending…" said neither, and the press now spans a wallet dialog as
+          well as a transaction, which is what `pendingNote` splits apart. */}
       <p className="lede dock-note">
         {actions.entering
-          ? "Sending — the buttons come back when it lands or fails."
+          ? pendingNote(session.work)
           : `Presets only, up to the $${STAKE_CAP_USD} per-side cap. Custom amounts, the slider and repeat-every-round are in 00-3.`}
       </p>
     </>
@@ -251,6 +262,7 @@ function ExtractBody() {
   const { live, actions, session, toasts } = useArena();
   const eligible = actions.extractEligible;
   const terms = live?.extractTerms ?? null;
+  const signingNote = sessionNote(session.plan, session.life);
 
   const run = useCallback(async () => {
     // Quoted before the await, exactly as 00-3.1 does: by the time the transaction lands the cursor
@@ -301,14 +313,20 @@ function ExtractBody() {
         </span>
       </button>
 
+      {/* IT USED TO END WITH "Tip: start a session key to skip wallet prompts" — a chore, pointing at
+          a button four clicks away, on the most time-critical control in the game. Nobody has to do
+          that any more: the extract opens the session itself. What is left is a description of what
+          the press will cost, and it disappears once a session is signing. */}
+      {signingNote !== null ? <p className="lede dock-note">{signingNote}</p> : null}
+
       {/* The two states this button spends most of its life in are both disabled ones, so both say
-          why and what would end them: a reason from `extractEligibility` (with the session hint,
-          which is the one a player can act on), or a transaction already in flight. */}
+          why and what would end them: a reason from `extractEligibility`, or a transaction already
+          in flight — which now spans a wallet dialog too, hence `pendingNote`. */}
       <p className="lede dock-note">
         {actions.extracting
-          ? "Sending…"
+          ? pendingNote(session.work)
           : !eligible.ok && eligible.reason
-            ? `${eligible.reason}.${!session.active ? " Tip: start a session key to skip wallet prompts." : ""}`
+            ? `${eligible.reason}.`
             : "You leave the fight straight away."}
       </p>
     </>

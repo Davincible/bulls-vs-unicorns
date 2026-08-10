@@ -15,6 +15,7 @@ import {
   bpsPct,
 } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
+import { ASSUMED_SESSION_TOP_UP_SOL } from "../data/autoSession.ts";
 import { feeNote, feePhrase } from "../views/feeCopy.ts";
 import { useFocusTrap } from "./useFocusTrap.ts";
 
@@ -29,7 +30,7 @@ export function IntroOverlay({ onClose }: { onClose(): void }) {
   // THE ENTRY RATE IS READ, NOT COMPILED IN. This overlay is the reason: it is the first thing a
   // first-time player reads, and when the rate moved 20 -> 100 on devnet mid-session this paragraph
   // spent the gap until the next build quoting a fifth of what the chain was charging. See `FEE_BPS`.
-  const { fee } = useArena();
+  const { fee, session } = useArena();
 
   // A DIALOGUE IS TWO CLAIMS, AND THE MARKUP ONLY MADE ONE. `aria-modal="true"` below tells a screen
   // reader that nothing outside this takeover exists; it tells the browser nothing at all, so Tab
@@ -87,6 +88,34 @@ export function IntroOverlay({ onClose }: { onClose(): void }) {
               to show you.
             </span>
           </li>
+          {/* SECOND, AND ONE LINE. A player arrives expecting to approve every move — that is what
+              every other Solana page has taught them, and it is what this one did until now. The
+              absence of those popups is the single best thing about playing here, and a good thing
+              nobody is told about is indistinguishable from one that does not exist. It is also the
+              expectation to set BEFORE the first Phantom dialog appears saying something about a
+              session key, which is the moment it would otherwise read as the wrong transaction.
+              Deliberately not longer: the cost, the count and the hour, and the wallet panel has
+              the rest.
+
+              DROPPED ENTIRELY ON THE TWO PATHS WHERE IT IS SIMPLY UNTRUE — `?fixture=1`, which signs
+              nothing and charges nobody, and `?signer=burner`, which signs locally and has never
+              shown a prompt. Both are module-level flags fixed for the life of the page, so this is
+              a fact about the build rather than a state a reader passes through: a disconnected or
+              underfunded visitor still gets the line, because it is about to become true for them
+              the moment they connect and fund. Quoting a cost nobody is charged is the exact defect
+              `autoSession.test.ts` exists to keep off the deploy panel, and this overlay is the
+              first thing anybody reads. */}
+          {session.plan.kind === "wallet" &&
+          (session.plan.reason === "fixture" || session.plan.reason === "burner") ? null : (
+            <li>
+              <b>Approvals</b>
+              <span>
+                Your first deploy opens a play session — one Phantom approval,{" "}
+                {ASSUMED_SESSION_TOP_UP_SOL} SOL to fund the key that signs for you, good for an hour
+                — and every deploy and extract after it goes through with no prompt at all.
+              </span>
+            </li>
+          )}
           <li>
             <b>Mayhem</b>
             <span>

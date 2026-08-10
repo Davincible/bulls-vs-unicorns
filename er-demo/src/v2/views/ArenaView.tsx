@@ -41,6 +41,7 @@ import {
   type Side,
 } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
+import { sessionNote } from "../data/autoSession.ts";
 import { abandonText, simBankrollUsd, type AmountRule } from "../data/autoDeploy.ts";
 import { houseNote } from "../data/houseFighters.ts";
 import { feePhrase } from "./feeCopy.ts";
@@ -815,7 +816,7 @@ function controlsFor(rule: AmountRule, armed: boolean): { stake: number; pct: nu
 }
 
 function Deploy() {
-  const { live, status, actions, autoDeploy, fee, mode, setMode, toasts, gate } = useArena();
+  const { live, status, actions, autoDeploy, fee, mode, setMode, session, toasts, gate } = useArena();
   // Read once, at mount, from whatever rule is standing — never on every render, which would make
   // these controls unusable while armed.
   const [initial] = useState(() => controlsFor(autoDeploy.rule, autoDeploy.armed));
@@ -838,6 +839,7 @@ function Deploy() {
   const phase = live?.phase ?? null;
   const stakeUnits = usdToUnits(stake);
   const feeUnits = feeOn(stakeUnits, fee);
+  const signingNote = sessionNote(session.plan, session.life);
 
   /** A LIVE CLOCK, because the deposit deadline is a time and not a phase.
    *
@@ -1030,6 +1032,15 @@ function Deploy() {
               Deploy both sides · {usd(stakeUnits * 2n)}
             </button>
 
+            {/* WHAT THE FIRST APPROVAL IS FOR, under the buttons that trigger it — the same sentence
+                the dock carries, from the same module, because two hand-written accounts of one
+                Phantom dialog is how one of them ends up describing a cost that moved. It is gone
+                the moment a session is signing, which is most of the time. */}
+            {signingNote !== null ? (
+              <p className="lede" style={{ marginTop: 14 }}>
+                {signingNote}
+              </p>
+            ) : null}
           </div>
         </div>
       )}
@@ -1056,6 +1067,7 @@ function Extract() {
   const eligible = actions.extractEligible;
   const terms = live?.extractTerms ?? null;
   const fighting = live?.phase === "Fight";
+  const signingNote = sessionNote(session.plan, session.life);
 
   const run = async () => {
     // Read the quote BEFORE awaiting: by the time the transaction lands the cursor has moved and the
@@ -1102,9 +1114,6 @@ function Extract() {
           {!eligible.ok && eligible.reason ? (
             <p className="lede" style={{ marginTop: 10 }}>
               Unavailable — {eligible.reason}.
-              {!session.active && fighting
-                ? " A session key would sign this without a wallet prompt (panel, bottom right)."
-                : ""}
             </p>
           ) : (
             <p className="lede" style={{ marginTop: 10 }}>
@@ -1118,6 +1127,20 @@ function Extract() {
               {live.resolvable
                 ? "Settleable now — anyone can end this round at any moment"
                 : `Bell in ${bellLeft(live)} · ${stepsPerSecond(live.fighters.length)} steps/sec`}
+            </p>
+          ) : null}
+          {/* IT USED TO READ "A session key would sign this without a wallet prompt (panel, bottom
+              right)" — a signpost to a manual step, on the control that is racing a settlement.
+              Extract opens its own session now, so what belongs here is a description of what the
+              press costs, and nothing at all once a session is signing.
+
+              GATED ON `fighting`, which is what keeps ONE copy of this sentence on the screen. 00-3
+              carries the same words inside its own open-lobby branch, and the two phases are
+              mutually exclusive — deposits are open in Lobby, extract is live in Fight — so the
+              reader gets it beside whichever control they can actually press, and never twice. */}
+          {fighting && signingNote !== null ? (
+            <p className="lede" style={{ marginTop: 12 }}>
+              {signingNote}
             </p>
           ) : null}
         </div>

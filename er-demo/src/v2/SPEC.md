@@ -105,9 +105,17 @@ interface ArenaContextValue {
     extractEligible: ExtractEligibility;
   };
 
+  /** THE SESSION KEY IS HOW THIS PAGE SIGNS, not a feature anyone opts into: the first deploy or
+   *  extract opens one (one Phantom approval, 0.02 SOL, an hour) and everything after it signs
+   *  silently; a lapsed one is replaced by the next move. `data/autoSession.ts` holds the whole
+   *  decision AND the words for it — no surface writes its own sentence about signing. */
   session: {
     active: boolean; busy: boolean; error: string | null;
+    opening: boolean;      // a session is being opened/renewed — the only state that needs approval
+    auto: boolean;         // false after an explicit Stop; in memory only, a reload re-arms it
+    plan: SigningPlan;     // how the NEXT move gets signed — the source of every signing sentence
     start(): Promise<void>; end(): Promise<void>;
+    life: SessionLife;     // INFERRED and advisory — see data/sessionExpiry.ts
   };
 
   wallet: {

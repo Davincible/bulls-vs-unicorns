@@ -14,6 +14,7 @@ import {
   type TokenKey,
 } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
+import { ASSUMED_SESSION_TOP_UP_SOL, sessionPanelNote, sessionStatus } from "../data/autoSession.ts";
 import { ASSUMED_SESSION_MINUTES, type SessionLife } from "../data/sessionExpiry.ts";
 import { CombatLog } from "./CombatLog.tsx";
 import { ConnectPanel } from "./ConnectPanel.tsx";
@@ -66,18 +67,19 @@ function Fact({ name, children }: { name: string; children: ReactNode }) {
 /** HOW LONG THE SESSION HAS LEFT, in words — every one of them hedged, and none of them a deadline.
  *
  *  `sessionExpiry.ts` counts forward from a MIRRORED constant (the hour lives as a private const in
- *  `chain/session/useSessionKeyManager.ts`), so this is an inference and is written as one. It exists
- *  to buy a player the chance to start a fresh session BETWEEN rounds rather than discovering the
- *  problem mid-fight — which is the one moment the whole feature exists to keep smooth.
+ *  `chain/session/useSessionKeyManager.ts`), so this is an inference and is written as one. Nothing
+ *  here is an instruction any more: a lapsed session is replaced by the next move on its own (see
+ *  `autoSession.ts`'s `afterRefusal`). It is here so a player who opens this panel can SEE what is
+ *  signing for them and roughly how long it has, not so they can be told to go and fix something.
  *
  *  `{ known: false }` is a real and common answer, not an error: a session restored from a previous
  *  visit has no local record of when it began. Saying so beats inventing a clock. */
 function sessionAge(life: SessionLife): string {
   if (!life.known) {
-    return "Started in an earlier visit, so its age is unknown here. If a deploy or extract is refused, start a fresh session.";
+    return "Started in an earlier visit, so its age is unknown here. If the chain refuses a move on it, the next move replaces it — you do not have to do anything.";
   }
   if (life.lapsed) {
-    return "Probably past its hour. It may still work — the chain decides, not this page — but if the next action is refused, start a fresh session.";
+    return "Probably past its hour. It may still work — the chain decides, not this page — and if the chain refuses it, the next move replaces it for you.";
   }
   const elapsed = Math.max(0, ASSUMED_SESSION_MINUTES - life.minutesLeft);
   // `minutesLeft` is rounded up, so the first minute of a session reported "Started about 0 minutes
@@ -86,7 +88,10 @@ function sessionAge(life: SessionLife): string {
     elapsed < 1
       ? `Started just now · roughly ${life.minutesLeft} minutes left.`
       : `Started about ${elapsed} ${elapsed === 1 ? "minute" : "minutes"} ago · roughly ${life.minutesLeft} left.`;
-  return life.lapsing ? `${age} Start a fresh one between rounds rather than mid-fight.` : age;
+  // The nudge is a description, not a chore: the renewal happens on the next move whether or not
+  // anybody reads this. Worth saying only because it costs two approvals rather than the usual none,
+  // and a player who would rather take that between rounds than mid-fight can now choose to.
+  return life.lapsing ? `${age} When it runs out the next move replaces it — two approvals.` : age;
 }
 
 function WalletTenant() {
@@ -202,7 +207,7 @@ function WalletTenant() {
                   alternative was the same class of claim this codebase refuses everywhere else. */}
               {burner
                 ? "Devnet only. This key is generated in your browser and pays the fees for your own entries."
-                : "Devnet only. Your wallet pays the devnet fees for your own entries. The only other thing it is ever asked for is 0.02 SOL to fund a session key, and only when you start one."}
+                : `Devnet only. Your wallet pays the devnet fees for your own entries. The only other thing it is ever asked for is ${ASSUMED_SESSION_TOP_UP_SOL} SOL to fund a play session key, once an hour at most, and revoking one sends the unspent part back.`}
             </p>
           </>
         ) : null}
@@ -216,8 +221,12 @@ function WalletTenant() {
         ) : null}
       </Block>
 
-      <Block title="Session key">
-        <Fact name="Status">{session.active ? "ACTIVE" : "NOT STARTED"}</Fact>
+      {/* THE MANUAL CONTROLS, AND NOBODY HAS TO FIND THEM. A session now opens itself on the first
+          deploy or extract and renews itself when the chain says it has lapsed, so this block is not
+          a step in anybody's flow — it is here for the player who wants to decide explicitly, and
+          for the one who wants to see what is signing for them. */}
+      <Block title="Play session">
+        <Fact name="Status">{sessionStatus(session.plan)}</Fact>
         {session.active ? (
           <p className="lede" style={{ marginTop: 10, fontSize: 12 }}>
             {sessionAge(session.life)}
@@ -229,18 +238,32 @@ function WalletTenant() {
           </p>
         ) : null}
         <div className="line" style={{ marginTop: 12, gap: 8 }}>
+          {/* ENABLED WITH A SESSION IN HAND, and that is a fix rather than a loosening. gum reuses
+              its session keypair, so pressing Start while one exists used to build a `create_session`
+              aimed at an account that already exists and fail — in exactly the state (a stale
+              session) that sends a player looking for this button. `start` now replaces what is
+              there; the label says so.
+
+              BOTH BUTTONS SHUT ON `work`, NOT ON `busy` ALONE, and that half is load-bearing. gum
+              revokes a session by calling its own send helper inside its own loading wrapper, so
+              `busy` drops to FALSE for the length of the balance sweep — with the revoke still
+              running and a session still on the manager. These two controls therefore re-enabled in
+              the middle of a renewal, and a press there sent a second `revoke_session` for a token
+              already being revoked: a wallet dialog with no possible explanation. `work` is ours and
+              spans both calls. `busy` stays in the expression because it is never wrongly HIGH — it
+              only fails to be high — so it costs nothing and covers plain session signing. */}
           <button
             type="button"
             className="btn btn--sm"
-            disabled={session.busy || session.active || gate !== null}
+            disabled={session.work !== null || session.busy || gate !== null}
             onClick={runSession(session.start)}
           >
-            Start
+            {session.active ? "Renew" : "Start"}
           </button>
           <button
             type="button"
             className="btn btn--sm btn--ghost"
-            disabled={session.busy || !session.active}
+            disabled={session.work !== null || session.busy || !session.auto}
             onClick={runSession(session.end)}
           >
             Stop
@@ -255,10 +278,12 @@ function WalletTenant() {
             Can&apos;t start one yet — {gate.short}.
           </p>
         ) : null}
+        {/* FROM THE PLAN, exactly like the Status row four lines above it. Branching on `auto` alone
+            put "the first move you make opens it" under a status line reading NOT NEEDED — THE
+            BURNER KEY SIGNS SILENTLY, and under NOT USED IN FIXTURE MODE, and under NEEDS ABOUT
+            0.021 SOL. One input, one story. */}
         <p className="lede" style={{ marginTop: 12, fontSize: 12 }}>
-          One approval now, and every deploy and extract after it signs silently for the rest of the
-          hour. Extracting mid-fight is a race against whoever settles the round; a wallet popup in
-          the middle of it costs you the round, which is exactly what this removes.
+          {sessionPanelNote(session.plan)}
         </p>
       </Block>
 

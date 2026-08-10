@@ -6,6 +6,7 @@
 import type { HitEvent } from "../../sim/hitEvents.ts";
 import type { VerifyResult } from "../../ui/verifyRound.ts";
 import type { AutoDeployHandle } from "./autoDeploy.ts";
+import type { SessionWork, SigningPlan } from "./autoSession.ts";
 import type { SignerMode } from "./flags.ts";
 import type { PlayBlock } from "./playGate.ts";
 import type { SessionLife } from "./sessionExpiry.ts";
@@ -150,11 +151,36 @@ export interface ArenaContextValue {
    *  The panel in 00-3 renders this and calls `arm`/`disarm`; it decides nothing itself. */
   autoDeploy: AutoDeployHandle;
 
+  /** THE SESSION KEY — which is not a feature of this page so much as the way it signs.
+   *
+   *  A session is opened by the FIRST deploy or extract and signs everything for the next hour, so
+   *  the ordinary player never touches any of this: they approve one Phantom dialog, once, and the
+   *  rest of the hour is silent. `autoSession.ts` holds the whole decision and the words for it. */
   session: {
     active: boolean;
+    /** The session SDK is doing something. Deliberately NOT a "we are opening a session" signal:
+     *  gum flips the same flag while signing an ordinary session-signed transaction, which is a
+     *  hundred times an hour and needs no approval at all. See `opening`. */
     busy: boolean;
+    /** WHAT THE SESSION MACHINERY IS DOING — the only state in which the player is being asked to
+     *  approve anything, and the one a control says "approve it in Phantom" off.
+     *
+     *  `busy` cannot stand in for it in either direction: it is true during every silent
+     *  session-signed move, and it drops momentarily to FALSE in the middle of a revoke (gum nests
+     *  one loading wrapper inside another), which would re-enable controls mid-renewal. */
+    work: SessionWork;
     error: string | null;
+    /** False once the player has pressed Stop — this page will not open one by itself again until
+     *  they press Start. Held in memory only: a reload is a fresh visit, not a standing preference. */
+    auto: boolean;
+    /** HOW THE NEXT DEPLOY OR EXTRACT WILL BE SIGNED, and the source of every sentence any surface
+     *  says about signing. See `autoSession.ts`'s `sessionNote`/`sessionStatus`. */
+    plan: SigningPlan;
+    /** Make sure a fresh session exists — opening one, or replacing the one that is there. Re-arms
+     *  `auto`. The rail's Start button; nothing in the ordinary flow needs it. */
     start(): Promise<void>;
+    /** Revoke it and STAY stopped: every move after this asks the wallet to approve it, until the
+     *  player presses Start again. */
     end(): Promise<void>;
     /** HOW LONG IT HAS LEFT — INFERRED, AND ADVISORY ONLY.
      *

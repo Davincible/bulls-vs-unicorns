@@ -36,15 +36,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { PROGRAM_ID } from "../../chain/constants.ts";
 import { useFightTicker } from "../../chain/useFightTicker.ts";
-import { useAppSessionManager } from "../../chain/session/useSessionKeyManager.ts";
+import {
+  useAppSessionManager,
+  type ActiveSession,
+  type SessionManager,
+} from "../../chain/session/useSessionKeyManager.ts";
 import { toAnchorWallet, useSigner } from "../../chain/useSigner.ts";
 import { feeRate, nameFor, shortKey, type FeeRate, type Side } from "../contract.ts";
 import { simBankrollUsd } from "./autoDeploy.ts";
+import { signingPlan, type SessionSigning, type SessionWork } from "./autoSession.ts";
+import { classifyWalletError } from "./walletFault.ts";
 import { useAutoDeploy } from "./useAutoDeploy.ts";
-import { FIXTURE_FORCED, SIGNER_MODE } from "./flags.ts";
+import { FIXTURE_FORCED, SIGNER_MODE, type SignerMode } from "./flags.ts";
 import { shouldDriveFight } from "./fightPace.ts";
 import { burnerIdentity, newTickerPlaceholder, walletIdentity, type ChainIdentity } from "./identity.ts";
-import { playBlock } from "./playGate.ts";
+import { playBlock, type PlayBlock } from "./playGate.ts";
 import { NO_COMBAT, combatFeed } from "./combatFeed.ts";
 import { houseDisclosureOf, withHouseMarks } from "./houseFighters.ts";
 import { useHouseRoster } from "./keeperFeed.ts";
@@ -173,7 +179,21 @@ function useFixtureSession(): ArenaContextValue["session"] {
     () => ({
       active,
       busy: false,
+      work: null,
       error: null,
+      auto: true,
+      // NOTHING ON THIS PATH IS SIGNED AT ALL — the fixture's `enter`/`extract` are local state
+      // changes. Routed through `signingPlan` rather than hand-written so the fixture branch is the
+      // same branch the tests hold: without it the deploy panel would quote a 0.02 SOL cost, and a
+      // first approval that is never coming, over invented data.
+      plan: signingPlan({
+        fixture: true,
+        mode: SIGNER_MODE,
+        auto: true,
+        sessionActive: active,
+        gate: null,
+        solBalance: null,
+      }),
       start: async () => setActive(true),
       end: async () => setActive(false),
       // No chain session exists, so there is no expiry to count down and nothing to infer one from.
@@ -319,6 +339,15 @@ function ChainArena({
     [identity.mode, identity.status, identity.fault, chain.program, providerPresent, walletValue.solBalance, youPubkey],
   );
 
+  const sessionCtl = useSessionController({
+    manager: sessionManager,
+    mode: identity.mode,
+    walletPubkey: youPubkey,
+    gate,
+    solBalance: walletValue.solBalance,
+    push: shell.toasts.push,
+  });
+
   const { onEntered, noteDeployRef } = useOnEntered(shell.simLedger.recordDeploy, fee);
   const actions = useActions({
     program: chain.program,
@@ -328,7 +357,8 @@ function ChainArena({
     arena: chain.arena,
     roundPda: chain.roundPda,
     live,
-    session: sessionManager.active,
+    plan: sessionCtl.plan,
+    signing: sessionCtl.signing,
     blocked: gate,
     onEntered,
   });
@@ -437,58 +467,7 @@ function ChainArena({
     [youPubkey],
   );
 
-  // HOW LONG THE SESSION HAS LEFT — recorded when we start one, read back by its token address.
-  // Advisory only; `sessionExpiry.ts` sets out why, and why the authoritative path is the reactive
-  // one in `useActions`.
-  const sessionToken = sessionManager.active?.sessionTokenPda.toBase58() ?? null;
-  // DESTRUCTURED, so the dependency below is the memoised callback rather than its container:
-  // `useAppSessionManager` builds a fresh object on every render, and depending on that would
-  // rebuild this callback — and every memo downstream of it — on every single render.
-  const { revokeSession } = sessionManager;
-  const endSession = useCallback(async () => {
-    // Read the token BEFORE revoking — afterwards there is nothing left to key the record by, and
-    // the stale entry would outlive the session it described.
-    const token = sessionToken;
-    await revokeSession();
-    if (token !== null) forgetSession(token);
-  }, [revokeSession, sessionToken]);
-
-  // A token appearing is how a successful `createSession` announces itself: gum resolves the address
-  // only once the session genuinely exists, so recording here books the start time against a real
-  // session rather than against an attempt. Idempotent — `noteSessionStarted` writes the same key,
-  // and re-recording would move the clock, so it only writes when nothing is stored.
-  //
-  // AN EFFECT, NOT A MEMO, and the distinction is not pedantry: this writes to `localStorage`, and a
-  // memo body must be pure. React is free to discard a render and recompute — under StrictMode it
-  // deliberately does — and a persisted record written from a render that was then thrown away is a
-  // clock started by a session that, from the component's point of view, never happened. It is
-  // idempotent enough to have been harmless today; it is the kind of harmless that stops being
-  // harmless when someone later makes the write unconditional.
-  const [sessionStartedAt, setSessionStartedAt] = useState<number | null>(null);
-  useEffect(() => {
-    if (sessionToken === null) {
-      setSessionStartedAt(null);
-      return;
-    }
-    const existing = readSessionStartedAt(sessionToken);
-    if (existing !== null) {
-      setSessionStartedAt(existing);
-      return;
-    }
-    const now = Date.now();
-    noteSessionStarted(sessionToken, now);
-    setSessionStartedAt(now);
-  }, [sessionToken]);
-
-  const session: ArenaContextValue["session"] = {
-    active: sessionManager.active !== null,
-    busy: sessionManager.isLoading,
-    error: sessionManager.error,
-    // Straight through — the manager already memoises it, and wrapping would only make it unstable.
-    start: sessionManager.createSession,
-    end: endSession,
-    life: sessionLife(sessionStartedAt, Date.now()),
-  };
+  const session = sessionCtl.session;
 
   const status: ArenaContextValue["status"] = {
     programReady: chain.program !== null,
@@ -572,6 +551,362 @@ function ChainArena({
       };
 
   return <ArenaContext.Provider value={value}>{children}</ArenaContext.Provider>;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The session controller
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * HOW LONG TO WAIT FOR THE MANAGER'S STATE TO CATCH UP WITH A CALL WE JUST MADE — and why any wait
+ * is needed at all, which is the one genuinely awkward thing in this file.
+ *
+ * `createSession` resolves `void`. gum's own hook DOES return the new session object, but the app's
+ * wrapper (`chain/session/useSessionKeyManager.ts`, which this workstream may not edit) discards it
+ * — so the only evidence a session now exists is that the hook's state has changed, and state
+ * changes reach this component on a LATER RENDER. React 18 batches updates made inside a promise,
+ * so the continuation after `await createSession()` runs BEFORE the re-render it caused.
+ *
+ * A player pressing Deploy is therefore in the one situation React has no synchronous answer for:
+ * the session exists, and this render does not know it yet. So the write path waits for the render,
+ * and exits the moment the answer is in either direction — a session appeared, or gum's error
+ * channel filled (`withLoading` clears it at the start of every call, so a non-null error after one
+ * belongs to that call).
+ *
+ * BOUNDED TWO WAYS, because the two failure modes pull in opposite directions. A fixed number of
+ * polls, so that giving up early is impossible — reporting "no session arrived" when one had would
+ * throw away 0.02 SOL and open a second popup, much the worst outcome here. And a wall-clock
+ * ceiling, because a HIDDEN tab has its timers throttled to roughly one a second, which is exactly
+ * the state a tab is in while its owner is reading a wallet dialog: forty polls would then be forty
+ * seconds of dead buttons rather than one. Neither bound is expected to be reached; a commit
+ * normally lands within a frame or two.
+ */
+const SESSION_SETTLE_POLLS = 40;
+const SESSION_SETTLE_STEP_MS = 25;
+const SESSION_SETTLE_CEILING_MS = 15_000;
+
+export interface SessionControllerParams {
+  manager: SessionManager;
+  mode: SignerMode;
+  /** `""` when nobody is connected. Only used to notice that a DIFFERENT wallet is now in play. */
+  walletPubkey: string;
+  gate: PlayBlock | null;
+  solBalance: number | null;
+  push: (text: string, kind?: "info" | "error") => void;
+}
+
+/**
+ * THE SESSION, MADE INVISIBLE — everything between `useAppSessionManager`'s four exports and a page
+ * where a player approves one thing an hour.
+ *
+ * It owns three jobs the rest of the file should not have to think about:
+ *
+ *   OPENING. The first deploy or extract opens a session and then signs with it, in one press
+ *   (`autoSession.ts`'s `runSigned` sequences it; `useActions` calls it). Nothing asks first.
+ *
+ *   RENEWING. gum REUSES ITS SESSION KEYPAIR — `createSession` only generates one when
+ *   `keypairRef.current` is empty (read from the compiled hook; it ships no source, see
+ *   `useSessionKeyManager.ts`'s header). The session token PDA is derived from that keypair, so a
+ *   second `createSession` targets an account that already exists. PROVED, not assumed:
+ *   `scripts/verify-session-renewal.mjs` runs it against the deployed program on devnet and the
+ *   second attempt fails with `custom program error: 0x0` — Anchor's `init` on a live account —
+ *   while a revoke-then-create with the same signer succeeds. An IDL cannot answer this (`init` and
+ *   `init_if_needed` look identical in one), and everything the page tells a player about renewal
+ *   rests on the answer. So `renew` revokes first, and the copy says two approvals rather than one.
+ *   The revoke is not wasted: it closes the old token and sweeps the session key's unspent SOL back
+ *   to the wallet.
+ *
+ *   STOPPING, AND STAYING STOPPED. `auto` is the player's own instruction, and `signingPlan` refuses
+ *   to use a session while it is false — even one that is still live, because a revoke can fail and
+ *   a Stop button that quietly kept using the key would be a lie.
+ */
+function useSessionController(params: SessionControllerParams): {
+  session: ArenaContextValue["session"];
+  plan: ReturnType<typeof signingPlan>;
+  signing: SessionSigning<ActiveSession>;
+} {
+  const { manager, mode, walletPubkey, gate, solBalance, push } = params;
+  const { active, error, isLoading } = manager;
+
+  // MIRRORS, WRITTEN ON EVERY RENDER, and there are two different reasons for the two kinds.
+  //
+  // THE STATE (`active`, `error`) is mirrored because the async callbacks below run BETWEEN renders
+  // and must never act on the session this render happened to close over — the value they read is
+  // the one that decides whether a transaction opens a wallet popup. Same device as `useOnEntered`'s
+  // `feeRef`.
+  //
+  // THE CALLBACKS (`createSession`, `revokeSession`) are mirrored because they are NOT STABLE and
+  // destructuring them does not make them so — which is what the comment that used to sit here
+  // claimed. `useAppSessionManager` memoises both, but lists gum's hook return in their dependency
+  // arrays, and gum builds that as a fresh object literal on every render. So both identities change
+  // every render, and depending on them would rebuild every callback in this hook, the `signing`
+  // object, and `useActions`' `enter`/`extract` — on a component that re-renders every 250ms during
+  // a fight. Nothing breaks today only because `useAutoDeploy` reads `enter` off a ref rather than an
+  // effect dependency; the first effect keyed on `actions.enter` would get a 250ms loop.
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const errorRef = useRef(error);
+  errorRef.current = error;
+  const createSessionRef = useRef(manager.createSession);
+  createSessionRef.current = manager.createSession;
+  const revokeSessionRef = useRef(manager.revokeSession);
+  revokeSessionRef.current = manager.revokeSession;
+
+  /** Wait until the manager's state satisfies `done`, or give up. See `SESSION_SETTLE_POLLS`. */
+  const settled = useCallback(
+    async (done: (s: ActiveSession | null) => boolean): Promise<ActiveSession | null> => {
+      const ceiling = Date.now() + SESSION_SETTLE_CEILING_MS;
+      for (let poll = 0; poll < SESSION_SETTLE_POLLS; poll += 1) {
+        if (done(activeRef.current)) return activeRef.current;
+        if (Date.now() > ceiling) break;
+        await new Promise((resolve) => setTimeout(resolve, SESSION_SETTLE_STEP_MS));
+      }
+      return activeRef.current;
+    },
+    [],
+  );
+
+  /** THE PLAYER'S OWN INSTRUCTION, and the only thing that turns this off. In memory only: a reload
+   *  is a fresh visit, not a standing preference, and a page that remembered one Stop forever would
+   *  quietly sentence that browser to a popup per move for good. */
+  const [auto, setAuto] = useState(true);
+  // READ FROM THE MIDDLE OF AN ACTION, not from a render — see `signing.renew`. A press can span
+  // several seconds of chain confirmation, and Stop can land inside that window.
+  const autoRef = useRef(auto);
+  autoRef.current = auto;
+  // A DIFFERENT WALLET INHERITS NOTHING. "I do not want sessions" was said by whoever was connected
+  // at the time; carrying it across to the next account would apply one person's decision to
+  // somebody else's key.
+  useEffect(() => {
+    setAuto(true);
+  }, [walletPubkey]);
+
+  /**
+   * Revoke whatever is live and drop its clock. Shared by the player's Stop and by a renewal, so the
+   * stored start time can never outlive the session it described.
+   *
+   * `true` when there is no live session left — which is NOT the same as "the call returned". gum's
+   * `revokeSession` swallows its own failures and resolves anyway, so the only evidence the token
+   * closed is the manager reporting no session, and that arrives on a later render like everything
+   * else here. The clock is forgotten only on that evidence: forgetting it after a revoke that in
+   * fact failed would leave the session running with no record of when it started, and the next
+   * visit would confidently restart its hour from zero.
+   */
+  const revokeLive = useCallback(async (): Promise<boolean> => {
+    const token = activeRef.current?.sessionTokenPda.toBase58() ?? null;
+    if (token === null) return true;
+    await revokeSessionRef.current();
+    if ((await settled((s) => s === null)) !== null) return false;
+    forgetSession(token);
+    return true;
+  }, [settled]);
+
+  /**
+   * WHAT THE SESSION MACHINERY IS DOING — tracked here because the manager's `isLoading` cannot
+   * answer it, in two different directions, and both of them cost a player something.
+   *
+   * TOO HIGH: gum wraps `signTransaction` in the SAME `withLoading` helper as `createSession`, so
+   * `busy` is equally true while an ordinary session-signed deploy is being signed — a hundred times
+   * an hour, silently. A dock reading "approve the play session in Phantom" off that would say it
+   * during every move that needed no approval at all.
+   *
+   * TOO LOW, WHICH IS THE DANGEROUS ONE: `revokeSession` calls `sendTransaction` to sweep the
+   * session key's balance back to the wallet, and `sendTransaction` is wrapped in `withLoading` too
+   * — so its `finally` clears `isLoading` while the revoke around it is still running. Any control
+   * disabled on `busy` therefore RE-ENABLES in the middle of a renewal, and a second press there
+   * sends a second `revoke_session` for a token already being revoked: a wallet dialog nobody could
+   * possibly explain. This flag stays set across the whole of both calls.
+   */
+  const [work, setWork] = useState<SessionWork>(null);
+
+  /**
+   * ONE `create_session` AT A TIME, and this is not defensive decoration.
+   *
+   * gum reuses its session keypair (see this hook's header), so two overlapping opens would build
+   * two transactions against the SAME token PDA: the first initialises it, the second fails on an
+   * account that already exists — after the wallet has already been asked to approve a second
+   * 0.02 SOL transfer. The buttons are disabled through a press, so this is a backstop rather than
+   * a routine path; it is the kind of backstop worth having when the failure mode spends money.
+   */
+  const openInFlight = useRef<Promise<ActiveSession> | null>(null);
+
+  /** One `create_session`, start to finish: the wallet approval, the wait for the manager to catch
+   *  up, and an honest throw when nothing arrived. Wrapped by `openSession`, never called directly. */
+  const createFresh = useCallback(async (): Promise<ActiveSession> => {
+    setWork((w) => w ?? "opening");
+    try {
+      await createSessionRef.current();
+      // EITHER ANSWER ENDS THE WAIT. Polling for the session alone would spend the whole window on
+      // every cancelled approval — a second of dead buttons after the player has already dismissed
+      // the dialog and is waiting to be told what happened.
+      const opened = await settled((s) => s !== null || errorRef.current !== null);
+      if (opened !== null) return opened;
+      // gum SWALLOWS ITS OWN FAILURES: `createSession` catches everything, calls `setError` and
+      // resolves anyway (read from the compiled hook). So "no session arrived" is the only signal
+      // there is that anything went wrong, and the reason — a cancelled popup, an unfunded wallet —
+      // is over in the error channel. Thrown from here so the ONE decision about what a failure
+      // means stays in `autoSession.ts` rather than being made twice.
+      throw new Error(
+        errorRef.current ??
+          "the play session could not be opened, and neither the wallet nor the session SDK said why",
+      );
+    } finally {
+      setWork(null);
+    }
+  }, [settled]);
+
+  const openSession = useCallback(async (): Promise<ActiveSession> => {
+    const running = openInFlight.current;
+    if (running !== null) return await running;
+    const attempt = createFresh();
+    openInFlight.current = attempt;
+    try {
+      return await attempt;
+    } finally {
+      openInFlight.current = null;
+    }
+  }, [createFresh]);
+
+  const renewSession = useCallback(async (): Promise<ActiveSession | null> => {
+    setWork("renewing");
+    try {
+      // A session still standing here is a revoke that failed — and going on to open one would
+      // collide with the token it did not close. Better to report the chain's original refusal than
+      // to add a doomed approval dialog to it.
+      if (!(await revokeLive())) return null;
+      return await openSession();
+    } catch (e) {
+      // A renewal is a recovery, not a request: whatever went wrong, the caller's own error is the
+      // one worth showing (`autoSession.ts`'s `runSigned` re-throws the chain's refusal), and a
+      // second red toast about the recovery would bury it.
+      //
+      // LOGGED, THOUGH, because this catch is otherwise the end of the evidence. From the outside
+      // every failure here looks identical — "extract keeps failing with session-expired" — and
+      // whether the revoke was cancelled, the create was rejected, the balance pre-flight refused or
+      // the wait timed out is the whole of the diagnosis. gum logs its own two; this covers ours.
+      console.error("[session] renewal failed", e);
+      return null;
+    } finally {
+      setWork(null);
+    }
+  }, [revokeLive, openSession]);
+
+  /** The rail's Start: make sure a FRESH session exists, whatever is there now, and re-arm `auto`.
+   *
+   *  It renews rather than opens when one is already live — pressing Start with a stale session in
+   *  hand used to be a silent no-op-then-failure for the keypair-reuse reason in this hook's header,
+   *  which is exactly the state a player would be in when they went looking for the button. */
+  const startSession = useCallback(async () => {
+    setAuto(true);
+    // Written straight through for the same reason `endSession` writes the other direction: this ref
+    // is read from the middle of an action, and an explicit Start must be visible to a refusal that
+    // lands before the next render.
+    autoRef.current = true;
+    if (activeRef.current !== null) {
+      const renewed = await renewSession();
+      if (renewed === null) {
+        throw new Error(errorRef.current ?? "the play session could not be replaced");
+      }
+      return;
+    }
+    await openSession();
+  }, [renewSession, openSession]);
+
+  /** The rail's Stop. `auto` goes down FIRST, so the instruction is recorded even if the on-chain
+   *  revoke fails — `signingPlan` will not touch a session the player has stopped. */
+  const endSession = useCallback(async () => {
+    setAuto(false);
+    // Written straight through as well as through state: `signing.renew` reads this ref, and a
+    // refusal arriving from a move already in flight must see the Stop that just happened rather
+    // than the value from the render before it.
+    autoRef.current = false;
+    setWork("stopping");
+    try {
+      await revokeLive();
+    } finally {
+      setWork(null);
+    }
+  }, [revokeLive]);
+
+  // THE BOOLEAN, NOT THE SESSION OBJECT, in the dependency list — and it is worth a line. gum builds
+  // a fresh `signTransaction` closure on every render, so `manager.active` changes identity every
+  // render even when the same session has been live for forty minutes. Depending on it would rebuild
+  // this plan, and with it every callback in `useActions` that reads it, on every single render.
+  const sessionActive = active !== null;
+  const plan = useMemo(
+    () => signingPlan({ fixture: false, mode, auto, sessionActive, gate, solBalance }),
+    [mode, auto, sessionActive, gate, solBalance],
+  );
+
+  const signing = useMemo<SessionSigning<ActiveSession>>(
+    () => ({
+      current: () => activeRef.current,
+      open: openSession,
+      // THE STOP INSTRUCTION IS RE-READ HERE, and that is not belt and braces. `runSigned` takes the
+      // PLAN from the render it was built in, but a press spans seconds of chain confirmation — long
+      // enough for a player watching nothing happen to open the rail and press Stop. Without this
+      // check the refusal that arrives a moment later would revoke, spend 0.02 SOL and raise a wallet
+      // dialog on behalf of somebody who had just said no. The rail's own Start goes through
+      // `startSession`, not this wrapper, so an explicit renewal is unaffected.
+      renew: async () => (autoRef.current ? await renewSession() : null),
+      classify: (e) => classifyWalletError(e).code,
+      // SAID ONCE, AND NOT AS A FAILURE. The move itself is fine — it is about to be signed by the
+      // wallet — so this is not an error, it is the page accounting for the popup that is about to
+      // appear when the player had been told there would not be one. `info`, not `error`, for
+      // exactly that reason.
+      onFallback: (e) =>
+        push(`No play session this time, so this move needs one wallet approval — ${classifyWalletError(e).detail}`, "info"),
+    }),
+    [openSession, renewSession, push],
+  );
+
+  // HOW LONG THE SESSION HAS LEFT — recorded when one appears, read back by its token address.
+  // Advisory only; `sessionExpiry.ts` sets out why, and why the authoritative path is the reactive
+  // renewal in `autoSession.ts`.
+  const sessionToken = active?.sessionTokenPda.toBase58() ?? null;
+
+  // A token appearing is how a successful `createSession` announces itself: gum resolves the address
+  // only once the session genuinely exists, so recording here books the start time against a real
+  // session rather than against an attempt. Idempotent — `noteSessionStarted` writes the same key,
+  // and re-recording would move the clock, so it only writes when nothing is stored.
+  //
+  // AN EFFECT, NOT A MEMO, and the distinction is not pedantry: this writes to `localStorage`, and a
+  // memo body must be pure. React is free to discard a render and recompute — under StrictMode it
+  // deliberately does — and a persisted record written from a render that was then thrown away is a
+  // clock started by a session that, from the component's point of view, never happened. It is
+  // idempotent enough to have been harmless today; it is the kind of harmless that stops being
+  // harmless when someone later makes the write unconditional.
+  const [sessionStartedAt, setSessionStartedAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (sessionToken === null) {
+      setSessionStartedAt(null);
+      return;
+    }
+    const existing = readSessionStartedAt(sessionToken);
+    if (existing !== null) {
+      setSessionStartedAt(existing);
+      return;
+    }
+    const now = Date.now();
+    noteSessionStarted(sessionToken, now);
+    setSessionStartedAt(now);
+  }, [sessionToken]);
+
+  return {
+    session: {
+      active: sessionActive,
+      busy: isLoading,
+      work,
+      error,
+      auto,
+      plan,
+      start: startSession,
+      end: endSession,
+      life: sessionLife(sessionStartedAt, Date.now()),
+    },
+    plan,
+    signing,
+  };
 }
 
 // ---------------------------------------------------------------------------------------------

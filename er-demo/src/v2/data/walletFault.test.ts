@@ -96,8 +96,16 @@ describe("classifyWalletError", () => {
       expect(classifyWalletError(e).code).toBe("session-expired");
     });
 
-    it("points at the one action that fixes it", () => {
-      expect(classifyWalletError(new Error("SessionTokenNotFound")).detail).toMatch(/start a new session/i);
+    it("points at the one action that fixes it — which is now the button they already pressed", () => {
+      // It used to send the reader to the wallet panel to start a session by hand. A lapsed session
+      // is replaced by the next move on its own (`autoSession.ts`'s `afterRefusal`), so these words
+      // only surface when THAT failed too — and the thing to do then is press again, not go hunting
+      // for a control. It must also not promise a single approval: replacing a session costs two,
+      // because the old key has to be closed before a new one can be opened.
+      const detail = classifyWalletError(new Error("SessionTokenNotFound")).detail;
+      expect(detail).toMatch(/press the button again/i);
+      expect(detail).not.toMatch(/wallet panel/i);
+      expect(detail).not.toMatch(/one Phantom approval/i);
     });
   });
 

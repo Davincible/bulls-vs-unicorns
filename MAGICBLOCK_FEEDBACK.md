@@ -10,6 +10,52 @@ documentation or capability), **[BUG]**, or **[FEATURE REQUEST]**.
 
 ---
 
+## 2026-08-10 — Making sessions the DEFAULT signing path: four things `useSessionKeyManager` will not tell you
+
+Context for all four: we stopped treating a session key as a feature a player opts into and made it
+how the app signs — the first deploy or extract opens one, everything for the next hour signs
+silently, and an expired one is replaced without the player being told to go and do it. That is,
+presumably, the use case the hook exists for. Every one of these cost us a design decision, and
+three of them are only answerable by reading the compiled `lib/index.js`, since no source ships.
+
+**[BUG] `createSession` never rejects.** Its whole body is wrapped in `try { … } catch (error) {
+console.error(…); setError(error); return { …, sessionToken: null, error: error.message } }`. So
+`await createSession(...)` resolves normally when the user cancelled the Phantom popup, when the
+wallet is unfunded, when the RPC drops it. A caller cannot `try/catch` the one call in the SDK most
+likely to fail, and cannot tell "opened" from "cancelled" without inspecting state that arrives on a
+later render. We now infer failure from "no session appeared" and dig the reason back out of the
+`error` channel — which is a lot of machinery to reconstruct a rejected promise.
+
+**[GAP] `createSession` returns the new session object, and nothing says so.** The success path
+returns `{ sessionToken, publicKey, signTransaction, … }` — exactly what a caller needs in order to
+sign *the transaction they were in the middle of* — but the documented shape of the hook is its
+state, so the obvious integration awaits the call and then reads `sessionToken` off the hook. That
+value does not exist until React re-renders, and React 18 batches updates made inside a promise, so
+the continuation after `await createSession()` runs **before** the render it caused. The result is
+that "open a session and then use it in the same click" — the single most natural thing to build —
+silently signs with the wallet instead, popping a second dialog. Documenting the return value would
+remove the entire problem.
+
+**[BUG] `createSession` cannot replace an existing session, and fails opaquely when asked to.** It
+generates a keypair only when it has none (`if (!keypairRef.current) generateKeypair()`), and the
+session token PDA is derived from that keypair — so a second call from a browser that already holds a
+session targets an account that already exists and fails with a bare `custom program error: 0x0`.
+Verified on devnet against our deployed program, not inferred:
+`er-demo/scripts/verify-session-renewal.mjs` creates, re-creates (fails), revokes, and re-creates
+(succeeds) with the same signer. This is the ordinary end of a session's life — an hour passes and
+the next action must work — and the correct sequence, `revokeSession()` then `createSession()`, is
+documented nowhere and costs the player **two** wallet approvals instead of one. A `renewSession`, or
+simply resetting the keypair when the stored session has expired, would make renewal invisible.
+
+**[GAP] `isLoading` conflates "asking the user to approve a session" with "silently signing one
+transaction".** `withLoading` wraps `createSession`, `revokeSession`, `signTransaction`,
+`sendTransaction` and `signAndSendTransaction` alike. A UI that says "approve the session in your
+wallet" off `isLoading` says it during every session-signed transaction — dozens an hour, none of
+which involve the user at all. We had to track the create/revoke phase ourselves to get a signal that
+means what the UI needs it to mean.
+
+---
+
 ## 2026-08-09 — Third consecutive session, third abandoned program id — and a first look at what a FRESH id does
 
 Nothing new about the cause; this is a **frequency and cost** data point on the entry below, plus one

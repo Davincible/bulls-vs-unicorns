@@ -237,11 +237,18 @@ export function classifyWalletError(e: unknown): WalletFault {
   if (SESSION_GONE.test(text)) {
     return {
       code: "session-expired",
+      // THE WORDS A PLAYER READS ONLY WHEN THE AUTOMATIC RECOVERY ALSO FAILED. A refused
+      // session-signed transaction is normally invisible: `autoSession.ts`'s `afterRefusal` replaces
+      // the session and re-sends the move, and this copy never appears. It appears when the
+      // REPLACEMENT was itself cancelled or failed — so it must not send anybody to a panel, and it
+      // must not promise a single approval, because replacing a session costs two (the old key has
+      // to be closed before a new one can be opened — see `useSessionController`).
       short: "your session key is no longer valid",
       detail:
         "The session key that was signing for you has expired or been revoked, so the chain refused " +
-        "the transaction. Start a new session in the Wallet panel — one Phantom approval — and the " +
-        "action will go through without prompting again.",
+        "the transaction. Press the button again — this page opens a fresh session and sends the " +
+        "move for you. It takes an approval or two in Phantom, and then another hour of playing " +
+        "without them.",
     };
   }
 
