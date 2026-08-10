@@ -199,7 +199,7 @@ describe("recognising a fight the chain says is behind the clock", () => {
     expect(isFightBehind({
       message: "failed to send transaction: custom program error: 0x1786",
       logs: [
-        "Program EpRY6fkv4RcazjYSJyk8rppeVTVMcWhCcVtTVrKkTLT4 invoke [1]",
+        "Program ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe invoke [1]",
         "Program log: AnchorError occurred. Error Code: FightBehind. Error Number: 6022. Error Message: the fight has not been advanced to the present — tick it first, then extract.",
       ],
     })).toBe(true);

@@ -11,7 +11,7 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-bulls_arena = "EpRY6fkv4RcazjYSJyk8rppeVTVMcWhCcVtTVrKkTLT4"
+bulls_arena = "ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe"
 
 [registry]
 url = "https://api.apr.dev"

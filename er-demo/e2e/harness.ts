@@ -90,7 +90,7 @@ function baseStatus() {
     },
     chain: {
       cluster: "devnet",
-      programId: "EpRY6fkv4RcazjYSJyk8rppeVTVMcWhCcVtTVrKkTLT4",
+      programId: "ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe",
       arenaPda: "B982CKufw8M86duY7t7R7FVQ4uSTLXBmMWQmJUvHpaXk",
       erValidator: null,
     },
