@@ -341,7 +341,17 @@ function RoundBoard({
           <b>
             {house} of {fighters.length}
           </b>{" "}
-          {house === 1 ? "fighter is" : "fighters are"} ours.{" "}
+          {/* TWO WORDS, TWO DIFFERENT NUMBERS, and they were both keyed to the same one — which
+              rendered "1 of 2 fighter is ours" on any round holding a single house fighter. That is
+              not a hypothetical lineup: it is the keeper's own hold-open state the moment one real
+              player joins a lobby the house was sitting in alone, and `?fighters=2` reproduces it
+              exactly (`e2e/copy.e2e.ts`, which is what found it).
+              The NOUN belongs to the DENOMINATOR — "1 of 2 fighters" — because it is what the "of"
+              counts out of. The VERB belongs to the NUMERATOR — "1 … is" — because that is the
+              subject of the sentence. `houseFighters.ts#houseNote` gets this right in its own
+              rendering of the same claim, which is the other half of the lesson: this is a second
+              hand-written copy of one sentence, and it is the copy that rotted. */}
+          {fighters.length === 1 ? "fighter" : "fighters"} {house === 1 ? "is" : "are"} ours.{" "}
           {disclosure.note ??
             "The keeper seats house wallets so a round is never empty. They stake, fight and lose real value like anyone else."}{" "}
           They are marked <span className="sc-bot">house</span> below.

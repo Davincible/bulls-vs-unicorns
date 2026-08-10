@@ -1,0 +1,38 @@
+// TYPE-CHECKING FOR `e2e/` — a third project in the solution, and it is here for the reason the root
+// tsconfig's own header describes at length.
+//
+// Without it, `e2e/**` would be exactly what `scripts/` used to be: a directory that can type-error
+// in silence. `tsconfig.app.json` includes only `src`, `tsconfig.node.json` only `vite.config.ts`,
+// and `tsc -b` follows the references in `tsconfig.json` and nothing else — so a broken selector
+// helper or a renamed export would compile forever and be discovered by a red suite instead of by a
+// green gate. This repo has already been bitten once by a type-check that checked nothing; adding a
+// browser suite that the type-check cannot see would be the same mistake with a longer feedback loop.
+//
+// Referenced from `tsconfig.json`, so `npm run typecheck` (`tsc -b --force`) covers it. `lib` carries
+// DOM because `page.evaluate` callbacks are compiled as browser code even though the file around them
+// runs in Node.
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.e2e.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"],
+    "skipLibCheck": true,
+
+    /* Bundler mode — matching tsconfig.app.json, because vitest resolves these the same way vite
+       does and `.ts` extensions in relative imports are the house style. */
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* Linting */
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["e2e", "vitest.e2e.config.ts"]
+}

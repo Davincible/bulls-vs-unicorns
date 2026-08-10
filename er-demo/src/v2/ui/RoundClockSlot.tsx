@@ -33,7 +33,13 @@ export function RoundClockSlot({ className }: RoundClockSlotProps) {
     // and a state word with no reachable explanation is the same dead end `0:00` was. It carries the
     // round's own two clauses, from the same object the sentence under the Deploy button renders —
     // see `clockSlotFor`. The surfaces with room for the sentence print it in full as well.
-    <span className={className} title={clockSlot.title}>
+    // `data-testid` IS THE TEST'S ONLY HANDLE ON THIS INVARIANT. The three call sites each pass a
+    // different class (that is the point of `className` above), and they sit in three unrelated
+    // subtrees — a fixed bar, a hero, a strip over the canvas — so there is no structural selector
+    // that finds all three and nothing else. The rule being protected is about ALL THREE AT ONCE
+    // (`0:00` shipped in three places simultaneously), so the suite has to be able to ask for every
+    // slot on the page in one query. `e2e/clock.e2e.ts` is the caller.
+    <span className={className} data-testid="round-clock" title={clockSlot.title}>
       {clockSlot.kind === "clock" ? clock(clockSlot.seconds) : clockSlot.word}
     </span>
   );
