@@ -15,13 +15,34 @@
 //              42%                      58%              centred on the playable middle
 //
 //
-//                   ROUNDS WON · 12 SETTLED           <- band 2: what has happened BEFORE
-//                        7 — 5                           one centred line, quiet, steady, at the foot
+//                   ROUNDS WON · 12 SETTLED           <- band 2: what has happened BEFORE,
+//                        7 — 5                           and, under it, WHERE THIS ROUND IS IN TIME
+//                         1:23
 //
 //   Band 1 is `hp + banked` per side, live off `field.bodies`, moving on every hit. Band 2 is a count
 //   of finished rounds and does not move until one settles. Each carries its own centred caption in
 //   neutral ink; the money band is two big columns, the record is one small line; the money band is
 //   ~2.4x the type size of the record. Nothing about them invites being read as one quantity.
+//
+//   THE CLOCK IS THE THIRD ROW OF BAND 2, and it arrived last — by direction ("I want it in the
+//   background not in the foreground... below the rounds and the settled number, relatively centred
+//   at the top"). It used to be an 88px DOM element in the frame's top-left corner; see ArenaView.css
+//   for what happened to that one and why there is now exactly one clock inside this frame.
+//
+//   IT IS IN BAND 2 AND NOT IN BAND 1, WHICH IS THE OPPOSITE OF WHAT THE FACT SUGGESTS — the clock is
+//   about THIS round and band 1 is the "this round" band. It sits here for two reasons that both
+//   outrank the taxonomy. Composition: band 1 is nailed to the playable middle, which is precisely
+//   where `field.ts`'s `recentre()` parks the crowd, and a four-glyph mark in the middle of the field
+//   is one disc away from reading `:23` instead of `1:23`. And reading order: the top strip already
+//   says which contest this is and how it has gone, and "how far into this round we are" completes
+//   that sentence before the eye drops to the money. The two bands stay separated on every axis they
+//   were separated on before — different sizes, different inks, a caption's worth of air between them.
+//
+//   IT IS NEUTRAL INK, and that is the same rule as the captions: base.css reserves colour for the
+//   two sides, and a clock belongs to neither. It is also the ONLY mark in this file that is neither
+//   a side's figure nor a label about one, which is the second reason it is set in `--ink` rather
+//   than in `--ink-3` — being the darkest thing here at a middling size is what makes it read as its
+//   own mark and not as a caption that grew.
 //
 //   BAND 2 IS A HEADER, AND NOT THE ROW DIRECTLY ABOVE. It sits at the TOP of the field (Max's
 //   direction) because that is the order the board reads in: who is ahead between these two
@@ -81,7 +102,8 @@
 // mode. (`draw.ts`'s enemy wedge already takes the same `globalAlpha` exemption, for the same reason:
 // a tint of a colour is not a new colour.)
 
-import { SIDE_TOKEN, usdCompact, type SideRecord } from "../contract.ts";
+import { SIDE_TOKEN, clock, usdCompact, type SideRecord } from "../contract.ts";
+import { NO_CLOCK, type ClockSlot } from "../ui/roundPhaseCopy.ts";
 import { drawTracked } from "./draw.ts";
 import { LABEL_SPACE } from "./field.ts";
 import type { InkMap } from "./ink.ts";
@@ -167,6 +189,28 @@ const SHARE_RANGE = [10, 38] as const;
  *  and unmistakably the quieter of the two. */
 const RECORD_SHARE = 0.42;
 const RECORD_RANGE = [14, 54] as const;
+/** THE CLOCK, WHICH IS THE LOUDEST THING IN BAND 2 AND STILL WELL UNDER BAND 1.
+ *
+ *  Ordered on purpose: caption < record < clock < money figure. The record is history and is quiet by
+ *  design; the clock is the one figure a person watching a fight actually wants off this frame ("how
+ *  much of this is left"), so within the top group it leads. It stays at ~0.62 of the money figure
+ *  because the money IS the game — a clock that outgrew the pot would make the field a stopwatch with
+ *  a fight behind it.
+ *
+ *  THE FLOOR IS 20 AND NOT `.u`'s 10. Every other row here degrades to a micro-label on a phone
+ *  because a micro-label is still what it is; a clock that shrank to caption size would be the exact
+ *  complaint that moved it out of the corner in the first place ("very hidden"). 20px is the smallest
+ *  this reads as a figure across a 360px field. The 78 ceiling is a shade under the 88 the DOM
+ *  element it replaces was clamped to — background ink can be a little smaller than foreground type
+ *  and still be the bigger reading, and 78 is where it stops crowding `ROUNDS WON · 12 SETTLED`
+ *  directly above it on a 1,680px page. */
+const CLOCK_SHARE = 0.62;
+const CLOCK_RANGE = [20, 78] as const;
+/** The air between the record numerals and the clock, as a share of the record's own size. Deliberately
+ *  larger than the 0.85-caption gap inside the record: `7 — 5` over `1:23` with a caption's gap
+ *  between them reads as a two-line block, and the one reading this band must not produce is a clock
+ *  mistaken for part of a score. Size, ink and air all say the same thing three times. */
+const CLOCK_GAP_SHARE = 0.8;
 /** `.u`'s 0.14em, which is what makes the page's micro-label type look like itself. */
 const TRACKING = 0.14;
 /** Cap height of uppercase and digits, as a share of the font size — this type sets no descenders in
@@ -209,6 +253,39 @@ const NAME_ALPHA = [0.42, 0.3] as const;
 const SHARE_ALPHA = [0.34, 0.26] as const;
 const RECORD_ALPHA = [0.3, 0.24] as const;
 const CAPTION_ALPHA = 0.5;
+/** THE CLOCK'S, AND THE ONLY ALPHA IN THIS FILE THAT IS A RANGE RATHER THAN A NUMBER.
+ *
+ *  It is the strongest value here and it has to be: it is neutral `--ink` rather than a side colour,
+ *  it carries no second signal (no weight change, no leader, no percentage beside it), and it is the
+ *  row a person is most likely to be trying to read at a glance from across a room.
+ *
+ *  AT THE CEILING, 0.30 of `--ink` (#0b0b0b) on `--paper` composites to #b6b6b6 — which is `--ink-4`
+ *  (#b5b5b5) to within a value, the tone this page already sets a dead fighter's `OUT` in, i.e. a
+ *  weight the design has accepted as legible-but-quiet ink rather than as a mark. 2.03:1 against
+ *  `--paper`, deliberately below AA and the right side of the line for background: the same figure is
+ *  on screen twice at full contrast in DOM (the top bar's telemetry, 00-1's hero clock) with a third
+ *  copy in the accessibility tree beside this canvas. Past ~0.4 at that size it stops being ground
+ *  and starts competing with the discs, which is what every alpha in this file was tuned against.
+ *
+ *  AT THE FLOOR IT RISES TO 0.46, and this is the file's own rule rather than an exception to it:
+ *  "what the eye integrates is area times alpha", which is why the captions here already carry more
+ *  alpha than the figures they sit under. Every other row keeps ONE value because every other row is
+ *  a fixed fraction of the money figure and therefore shrinks in proportion with it. The clock does
+ *  not — `CLOCK_RANGE`'s floor binds on a phone, where it is 20px against a ~28px money figure — so
+ *  the proportional argument stops holding at exactly the width where the field is most crowded.
+ *  Screenshotted at 390x844 with 44 fighters: a 20px clock at 0.30 is a grey smear among 44 labels;
+ *  at 0.46 (#8f8f8f, 3.23:1) it is the figure it is supposed to be, and it is still lighter than any
+ *  fighter's label beside it — `--ink-3` (#767676) is 4.54:1, so the loudest this row ever gets is
+ *  still a third of a stop under the quietest LABEL on the field. Interpolated on the clock's own
+ *  size, so there is no step anywhere. */
+const CLOCK_ALPHA = [0.46, 0.3] as const;
+
+/** The clock's ink weight at this size — see CLOCK_ALPHA. Linear between the ends of CLOCK_RANGE,
+ *  and clamped, so a size outside the range (there is none today) cannot invert the relation. */
+function clockAlpha(size: number): number {
+  const t = clamp((size - CLOCK_RANGE[0]) / (CLOCK_RANGE[1] - CLOCK_RANGE[0]), 0, 1);
+  return CLOCK_ALPHA[0] + (CLOCK_ALPHA[1] - CLOCK_ALPHA[0]) * t;
+}
 /** The punctuation between the two figures on a split line — quieter than either of them, because it
  *  is punctuation and not a third number. A dash for the record and a middot for the share, so the
  *  two centred lines in this block are never mistaken for each other at a glance; the middot is the
@@ -248,6 +325,34 @@ function leaderOf(a: number | bigint, b: number | bigint): 0 | 1 | null {
 function recordCaption(settled: number): string {
   if (settled === 0) return "ROUNDS WON · NONE SETTLED YET";
   return `ROUNDS WON · ${settled} SETTLED`;
+}
+
+/** What the clock row actually puts on the paper, or `null` for "draw nothing at all". The only
+ *  decision this file makes about the clock; everything about WHICH fact belongs in the slot, and
+ *  whether any deadline may be counted at all, was decided by `ui/roundPhaseCopy.ts` before it got
+ *  here (see `ArenaCanvasProps.clockSlot`).
+ *
+ *  THREE CASES, AND THE THIRD IS THE ONE THIS FUNCTION EXISTS FOR:
+ *
+ *    a figure   `clock()`, untracked, tabular — set exactly like the money figures two bands down,
+ *               because it is the same kind of mark: a number to be read off the field.
+ *    a word     `OPEN`, the state a held-open lobby is genuinely in — and TRACKED, which is the whole
+ *               difference. `RoundClockSlot`'s rule is that a state must never be dressed as a
+ *               figure, since `0:00` was misread precisely because it wore a figure's clothes. On a
+ *               canvas there is no `.num` class to stay out of, so the distinction has to be drawn:
+ *               `.u`'s 0.14em tracking is how this page sets a WORD, and at this size a tracked
+ *               `O P E N` cannot be mistaken for a reading of anything.
+ *    nothing    `NO_CLOCK`. A fixed slot must print `—`, because a blank cell reads as broken; a
+ *               watermark has no cell, so the honest rendering of "no clock is running" is no clock.
+ *               A metre-wide em dash over the fight would be an assertion, and the thing it would
+ *               assert is nothing. See the note on `NO_CLOCK` in `ui/roundPhaseCopy.ts`.
+ *
+ *  Any FUTURE state word — a paused arena, an intermission — falls through to the word case and is
+ *  drawn, which is the right default: a state this page thought worth naming is worth showing. */
+function clockMark(slot: ClockSlot, size: number): { text: string; tracking: number } | null {
+  if (slot.kind === "clock") return { text: clock(slot.seconds), tracking: 0 };
+  if (slot.word === NO_CLOCK) return null;
+  return { text: slot.word, tracking: size * TRACKING };
 }
 
 /** ONE CENTRED LINE IN THREE PIECES, so each side keeps its own colour. `49%  ·  51%` and `8 — 8` are
@@ -304,6 +409,10 @@ export interface ScoreboardInput {
   totals: readonly [bigint, bigint];
   record: SideRecord | null;
   crowd: number;
+  /** WHERE THIS ROUND IS IN TIME, already decided — `ui/roundPhaseCopy.ts`'s `ClockSlot`, passed
+   *  through `ArenaCanvasProps` untouched. Not `elapsedSec`, and the reason is written out on the
+   *  prop. */
+  clock: ClockSlot;
 }
 
 /**
@@ -365,12 +474,16 @@ export function drawScoreboard(
   let nameSize = 0;
   let shareSize = 0;
   let recordSize = 0;
+  let clockSize = 0;
   let liveH = 0;
   for (let pass = 0; pass < 2; pass++) {
     capSize = clamp(figure * CAPTION_SHARE, CAPTION_RANGE[0], CAPTION_RANGE[1]);
     nameSize = clamp(figure * NAME_SHARE, NAME_RANGE[0], NAME_RANGE[1]);
     shareSize = clamp(figure * SHARE_SHARE, SHARE_RANGE[0], SHARE_RANGE[1]);
     recordSize = clamp(figure * RECORD_SHARE, RECORD_RANGE[0], RECORD_RANGE[1]);
+    // Derived in the same pass as the rest, so a shrink-to-fit on the live band takes the top group
+    // down with it rather than leaving a clock sized for a field this one turned out not to be.
+    clockSize = clamp(figure * CLOCK_SHARE, CLOCK_RANGE[0], CLOCK_RANGE[1]);
     liveH =
       capSize * CAP_H +
       capSize * 0.85 + nameSize * CAP_H +
@@ -465,8 +578,16 @@ export function drawScoreboard(
     claimRow(w / 2, yShare, width, shareSize);
   }
 
-  // --- band 2: the head-to-head ------------------------------------------------------------------
-  if (record) {
+  // --- band 2: the head-to-head, and the clock under it ------------------------------------------
+  //
+  // TWO ROWS THAT COME AND GO INDEPENDENTLY, which is why nothing below assumes either of them. The
+  // record is `null` until the round log has been read — a fold over N round accounts that can fail —
+  // and the clock is absent in every phase that genuinely has none (`clockMark`). A band that is
+  // sized as "the record, plus a clock" would put the clock a caption-and-a-numeral below the top of
+  // the field on a page whose history had not loaded, i.e. floating over nothing.
+  const caption = record ? recordCaption(record.settled) : null;
+  const mark = clockMark(score.clock, clockSize);
+  if (caption !== null || mark !== null) {
     // Anchored to the FIELD, not to the band below it — it sits at the top of the board and the live
     // band keeps the middle it earned. Two clamps, in this order of priority:
     //   1. never overlap the live band — pulled UP so its last row ends a caption's height above the
@@ -475,13 +596,19 @@ export function drawScoreboard(
     //   2. never leave the field — floored at 0 for a squat panel, which degrades to "high and tight"
     //      rather than to "drawn off the top edge".
     // Both are unreachable at any frame this page actually renders.
-    const recordH = capSize * CAP_H + capSize * 0.85 + recordSize * CAP_H;
+    //
+    // EVERY TERM IS CONDITIONAL, and the gaps belong to the row BELOW them — so a missing record
+    // takes its caption, its numerals AND the air under them out of the total, and the clock becomes
+    // the first row of the band rather than the second row of a band with a hole in it.
+    const recordH = caption === null ? 0 : capSize * CAP_H + capSize * 0.85 + recordSize * CAP_H;
+    const clockH = mark === null ? 0 : (caption === null ? 0 : recordSize * CLOCK_GAP_SHARE) + clockSize * CAP_H;
+    const bandH = recordH + clockH;
     const liveTop = cy - liveH / 2;
-    const lowest = liveTop - capSize * 1.6 - recordH;
+    const lowest = liveTop - capSize * 1.6 - bandH;
     const highest = Math.min(playable * RECORD_TOP_SHARE, lowest);
 
-    const caption = recordCaption(record.settled);
-    const captionW = monoWidth(caption.length, capSize, capSize * TRACKING);
+    const captionW = caption === null ? 0 : monoWidth(caption.length, capSize, capSize * TRACKING);
+    const markW = mark === null ? 0 : monoWidth(mark.text.length, clockSize, mark.tracking);
 
     // …AND THEN, ONLY FOR THE SHELL'S OWN CHROME, IT MOVES.
     //
@@ -500,42 +627,76 @@ export function drawScoreboard(
     // the caption is 175px in the middle of a 1,390px field and the corners are 350px away, so the
     // first probe passes and this costs one `hits` call.
     //
-    // Probed as ONE BOX at the caption's width for the band's full height: the caption is by far the
-    // wider of the two rows (`ROUNDS WON · 16 SETTLED` against `9 — 7`) and it is the top one, so the
-    // union is the caption's column. Conservative in the numerals' favour, which is the right
-    // direction — they are the score.
+    // Probed as ONE BOX at the WIDEST row's width for the band's full height. That used to be the
+    // caption unconditionally (`ROUNDS WON · 16 SETTLED` against `9 — 7`); with the clock in the band
+    // it is a max, because a caption-less band — the round log has not landed yet — would otherwise
+    // probe a zero-width column, clear the chrome trivially and draw the clock straight through it.
     cursor = Math.max(0, highest);
+    const probeW = Math.max(captionW, markW);
     for (let y = cursor; y <= lowest; y += RECORD_YIELD_STEP) {
-      if (!ink.hits(w / 2 - captionW / 2, y, w / 2 + captionW / 2, y + recordH)) {
+      if (!ink.hits(w / 2 - probeW / 2, y, w / 2 + probeW / 2, y + bandH)) {
         cursor = y;
         break;
       }
     }
 
-    const yRecordCaption = rowMiddle(capSize * CAP_H, 0);
-    const yRecord = rowMiddle(recordSize * CAP_H, capSize * 0.85);
+    if (record !== null && caption !== null) {
+      const yRecordCaption = rowMiddle(capSize * CAP_H, 0);
+      const yRecord = rowMiddle(recordSize * CAP_H, capSize * 0.85);
 
-    ctx.fillStyle = palette.ink3;
-    ctx.globalAlpha = CAPTION_ALPHA;
-    ctx.font = monoFont(capSize);
-    drawTracked(ctx, caption, w / 2, yRecordCaption, capSize * TRACKING);
-    claimRow(w / 2, yRecordCaption, captionW, capSize);
+      ctx.fillStyle = palette.ink3;
+      ctx.globalAlpha = CAPTION_ALPHA;
+      ctx.font = monoFont(capSize);
+      drawTracked(ctx, caption, w / 2, yRecordCaption, capSize * TRACKING);
+      claimRow(w / 2, yRecordCaption, captionW, capSize);
 
-    // The same split line the share row is set on — see `drawSplitLine`. Weight stays at 400 for
-    // both numerals: the advance is identical in this mono stack, but the leader cue in this band is
-    // alpha alone, so that the heavier type stays a property of the live figure and the two bands
-    // cannot be confused.
-    const recLead = leaderOf(record.wins[0], record.wins[1]);
-    ctx.font = monoFont(recordSize);
-    const width = drawSplitLine(
-      ctx,
-      w / 2,
-      yRecord,
-      [String(record.wins[0]), RECORD_SEPARATOR, String(record.wins[1])],
-      [palette.side[0], palette.ink3, palette.side[1]],
-      [RECORD_ALPHA[recLead === 0 ? 0 : 1], SEPARATOR_ALPHA, RECORD_ALPHA[recLead === 1 ? 0 : 1]],
-    );
-    claimRow(w / 2, yRecord, width, recordSize);
+      // The same split line the share row is set on — see `drawSplitLine`. Weight stays at 400 for
+      // both numerals: the advance is identical in this mono stack, but the leader cue in this band is
+      // alpha alone, so that the heavier type stays a property of the live figure and the two bands
+      // cannot be confused.
+      const recLead = leaderOf(record.wins[0], record.wins[1]);
+      ctx.font = monoFont(recordSize);
+      const width = drawSplitLine(
+        ctx,
+        w / 2,
+        yRecord,
+        [String(record.wins[0]), RECORD_SEPARATOR, String(record.wins[1])],
+        [palette.side[0], palette.ink3, palette.side[1]],
+        [RECORD_ALPHA[recLead === 0 ? 0 : 1], SEPARATOR_ALPHA, RECORD_ALPHA[recLead === 1 ? 0 : 1]],
+      );
+      claimRow(w / 2, yRecord, width, recordSize);
+    }
+
+    // THE CLOCK. Centred on the field, under the standings, in neutral ink — the last row of the top
+    // group and the loudest of them.
+    //
+    // IT TAKES THE SAME BARGAIN EVERY ROW HERE TAKES and it is worth being explicit about which one,
+    // because this file's own rule is that "a row that can be swallowed whole is a row that can lie":
+    // `1:23` is four glyphs, so at 57px on a desktop it is ~137px against a widest-disc of ~125px at
+    // this crowd — wider than one fighter, and only just. A disc taking its left half would leave
+    // `:23`, which is a false reading and not a damaged one, exactly as `49%` became `9%`.
+    //
+    // WHAT MAKES THAT ACCEPTABLE HERE AND NOT THERE is that the share line was the only statement of
+    // the split on the whole screen, and this figure is the fourth copy of one that is also in the
+    // top bar's telemetry, in 00-1's hero directly above this frame, and in the accessibility tree
+    // beside this canvas — all three at full contrast, none of them coverable by anything. A
+    // watermark clock is a convenience at the size of the field, and the top strip is the emptiest
+    // paper on it (`recentre` parks the crowd on the middle), so the case where it is obscured is
+    // both rare and harmless. It is NOT padded out to disc width the way `SHARE_SEPARATOR` is: a
+    // clock spaced `1 : 2 3` to survive a circle would stop reading as a clock, which trades a rare
+    // partial loss for a permanent one.
+    if (mark !== null) {
+      const yClock = rowMiddle(clockSize * CAP_H, caption === null ? 0 : recordSize * CLOCK_GAP_SHARE);
+      ctx.fillStyle = palette.ink;
+      ctx.globalAlpha = clockAlpha(clockSize);
+      ctx.font = monoFont(clockSize);
+      // Tracked only when it is a WORD — see `clockMark`. `drawTracked` at zero extra is the same
+      // marks as `fillText`, but going through one path for both would set a figure a glyph at a
+      // time for nothing, so the figure takes the plain centred draw the money figures take.
+      if (mark.tracking > 0) drawTracked(ctx, mark.text, w / 2, yClock, mark.tracking);
+      else ctx.fillText(mark.text, w / 2, yClock);
+      claimRow(w / 2, yClock, markW, clockSize);
+    }
   }
 
   ctx.restore();

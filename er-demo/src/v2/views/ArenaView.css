@@ -168,61 +168,33 @@
 .ovl-line { display: flex; align-items: baseline; gap: 10px; }
 .ovl-line + .ovl-line { margin-top: 5px; }
 
-/* THE MATCH CLOCK, AT THE SIZE THE FIGHT IS ACTUALLY WATCHED AT.
-   It used to be `.num` — 12px of mono, inline between the phase word and the step gauge, i.e. the
-   size of a column header — and Max's report was that the one figure saying how much of a round is
-   left is "very hidden now". It is the second line of `.ovl--tl` and the only thing in that whole
-   column that is not a micro-label: the phase and round above it and the step gauge below it are
-   what say which clock this is, and `.ovl-lead` under them is who is winning by it.
+/* THE MATCH CLOCK IS NOT IN THIS FILE ANY MORE, AND THAT IS THE CHANGE WORTH RECORDING.
 
-   NOT `.display`, WHICH IS THE OBVIOUS REUSE AND THE WRONG ONE. `.display` is `var(--sans)`, and a
-   clock on this page is mono by two separate rules: SPEC.md's non-negotiables send the fight clock
-   through `clock()`, and base.css rule 4 says every number here is mono and tabular. So this borrows
-   `.display`'s PROPORTIONS — 0.9 line-height, tracking pulled in — and keeps `.num`'s letterforms.
-   `-0.045em` is `.display--mono`'s own tracking rather than a value chosen here, which is what makes
-   this read as the hero pot's sibling at the other end of the page instead of as a fourth typeface.
+   `.ovl-clock` was a `clamp(32px, 8vw, 88px)` block, the second row of `.ovl--tl`, and the only
+   thing in that column that was not a micro-label. It exists now as the third row of the canvas's
+   own background scoreboard — centred under `ROUNDS WON · N SETTLED`, painted before a single
+   fighter, in the same ink family as the two side totals. `arena/scoreboard.ts` owns it; the sizes,
+   the alpha and the reason a held-open lobby prints a tracked `OPEN` there are all in that file.
 
-   THE CLAMP, MEASURED RATHER THAN CHOSEN. Every bound answers one constraint:
+   WHY IT LEFT. Max: "I want it in the background not in the foreground. Like we have the total score
+   of the dollar amounts on both teams and the settled rounds — that should also have the timer there
+   as a background element." The 88px version was answering the previous complaint ("very hidden") by
+   getting louder in the corner, and loud in a corner is still a HUD. The watermark family already had
+   the right answer for big type on this field, so the clock joined it rather than continuing to
+   compete with it.
 
-     32px   The floor. It binds below a 400px viewport and therefore governs the phone, which is the
-            width where this box is most expensive — `arena/chrome.ts` reads every `.ovl` box's live
-            rect once a frame and claims it into the canvas's ink map, so every pixel this grows is a
-            pixel of field the fighters' labels and damage figures have to route around. Measured on
-            the built page at 390x844 with 16 fighters: the whole overlay is 95x35 CSS px against a
-            362x272 field, 3.3% of it — against 174x33 and 5.8% for the one-line strip it replaces.
-            The phone's clock is nearly three times the type in a smaller box, because the two `.u`
-            lines beside it are gone there (see the `max-width: 560px` block) and a stack is narrower
-            than a sentence. The floor is 32 rather than 34 for a reason written out in the same
-            place: two pixels of type here are ~2 pixels of box height there, and the whole margin
-            the canvas's record band has to step around this on a 360px screen is 3.
-     8vw    The slope, so the clock is a fraction of the field rather than of nothing. The frame is
-            the page's full width, and the page is `100vw` less two `--gut`s, so `vw` tracks the
-            field to within ~5% at every width. It reaches the ceiling at 1100px.
-     88px   The ceiling, and the page's own `max-width: 1680px` is what sets it. Past a ~1730px
-            viewport the field stops growing and `vw` does not, so a clock that kept scaling there
-            would eat a field that had stopped getting bigger. Measured at 1440x1000: the clock and
-            its two labels are 225x124 of a 1392x783 field — 2.6% of it, or 5.8% once the leaderboard
-            below takes the column to 245x257. Wide enough to be read across a room, small enough
-            that the frame's top edge is still the fight's.
+   WHAT THE CANVAS GAINS BY IT, measured rather than assumed: `arena/chrome.ts` claims every `.ovl`
+   rect into the ink map once a frame and the fight's labels route around it. On a 390x844 phone the
+   three-line box was 95x35 of a 362x272 field; without the clock the column is two `.u` lines, and
+   below 560px it is nothing at all (see that block). Every pixel of it went back to the fight, which
+   at 44 fighters is the one thing this field is short of.
 
-   IT MUST HOLD A WORD AS WELL AS A FIGURE — `RoundClockSlot` prints `OPEN` across this slot for a
-   lobby the keeper is holding open, which at this size is the correct and rather good reading of
-   that state. Five glyphs is the widest case and it is not `10:23`: a fight is capped at
-   `FIGHT_TIMEOUT_SECONDS` and never reaches ten minutes, but a lobby's countdown is whatever the
-   keeper published and `59:00` is an ordinary reading of one. `OPEN` is four. The `.ovl`'s
-   `max-width: calc(100% - 24px)` is never the binding constraint on either at any width above
-   ~215px, so the box is sized by the type and never by the frame. */
-.ovl-clock {
-  display: block;
-  font-size: clamp(32px, 8vw, 88px);
-  line-height: 0.9;
-  letter-spacing: -0.045em;
-  /* Not `.ovl-line`'s 5px: at this size the gap wants to be smaller than it would be between two
-     10px labels, because a 0.9 line-height already leaves the glyphs sitting well inside their box. */
-  margin: 3px 0 4px;
-}
+   THE DOM STILL CARRIES THE FIGURE, once, at 1px — `RoundClockSlot className="sr"` beside the canvas
+   in ArenaView.tsx. Painted ink has no accessible name and cannot be queried; that node is the
+   field's text alternative and the handle `e2e/clock.e2e.ts` holds the largest clock on the page by.
+   It is deliberately not an `.ovl`, so it claims no field. */
 
-/* THE ROUND'S TOP FIVE — the second block of the top-left overlay, under the clock. See
+/* THE ROUND'S TOP FIVE — the last block of the top-left overlay. See
    `FieldLeaders` in ArenaView.tsx for why it is there and not in the empty corner below.
 
    THE SEPARATOR IS 14PX OF NOTHING, and both halves of that are deliberate. Whitespace rather than a
@@ -465,53 +437,62 @@
 }
 
 @media (max-width: 560px) {
-  /* THE CLOCK KEEPS THE CORNER; ITS METADATA GIVES IT UP — and this rule is the result of a
-     measurement, not a taste. `arena/scoreboard.ts` anchors the head-to-head record band to the
-     field's TOP EDGE and, since `arena/chrome.ts`, walks it DOWNWARD one step at a time until it
-     stops hitting the shell's overlay boxes; if it reaches the live band before it clears them it
-     gives up and takes the overlap, because a header printing through the money figures is the
-     worse of the two failures. So there are exactly two ways for this box to stay out of its way,
-     and on a phone the three-line stack satisfies neither.
+  /* THE PHONE GIVES THE TOP-LEFT CORNER BACK TO THE FIELD, ENTIRELY — and this is a measurement
+     finishing an argument it had already half-won rather than a new opinion.
 
-     Measured on the built page with sixteen fighters, by reading the canvas back — first with the
-     overlays hidden, for where the band WANTS to sit, then by sweeping this box's height for where
-     it can be pushed to:
+     THE RULE IT IS ANSWERING. `arena/scoreboard.ts` anchors the top group — `ROUNDS WON · N
+     SETTLED`, the head-to-head numerals, and now the clock under them — to the field's TOP EDGE,
+     and, since `arena/chrome.ts`, walks it DOWNWARD one step at a time until it stops hitting the
+     shell's overlay boxes. If it reaches the live money band before it clears them it gives up and
+     takes the overlap, because a header printing through the money figures is the worse of the two
+     failures. So a box in this corner has exactly two ways to stay out of the band's way: be
+     narrower than its column, or be short enough for it to step below.
+
+     Measured on the built page, by reading the canvas back with the overlays hidden — where the band
+     wants to sit, before anything pushes it:
 
        viewport   field      record caption      band's floor
        360x900    332x249    y 10, x  86-242     between 38px and 40px of box
        390x844    362x272    y 11, x 101-257     between 48px and 52px of box
 
-       Route 1 — be narrower than the caption's column. The three-line box is 126px wide, set by
-                 `FIGHT · ROUND 17` rather than by the clock, and reaches 26px into that column at
-                 390px and 40px into it at 360px. It is the only width on the page that does: at a
-                 561px viewport the caption's left edge is 186px against a 126px box, and at 1440px
-                 it is 609px against 225px. Every width from 561px up is clear on this route alone.
-       Route 2 — be short enough for the band to step below. The three-line box is 74px tall at the
-                 clamp's own floor, and no clock size fixes that: even a 20px clock measures 63px
-                 once two `.u` lines are in the box, which is over the floor at both widths above.
+     WHAT CHANGED. The previous version of this block kept the clock in the corner and hid its two
+     `.u` lines to buy the height — the clock was the thing being protected, so the metadata paid.
+     The clock is on the canvas now, so the trade is inverted: what is left in this box is two lines
+     of metadata, ~41px tall and ~126px wide (`FIGHT · ROUND 17` sets the width, not the gauge).
 
-     So the phone takes route 2, and it needs all three of the rules below to get there. The ladder,
-     measured at 390px with a 32px clock: the three-line box is 74px, without the two `.u` lines it
-     is 50px, without the clock's own margins 43px, and without the overlay's 6px vertical padding
-     35px — which clears 360px's 38px floor with 3px in hand and 390px's 48px floor by 13px. Three
-     small rules rather than one is not tidy; it is what the measurement asks for, and each of them
-     is spending the same budget.
+       Route 1 fails: 126px reaches 26px into the caption's column at 390px and 40px into it at 360px.
+                      This is the only width on the page where it does — at 561px the caption's left
+                      edge is 186px against the same 126px box, and at 1440px it is 609px against
+                      225px, so every width from 561px up is clear on this route alone.
+       Route 2 fails: 41px is over 360px's 38-40px floor, and the floor is LOWER than it used to be,
+                      because the top group is a clock taller than it was when those numbers were
+                      taken.
 
-     WHAT THE PHONE GIVES UP, AND WHERE IT STILL HAS IT. The phase word is in the fixed top bar on
-     every screen and at 20px in 00-1's hero directly above this frame; the round number is in
-     00-1's own section tools and on the field's plate in every phase that has one; the step gauge
-     is under 00-1's hero clock. Nothing here is the only copy of anything. This is the same trade
-     `.ovl--bl` and the lobby hint already make one breakpoint up, for the same reason.
+     Both routes fail for a box whose entire contents are stated elsewhere on the same screen, so the
+     box goes. The phase word is in the fixed top bar on every screen and at 20px in 00-1's hero
+     directly above this frame; the round number is in 00-1's section tools and on the field's own
+     plate in every phase that has one; the step gauge is under 00-1's hero clock; and the clock —
+     the one thing the phone was keeping this corner FOR — is now painted across the middle of the
+     field at 20px, which is larger than it ever was here relative to the paper it sits on. Nothing
+     is lost and the fight gets a corner back. Same trade `.ovl--bl` and the lobby hint make one
+     breakpoint up, for the same reason.
 
-     AT 560px RATHER THAN AT THE 428px WHERE THE COLLISION ACTUALLY STARTS, because the collision
-     width is not a constant: `ROUND 17` is two digits today and `ROUND 12345` is five, which widens
-     the first line by ~37px and pushes the crossover out past 500px. This is also the breakpoint at
-     which the tables below already drop their optional columns — one "this is a phone" line rather
-     than a fourth one fitted to a single measurement. */
-  .ovl--tl .ovl-line { display: none; }
-  .ovl--tl { padding-top: 2px; padding-bottom: 2px; }
-  /* The gaps existed to separate the clock from the two lines that are no longer there. */
-  .ovl--tl .ovl-clock { margin: 0; }
+     `display: none` AND NOT A NARROWER BOX, because a hidden `.ovl` measures 0x0 and `chrome.ts`
+     skips it — the corner is not merely quieter, it is genuinely unclaimed, and the top group stops
+     walking at its first probe. A `visibility: hidden` box would still hold its rect and still evict
+     the fight from it, which is the whole cost being removed here.
+
+     THE CLOCK'S OWN SLOT SURVIVES THIS RULE because it is not in this box: `RoundClockSlot`'s `.sr`
+     node sits beside the canvas (ArenaView.tsx), outside every `.ovl`, so the field keeps its text
+     alternative at every width. A slot hidden with `display: none` would be gone from the
+     accessibility tree too, which is exactly what the field cannot afford now that its clock is ink.
+
+     AT 560px RATHER THAN AT THE ~428px WHERE THE COLLISION STARTS TODAY, because the collision width
+     is not a constant: `ROUND 17` is two digits and `ROUND 12345` is five, which widens the first
+     line by ~37px and pushes the crossover past 500px. It is also the breakpoint at which the tables
+     below drop their optional columns — one "this is a phone" line rather than a second one fitted
+     to a single measurement. */
+  .ovl--tl { display: none; }
 
   .roster { grid-template-columns: 22px 7px minmax(60px, 1fr) 66px 46px; }
   .standing { grid-template-columns: 24px 7px minmax(60px, 1fr) 70px 82px; }

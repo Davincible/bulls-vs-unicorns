@@ -7,6 +7,15 @@
 // the time is up; nothing was up. A visitor read a broken clock over the healthiest resting state
 // this arena has.
 //
+// WHERE THE THIRD ONE IS NOW, because "the strip over the field" stopped being true and the count
+// below did not. The field's clock is background ink on the canvas — the third row of the scoreboard
+// watermark, centred under `ROUNDS WON · N SETTLED` (`arena/scoreboard.ts`). Painted ink cannot be
+// queried, so that surface renders `RoundClockSlot` at `.sr` beside the canvas as its text
+// alternative, and the canvas is handed the same `ClockSlot` object rather than a number. That is
+// what keeps this file's assertion meaningful: three surfaces, one decision, and the largest of them
+// still has a handle. A change that deleted the `.sr` node would take a clock off the accessibility
+// tree and out of this suite in the same move, which is why it must not be treated as spare markup.
+//
 // THE FIX WAS `ClockSlot` + `RoundClockSlot`, and `roundPhaseCopy.test.ts` already holds the
 // DECISION: given a round, a clock and a keeper cadence, what belongs in the slot. What no unit test
 // can hold is whether the three surfaces actually ASK — the original bug was three call sites that

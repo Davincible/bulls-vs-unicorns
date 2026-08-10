@@ -454,6 +454,10 @@ export function createArenaLoop(deps: ArenaLoopDeps): ArenaLoop {
         totals,
         record: p.sideRecord,
         crowd: f.bodies.length,
+        // Handed straight through, never unpacked here. It is a decision made by
+        // `ui/roundPhaseCopy.ts` — see `ArenaCanvasProps.clockSlot` for why the loop must not be the
+        // place that turns it into a number.
+        clock: p.clockSlot,
       });
       drawBodies(ctx, f, palette, { hoverId, selectedId: p.selectedId ?? null }, ink, rafMs);
       if (!still) impact.draw(ctx, palette, rafMs, ink);

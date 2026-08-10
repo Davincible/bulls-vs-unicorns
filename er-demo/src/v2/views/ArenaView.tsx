@@ -631,6 +631,11 @@ function TheArena() {
           for the two halves of one look to fall out of step. */}
       <div ref={frameRef} className={`frame frame--${board}`}>
         <div className="frame-fill">
+          {/* `clockSlot` IS THE FIELD'S CLOCK, NOW THAT THE FIELD DRAWS IT. The canvas sets it as the
+              third row of the background scoreboard (`arena/scoreboard.ts`), and it is handed the
+              same decision object `RoundClockSlot` renders, off the same `useRoundPhase()` this
+              component already calls — so the ink on the field and the word in the accessibility
+              tree below it cannot disagree about what the round is doing. */}
           <ArenaCanvas
             fighters={fighters}
             hitEvents={hitEvents}
@@ -638,18 +643,37 @@ function TheArena() {
             phase={phase}
             board={board}
             sideRecord={sideRecord}
+            clockSlot={phaseCopy.clockSlot}
             onSelect={onSelect}
             selectedId={selectedId}
           />
+          {/* WHAT A `role="img"` CANVAS OWES A READER WHO CANNOT SEE IT.
+              The clock is painted ink now, and no assistive technology can reach painted ink — the
+              canvas is one opaque object with a summary label (see `ArenaCanvas`), and that summary
+              is throttled and deliberately about the fight rather than about the round's clock. So
+              the field's clock keeps a text alternative, and the alternative is the SAME component
+              the other three slots use rather than a second reading of the same facts: one hook, one
+              union, one answer, four surfaces.
+              IT IS ALSO WHY THIS SCREEN STILL CARRIES THREE SLOTS. `e2e/clock.e2e.ts` asserts that
+              every surface showing this figure asked `roundPhaseCopy.ts` for it, and the field is
+              still one of those surfaces — it just prints its copy in pixels the DOM cannot be
+              queried for. Deleting this node would not remove a clock from the page; it would remove
+              the only handle the suite has on the largest one.
+              NOT AN `.ovl`, deliberately: `arena/chrome.ts` claims every `.ovl` rect into the ink map
+              and evicts the fight from it. `.sr` is a 1px clipped box with no class chrome looks
+              for, so it costs the field nothing at any width — including below 560px, where the
+              top-left overlay is gone entirely. */}
+          <RoundClockSlot className="sr" />
         </div>
 
-        {/* A COLUMN, NOT A LINE, AND THE SECOND ROW OF IT IS THE POINT. This was `LOBBY 0:00 0/4,000`
-            on a single line in 12px mono — the phase, the clock and the step gauge given equal
-            weight, which meant the round's clock was the same size as the label beside it and Max's
-            report was that it is "very hidden". A player watching a fight wants one figure off this
-            frame and it is how much of the round is left; everything else here is the metadata that
-            says what the figure is a clock OF, and who is winning by it. See `.ovl-clock` in
-            ArenaView.css for the sizing and what each bound of the clamp is holding off. */}
+        {/* A COLUMN OF METADATA, AND IT NO LONGER HOLDS THE FIGURE IT WAS BUILT AROUND. It began as
+            `LOBBY 0:00 0/4,000` on one 12px line, which made the round's clock the same size as the
+            label beside it ("very hidden"); it then held an 88px clock as its second row; the clock
+            is now background ink on the canvas itself, centred at the top of the field. What is left
+            is exactly what this column was always for — what the figure is a clock OF (the phase and
+            the round), how far through the fight it is (the step gauge), and who is winning it
+            (`.ovl-lead`). It reads top to bottom as one sentence and answers the questions the
+            watermark cannot. Below 560px the whole column is gone; see ArenaView.css. */}
         <div className="ovl ovl--tl">
           {/* WHICH ROUND, ON THE FIELD ITSELF. It was in 00-1's section tools and inside the centred
               plate — and the plate is gone the instant the fight starts, which is exactly when
@@ -665,12 +689,20 @@ function TheArena() {
               Round {status.roundNo === null ? <Dash /> : status.roundNo.toString()}
             </span>
           </div>
-          {/* STILL EXACTLY ONE SLOT — see `RoundClockSlot`, and `e2e/clock.e2e.ts`, which asserts
-              that this screen carries three of them and no more. What changed here is the class and
-              nothing else: the component is what stops a held-open lobby printing `0:00`, and at
-              this size it prints `OPEN` across the field instead, which is the best reading that
-              state has ever had on this page. */}
-          <RoundClockSlot className="num ovl-clock" />
+          {/* THE CLOCK IS NOT IN THIS COLUMN ANY MORE. It was here, at `clamp(34px, 8vw, 88px)`, and
+              it is now the third row of the canvas's own background scoreboard — centred under
+              `ROUNDS WON · N SETTLED`, behind the fighters, in the same ink family as the two side
+              totals (`arena/scoreboard.ts`, band 2). Max's direction: "I want it in the background
+              not in the foreground... it can be placed below the rounds and the settled number,
+              relatively centred at the top."
+              IT WAS REMOVED RATHER THAN SHRUNK, and that is the one call worth defending here. A
+              small clock in this corner and a large one centred 200px away are two readings of one
+              figure inside one frame, and the eye finds the disagreement even when the numbers agree
+              — the money watermark has no small twin in an overlay, and neither should this. What is
+              left in this column is metadata about the clock rather than a second copy of it: which
+              phase, which round, how far through the steps, and who is ahead.
+              The remaining slot on this screen is `.sr` beside the canvas — see it for why the count
+              `e2e/clock.e2e.ts` asserts is still three. */}
           <div className="ovl-line">
             {/* Same reasoning as 00-1's step readout: the ceiling is per-lineup
                 (`finalCursor(fighterCount)`), so with no round in scope there is no honest number to

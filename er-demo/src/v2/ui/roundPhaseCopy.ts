@@ -112,8 +112,18 @@ export type ClockSlot =
 const HELD_OPEN_WORD = "OPEN";
 
 /** Every other clockless state. This page's standing rule for a slot with no figure in it — a
- *  no-data cell reads `—`, never `0` (styles/base.css). */
-const NO_CLOCK = "—";
+ *  no-data cell reads `—`, never `0` (styles/base.css).
+ *
+ *  EXPORTED BECAUSE ONE SURFACE HAS NO CELL TO FILL. `—` is the right mark in a fixed slot: the top
+ *  bar's strip, the hero's tile and a table cell all reserve their space whether or not there is a
+ *  figure for it, and leaving one blank reads as a rendering failure rather than as "no clock".
+ *  `arena/scoreboard.ts` draws the same slot as background ink on the field, where there is no cell,
+ *  no reserved space and nothing to look broken — so it draws NOTHING for this value rather than
+ *  hanging a metre-wide em dash over the fight. That is a rendering decision about a known value and
+ *  belongs to the renderer (same division of labour as `RoundClockSlot`'s header describes), but it
+ *  must be made against THIS constant and never against a `"—"` typed out over there: two spellings
+ *  of one mark is how a surface ends up drawing the dash it meant to suppress. */
+export const NO_CLOCK = "—";
 
 export interface RoundPhaseCopy {
   /** Which body a control surface should show: the deploy buttons, the extract button, or neither.
