@@ -56,6 +56,7 @@ import {
 import { useArena } from "../data/useArena.ts";
 import { pendingNote, sessionNote } from "../data/autoSession.ts";
 import { firstDeployWarning } from "../data/entryWindow.ts";
+import { gatePlacement, type PlayBlock } from "../data/playGate.ts";
 import { feeNote, feePhrase } from "../views/feeCopy.ts";
 import { ConnectPanel } from "./ConnectPanel.tsx";
 import { Seg } from "./primitives.tsx";
@@ -172,9 +173,14 @@ function useDockHeight(): (el: HTMLElement | null) => void {
 interface DeployBodyProps {
   stake: number;
   setStake: (usd: number) => void;
+  /** THE GATE STANDING IN THE WAY, when it is one this panel keeps its controls under — `null`
+   *  whenever the player can actually press these buttons. Only ever a block `gatePlacement` calls
+   *  `"beside"`: one with nothing to press, where evicting the controls would take a disabled button
+   *  that says why and put nothing in its place. */
+  gated: PlayBlock | null;
 }
 
-function DeployBody({ stake, setStake }: DeployBodyProps) {
+function DeployBody({ stake, setStake, gated }: DeployBodyProps) {
   const { actions, fee, session, toasts } = useArena();
   // WHAT THE ROUND IS DOING, FOR THE ONE THING THIS BODY NEEDS THAT THE NOTE ABOVE DOES NOT PRINT:
   // whether a real number is counting down at all. `timing` is the honest answer and the only honest
@@ -213,6 +219,11 @@ function DeployBody({ stake, setStake }: DeployBodyProps) {
           answer "what can I do", so this rendering carries only the label and the countdown. */}
       <RoundPhaseNote detail="timing" announce={false} />
 
+      {/* LIVE EVEN WHILE `gated`, AND THAT IS THE WHOLE REASON THIS BLOCK SITS BESIDE THE CONTROLS
+          RATHER THAN REPLACING THEM. Choosing an amount sends nothing, costs nothing and cannot be
+          refused by anything the gate is about; a reader waiting on a wallet can do their shopping,
+          and the press lands the instant it becomes possible. Disabling it would take away the one
+          thing still genuinely available and leave the panel with nothing on it that works. */}
       <div className="dock-row">
         <span className="u">Stake</span>
         <Seg<number>
@@ -251,7 +262,7 @@ function DeployBody({ stake, setStake }: DeployBodyProps) {
         <button
           type="button"
           className="btn btn--a btn--wide"
-          disabled={actions.entering}
+          disabled={actions.entering || gated !== null}
           onClick={() => void deploy(0)}
         >
           <TokenIcon token={SIDE_TOKEN[0]} /> {SIDE_TOKEN[0].name}
@@ -259,7 +270,7 @@ function DeployBody({ stake, setStake }: DeployBodyProps) {
         <button
           type="button"
           className="btn btn--b btn--wide"
-          disabled={actions.entering}
+          disabled={actions.entering || gated !== null}
           onClick={() => void deploy(1)}
         >
           <TokenIcon token={SIDE_TOKEN[1]} /> {SIDE_TOKEN[1].name}
@@ -278,21 +289,34 @@ function DeployBody({ stake, setStake }: DeployBodyProps) {
           the press, which is the only time it can do its job. */}
       {signingNote !== null ? <p className="lede dock-note">{signingNote}</p> : null}
 
-      {/* `.lede`, not `.u`: a tracked-out uppercase sentence is the house voice for a LABEL, and
-          three lines of it is a wall. Sentences on this page are sentence case.
-          The `entering` case is the one moment these buttons are disabled, so it says why they are
-          and what ends it — "Sending…" said neither, and the press now spans a wallet dialog as
-          well as a transaction, which is what `pendingNote` splits apart. */}
-      <p className="lede dock-note">
-        {actions.entering
-          ? pendingNote(session.work)
-          : `Presets only, up to the $${STAKE_CAP_USD} per-side cap. Custom amounts, the slider and repeat-every-round are in 00-3.`}
-      </p>
+      {/* THE "WHY", DIRECTLY UNDER THE BUTTONS IT IS ABOUT. SPEC's rule is that a button a player
+          cannot press must say why and what would make it pressable, and `ConnectPanel` is the one
+          component that owns those words — so this slot hands over to it rather than writing a
+          second account of the same block three files from where it was decided. No copy is composed
+          here, exactly as `ConnectPanel`'s own header demands of every surface that renders one.
+          `.lede dock-note` otherwise, unchanged: `.u` is the house voice for a LABEL and three lines
+          of tracked uppercase is a wall. The `entering` case is the other moment these buttons are
+          disabled, so it too says why and what ends it — a press now spans a wallet dialog as well
+          as a transaction, which is what `pendingNote` splits apart. */}
+      {gated !== null ? (
+        <ConnectPanel block={gated} density="compact" />
+      ) : (
+        <p className="lede dock-note">
+          {actions.entering
+            ? pendingNote(session.work)
+            : `Presets only, up to the $${STAKE_CAP_USD} per-side cap. Custom amounts, the slider and repeat-every-round are in 00-3.`}
+        </p>
+      )}
     </>
   );
 }
 
-function ExtractBody() {
+interface ExtractBodyProps {
+  /** The same value, and the same rule, as `DeployBodyProps["gated"]`. */
+  gated: PlayBlock | null;
+}
+
+function ExtractBody({ gated }: ExtractBodyProps) {
   const { live, actions, session, toasts } = useArena();
   const eligible = actions.extractEligible;
   const terms = live?.extractTerms ?? null;
@@ -353,16 +377,30 @@ function ExtractBody() {
           the press will cost, and it disappears once a session is signing. */}
       {signingNote !== null ? <p className="lede dock-note">{signingNote}</p> : null}
 
-      {/* The two states this button spends most of its life in are both disabled ones, so both say
-          why and what would end them: a reason from `extractEligibility`, or a transaction already
-          in flight — which now spans a wallet dialog too, hence `pendingNote`. */}
-      <p className="lede dock-note">
-        {actions.extracting
-          ? pendingNote(session.work)
-          : !eligible.ok && eligible.reason
-            ? `${eligible.reason}.`
-            : "You leave the fight straight away."}
-      </p>
+      {/* THE DISABLING IS NOT DUPLICATED HERE, AND MUST NOT BE. `useActions` builds `extractEligible`
+          with `blocked?.short` as its `notReady` reason, so a gated player already reaches this
+          button with `ok: false` and a reason attached — the button above is disabled by the gate
+          through the single verdict, exactly as it is by every other reason. Adding `gated !== null`
+          to that `disabled` expression would be a second statement of one fact, and the two would
+          only ever be able to disagree.
+          What `gated` changes is the sentence under it. `eligible.reason` is `PlayBlock.short` — one
+          clause, no remedy — because that is all a one-line note can hold; the compact panel is the
+          whole block, with what to do and when it changes, and it belongs here for the same reason it
+          belongs under the deploy buttons. Otherwise: the two states this button spends most of its
+          life in are both disabled ones, so both say why and what would end them — a reason from
+          `extractEligibility`, or a transaction already in flight, which now spans a wallet dialog
+          too, hence `pendingNote`. */}
+      {gated !== null ? (
+        <ConnectPanel block={gated} density="compact" />
+      ) : (
+        <p className="lede dock-note">
+          {actions.extracting
+            ? pendingNote(session.work)
+            : !eligible.ok && eligible.reason
+              ? `${eligible.reason}.`
+              : "You leave the fight straight away."}
+        </p>
+      )}
     </>
   );
 }
@@ -544,7 +582,6 @@ function StakeDockBody() {
   // explaining a settled round, so the round's own label goes there instead and the note below drops
   // it rather than printing it twice.
   const { control, label, blocked } = useRoundPhase();
-  const title = control === "deploy" ? "Deploy" : control === "extract" ? "Extract" : label;
 
   // THE FUNNEL, ON THE ONE SURFACE THAT IS ON EVERY SCREEN. `blocked` is non-null only when the round
   // WAS offering a move and this reader's own gate took it away (`roundPhaseCopy.ts`) — which is
@@ -553,10 +590,42 @@ function StakeDockBody() {
   const { gate } = useArena();
   const funnel = blocked !== null && gate !== null ? gate : null;
 
+  // The gate is in the way, but a block with nothing to press does not deserve the panel — see
+  // `gatePlacement`. `beside` accompanies the controls; `replaced` takes their place.
+  const beside = funnel !== null && gatePlacement(funnel) === "beside" ? funnel : null;
+  const replaced = beside === null ? funnel : null;
+
+  /** The head, and — through `handleWord` — the collapsed handle.
+   *
+   *  WITH THE CONTROLS STILL ON SCREEN, THE MOVE IS STILL WHAT THIS PANEL IS ABOUT, so it gets its
+   *  own word back. `roundPhaseCopy` has already set `control` to "none" and moved the answer to
+   *  `blocked`, and for a `replace` block the gate's label is right — the panel really is about
+   *  connecting or reloading now. For a `beside` one it is not: the buttons are right there, the
+   *  reader is looking at Deploy, and a head reading "Open" over them is the round's word standing in
+   *  a slot that names the move. */
+  const title =
+    control === "deploy"
+      ? "Deploy"
+      : control === "extract"
+        ? "Extract"
+        : beside !== null
+          ? blocked === "deploy"
+            ? "Deploy"
+            : "Extract"
+          : label;
+
+  /** Which body is on screen, asked ONCE. Both the deploy body and the slot `AutoDeployLine` sits in
+   *  are keyed off this, so the line and the buttons it is about cannot end up on opposite sides of
+   *  each other — see `AutoDeployLine` for why its position depends on what is under it. A gated
+   *  deploy body is still a deploy body. */
+  const showingDeploy = control === "deploy" || (beside !== null && blocked === "deploy");
+  const showingExtract = control === "extract" || (beside !== null && blocked === "extract");
+
   /** The collapsed handle and bar are one word wide, and that word is the move they open onto.
    *  "Round" is the honest word for a state with nothing on offer — but a gated one DOES have
-   *  something on offer, and it is the thing standing in the way. `title` is already the gate's own
-   *  short label in that case (`gateLabel`), so this only has to stop "Round" swallowing it. */
+   *  something on offer, and it is either the move itself (a block that sits beside it) or the thing
+   *  standing in the way (`gateLabel`). `title` is already whichever of the two applies, so this only
+   *  has to stop "Round" swallowing it. */
   const handleWord = control === "none" && funnel === null ? "Round" : title;
 
   /** Built once and placed in exactly ONE of the two slots below — see `AutoDeployLine` for which,
@@ -668,32 +737,37 @@ function StakeDockBody() {
         </div>
 
         {/* Above Deploy, below everything else, and nothing at all when no rule is armed — the whole
-            argument is on `AutoDeployLine`. One element, two slots. */}
-        {control === "deploy" ? autoLine : null}
+            argument is on `AutoDeployLine`. One element, two slots, one boolean deciding which. */}
+        {showingDeploy ? autoLine : null}
 
-        {control === "deploy" ? (
-          <DeployBody stake={stake} setStake={setStake} />
-        ) : control === "extract" ? (
-          <ExtractBody />
-        ) : funnel !== null ? (
-          // BLOCKED, WITH A MOVE ON THE TABLE. Two different facts, and both are wanted: the round
-          // is still counting down (`detail="timing"` — the clock, without repeating "what can you
-          // do", which is the panel's whole job) and the reader is the reason there is no button,
-          // which the panel says and then fixes.
+        {showingDeploy ? (
+          <DeployBody stake={stake} setStake={setStake} gated={beside} />
+        ) : showingExtract ? (
+          <ExtractBody gated={beside} />
+        ) : replaced !== null ? (
+          // BLOCKED, WITH A MOVE ON THE TABLE AND SOMETHING TO PRESS THAT IS NOT IT. Two different
+          // facts, and both are wanted: the round is still counting down (`detail="timing"` — the
+          // clock, without repeating "what can you do", which is the panel's whole job) and the
+          // reader is the reason there is no button, which the panel says and then fixes.
+          //
+          // THE CONTROLS ARE GONE HERE BECAUSE SOMETHING BETTER IS UNDER THE CURSOR — a Connect, an
+          // Install, a faucet, a reload. `gatePlacement` is where that judgement is made and why;
+          // the blocks with nothing to press never reach this branch, because taking the buttons
+          // away from a reader and offering them nothing in exchange buys nothing at all.
           <>
             {/* `showLabel={false}` for the same reason the branch below carries it: with no control
                 on offer `title` IS `label`, so the head is already printing this exact word and a
                 second copy one line under it reads as a rendering fault. The round's own identity is
                 still on the top chrome (`R 12 / LOBBY`); what this line adds is the clock. */}
             <RoundPhaseNote detail="timing" showLabel={false} announce={false} />
-            <ConnectPanel block={funnel} density="compact" />
+            <ConnectPanel block={replaced} density="compact" />
           </>
         ) : (
           // The head above is already showing this state's label — see `title`.
           <RoundPhaseNote showLabel={false} announce={false} />
         )}
 
-        {control === "deploy" ? null : autoLine}
+        {showingDeploy ? null : autoLine}
       </section>
     </>
   );

@@ -40,6 +40,13 @@ import { WalletReadyState } from "@solana/wallet-adapter-base";
 import { PhantomWalletAdapter } from "@solana/wallet-adapter-phantom";
 import type { PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
 import type { SigningWallet } from "./identity.ts";
+import {
+  hasStalled,
+  isConnecting,
+  msUntilStalled,
+  stall,
+  type ConnectWait,
+} from "./connectPatience.ts";
 import { classifyWalletError, connectFailedFault, type WalletFault } from "./walletFault.ts";
 import {
   hasInjectedPhantom,
@@ -57,6 +64,20 @@ export interface PhantomHandle {
   /** True when a Phantom-shaped provider is in the page, whatever the adapter's readiness says.
    *  Feeds `playGate`'s split between "install Phantom" and "Phantom is here but silent". */
   providerPresent: boolean;
+  /**
+   * THE CONNECT HANDSHAKE HAS GONE UNANSWERED PAST `CONNECT_PATIENCE_MS` — see `connectPatience.ts`
+   * for the bound and the whole argument behind it.
+   *
+   * A STALLED HANDSHAKE IS STILL PENDING. This is not a failure and no surface may render it as one:
+   * `adapter.connect()` is still outstanding, and a late approval settles it through `onConnect`
+   * exactly as an early one would, at which point this clears itself. It is derived from the live
+   * attempt rather than latched, so nothing has to remember to reset it.
+   *
+   * What changes at the bound is what the page is entitled to SAY. "Phantom is waiting on you" is a
+   * claim about the player, and this page cannot verify that a popup was ever shown; past the bound
+   * it stops making that claim. See `playGate`'s `connect-stalled`.
+   */
+  connectStalled: boolean;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   /** ONE PROMPT, NO TRANSACTION — the raw 64-byte detached signature over exactly these bytes.
@@ -136,11 +157,19 @@ function noProviderOnServer(): boolean {
   return false;
 }
 
+/** The resting value, module-level and frozen so the four places that clear the wait write one
+ *  identity rather than four allocations — a `wait` that is `idle` twice must not be two renders. */
+const IDLE: ConnectWait = Object.freeze({ kind: "idle" });
+
 export function usePhantom(): PhantomHandle {
   const adapter = useMemo(() => phantomAdapter(), []);
 
   const [publicKey, setPublicKey] = useState<PublicKey | null>(null);
-  const [connecting, setConnecting] = useState(false);
+  // THE HANDSHAKE, AS ONE VALUE RATHER THAN A BOOLEAN WITH A SECOND BOOLEAN BESIDE IT. This was
+  // `useState(false)`; it is WIDENED rather than joined by a parallel `stalled` flag, because two
+  // pieces of state describing one action is the mistake `selfDisconnecting` and `inFlight` below
+  // each cost an incident to learn. See `connectPatience.ts`.
+  const [wait, setWait] = useState<ConnectWait>(IDLE);
   const [readyState, setReadyState] = useState<WalletReadyState>(() => adapter.readyState);
   const [fault, setFault] = useState<WalletFault | null>(null);
   // Set while OUR OWN `disconnect()` is in flight. Phantom emits `disconnect` in both directions and
@@ -160,17 +189,20 @@ export function usePhantom(): PhantomHandle {
   useEffect(() => {
     const onConnect = (pk: PublicKey) => {
       setPublicKey(pk);
-      setConnecting(false);
+      // THIS IS ALSO HOW A STALLED WAIT ENDS, and it is why `connectStalled` needs no clearing of its
+      // own: an approval that arrives four minutes late still lands here, and the wait it belongs to
+      // goes back to `idle` with it.
+      setWait(IDLE);
       // A successful connect retires whatever went wrong last time. Leaving a stale "you cancelled"
       // beside a live account is the kind of contradiction that makes a working page look broken.
       setFault(null);
     };
     const onDisconnect = () => {
       setPublicKey(null);
-      setConnecting(false);
+      setWait(IDLE);
     };
     const onError = (e: unknown) => {
-      setConnecting(false);
+      setWait(IDLE);
       // A disconnect we asked for is not a failure and must not be reported as one.
       if (selfDisconnecting.current) return;
       // Neither is a message signature, whose caller is holding the same error already.
@@ -228,10 +260,35 @@ export function usePhantom(): PhantomHandle {
    */
   const inFlight = useRef(false);
 
+  /**
+   * THE ONE AWAIT ON THIS PAGE WITH NOTHING BOUNDING IT — and why the escape from it is a reload
+   * rather than a Try again.
+   *
+   * `adapter.connect()` has no timeout, no `AbortSignal` and no race anywhere in it, read off the
+   * compiled adapter rather than assumed. When the extension never answers — a dead MV3
+   * content-script bridge after a Phantom auto-update, a request queued behind a popup another tab
+   * owns, a locked wallet whose unlock screen was dismissed — this promise never settles, the
+   * `finally` below never runs, and the page said "waiting for you to approve the connection in
+   * Phantom" for the life of the tab. The bound is `connectPatience.ts`, which does not cancel the
+   * call and cannot: there is nothing here to cancel.
+   *
+   * AND A SECOND ATTEMPT IS NOT AN OPTION, WHICH IS THE ADAPTER'S DOING RATHER THAN A CHOICE. Its
+   * `connect()` opens `if (this.connected || this.connecting) return;` — a SILENT early return. While
+   * a hung call is pending `this._connecting` is still true (it is cleared only in that call's own
+   * `finally`), so a second `adapter.connect()` resolves immediately having done nothing at all,
+   * leaving `adapter.publicKey` null — which the check below would then report as
+   * `connectFailedFault()`, a fabricated failure on top of a wedge. `disconnect()` does not reset the
+   * flag either, and the adapter is module-scope, one per tab. So the only thing that genuinely
+   * clears this is a new page, and `connect-stalled` offers exactly that — the same CTA
+   * `wallet-unannounced` already uses for the same class of wedge.
+   *
+   * It also means there is never a second concurrent attempt to tell apart from the first, which is
+   * why nothing here is stamped with a generation or an attempt id.
+   */
   const runConnect = useCallback(async () => {
     if (inFlight.current) return;
     inFlight.current = true;
-    setConnecting(true);
+    setWait({ kind: "asked", startedAtMs: Date.now() });
     try {
       await adapter.connect();
       // Resolving without a public key is a real state (a locked wallet, or one with no accounts).
@@ -248,9 +305,28 @@ export function usePhantom(): PhantomHandle {
       setFault(classifyWalletError(e));
     } finally {
       inFlight.current = false;
-      setConnecting(false);
+      setWait(IDLE);
     }
   }, [adapter]);
+
+  // THE ONE TIMER, ARMED FROM THE SAME ARITHMETIC THAT DECIDES WHAT ITS FIRING MEANS.
+  //
+  // `msUntilStalled` returns null for every state with nothing to schedule (`idle`, and `stalled`,
+  // which is terminal until the attempt settles), so this arms exactly once per handshake and
+  // re-arms only when `wait` genuinely changes.
+  //
+  // `setWait(stall)` PASSES THE REDUCER AND NEVER A CAPTURED VALUE, which is the load-bearing line.
+  // Between arming and firing the handshake can settle — `onConnect`, `onDisconnect`, `onError` and
+  // `runConnect`'s `finally` all write `IDLE` — and a captured `{kind:"stalled"}` would resurrect a
+  // wait that was already over, putting a stalled panel over a connected wallet. Handing React the
+  // transition instead means a settle that landed first always wins, because by then there is no
+  // `asked` left to stall.
+  useEffect(() => {
+    const ms = msUntilStalled(wait, Date.now());
+    if (ms === null) return;
+    const id = setTimeout(() => setWait(stall), ms);
+    return () => clearTimeout(id);
+  }, [wait]);
 
   useEffect(() => {
     if (autoConnected.current) return;
@@ -349,6 +425,11 @@ export function usePhantom(): PhantomHandle {
   // `connecting` alone — never `adapter.connecting` beside it. That was a second, non-reactive read
   // of a mutable external object during render: nothing re-renders when it changes, so it could only
   // ever be right by accident, and `runConnect` now owns the same fact reactively.
+  //
+  // A STALLED WAIT IS STILL A CONNECTING ONE, so `WalletStatus` stays the same four-state union and
+  // nothing downstream of it ripples. The bound changes what the page may SAY about an outstanding
+  // handshake, not whether one is outstanding — see `isConnecting`.
+  const connecting = isConnecting(wait);
   const status = statusForReadyState(readyState, connecting, publicKey !== null);
 
   const providerPresent = useSyncExternalStore(
@@ -382,6 +463,7 @@ export function usePhantom(): PhantomHandle {
     publicKey,
     fault,
     providerPresent,
+    connectStalled: hasStalled(wait),
     connect,
     disconnect,
     signMessage,

@@ -9,10 +9,19 @@ import { WalletReadyState } from "@solana/wallet-adapter-base";
  * `"unsupported"` — no Phantom the adapter is willing to talk to (see `hasInjectedPhantom` for the
  *                   case where that verdict is wrong and how the page recovers from it).
  * `"disconnected"` — Phantom is there, nobody has connected yet, or the wallet hung up.
- * `"connecting"`  — a handshake is genuinely running: a popup is open, or a trusted reconnect is
- *                   completing. NOT the silent `onlyIfTrusted` probe that precedes that reconnect —
- *                   for an untrusted origin that rejects without showing anything, and reporting it
- *                   would render "waiting for you to approve…" over a popup nobody can see.
+ * `"connecting"`  — a handshake this page started has not settled, WHETHER OR NOT A POPUP WAS EVER
+ *                   SHOWN. That last clause is the honest version and it used to read "a popup is
+ *                   open, or a trusted reconnect is completing" — a claim about the player's screen,
+ *                   which this page has no way to verify. `adapter.connect()` has no timeout in it,
+ *                   so an extension that never answers leaves a handshake outstanding forever with
+ *                   nothing on screen to approve. The status is still the right one there (the
+ *                   attempt genuinely is live, and a late approval still lands through it), so it is
+ *                   the WORDING that had to give: past `CONNECT_PATIENCE_MS` the page stops claiming
+ *                   the player is being asked. See `connectPatience.ts` and `playGate`'s
+ *                   `connect-stalled`.
+ *                   NOT the silent `onlyIfTrusted` probe that precedes a trusted reconnect — for an
+ *                   untrusted origin that rejects without showing anything, and reporting it would
+ *                   render "waiting for you to approve…" over a popup nobody can see.
  * `"connected"`   — there is a public key and this page can ask for signatures.
  */
 export type WalletStatus = "unsupported" | "disconnected" | "connecting" | "connected";

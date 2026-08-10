@@ -28,8 +28,13 @@ import "./ConnectPanel.css";
 
 /** The waiting states worth telling a screen reader about, and the resting ones that are not.
  *
- *  `connect-failed` is the only ALERT: something the reader did has just failed and the page is
- *  asking them to do it again, which is the one case that earns an interruption.
+ *  `connect-failed` and `connect-stalled` are the ALERTS. In both, something the reader did has
+ *  stopped going anywhere and the page is asking them to act, which is the one case that earns an
+ *  interruption. `connect-stalled` earns it for a sharper reason than its neighbour: the reader has
+ *  been sitting under a POLITE "waiting for you to approve" for twenty seconds — a sentence that is
+ *  read once and then never again — and the thing it told them to wait for is not happening. If the
+ *  correction arrived politely too, it would queue behind whatever else the page has said and a
+ *  reader with no popup on screen would go on waiting for one.
  *
  *  `connecting` and `no-program` are POLITE: both are transient, both end on their own, and both
  *  answer "is this thing working?" — the question a reader who cannot see a spinner is actually
@@ -43,7 +48,7 @@ import "./ConnectPanel.css";
  *  of the thing the reader just asked to see. The panel is still read normally, in reading order,
  *  where they went looking for it. */
 function liveRole(code: PlayBlock["code"]): "alert" | "status" | undefined {
-  if (code === "connect-failed") return "alert";
+  if (code === "connect-failed" || code === "connect-stalled") return "alert";
   if (code === "connecting" || code === "no-program") return "status";
   return undefined;
 }
@@ -63,9 +68,8 @@ export function ConnectPanel({ block, density }: ConnectPanelProps) {
   //
   // `playGate.ts` embeds `DEVNET_ONLY_NOTE` in the two blocks where it is part of the pitch (the
   // first thing a visitor reads on `not-installed` and `not-connected`). Every other block does not
-  // carry it, and it is the one statement about this page that is correct 100% of the time — with no
-  // way to read a wallet's cluster, saying which network we are on unconditionally is the whole
-  // mitigation. So it is appended here when it is missing.
+  // carry it, so an appended copy is how the rail still says it in those states — see the render
+  // below for which surfaces get the appended one and why the dock does not.
   //
   // The check reads the rendered string instead of listing the two codes that embed it today. A list
   // would be a second place that has to agree with `playGate.ts`, and it would agree right up until
@@ -130,7 +134,25 @@ export function ConnectPanel({ block, density }: ConnectPanelProps) {
         <p className="lede cx-aside">{block.aside}</p>
       ) : null}
 
-      {noteAlreadySaid ? null : <p className="u cx-net">{DEVNET_ONLY_NOTE}</p>}
+      {/* THE APPENDED NETWORK STATEMENT IS THE RAIL'S, NOT THE DOCK'S — the same rule as the `aside`
+          above, applied to the one paragraph that had escaped it.
+          THE COMPLAINT THIS ANSWERS: three stacked paragraphs in a 320px corner while a connect was
+          in flight — the round's clock, the reader's blocker, and then this. The first two are
+          deliberate and argued where they are rendered (`StakeDock`, and `short` then `detail` in
+          SPEC's order). The third was neither: it was appended unconditionally, in both densities,
+          to every block that did not already embed it, on the argument that it is "correct 100% of
+          the time". It is. That is an argument for saying it SOMEWHERE, not for saying it in a
+          corner under a transient wait.
+          AND `playGate.ts` ALREADY DRAWS THE REAL LINE. It embeds the note in exactly two blocks —
+          `not-installed` and `not-connected` — the two a stranger is standing in while deciding
+          whether to connect at all, where the network is part of the pitch. Those two carry it in
+          BOTH densities, because there it was put in `detail` on purpose: a first-time visitor still
+          reads it in the dock. Every state reached AFTER that point is being told a fact it has
+          already been told, and repeating it costs a paragraph on the smallest surface on the page.
+          So the appended copy goes where there is a column to hold it. That drops the dock's
+          connecting panel from three paragraphs to two, and takes nothing away from anyone who has
+          not yet been told. */}
+      {density === "full" && !noteAlreadySaid ? <p className="u cx-net">{DEVNET_ONLY_NOTE}</p> : null}
     </div>
   );
 }

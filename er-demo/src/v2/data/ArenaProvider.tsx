@@ -397,7 +397,11 @@ function WalletChainProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <ChainArena identity={identity} providerPresent={phantom.providerPresent}>
+    <ChainArena
+      identity={identity}
+      providerPresent={phantom.providerPresent}
+      connectStalled={phantom.connectStalled}
+    >
       {children}
     </ChainArena>
   );
@@ -410,12 +414,16 @@ function WalletChainProvider({ children }: { children: ReactNode }) {
 function ChainArena({
   identity,
   providerPresent = false,
+  connectStalled = false,
   children,
 }: {
   identity: ChainIdentity;
   /** Wallet mode only: a Phantom-shaped provider is in the page even if the adapter has not said so.
    *  Splits "install Phantom" from "Phantom is here but silent" — see `walletConnection.ts`. */
   providerPresent?: boolean;
+  /** Wallet mode only: the connect handshake has gone unanswered past `CONNECT_PATIENCE_MS`, so the
+   *  page stops claiming the player is being asked — see `connectPatience.ts`. */
+  connectStalled?: boolean;
   children: ReactNode;
 }) {
   const shell = useShell();
@@ -521,11 +529,12 @@ function ChainArena({
         programReady: chain.program !== null,
         walletStatus: identity.status,
         providerPresent,
+        connectStalled,
         fault: identity.fault,
         solBalance: walletValue.solBalance,
         pubkey: youPubkey,
       }),
-    [identity.mode, identity.status, identity.fault, chain.program, providerPresent, walletValue.solBalance, youPubkey],
+    [identity.mode, identity.status, identity.fault, chain.program, providerPresent, connectStalled, walletValue.solBalance, youPubkey],
   );
 
   const sessionCtl = useSessionController({

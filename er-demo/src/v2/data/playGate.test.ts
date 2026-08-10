@@ -6,7 +6,8 @@
 // questions, and no block is a dead end.
 
 import { describe, expect, it } from "vitest";
-import { playBlock, type PlayGateInput } from "./playGate.ts";
+import { CONNECT_PATIENCE_SECONDS } from "./connectPatience.ts";
+import { gatePlacement, playBlock, type PlayGateInput } from "./playGate.ts";
 import { classifyWalletError } from "./walletFault.ts";
 
 const PUBKEY = "6dQmS8x1YAtLPMuVfrfeQGKtZRDe6dTr8SafMDaFhTd2";
@@ -17,6 +18,7 @@ const READY: PlayGateInput = {
   programReady: true,
   walletStatus: "connected",
   providerPresent: true,
+  connectStalled: false,
   fault: null,
   solBalance: 1.5,
   pubkey: PUBKEY,
@@ -100,6 +102,63 @@ describe("connecting, and the ways connecting ends badly", () => {
     expect(b?.cta).toBeNull();
   });
 
+  it("leaves the ordinary connecting block untouched while the wait is still inside the bound", () => {
+    // The split must not cost the common case anything. Somebody with a popup in front of them reads
+    // exactly what they read before, and the stalled copy is unreachable until the bound expires.
+    const b = playBlock({ ...READY, walletStatus: "connecting", connectStalled: false });
+    expect(b?.code).toBe("connecting");
+    expect(b?.detail).toMatch(/waiting on you/i);
+    expect(b?.cta).toBeNull();
+  });
+
+  it("stops claiming Phantom is waiting on you once the wallet has gone silent past the bound", () => {
+    // THE DEFECT: `adapter.connect()` has no timeout in it, so an extension that never answers left
+    // this page asserting "waiting for you to approve the connection in Phantom" for the life of the
+    // tab. That sentence is a claim about the PLAYER, and it is one this page cannot verify — it
+    // cannot see whether a popup exists at all. Past the bound it must stop making it.
+    const b = playBlock({ ...READY, walletStatus: "connecting", connectStalled: true });
+    expect(b?.code).toBe("connect-stalled");
+    expect(b?.detail).not.toMatch(/waiting (for|on) you/i);
+    // Nor may it swing to the opposite lie. The promise is still outstanding and a late approval
+    // still lands, so nothing here may report the request as dead, failed or cancelled.
+    expect(b?.detail).not.toMatch(/failed|cancell?ed|gave up|timed out|no longer/i);
+  });
+
+  it("names the bound from the bound, so the sentence cannot outlive the number it quotes", () => {
+    const b = playBlock({ ...READY, walletStatus: "connecting", connectStalled: true });
+    expect(b?.detail).toContain(`${CONNECT_PATIENCE_SECONDS} seconds`);
+  });
+
+  it("keeps the escape honest: approving a popup that IS open still works", () => {
+    // The copy offers a reload, and a reload is a real loss to anyone who does have a dialog open.
+    // So it must not read as "this is over" — it names both live possibilities, in that order, and
+    // says the panel clears itself if the approval lands.
+    const b = playBlock({ ...READY, walletStatus: "connecting", connectStalled: true });
+    expect(b?.detail).toMatch(/if a phantom popup is open/i);
+    expect(b?.detail).toMatch(/approving it still connects you/i);
+    // And it says plainly that nothing was at stake, because a wedged wallet dialog is exactly where
+    // a reader starts wondering whether they have been charged for something.
+    expect(b?.detail).toMatch(/nothing was sent and nothing was spent/i);
+  });
+
+  it("offers a reload rather than a retry, which the adapter leaves as the only real recovery", () => {
+    // `PhantomWalletAdapter.connect()` opens `if (this.connected || this.connecting) return;`, and a
+    // hung call leaves `_connecting` true for the life of the tab — `disconnect()` does not reset it
+    // and the adapter is module-scope. So a second `connect()` would resolve instantly having done
+    // nothing, come back with a null public key, and be reported as a failed connect. A Try again
+    // button here would manufacture a failure on top of a wedge.
+    const b = playBlock({ ...READY, walletStatus: "connecting", connectStalled: true });
+    expect(b?.cta).toEqual({ kind: "retry", label: "Reload the page" });
+  });
+
+  it("ignores a stalled flag outside the connecting status, since it describes a live handshake", () => {
+    // `connectStalled` is derived from the attempt, so it cannot be true here — but the branch order
+    // is what guarantees a stale flag can never speak over a wallet that has since said no.
+    const fault = classifyWalletError({ code: 4001 });
+    const b = playBlock({ ...READY, walletStatus: "disconnected", fault, connectStalled: true });
+    expect(b?.code).toBe("connect-failed");
+  });
+
   it("carries the wallet's own reason forward rather than a generic failure", () => {
     // "You cancelled", "Phantom disconnected this site" and "your session key is no longer valid"
     // need three different next actions. Flattening them to "connection failed" deletes all three.
@@ -176,6 +235,7 @@ describe("invariants every block must hold", () => {
     { ...READY, walletStatus: "unsupported", providerPresent: false },
     { ...READY, walletStatus: "unsupported", providerPresent: true },
     { ...READY, walletStatus: "connecting" },
+    { ...READY, walletStatus: "connecting", connectStalled: true },
     { ...READY, walletStatus: "disconnected", fault: classifyWalletError({ code: 4001 }) },
     { ...READY, walletStatus: "disconnected" },
     { ...READY, solBalance: 0 },
@@ -194,6 +254,7 @@ describe("invariants every block must hold", () => {
         "not-installed",
         "wallet-unannounced",
         "connecting",
+        "connect-stalled",
         "connect-failed",
         "not-connected",
         "no-sol",
@@ -281,5 +342,57 @@ describe("invariants every block must hold", () => {
 
   it("keeps the burner's no-sol free of an aside — a developer with a script needs no digression", () => {
     expect(playBlock({ ...READY, mode: "burner", solBalance: 0 })!.aside).toBeUndefined();
+  });
+
+  /**
+   * WHICH BLOCKS TAKE THE CONTROLS' PLACE, AND WHICH STAND NEXT TO THEM — asserted over the WHOLE
+   * surface rather than for the one state that prompted the rule.
+   *
+   * `gatePlacement` is derived from `cta` on purpose, so that a new block gets a placement the
+   * moment it gets a route out and nobody has to remember to add it to a list. The risk that
+   * introduces is the opposite one: a block shipped with the wrong `cta` now silently changes where
+   * it renders. So this walks every code the module can produce and states the answer for each, which
+   * turns "somebody wrote `cta: null` by mistake" into a failing test with the code's name on it.
+   */
+  it("places every block, with the ones that have nothing to press standing beside the controls", () => {
+    // KEYED BY INPUT ORDER, NOT BY CODE, AND THAT IS NOT A STYLE CHOICE. `no-sol` is one code with
+    // two entirely different blocks behind it, and — the thing this test found — they place
+    // DIFFERENTLY: a stranger gets a faucet link and so gives way to it, while a developer gets a
+    // terminal command and no button at all, and so keeps their controls. A map keyed on the code
+    // silently drops one of the two and asserts the survivor.
+    const placed = EVERY.map((input) => {
+      const b = playBlock(input)!;
+      return `${b.code}${input.mode === "burner" ? " (burner)" : ""} → ${gatePlacement(b)}`;
+    });
+    expect(placed).toEqual([
+      // NOTHING TO PRESS, SO NOTHING IS GAINED BY CLEARING THE PANEL. Evicting a disabled control
+      // that says why, to put no control in its place, trades one thing for nothing — and costs the
+      // reader the staged stake and the price still on screen.
+      "no-program → beside",
+      "not-installed → replace",
+      "wallet-unannounced → replace",
+      "connecting → beside",
+      // Twenty seconds later the same status has a reload to offer, so it crosses the line.
+      "connect-stalled → replace",
+      "connect-failed → replace",
+      "not-connected → replace",
+      // A stranger with no devnet SOL is handed the faucet, which is the button that ought to be
+      // under their cursor.
+      "no-sol → replace",
+      // A developer with no devnet SOL is handed a shell command. There is no control to hand them,
+      // so their deploy buttons stay where they are with the reason underneath — the same judgement
+      // `connecting` gets, reached by the same rule, without anybody having listed either.
+      "no-sol (burner) → beside",
+    ]);
+  });
+
+  it("moves connecting across that line at the bound, which is the whole point of the timeout", () => {
+    // One rule, and the bound in `connectPatience.ts` walks the state through it. While the page is
+    // still legitimately waiting there is nothing to press and the controls stay; once it has stopped
+    // waiting there IS something to press, and they give way to it.
+    const waiting = playBlock({ ...READY, walletStatus: "connecting" })!;
+    const stalled = playBlock({ ...READY, walletStatus: "connecting", connectStalled: true })!;
+    expect(gatePlacement(waiting)).toBe("beside");
+    expect(gatePlacement(stalled)).toBe("replace");
   });
 });

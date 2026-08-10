@@ -37,6 +37,9 @@ import { chromium, type Browser, type ConsoleMessage, type Page } from "playwrig
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+// THE BOUND ITSELF, not a number retyped beside it. A harness that waited "about twenty seconds"
+// would go on passing the day somebody raised the bound to sixty, having verified nothing.
+import { CONNECT_PATIENCE_MS } from "../src/v2/data/connectPatience.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -158,6 +161,19 @@ interface Scenario {
   expect: string | null;
   /** Extra driving between load and assertion. */
   drive?: (page: Page) => Promise<void>;
+  /**
+   * HOW LONG TO SIT STILL AFTER `drive`, for a scenario whose assertion is about a bound that only
+   * starts running once the page has been driven into the state.
+   *
+   * It is deliberately NOT a knob on the settle window above, which is what an earlier sketch of this
+   * called for. That window is the adapter's detection poll plus the first balance read, and it runs
+   * BEFORE `drive` — widening it would make every scenario slower and would still leave the
+   * connect-stalled clock un-started at the moment of assertion, because that clock does not begin
+   * until the Connect button is pressed. The wait has to come after the press, so it lives here.
+   *
+   * Zero by default, so every existing scenario is timed exactly as it was.
+   */
+  dwellMs?: number;
   /** Skip opening the rail — for the fixture/burner regressions where the point is the page. */
   openRail?: boolean;
   /** Whatever else this state is supposed to be true of. Returns the failures it found, so one
@@ -237,6 +253,7 @@ async function runScenario(browser: Browser, s: Scenario): Promise<Result> {
     await page.waitForTimeout(2500);
 
     if (s.drive) await s.drive(page);
+    if (s.dwellMs) await page.waitForTimeout(s.dwellMs);
 
     if (s.openRail !== false) {
       const btn = page.locator('[data-testid="chrome-wallet-btn"]');
@@ -288,6 +305,33 @@ async function runScenario(browser: Browser, s: Scenario): Promise<Result> {
 
 const FULL: MockSpec = { announce: true, trusted: false };
 
+/** A Phantom that takes the request and never answers — the shape both connect-wait scenarios need,
+ *  shared so they cannot drift into testing two different wallets. */
+const HANGING: MockSpec = { announce: true, trusted: false, hang: true };
+
+/** Open the rail and press Connect. The two connect-wait scenarios differ ONLY in how long they then
+ *  stand still, so the driving is one function: if these diverged, the pair would stop being a
+ *  before-and-after of the same handshake. */
+async function pressConnect(page: Page): Promise<void> {
+  await page.locator('[data-testid="chrome-wallet-btn"]').first().click();
+  await page.waitForTimeout(400);
+  await page.locator('[data-testid="connect-cta"]').first().click();
+  await page.waitForTimeout(600);
+}
+
+/** What a particular block says on screen, as one flat string — or null if that block is not up.
+ *
+ *  IT PICKS THE PANEL BY `data-block` RATHER THAN TAKING THE FIRST. Both the rail and the dock render
+ *  a `ConnectPanel`, at different densities and with deliberately different content, so `.first()`
+ *  answers a question about DOM order rather than about the state. Reading the compact one — the
+ *  dock's, which is the surface the density rule and the placement rule both act on — is the point
+ *  of these assertions. */
+async function panelText(page: Page, block: string): Promise<string | null> {
+  const panel = page.locator(`.cx--compact[data-block="${block}"]`);
+  if ((await panel.count()) === 0) return null;
+  return (await panel.first().innerText()).replace(/\s+/g, " ").trim();
+}
+
 const SCENARIOS: Scenario[] = [
   {
     name: "not-installed",
@@ -319,16 +363,73 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: "connecting",
-    mock: { announce: true, trusted: false, hang: true },
+    mock: HANGING,
     lamports: 0,
     expect: "connecting",
-    drive: async (page) => {
-      await page.locator('[data-testid="chrome-wallet-btn"]').first().click();
-      await page.waitForTimeout(400);
-      await page.locator('[data-testid="connect-cta"]').first().click();
-      await page.waitForTimeout(600);
-    },
+    drive: pressConnect,
     openRail: false,
+    // ~1s of driving, comfortably inside the bound, so this is still the ORDINARY wait: a popup is
+    // notionally open and the page is entitled to say so.
+    assert: async (page) => {
+      const bad: string[] = [];
+      const panel = await panelText(page, "connecting");
+      if (panel === null) return ["no connecting panel to read"];
+      if (!/waiting on you/i.test(panel)) {
+        bad.push(`the ordinary wait should still say Phantom is waiting on you, read "${panel}"`);
+      }
+      // THE PLACEMENT RULE, ON THE SURFACE IT WAS WRITTEN FOR. `connecting` carries no cta, so it
+      // must SIT BESIDE the dock's deploy controls rather than evict them — see `gatePlacement`.
+      // Before this change the panel replaced them outright, and a reader mid-connect lost the stake
+      // they had staged and the price it would cost them for as long as the wallet took to answer.
+      const sides = await page.locator("#stake-dock .dock-sides button").count();
+      if (sides !== 2) bad.push(`expected the dock's two side buttons beside the panel, found ${sides}`);
+      const stake = await page.locator('#stake-dock [aria-label="Stake amount"] button').count();
+      if (stake === 0) bad.push("the stake segment is gone while the wallet thinks");
+      // And the third paragraph is the rail's now, not the dock's — the note is embedded in `detail`
+      // for the two states that are still a pitch, and appended nowhere else at this density.
+      if (/devnet only/i.test(panel)) {
+        bad.push(`the compact panel is still repeating the network note: "${panel}"`);
+      }
+      return bad;
+    },
+  },
+  {
+    name: "connect-stalled",
+    // The same hung provider. What is different is only how long we wait for it — which is the whole
+    // claim: nothing about the wallet changes at the bound, only what this page is willing to say.
+    mock: HANGING,
+    lamports: 0,
+    expect: "connect-stalled",
+    drive: pressConnect,
+    // Past the bound, plus a margin. A backgrounded tab throttles timers to roughly one a second, so
+    // the transition can land LATE — never early — and a dwell of exactly the bound would be a
+    // coin-flip. See `connectPatience.ts`.
+    dwellMs: CONNECT_PATIENCE_MS + 4_000,
+    openRail: false,
+    assert: async (page) => {
+      const bad: string[] = [];
+      const panel = await panelText(page, "connect-stalled");
+      if (panel === null) return ["no connect-stalled panel to read"];
+      // THE DEFECT, IN ONE ASSERTION. The page said "waiting for you to approve the connection in
+      // Phantom" for the life of the tab, over an extension that was never going to answer. That
+      // sentence is a claim about the player, and past the bound this page cannot make it.
+      if (/waiting for you|waiting on you/i.test(panel)) {
+        bad.push(`still claiming the player is being asked: "${panel}"`);
+      }
+      // A LIVE ROUTE OUT, which is the other half of it: a wedge with no button is still a wedge.
+      const cta = page.locator('[data-testid="connect-cta"]');
+      if ((await cta.count()) === 0) {
+        bad.push("no cta at all — the stalled state must offer the reload");
+      } else if (await cta.first().isDisabled()) {
+        bad.push("the reload cta is disabled, which leaves the page with no way out");
+      }
+      // And it must not have swung to the opposite lie: the promise is still live and a late
+      // approval still lands, so the escape says so rather than declaring the request dead.
+      if (!/popup is open/i.test(panel)) {
+        bad.push(`the escape no longer mentions approving an open popup: "${panel}"`);
+      }
+      return bad;
+    },
   },
   {
     name: "connect-failed",

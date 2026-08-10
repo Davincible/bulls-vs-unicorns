@@ -19,6 +19,7 @@
 // THE ORDER IS THE ORDER OF THE FUNNEL. A visitor with no extension is not also told they have no
 // SOL; the first thing standing between them and playing is the only thing they are asked to fix.
 
+import { CONNECT_PATIENCE_SECONDS } from "./connectPatience.ts";
 import type { SignerMode } from "./flags.ts";
 import { DEVNET_ONLY_NOTE, PHANTOM_DEVNET_STEPS, type WalletFault } from "./walletFault.ts";
 import type { WalletStatus } from "./walletConnection.ts";
@@ -28,6 +29,7 @@ export type PlayBlockCode =
   | "not-installed"
   | "wallet-unannounced"
   | "connecting"
+  | "connect-stalled"
   | "connect-failed"
   | "not-connected"
   | "no-sol";
@@ -73,6 +75,8 @@ export interface PlayGateInput {
   /** A Phantom-shaped provider is in the page, whatever the adapter's readiness says. Wallet mode
    *  only; see `hasInjectedPhantom`. */
   providerPresent: boolean;
+  /** The connect handshake has been unanswered past `CONNECT_PATIENCE_MS`. Wallet mode only. */
+  connectStalled: boolean;
   /** The last thing the wallet said no with, if anything. */
   fault: WalletFault | null;
   /** SOL on devnet. `null` means the first balance poll has not landed, which is NOT zero. */
@@ -95,7 +99,8 @@ export { DEVNET_ONLY_NOTE };
  * not zero.
  */
 export function playBlock(input: PlayGateInput): PlayBlock | null {
-  const { mode, programReady, walletStatus, providerPresent, fault, solBalance, pubkey } = input;
+  const { mode, programReady, walletStatus, providerPresent, connectStalled, fault, solBalance, pubkey } =
+    input;
 
   if (!programReady) {
     return {
@@ -136,6 +141,37 @@ export function playBlock(input: PlayGateInput): PlayBlock | null {
     }
 
     if (walletStatus === "connecting") {
+      // ONE STATUS, TWO SENTENCES, AND THE BOUND IS WHAT MOVES A READER FROM THE FIRST TO THE SECOND.
+      //
+      // WHAT THIS COPY STOPS SAYING, AND WHY. The block below asserts that Phantom "is waiting on
+      // you" — which is a statement about the PLAYER, and past `CONNECT_PATIENCE_MS` it is one this
+      // page can no longer verify. `adapter.connect()` has no timeout in it (see
+      // `connectPatience.ts`), so an extension that never answers is indistinguishable here from a
+      // popup somebody is reading. Twenty seconds in, the honest position is that we asked and have
+      // heard nothing.
+      //
+      // AND WHAT IT MUST NOT SAY INSTEAD. It must not claim the request is dead, because it may not
+      // be: the promise is still outstanding, a late approval still lands, and this panel still
+      // clears itself when it does. So the copy reports the one fact it holds — no answer — names
+      // both live possibilities, and offers the only thing that genuinely recovers the other one.
+      //
+      // A RELOAD RATHER THAN A RETRY, WHICH IS THE ADAPTER'S DOING. Its `connect()` opens
+      // `if (this.connected || this.connecting) return;`, and a hung call leaves `_connecting` true —
+      // so a second attempt would resolve instantly having done nothing and be misreported as a
+      // failed connect. `wallet-unannounced` offers a reload for the same class of wedge.
+      if (connectStalled) {
+        return {
+          code: "connect-stalled",
+          short: "Phantom has not answered the connection request",
+          detail:
+            `This page asked Phantom to connect about ${CONNECT_PATIENCE_SECONDS} seconds ago and it has ` +
+            "not come back. Nothing was sent and nothing was spent. If a Phantom popup is open, approving " +
+            "it still connects you and this panel clears itself. If there is no popup, the extension is " +
+            "not answering this page — reload and press Connect again.",
+          cta: { kind: "retry", label: "Reload the page" },
+        };
+      }
+
       return {
         code: "connecting",
         short: "waiting for you to approve the connection in Phantom",
@@ -214,4 +250,39 @@ export function playBlock(input: PlayGateInput): PlayBlock | null {
   }
 
   return null;
+}
+
+/** Whether a block TAKES the controls' place or stands next to them. See `gatePlacement`. */
+export type GatePlacement = "replace" | "beside";
+
+/**
+ * WHICH GATE STATES REPLACE THE DEPLOY CONTROLS, AND WHICH SIT BESIDE THEM — one rule, derived from
+ * the block itself.
+ *
+ * A BLOCK WITH A CTA REPLACES THEM. The cta is the button that should be under the player's cursor:
+ * connect the wallet, get devnet SOL, reload the page. Leaving a disabled Deploy beside it puts two
+ * primary-weight buttons in a 320px corner and makes the reader choose which one is the way forward,
+ * when one of them is not a way anywhere. The controls come back the moment the cta has done its job.
+ *
+ * A BLOCK WITH NO CTA SITS BESIDE THEM, because replacing them buys nothing. You remove a button and
+ * put no button in its place — trading a disabled control that says why for no control that says the
+ * same thing. Keeping it costs a reader nothing and holds two real things on screen: the stake they
+ * had already staged and the price it will cost them, neither of which is invalidated by a wallet
+ * that is still thinking. The stake segment stays live, so the shopping can be done while the wallet
+ * thinks and the press lands the instant it is possible.
+ *
+ * DERIVED FROM `cta`, DELIBERATELY NOT A LIST OF CODES. A list would be a second place that has to
+ * agree with the blocks above it, and it would agree right up until somebody added a state and
+ * forgot — at which point a new block would silently take one of the two placements without anyone
+ * choosing it. This is the same move `ConnectPanel` makes with `noteAlreadySaid`: read the object,
+ * do not remember facts about it.
+ *
+ * AND THIS IS THE LINE `connecting` NOW CROSSES, which is the point of the whole arrangement. While
+ * the page is still legitimately waiting there is nothing on it to press, so the controls stay and
+ * the wait sits under them. Once it has stopped waiting there IS something to press — the reload —
+ * and the controls give way to it. One rule; the bound in `connectPatience.ts` moves the state
+ * through it.
+ */
+export function gatePlacement(block: PlayBlock): GatePlacement {
+  return block.cta === null ? "beside" : "replace";
 }
