@@ -25,11 +25,19 @@
 // render, a keyboard shortcut, the repeat rule firing) answers the player instead of throwing a
 // TypeError into a toast.
 //
-// ERRORS COME BACK AS THE CHAIN'S OWN WORDS, WITH THREE EXCEPTIONS. A presenter can read "custom
-// program error: NothingToExtract" aloud and no paraphrase is more useful, so `unknown` failures are
-// re-thrown verbatim. The three that are re-written are the ones whose real message names a symptom
-// and hides the cause — a cancelled popup, an expired blockhash, a lapsed session key. See
-// `walletFault.ts`.
+// ERRORS COME BACK AS THE CHAIN'S OWN WORDS, WITH TWO SETS OF EXCEPTIONS. A presenter can read
+// "custom program error: NothingToExtract" aloud and no paraphrase is more useful, so `unknown`
+// failures are re-thrown verbatim. What IS re-written is anything whose real message names a symptom
+// and hides the cause:
+//
+//   · Three WALLET faults — a cancelled popup, an expired blockhash, a lapsed session key. The
+//     `REWRITTEN` set below, worded by `walletFault.ts`.
+//   · Three PROGRAM refusals of `enter`, and only of `enter` — the round moved on, the lobby closed,
+//     the room filled. Worded by `entryWindow.ts`, which also refuses to SEND the ones it can see
+//     coming. Those three are re-written for a reason none of the others share: through the Magic
+//     Router the chain's own words are `custom program error: 0x1772` and nothing else — no logs, no
+//     error name (see that module's header for the measurement). There is no verbatim message worth
+//     keeping, and the player did nothing and can do nothing about any of them.
 //
 // A PRESS IS BOUNDED, AND IT DID NOT USED TO BE. `entering`/`extracting` shut every Deploy and
 // Extract control on the page for the whole of a press, which is right — the press now spans a
@@ -61,9 +69,10 @@ import type { PublicKey } from "@solana/web3.js";
 import type { ConnectionMagicRouter } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { AnchorError } from "@coral-xyz/anchor";
 import { enter as buildEnter, extract as buildExtract, tick as buildTick } from "../../chain/round.ts";
-import { MAX_STEPS_PER_CALL, finalCursor } from "../../chain/constants.ts";
+import { MAX_STEPS_PER_CALL, PHASE_NAME, finalCursor } from "../../chain/constants.ts";
+import { loadIdl } from "../../chain/idl.ts";
 import { sendTx, type TxSigner } from "../../chain/sendTx.ts";
-import type { BullsArenaProgram } from "../../chain/program.ts";
+import { bnOr0, type BullsArenaProgram } from "../../chain/program.ts";
 import type { ActiveSession } from "../../chain/session/useSessionKeyManager.ts";
 // `MAX_FIGHTERS` comes from the sim rather than `chain/constants.ts`, which does not carry it — the
 // same import `data/combatFeed.ts` makes, for the same reason.
@@ -71,6 +80,14 @@ import { MAX_FIGHTERS } from "../../sim/erSim.ts";
 import { unitsToUsd, type LiveRound, type Side } from "../contract.ts";
 import { runUnattendedEntry } from "./autoPolicy.ts";
 import { runSigned, type SessionSigning, type SigningPlan } from "./autoSession.ts";
+import {
+  enterErrorCodes,
+  entryRefusal,
+  entryRefusedError,
+  refusalFromProgramError,
+  refusalOf,
+  type EntryWindow,
+} from "./entryWindow.ts";
 import { extractEligibility } from "./extractTerms.ts";
 import { NO_WALLET_MESSAGE } from "./identity.ts";
 import type { PlayBlock } from "./playGate.ts";
@@ -153,6 +170,59 @@ const FIGHT_BEHIND = /Error Code: FightBehind\b/;
 
 export function isStoppedWaiting(e: unknown): boolean {
   return e instanceof Error && e.name === STOPPED_WAITING;
+}
+
+/** THE DEPLOYED PROGRAM'S ERROR NUMBERS, resolved once per page and only when something has already
+ *  failed.
+ *
+ *  Module-level rather than hook state because it is a property of the DEPLOY, not of a component: it
+ *  cannot change while the page is open, every caller wants the same answer, and `loadIdl()` is
+ *  itself cached — so after the first `createProgram` this is a resolved promise and costs a
+ *  microtask. It is awaited only on the failure path, so the happy path is byte-for-byte unchanged.
+ *
+ *  A FAILURE TO READ IT IS NOT A FAILURE TO REPORT THE ERROR. If the IDL cannot be re-read, the map
+ *  is empty, `refusalFromProgramError` falls back to matching Anchor's error NAMES, and anything it
+ *  cannot claim keeps the chain's own words — which is exactly what this page did before. */
+let enterCodesCache: Promise<ReadonlyMap<string, number>> | null = null;
+function enterCodes(): Promise<ReadonlyMap<string, number>> {
+  enterCodesCache ??= loadIdl()
+    .then((idl) => enterErrorCodes(idl.errors))
+    .catch(() => enterErrorCodes(undefined));
+  return enterCodesCache;
+}
+
+/**
+ * THE ROUND AS `enter`'S GUARDS SEE IT, READ FRESH — the boundary between a decoded account and
+ * `entryWindow.ts`'s four plain fields.
+ *
+ * `fetchNullable`, and `bnOr0` on the deadline, for the reasons `chain/useRound.ts` gives at length:
+ * a round mid-undelegation is briefly readable through neither route, a closed round is simply gone,
+ * and `lobbyClosesAt` is absent altogether on a program revision that predates it. None of those is
+ * an error and none of them is evidence that a deposit would be refused — so all three come back
+ * `null` here and the caller sends anyway.
+ */
+async function readEntryWindow(
+  program: BullsArenaProgram,
+  roundPda: PublicKey,
+  roundNo: bigint | null,
+): Promise<EntryWindow | null> {
+  const raw = await program.account.round.fetchNullable(roundPda);
+  if (raw === null) return null;
+  // `<= 0n` and not merely `undefined`: a round opened by an older `open_round` carries a ZERO
+  // deadline, which means the same thing as an absent field — this round has no deposit deadline.
+  // `data/liveRound.ts`'s `lobbyClosesAtMsOf` makes the identical judgement on the polled account.
+  const closesAtSec = bnOr0(raw.lobbyClosesAt);
+  return {
+    roundNo,
+    // `?? "Lobby"` READS AN UNKNOWN PHASE BYTE AS ENTERABLE, and it has to, because that is what the
+    // page's own decoder does (`chain/useRound.ts`'s `toPlainRound`, same expression). A guard that
+    // disagreed with the decoder would refuse a deposit under a live Deploy button — the two surfaces
+    // contradicting each other is a worse failure than either policy, and the chain still has the
+    // last word either way.
+    phase: PHASE_NAME[raw.phase] ?? "Lobby",
+    lobbyClosesAtMs: closesAtSec <= 0n ? null : Number(closesAtSec) * 1000,
+    fighterCount: raw.fighterCount,
+  };
 }
 
 function stoppedWaiting(message: string): Error {
@@ -342,19 +412,55 @@ export function useActions(params: ActionsParams): WriteActions {
     throw new Error(fault.detail);
   }, []);
 
-  /** One `enter`, built and sent. Shared by the attended and the unattended paths so that the
-   *  transaction they send is provably the same one and only the way it is SIGNED differs. */
+  /**
+   * One `enter`, built and sent. Shared by the attended and the unattended paths so that the
+   * transaction they send is provably the same one and only the way it is SIGNED differs.
+   *
+   * IT IS ALSO WHERE THE ROUND IS RE-READ, AND THIS IS THE ONE PLACE THAT CAN BE. `runSigned` calls
+   * this AFTER every wallet dialog it was going to open has closed — after the session was opened, or
+   * after a lapsed one was replaced — so this is the last instant before the transaction exists, and
+   * it is the only instant at which "is the round still taking deposits" is worth asking. Asking at
+   * the top of `enter()` instead would answer a question about a round twenty seconds and two Phantom
+   * popups ago, which is precisely the race this is here to close.
+   *
+   * A REFUSAL COSTS THE PLAYER NOTHING AND THE CHAIN SEES NOTHING. Nothing is built, nothing is
+   * signed, nothing is sent; `onEntered` never fires, so the simulated ledger books no deploy; and
+   * the dock's staged amount is state a thrown error does not touch, so "press again" really is one
+   * press. Sending anyway would spend a fee to be told a fact this page already knew, and hand back
+   * the wall of simulation text this whole module exists to replace.
+   *
+   * IT FAILS OPEN, DELIBERATELY. `readEntryWindow` returning null — a round mid-undelegation, a
+   * closed account, an RPC that answered badly — is NOT evidence that a deposit would be refused, and
+   * neither is a read that throws. In both cases the press proceeds and the chain gets the last word,
+   * which is the correct authority. The only thing this may do is decline to send something it has
+   * just seen the chain refusing.
+   */
   const sendEnter = useCallback(
     async (
       p: BullsArenaProgram,
       from: PublicKey,
       round: PublicKey,
+      roundNo: bigint | null,
       session: ActiveSession | null,
       side: Side,
       stakeUnits: bigint,
     ): Promise<string> => {
       const signer = signerFor(session);
       if (signer === null) throw new Error(NO_WALLET_MESSAGE);
+
+      // NOT `window`, which is the global this module runs inside. A local of that name compiles,
+      // reads correctly, and is one careless edit away from shadowing the DOM.
+      const snapshot = await readEntryWindow(p, round, roundNo).catch((e: unknown) => {
+        // SAID OUT LOUD, THEN IGNORED. Failing open is the policy and it is not changing — but a
+        // router that has quietly stopped answering `getAccountInfo` would otherwise turn this whole
+        // guard off with no trace anywhere, on a page whose author is debugging it at 3am. One line,
+        // on a path that runs once per press.
+        console.warn("[enter] could not re-read the round before sending; sending anyway", e);
+        return null;
+      });
+      const refusal = snapshot === null ? null : entryRefusal(snapshot, Date.now());
+      if (refusal !== null) throw entryRefusedError(refusal);
+
       const builder = buildEnter(p, {
         arena,
         round,
@@ -364,7 +470,22 @@ export function useActions(params: ActionsParams): WriteActions {
         side,
         stake: stakeUnits,
       });
-      return (await sendTx(router, builder, signer, `enter side ${side}`)).signature;
+      try {
+        return (await sendTx(router, builder, signer, `enter side ${side}`)).signature;
+      } catch (e) {
+        // THE REST OF THE RACE. The read above is already the past by the time this transaction is
+        // signed and submitted, so the round can still close inside that window — and when it does,
+        // the chain says so in the least useful way available (see `entryWindow.ts`'s header for what
+        // the rollup actually returns, which is a hex code and nothing else). Answered here with the
+        // SAME sentence the pre-check would have used, so a player cannot tell which of the two
+        // caught it and never has to.
+        //
+        // Anything that is not one of those three refusals is re-thrown exactly as it arrived, and
+        // `rethrow` upstream still has the last word on it.
+        const late = refusalFromProgramError(e, await enterCodes(), roundNo);
+        if (late !== null) throw entryRefusedError(late);
+        throw e;
+      }
     },
     [arena, router, signerFor],
   );
@@ -393,7 +514,7 @@ export function useActions(params: ActionsParams): WriteActions {
         // AFTER `runSigned`, deliberately: it can send twice (a lapsed session is renewed and the
         // move re-sent), and the simulated ledger must book one confirmed deploy, not two.
         const work = runSigned(plan, signing, (session) =>
-          sendEnter(p, from, roundPda, session, side, stakeUnits),
+          sendEnter(p, from, roundPda, bookedRoundNo, session, side, stakeUnits),
         ).then((signature) => {
           onEntered(side, stakeUnits, bookedRoundNo);
           return signature;
@@ -567,7 +688,7 @@ export function useActions(params: ActionsParams): WriteActions {
           // refuses rather than quietly signing with the wallet instead.
           signing.current(),
           { roundNo, side, amountUsd: unitsToUsd(stakeUnits) },
-          (entry, session) => sendEnter(p, from, roundPda, session, entry.side, stakeUnits),
+          (entry, session) => sendEnter(p, from, roundPda, roundNo, session, entry.side, stakeUnits),
         ).then((signature) => {
           onEntered(side, stakeUnits, roundNo);
           return signature;
@@ -591,6 +712,20 @@ export function useActions(params: ActionsParams): WriteActions {
                 ),
         );
       } catch (e) {
+        // A REFUSAL WORDED FOR NOBODY, WHICH IS NOT THE SAME SENTENCE A PLAYER GETS.
+        //
+        // `sendEnter` is shared, so the refusal that reaches here is the one written for somebody who
+        // just pressed a button: "while your wallet was open… press the same button again when the
+        // next lobby opens". Nothing about that is true here. No wallet was open — this path cannot
+        // raise a dialog at all, by construction (`runUnattendedEntry`) — and there is no button and
+        // nobody to press it. Left alone it would surface verbatim through `attemptFailed` into
+        // `abandonText`'s "3 attempts failed — …" and out to a toast, telling an absent player to do
+        // something they are not there to do.
+        //
+        // `short` is the clause built for exactly this: it names no round (the rule's own frame
+        // already does — "Repeat missed round 42 — …") and it instructs nobody.
+        const refused = refusalOf(e);
+        if (refused !== null) throw new Error(refused.short);
         // NOT `isStoppedWaiting` HERE, unlike the two attended paths. There is no player reading
         // this sentence — it goes into the attempt record and, if the round is eventually written
         // off, into `abandonText`'s account of it — and `rethrow` leaves a message that names no

@@ -4,7 +4,9 @@
 // TWO SOURCES, ONE COLUMN, AND THE SEPARATION IS STRUCTURAL RATHER THAN COSMETIC.
 //
 //   `toasts.items`   what YOU did — a deploy landed, an extract landed, a transaction was refused.
-//                    Receipts. `data/useToasts.ts` caps them at five and keeps each for six seconds.
+//                    Receipts. `data/useToasts.ts` caps them at five and keeps each for as long as it
+//                    takes to READ it — six seconds for a one-line receipt, up to twenty for the
+//                    forty-word account of why a deposit was refused. See its `dismissMs`.
 //   `voice.lines`    what the FIGHT is doing to you — see `useCombatVoice.ts`. Throttled, coalesced,
 //                    capped at three, and five seconds each.
 //

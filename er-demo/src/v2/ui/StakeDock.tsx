@@ -55,6 +55,7 @@ import {
 } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
 import { pendingNote, sessionNote } from "../data/autoSession.ts";
+import { firstDeployWarning } from "../data/entryWindow.ts";
 import { feeNote, feePhrase } from "../views/feeCopy.ts";
 import { ConnectPanel } from "./ConnectPanel.tsx";
 import { Seg } from "./primitives.tsx";
@@ -167,16 +168,25 @@ function useDockHeight(): (el: HTMLElement | null) => void {
 
 // ---------------------------------------------------------------------------------------------
 
-function DeployBody() {
+/** THE STAKE IS HELD ONE LEVEL UP, AND IT HAS TO BE — see `StakeDockBody`, which owns it. */
+interface DeployBodyProps {
+  stake: number;
+  setStake: (usd: number) => void;
+}
+
+function DeployBody({ stake, setStake }: DeployBodyProps) {
   const { actions, fee, session, toasts } = useArena();
-  // Deliberately NOT shared with 00-3's stake state. Two controls that silently rewrote each other's
-  // amount across four screens of scroll would be a worse surprise than two independent ones, and
-  // there is no chain state here to keep in sync — `enter()` takes the amount at the moment it is
-  // pressed. $20 rather than the section's $5: this is the "put more in" control.
-  const [stake, setStake] = useState(20);
+  // WHAT THE ROUND IS DOING, FOR THE ONE THING THIS BODY NEEDS THAT THE NOTE ABOVE DOES NOT PRINT:
+  // whether a real number is counting down at all. `timing` is the honest answer and the only honest
+  // answer — `roundPhaseCopy.ts` has already decided which authority may be quoted, and a lobby the
+  // keeper is holding open for players is a `waiting`, i.e. no deadline. Reading `timing` rather than
+  // `live.lobbyClosesAtMs` is what keeps the hour-away backstop out of the sentence below.
+  const phase = useRoundPhase();
+  const secondsLeft = phase.timing.kind === "countdown" ? phase.timing.seconds : null;
   const stakeUnits = usdToUnits(stake);
   const feeUnits = feeOn(stakeUnits, fee);
   const signingNote = sessionNote(session.plan, session.life);
+  const deployWarning = firstDeployWarning(session.plan, secondsLeft);
 
   const deploy = useCallback(
     async (side: Side) => {
@@ -223,6 +233,19 @@ function DeployBody() {
         {usd(stakeUnits, 2)} → <span className="num">{usd(stakeUnits - feeUnits, 2)}</span> in the
         ring · {feePhrase(fee)} fee
       </p>
+
+      {/* THE ONE SENTENCE WORTH MORE THAN ANY ERROR MESSAGE, AND THE ONLY PLACE IT CAN GO.
+          It has to be read BEFORE the press, because everything it warns about happens after it —
+          twenty seconds of Phantom dialogs against a lobby the keeper closes twenty seconds after the
+          first real player arrives. So it sits directly above the two buttons it is about, and above
+          `signingNote`, which explains the same approval in the case where there is no hurry.
+          It never disables anything; see `firstDeployWarning` for why that is the design and not a
+          softening of it. */}
+      {deployWarning !== null ? (
+        <p className="lede dock-note">
+          <span className="u u--ink">Heads up</span> · {deployWarning}
+        </p>
+      ) : null}
 
       <div className="dock-sides">
         <button
@@ -454,6 +477,24 @@ function StakeDockBody() {
   const [open, setOpen] = useState(() => readOpen(narrow));
   const measure = useDockHeight();
 
+  // THE STAKED AMOUNT OUTLIVES THE ROUND IT WAS CHOSEN FOR, and that is not a preference — it is what
+  // makes a sentence this page prints true.
+  //
+  // It used to live in `DeployBody`, which is mounted only while `control === "deploy"`. So the
+  // moment a lobby closed the deploy body unmounted and the amount went back to $20 — and the state
+  // that destroyed it is EXACTLY the state `entryWindow.ts` apologises for: "your stake is still set
+  // here — press the same button again when the next lobby opens". A player who had chosen $50, lost
+  // the round to the approval race, read that sentence, and then pressed $20 into the next one would
+  // have been told something false by this page and charged for believing it.
+  //
+  // One level up is enough: `StakeDockBody` is rendered by the shell in every phase, so the amount
+  // survives Lobby → Drawing → Fight → the next Lobby. It is still deliberately NOT shared with
+  // 00-3's own stake state — two controls four screens apart silently rewriting each other's amount
+  // would be a worse surprise than two independent ones, and `enter()` takes the amount at the
+  // instant it is pressed either way. $20 rather than the section's $5: this is the "put more in"
+  // control.
+  const [stake, setStake] = useState(20);
+
   // COLLAPSING THIS PANEL DESTROYS WHATEVER IS FOCUSED INSIDE IT, so it has to hand focus on.
   //
   // Escape is handled below and, per the note there, collapses the dock and goes no further. That
@@ -631,7 +672,7 @@ function StakeDockBody() {
         {control === "deploy" ? autoLine : null}
 
         {control === "deploy" ? (
-          <DeployBody />
+          <DeployBody stake={stake} setStake={setStake} />
         ) : control === "extract" ? (
           <ExtractBody />
         ) : funnel !== null ? (
