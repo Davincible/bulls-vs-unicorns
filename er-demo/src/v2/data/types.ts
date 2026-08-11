@@ -19,7 +19,6 @@ import type {
   CombatFeed,
   ExtractEligibility,
   FeeRate,
-  HouseDisclosure,
   LiveRound,
   LogCoverage,
   Mode,
@@ -86,11 +85,6 @@ export interface ArenaContextValue {
   /** THE FIGHT, IN EVENTS — the recent tail of `hitEvents`, resolved against the current roster. See
    *  `CombatFeed` for the shape, the ordering guarantee and how a consumer dedupes against `at`. */
   combat: CombatFeed;
-
-  /** WHO IN THE ROUND ON SCREEN IS THE HOUSE'S, counted from the same pass that set each
-   *  `FighterView.house`. Both counts are null when nothing is publishing a disclosure list, which is
-   *  a different fact from "none of them are" — see `HouseDisclosure`. */
-  houseDisclosure: HouseDisclosure;
 
   /** THE ARENA'S HOUSE BOOKS, off the `Treasury` PDA. Null means not read yet OR never initialised
    *  (`init_treasury` is a separate admin call) — never "holds nothing", which is a real state that

@@ -53,39 +53,6 @@ const FULL = runFullFight(MOCK_SEED, ENTRIES, finalCursor(ENTRIES.length));
 /** The whole fight, precomputed — exactly what the real provider hands the canvas. */
 export const MOCK_HIT_EVENTS: HitEvent[] = FULL.events;
 
-/** WHICH OF THE FIXTURE'S FIGHTERS ARE THE HOUSE'S — invented, deterministic, and shaped like the
- *  thing it stands in for.
- *
- *  The disclosure UI has to be reviewable with no keeper running, which is the same argument that
- *  produced this whole fixture: "the bot markers are unstyleable unless somebody is running the
- *  keeper" is not a way to build a front end. So the fixture seats its own house, and the rule is
- *  index-based rather than random because two screenshots of `?fighters=9` must differ only by the
- *  design being reviewed.
- *
- *  TWO IN THREE, ROUGHLY, and never you. That is the picture the real keeper produces and the reason
- *  disclosure is owed at all: it holds a lobby open with the house in it so the room is never empty,
- *  and a real player or two arrives. Index 0 is the local player and is never house — a fixture that
- *  marked "you" as a bot would be teaching the roster a state that cannot occur. Sides alternate by
- *  index, so the marks land on both rosters at every lineup size. */
-export function isFixtureHouseFighter(index: number): boolean {
-  return index > 0 && index % 3 !== 0;
-}
-
-/** The same list in the shape the chain path's resolver reads (`keeperStatus.ts`'s `HouseRoster`),
- *  so both paths mark and count through one function rather than the fixture carrying a private
- *  version of the rule. */
-export const MOCK_HOUSE_WALLETS: string[] = ENTRIES.filter((_, i) => isFixtureHouseFighter(i)).map(
-  (e) => e.wallet,
-);
-
-/** The fixture's stand-in for `KeeperStatus.house.disclosure` — the keeper's own sentence, which the
- *  page quotes rather than paraphrases. It says FIXTURE first because that is the load-bearing word:
- *  everything else on this path is invented and this sentence must not be the one that reads like it
- *  came off a running process. */
-export const MOCK_HOUSE_DISCLOSURE =
-  "Fixture — this lineup's house fighters are invented, like the rest of the round. On a live " +
-  "arena this sentence is the keeper's own, published beside the wallet list it is a claim about.";
-
 export const MOCK_FIGHTER_SEEDS = ENTRIES.map((e, id) => ({
   id,
   wallet: e.wallet,
@@ -97,10 +64,6 @@ export const MOCK_FIGHTER_SEEDS = ENTRIES.map((e, id) => ({
   // The fixture links nobody. Unlinked is the majority case on a live arena too, so a fixture of
   // coin-faced fighters is the representative lineup rather than a stripped-down one.
   avatarSrc: null,
-  // Resolved from the list above, not hardcoded false as it was: `FighterView.house` is a disclosure
-  // obligation, and a fixture that renders every fighter as a person is the same misrepresentation
-  // the live page was making, in the one place design review would have caught it.
-  house: isFixtureHouseFighter(id),
 }));
 
 /** Replays the event stream up to `step` and returns the rosters as they stand at that moment —

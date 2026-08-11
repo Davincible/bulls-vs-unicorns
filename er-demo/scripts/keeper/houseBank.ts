@@ -68,11 +68,31 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** PERSISTED, and that is the point rather than a convenience. The status file publishes these
- *  pubkeys as the house's disclosure list, and a list that changed on every boot would be worthless —
- *  a player checking whether the wallet they just fought was a bot would be checking against keys that
- *  did not exist when the round ran. `.devnet/` is already gitignored, alongside the fork payer these
- *  are funded from. */
+/** PERSISTED, and that is the point rather than a convenience — though the reason has CHANGED, and
+ *  the new one is stronger than the old.
+ *
+ *  IT USED TO BE ABOUT DISCLOSURE. The status file published these pubkeys to every browser as the
+ *  house's bot-disclosure list, so a set that rotated on every boot would have been worthless: a
+ *  player checking whether the wallet they just fought was a bot would have been checking against keys
+ *  that did not exist when the round ran. That list is gone — the arena's own wallets are no longer
+ *  published, named or counted anywhere a browser can read.
+ *
+ *  WHAT PERSISTENCE BUYS NOW IS THE STABILITY OF A CLASSIFICATION, and two consumers depend on it.
+ *
+ *  The first is `classify` below, which is what the treasury rule is ultimately made of: a lobby with
+ *  no REAL fighter in it gets exactly one house fighter, so the round cannot be drawn and cannot
+ *  become a house-versus-house fight. "Real" is defined as "not in this set". A boot that generated a
+ *  fresh set would therefore reclassify every previously-funded house wallet as a real player — and a
+ *  keeper reading two of its own bots as two visitors is a keeper that fields a full board into an
+ *  empty room and lets it fight itself. A wallet that fought yesterday must still classify as house
+ *  today, and the file is the only thing that makes that true across a restart.
+ *
+ *  The second is the identity API's refusal set, read over the authenticated roster endpoint in
+ *  `statusServer.ts`. Its whole job is to withhold a face from a house wallet, and a set that churned
+ *  would mean the wallets it refused yesterday are wallets it serves today. A refusal set that changes
+ *  underneath the rounds it describes is not a refusal set.
+ *
+ *  `.devnet/` is already gitignored, alongside the fork payer these are funded from. */
 export const HOUSE_WALLETS_PATH = join(here, "..", "..", "..", ".devnet", "keeper-house-wallets.json");
 
 /** The same file's CONTENTS, as an environment variable, for a deployment that has no `.devnet/` and
@@ -88,22 +108,19 @@ export const HOUSE_WALLETS_PATH = join(here, "..", "..", "..", ".devnet", "keepe
  *  the same validation, so a malformed secret fails exactly as a malformed file does. */
 export const HOUSE_WALLETS_ENV = "KEEPER_HOUSE_WALLETS";
 
-/** The prose published in the status file. Deliberately plain: it is read by a player, not an
- *  operator, and its job is to say what these wallets are without requiring the reader to know what a
- *  keeper is.
- *
- *  THE PUBLISHED LIST IS AN INTERIM MECHANISM AND SAYS SO. It is a claim made by the same process
- *  that runs the bots, in a file that process writes itself — believable, not verifiable. The better
- *  design is registering the house wallets on the Arena account on-chain, where the disclosure is as
- *  public and as tamper-evident as the round it describes and a client can check it without trusting
- *  the keeper at all. That is planned separately (see `isHouseWallet`'s doc comment in
- *  src/v2/data/keeperStatus.ts, which carries the same note at the reading end); until it lands, this
- *  is disclosure on the keeper's word. */
-export const HOUSE_DISCLOSURE =
-  "These wallets are operated by the arena keeper, an automated process that opens each round and " +
-  "fields house fighters so the arena is never an empty room. They are not other players. The keeper " +
-  "holds their keys and enters on the house's behalf, and it fields fewer of them as real players " +
-  "join. Any fighter whose wallet appears in this list is one of the house's.";
+// `HOUSE_DISCLOSURE` USED TO LIVE HERE — a paragraph of player-facing prose, published in the status
+// file beside the wallet list, explaining that these keys belong to the keeper. It is deleted rather
+// than merely unreferenced, and the deletion is a product decision rather than a cleanup: the arena's
+// own wallets are anonymous now, so there is no list to caption. Keeping the sentence would leave the
+// next reader looking for the list it describes.
+//
+// WHAT THE OLD COMMENT WAS RIGHT ABOUT IS WORTH CARRYING FORWARD. It said the published list was an
+// interim mechanism — a claim made by the same process that runs the bots, in a file that process
+// writes itself, believable but not verifiable — and that the honest version of disclosure is
+// registering the house wallets on the Arena account on-chain, where the claim is as public and as
+// tamper-evident as the round it describes and a client can check it without trusting the keeper at
+// all. That is still true, and it is still the shape any future disclosure has to take. What has been
+// removed is the weak version, not the ambition.
 
 export interface HouseWallet {
   /** Position in the bank, stable across restarts because the file is. `houseStake` takes it, so a
@@ -174,10 +191,21 @@ export interface HouseEntryResult {
 export interface HouseBank {
   /** The wallets that may enter a round: the first `HOUSE_WALLET_COUNT` in the file. */
   active: HouseWallet[];
-  /** EVERY wallet the file holds, base58. Wider than `active` on purpose — if `HOUSE_WALLET_COUNT` is ever
-   *  reduced, a key that fought yesterday is still a house key, and both the disclosure list and the
-   *  house/real classifier must keep saying so. */
-  disclosedPubkeys: string[];
+  /** EVERY wallet the file holds, base58 — the INTERNAL set of keys this arena owns. Wider than
+   *  `active` on purpose: if `HOUSE_WALLET_COUNT` is ever reduced, a key that fought yesterday is
+   *  still a house key, and both consumers below must keep saying so.
+   *
+   *  IT WAS CALLED `disclosedPubkeys`, AND THE RENAME IS THE POINT. These pubkeys were published in
+   *  the status file to every browser as this arena's bot disclosure; they are not, any more. A field
+   *  named "disclosed" that is no longer disclosed is a lie in the source — the kind that survives for
+   *  years because it reads as documentation, and the kind that makes the next person add a second
+   *  field rather than notice the first one is wrong.
+   *
+   *  TWO CONSUMERS READ IT, AND NEITHER IS A BROWSER. `classify` below, which is what the treasury
+   *  rule is made of — see `HOUSE_WALLETS_PATH` on why that set has to be stable across restarts — and
+   *  the authenticated roster endpoint in `statusServer.ts`, which serves it to the identity API and
+   *  to nothing else. */
+  bankPubkeys: string[];
   isHouse(pubkey: PublicKey): boolean;
   classify(round: RawRoundAccount): FighterSplit;
 }
@@ -189,7 +217,10 @@ interface HouseWalletFile {
 
 const FILE_NOTE =
   "Keeper house-fighter wallets. Generated and topped up by er-demo/scripts/keeper. Devnet only. " +
-  "Persisted so the pubkeys disclosed in public/keeper-status.json are stable across restarts.";
+  "These pubkeys are NOT published anywhere. Persisted because the keeper's house/real classifier " +
+  "defines \"real\" as \"not in this set\": a wallet that fought yesterday must still classify as " +
+  "house today, or the keeper reads its own bots as visitors and lets a round fight itself. The " +
+  "identity API's refusal set is read from the same keys and must not churn either.";
 
 /** The keys the process booted with, and where they came from. */
 interface StoredWallets {
@@ -205,10 +236,11 @@ function readWalletFile(): StoredWallets | null {
   const keys = parsed?.secretKeys;
   if (!Array.isArray(keys)) {
     // Refusing loudly rather than regenerating: silently replacing a damaged file would rotate every
-    // disclosed pubkey and strand whatever devnet SOL the old ones held. Same refusal for a malformed
-    // secret, and for the stronger version of the same reason — a deployment that quietly generated a
-    // fresh set of house wallets would publish a disclosure list nobody can check against the rounds
-    // those wallets fought, and would strand the funded ones.
+    // pubkey in the bank and strand whatever devnet SOL the old ones held. Same refusal for a
+    // malformed secret, and for the stronger version of the same reason — a deployment that quietly
+    // generated a fresh set of house wallets would strand the funded ones AND hand the classifier a
+    // set in which none of the wallets currently standing in the round are house any more, which is
+    // the state in which the arena fields a full board into an empty room and fights itself.
     throw new Error(
       `${secret.where} is not a keeper wallet file (expected {"secretKeys": [[...]]}). ` +
       (secret.source === "env"
@@ -238,7 +270,7 @@ function writeWalletFile(secretKeys: number[][]): void {
  *
  *  EXTENDS, never regenerates. Existing keys keep their index and their pubkey; only the shortfall is
  *  generated. A file holding MORE than `HOUSE_WALLET_COUNT` keeps all of them — the extras stop entering
- *  rounds but remain disclosed and remain classified as house, because they are.
+ *  rounds but stay in `bankPubkeys` and stay classified as house, because they are.
  *
  *  KEYS THAT ARRIVED FROM THE ENVIRONMENT ARE NEVER WRITTEN BACK. Three reasons, and the first alone
  *  settles it: a container filesystem is not a place to put secret keys — it is ephemeral, so the
@@ -263,7 +295,7 @@ export function loadOrCreateHouseBank(dryRun: boolean): HouseBank {
     if (dryRun) {
       // A rehearsal that promises to send nothing should not leave keys on disk either. The generated
       // ones are used for this pass and thrown away, so the dry run still exercises the classifier and
-      // the disclosure list — it just does not commit an identity the operator did not ask for.
+      // the roster endpoint — it just does not commit an identity the operator did not ask for.
       warn(`DRY RUN — ${created} house wallet(s) generated in memory and NOT written to ${HOUSE_WALLETS_PATH}`);
     } else if (stored?.source === "env") {
       // REFUSED, not warned about, and the money is why. Warning and carrying on was the first
@@ -274,10 +306,13 @@ export function loadOrCreateHouseBank(dryRun: boolean): HouseBank {
       // `HOUSE_WALLET_TARGET_SOL x created` SOL in wallets nothing will ever hold the keys to again,
       // silently, forever.
       //
-      // The disclosure list is the other half: these pubkeys are published as this arena's bot
-      // disclosure, and an unpersisted key is a different pubkey after every restart. A player
-      // checking whether the wallet they just fought was a bot would be checking against a list that
-      // did not exist when the round ran.
+      // THE CLASSIFIER IS THE OTHER HALF, and this argument survived the removal of the published
+      // disclosure list intact — it merely stopped being about a player and started being about the
+      // treasury rule. An unpersisted key is a different pubkey after every restart, so the wallets
+      // that fought the round in flight are wallets the next boot reads as REAL players. That is the
+      // one input `plannedHouseEntries` sizes the board from: seeing visitors where there are bots, it
+      // fields a full board into an empty room and hands a permissionless caller the
+      // house-versus-house fight `HOUSE_MAX_WITHOUT_REAL_PLAYER` exists to make impossible.
       //
       // Refusing matches what this module already does with a damaged wallet file a few lines up —
       // "refusing loudly rather than regenerating" — and for the same reason. The trigger is real and
@@ -287,8 +322,8 @@ export function loadOrCreateHouseBank(dryRun: boolean): HouseBank {
         `Generating the other ${created} would strand money: they cannot be persisted (a key from the ` +
         `environment is never written to disk), they WOULD be funded to ${HOUSE_WALLET_TARGET_SOL} SOL each ` +
         `at boot, and they are gone on the next restart — ${(HOUSE_WALLET_TARGET_SOL * created).toFixed(3)} SOL ` +
-        `lost per restart — while the published bot-disclosure list changes underneath the rounds it ` +
-        `describes.\n` +
+        `lost per restart — while the house/real classifier's set changes underneath the rounds it ` +
+        `describes, so the keeper reads its own previous wallets as real players.\n` +
         `Re-issue the secret with all ${HOUSE_WALLET_COUNT} keys: run the keeper once on a machine that can write ` +
         `${HOUSE_WALLETS_PATH}, then fly secrets set ${HOUSE_WALLETS_ENV}="$(cat ${HOUSE_WALLETS_PATH})".`,
       );
@@ -308,8 +343,9 @@ export function loadOrCreateHouseBank(dryRun: boolean): HouseBank {
           `If this is a deployment, that path is not where the keys belong: set ${HOUSE_WALLETS_ENV} to ` +
           `the contents of a wallet file instead, and nothing needs to be written at all. Generate one ` +
           `locally first (run the keeper once on a machine that can write .devnet/), then ` +
-          `fly secrets set ${HOUSE_WALLETS_ENV}="$(cat ${HOUSE_WALLETS_PATH})" — the pubkeys are ` +
-          `published as this arena's bot disclosure, so they must be the same on every restart.`,
+          `fly secrets set ${HOUSE_WALLETS_ENV}="$(cat ${HOUSE_WALLETS_PATH})" — the keeper's ` +
+          `house/real classifier defines "real" as "not one of these", so they must be the same on ` +
+          `every restart.`,
         );
       }
       info(stored
@@ -322,18 +358,23 @@ export function loadOrCreateHouseBank(dryRun: boolean): HouseBank {
 
 /** The bank's LOGIC, separated from where its keys came from.
  *
- *  Split out so the classifier — which decides what the status file publishes as house versus real,
- *  and therefore what the sizing policy is fed — can be exercised without a filesystem and without
- *  generating keys into `.devnet/`. `loadOrCreateHouseBank` is the only thing that touches disk. */
+ *  Split out so the classifier — which decides what the sizing policy is fed, and therefore whether
+ *  the treasury rule holds — can be exercised without a filesystem and without generating keys into
+ *  `.devnet/`. `loadOrCreateHouseBank` is the only thing that touches disk.
+ *
+ *  The classifier's split USED TO reach the status file as `houseFighterCount` / `realFighterCount`
+ *  as well. It no longer leaves this process, and that is a change to the publisher and not to this
+ *  function: the numbers are exactly as load-bearing as they were, because the policy has always been
+ *  computed from them rather than merely reported alongside them. */
 export function houseBankFrom(keypairs: Keypair[]): HouseBank {
   const active = keypairs.slice(0, HOUSE_WALLET_COUNT).map((keypair, index) => ({ index, keypair }));
-  const disclosedPubkeys = keypairs.map((k) => k.publicKey.toBase58());
-  const disclosedSet = new Set(disclosedPubkeys);
+  const bankPubkeys = keypairs.map((k) => k.publicKey.toBase58());
+  const bankSet = new Set(bankPubkeys);
 
   return {
     active,
-    disclosedPubkeys,
-    isHouse: (pubkey) => disclosedSet.has(pubkey.toBase58()),
+    bankPubkeys,
+    isHouse: (pubkey) => bankSet.has(pubkey.toBase58()),
     classify(round) {
       const real: SideCounts = { side0: 0, side1: 0 };
       const house: SideCounts = { side0: 0, side1: 0 };
@@ -342,9 +383,9 @@ export function houseBankFrom(keypairs: Keypair[]): HouseBank {
       // the entries past the count are zeroed defaults, not fighters.
       for (const fighter of round.fighters.slice(0, round.fighterCount)) {
         const key = fighter.wallet.toBase58();
-        const bucket = disclosedSet.has(key) ? house : real;
+        const bucket = bankSet.has(key) ? house : real;
         if (fighter.side === 0) bucket.side0 += 1; else bucket.side1 += 1;
-        if (disclosedSet.has(key)) houseIn.add(key);
+        if (bankSet.has(key)) houseIn.add(key);
       }
       return {
         houseCount: house.side0 + house.side1,

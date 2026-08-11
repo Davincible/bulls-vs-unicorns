@@ -47,7 +47,7 @@ if (dryRun) console.log("DRY RUN — no keys will be written and no SOL will mov
 // Generates and PERSISTS any wallets that are missing, or reports what it would generate under
 // --dry-run. This is the step that grows `.devnet/keeper-house-wallets.json`.
 const bank = loadOrCreateHouseBank(dryRun);
-console.log(`\npool now holds      ${bank.disclosedPubkeys.length} wallet(s)`);
+console.log(`\npool now holds      ${bank.bankPubkeys.length} wallet(s)`);
 
 const client = await createChainClient({ operator, dryRun, stopSignal: AbortSignal.timeout(120_000) });
 const before = await client.balance(operator.publicKey);

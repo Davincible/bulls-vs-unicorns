@@ -115,9 +115,17 @@ the served IDL and the account lists are byte-identical, so the extra account is
 every early close would come back as `LobbyStillOpen` (an error about the *clock*) with a real player
 standing in the lobby.
 
-**Real vs house is a private list.** Anyone not in the keeper's own house-wallet set counts as real.
-There is deliberately no on-chain registry and no flag on the round — that is an operator decision,
-not a gap to be tidied up.
+**Real vs house is a private list, and it is now private in both directions.** Anyone not in the
+keeper's own house-wallet set counts as real. There is deliberately no on-chain registry and no flag
+on the round — that is an operator decision, not a gap to be tidied up.
+
+> **Changed.** The set used to be private only in the sense that the chain did not know it: the keeper
+> *published* it, in `keeper-status.json`, as a bot-disclosure list every browser could read, together
+> with a per-round `houseFighterCount` / `realFighterCount` split. That is gone. The arena's own
+> wallets are anonymous — not named, not listed, not counted anywhere a browser can reach. The
+> classifier is unchanged and still runs on every pass, because the treasury rule is built on it; what
+> changed is that its output no longer leaves the process by a public channel. One authenticated
+> consumer remains: see [The roster endpoint](#the-roster-endpoint).
 
 ## The house's board
 
@@ -274,8 +282,8 @@ asked for an eleventh fighter would be asking for a wallet that does not exist. 
 ```
 # 1. locally, where .devnet/ is writable. The bank is extended during boot, before the first pass, so
 #    starting the keeper and stopping it once the banner has printed is enough. It EXTENDS the file —
-#    every existing key keeps its index and its pubkey, so the published disclosure list stays valid
-#    for the rounds it already describes. Do NOT use --dry-run here: it generates in memory and
+#    every existing key keeps its index and its pubkey, so the classifier still reads the wallets that
+#    fought earlier rounds as house rather than as visitors. Do NOT use --dry-run here: it generates in memory and
 #    deliberately writes nothing, which is the opposite of what this step is for.
 bun run scripts/keeper/keeper.ts     # Ctrl-C once the boot banner shows the new wallet count
 
@@ -284,9 +292,10 @@ fly secrets set KEEPER_HOUSE_WALLETS="$(cat ../.devnet/keeper-house-wallets.json
 ```
 
 Keys that arrive from the environment are never written back, so a container that generated the
-shortfall itself would fund four wallets and lose them on every restart, while the published bot
-disclosure changed underneath the rounds it describes. The keeper throws with that arithmetic in the
-message rather than doing it.
+shortfall itself would fund four wallets and lose them on every restart — while the classifier's set
+changed underneath the rounds it describes, leaving the keeper reading its own previous wallets as
+real players and fielding a full board into an empty room. The keeper throws with that arithmetic in
+the message rather than doing it.
 
 **The house must never be able to fill the room.** `REAL_SEATS_RESERVED` holds seats back against the
 chain's own `fighters.length`, so a raised board target cannot hand an arriving player `RoundFull`. It
@@ -520,10 +529,22 @@ The six fields that carry the meaning:
   populated during the hold on purpose: `keeperCountdown` returns nothing when `round` is null, so
   clearing it would silently kill the "next lobby in 0:08" countdown.
 
-`round.houseFighterCount` / `realFighterCount` split the lineup against `house.wallets`, which is the
-keeper's bot disclosure. That list is a claim made by the same process that runs the bots — believable,
-not verifiable. Registering the house wallets on the Arena account on-chain is the better design and
-is planned separately.
+> **Changed — schema 5 removed the house from this file.** It used to carry a `house` block (all the
+> bank's pubkeys plus a paragraph of player-facing prose) and a per-round `houseFighterCount` /
+> `realFighterCount` split. All three are gone, and `keeper.lastError.message` went with them — it was
+> arbitrary exception text, and a failed house `enter` throws with one of the arena's own wallets
+> inside it. What a round still reports is `fighterCount`, `pot`, `phase` and `winner`: every one a
+> copy of a public account anybody can read for themselves. `heldOpen` stays, because it exists to
+> *stop* a countdown rather than to describe a lineup.
+>
+> `parseKeeperStatus` **hard-rejects** anything that is not schema 5, which is the point rather than
+> housekeeping: a parser that merely ignored the old fields would leave a not-yet-redeployed keeper's
+> file carrying every pubkey to every browser exactly as before, with the only difference being that
+> nothing displayed it. The cost is one deploy's stretch where the page says "keeper is down".
+>
+> The old list was a claim made by the same process that runs the bots — believable, not verifiable.
+> Registering the house wallets on the Arena account on-chain remains the better design if disclosure
+> is ever wanted again; what was removed is the weak version, not the ambition.
 
 The file is gitignored. Its **absence** is meaningful: a 404 is correctly read as "no keeper is
 running here" — and so is a connection refused on the HTTP channel. `useKeeperStatus` collapses every
@@ -532,7 +553,7 @@ the number.
 
 ### The health endpoint
 
-`GET /health` → `200 {"ok":true,"schema":3,"heartbeatAgeSeconds":N}`.
+`GET /health` → `200 {"ok":true,"schema":5,"heartbeatAgeSeconds":N}`.
 
 **It makes no chain calls, and that is the whole design.** If it depended on RPC, a devnet blip — a
 429, a slow block — would fail the platform's check and get a *perfectly healthy keeper killed
@@ -549,6 +570,50 @@ reads.
 (`engine/`'s Dockerfile points its check at `/live` and explicitly **not** at `/health`, for the
 mirror-image reason: engine's `/health` returns 503 on a solvency freeze, which a restart cannot fix.
 Here `/health` is the one that is safe to probe. The divergence is deliberate in both directions.)
+
+### The roster endpoint
+
+`GET /house-wallets.json`, `Authorization: Bearer $KEEPER_HOUSE_TOKEN` → `200 {"wallets":[…]}`.
+
+The one route on this server that is **not** public telemetry. It exists because the identity API
+(`er-demo/api/`) has a rule to enforce — a house wallet must never wear a person's X avatar — and it
+cannot enforce a rule about wallets it cannot name. It uses the answer **only to withhold**.
+
+**Why a live endpoint rather than a copy of the list.** Two cheaper designs were rejected for the same
+reason: a build-time environment variable holding the pubkeys, and a static list committed to the
+repo. Both put a *snapshot* of the bank where the API can read it — and the bank **grows**
+(`extendHouseBank.ts` exists for that, and production runs 48 wallets against a code default of 10). A
+baked-in copy therefore goes stale at exactly the moment a wallet is added, and a house wallet the API
+has never heard of is *precisely and only* the case the check exists for. The keeper is the only
+process that knows its own bank, so the API asks it. One source of truth, ~one request a minute.
+
+Three properties worth knowing before you touch it:
+
+- **It never sends `Access-Control-Allow-Origin`** — not even to an allowed origin. The CORS allowlist
+  decides which *pages* may read public telemetry; the token decides which *services* may read the
+  roster, and a browser is never in the second category. If a page ever came to hold the token, the
+  missing allow header is the last thing between that and the same-origin policy handing it the bank.
+- **No token configured → `404`, not `401`.** A 401 advertises that this keeper holds a roster worth
+  protecting. With no token the route genuinely does not exist, so it is indistinguishable from any
+  unknown path. For the same reason the 404 body names only `/keeper-status.json` and `/health`, even
+  on a keeper that *is* serving the roster.
+- **A token shorter than 32 characters is refused and the route stays off**, with a warning naming the
+  actual length. The route is public on a public hostname; the token's entropy is all of its security,
+  and a short one accepted "for now" is one nothing will ever remind anybody about.
+
+```sh
+# generate once, then set the SAME value on both ends
+openssl rand -base64 24
+fly secrets set KEEPER_HOUSE_TOKEN='…' -a bulls-arena-keeper-devnet   # the keeper
+# …and KEEPER_HOUSE_TOKEN in the Vercel project                        # the identity API
+```
+
+**If you do not set it**, on either end: the keeper logs a loud warning and serves no roster, and the
+API — which fails **closed** by design — serves **no avatars at all, for everybody**, not just for
+house wallets. Nothing on either side renders an error a person would notice, which is why both ends
+say so at boot. The Vercel half goes further and refuses to cold-start without it, so the first request
+after a deploy is a 500 at the origin rather than a site that quietly looks like nobody has ever linked
+an account.
 
 ## Deploying it
 
@@ -643,6 +708,7 @@ won is logged at boot, the key material never is.
 |---|---|---|
 | `KEEPER_OPERATOR_KEY` | `.devnet/fork-payer.json` | the **arena authority** secret key, a JSON array of 64 numbers. `open_round` and `delegate_round` are both `has_one = authority`; the keeper refuses to start if this key is not the arena's authority |
 | `KEEPER_HOUSE_WALLETS` | `.devnet/keeper-house-wallets.json` | the house-fighter keys, the **verbatim contents** of that file (`{"note": …, "secretKeys": [[…]]}`). Keys that arrive this way are never written back to disk |
+| `KEEPER_HOUSE_TOKEN` | *none — the route is not served* | bearer token for `GET /house-wallets.json`, minimum **32 characters**. Must match `KEEPER_HOUSE_TOKEN` in the Vercel project. Unset on either end means the identity API serves **no avatars at all** — see "The roster endpoint" |
 
 Configuration — safe in `fly.toml`'s `[env]`, except where noted.
 
@@ -711,7 +777,7 @@ direction.
 
 ```
 $ curl -s https://bulls-arena-keeper-devnet.fly.dev/health
-{"ok":true,"schema":3,"heartbeatAgeSeconds":1}
+{"ok":true,"schema":5,"heartbeatAgeSeconds":1}
 ```
 
 `heartbeatAgeSeconds` under `staleAfterSeconds` (15) is what **you** read; the platform's check
@@ -722,8 +788,8 @@ That is the one condition here a restart genuinely fixes, and it is the one you 
 yourself, because nothing else will.
 
 ```
-$ curl -s https://bulls-arena-keeper-devnet.fly.dev/keeper-status.json | jq '{schema, cluster: .chain.cluster, age: (now - .keeper.heartbeatAt | floor), stalled: .keeper.stalledSince, round: .round.no, phase: .round.phase, real: .round.realFighterCount, held: .round.heldOpen}'
-{ "schema": 3, "cluster": "devnet", "age": 1, "stalled": null, "round": 5, "phase": "Lobby", "real": 0, "held": true }
+$ curl -s https://bulls-arena-keeper-devnet.fly.dev/keeper-status.json | jq '{schema, cluster: .chain.cluster, age: (now - .keeper.heartbeatAt | floor), stalled: .keeper.stalledSince, round: .round.no, phase: .round.phase, fighters: .round.fighterCount, held: .round.heldOpen}'
+{ "schema": 5, "cluster": "devnet", "age": 1, "stalled": null, "round": 5, "phase": "Lobby", "fighters": 1, "held": true }
 ```
 
 That is a healthy idle keeper under `--hold-open`: one lobby, held, waiting for a person. The four
@@ -732,7 +798,9 @@ things to read, in order — everything else is detail:
 1. `age` (`now - keeper.heartbeatAt`) **under 15**. Over it, the keeper is down and nothing else in the
    file means anything.
 2. `keeper.stalledSince` is `null`. Non-null is the third state: alive, heartbeating, and its loop
-   failing every pass. A restart will not help — read `keeper.lastError`, which says what is failing.
+   failing every pass. A restart will not help — `keeper.lastError.context` says which PART is failing
+   (`main-loop`, `entry-fill`, `take-sweep`, …); the *reason* is in the Fly logs, deliberately, because
+   exception text names accounts and this file is public.
 3. `chain.cluster` is `"devnet"`. It is written unconditionally and asserted by the parser; if it were
    ever anything else, something is very wrong upstream.
 4. `round` is non-null and its `phase` moves. `roundsCompleted` rising is the "it is actually doing the

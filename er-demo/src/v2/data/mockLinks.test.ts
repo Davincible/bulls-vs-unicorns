@@ -33,6 +33,9 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { assignMockIdentities, mockAttestations, parseMockFixture, type MockIdentity } from "./mockLinks.ts";
 import { trustedKeysFor } from "./linkSource.ts";
+import { MOCK_HISTORY, MOCK_YOU, mockFightersAt } from "./mockData.ts";
+import { deriveStandings } from "./roundLog.ts";
+import { rosterCast, rosterKey } from "./useLinks.ts";
 import {
   ATTESTATION_TTL_SECONDS,
   avatarPathFor,
@@ -171,17 +174,60 @@ describe("assignMockIdentities", () => {
     expect(new Set(used.map((i) => i.handle)).size).toBe(used.length);
   });
 
-  it("is deterministic for the same wallet set, in any order", () => {
-    // Two screenshots of the same round have to be comparable, and the roster is re-sorted by several
-    // views — so the assignment must depend on the SET, never on the order a view happened to hand it
-    // over in. A shuffle changing who has a face would read as a bug in the feature itself.
+  it("is deterministic for the same wallets in the same order", () => {
+    // Two screenshots of the same round have to be comparable. The mechanism used to be an internal
+    // sort — the assignment depended on the SET and nothing else — and it is now the caller handing
+    // over the same list twice, which `ArenaProvider` does by composing it from `[round, you,
+    // standings]` (all three module constants under `?fixture=1`). What must not change is the
+    // guarantee: same input, same faces, every reload.
     const wallets = roster(24);
     const you = wallets[3];
     const a = [...assignMockIdentities(identities(20), wallets, you)];
     const b = [...assignMockIdentities(identities(20), wallets, you)];
-    const reversed = [...assignMockIdentities(identities(20), [...wallets].reverse(), you)];
     expect(b).toEqual(a);
-    expect(new Map(reversed)).toEqual(new Map(a));
+    // And it does not mutate what it was handed. The list is derived from `live.fighters`, where
+    // positional ids name the parties in every hit event, so a sort applied in place here would
+    // silently repoint the whole fight.
+    const untouched = roster(24);
+    const before = [...untouched];
+    assignMockIdentities(identities(20), untouched, untouched[3]);
+    expect(untouched).toEqual(before);
+  });
+
+  it("walks the wallets in the ORDER GIVEN, because the caller's order is the priority", () => {
+    // THE PROPERTY THIS FUNCTION WAS REWRITTEN FOR. The caller composes `[the round on screen, you,
+    // the leaderboard's rows]` and the identities are scarce — six of them, against a capped
+    // fifty-two — so whoever is at the front of the list is who the fixture is about. Walking a
+    // base58-sorted list instead spends the cast on whatever sorts lowest, which is an accident
+    // rather than a decision, and the arena screen loses its faces (see this function's doc).
+    //
+    // Asserted as "the front of the list wins", which is the property, rather than by pinning the
+    // stride's exact indices — the stride is a rate and may legitimately move.
+    const wallets = roster(40);
+    const front = wallets.slice(0, 6);
+    const assigned = assignMockIdentities(identities(3), wallets, null);
+    for (const w of assigned.keys()) expect(front, w).toContain(w);
+    // Reversing the list is a DIFFERENT request, not the same one shuffled: it says a different set
+    // of wallets matters most, and the answer follows it.
+    const reversed = assignMockIdentities(identities(3), [...wallets].reverse(), null);
+    expect([...reversed.keys()]).not.toEqual([...assigned.keys()]);
+    for (const w of reversed.keys()) expect(wallets.slice(-6), w).toContain(w);
+  });
+
+  it("cannot lose the front of the list to a re-ordered tail", () => {
+    // WHY THE DROPPED SORT COSTS LESS THAN IT LOOKS. On the chain path the tail of the caller's list
+    // is the leaderboard, and `deriveStandings` ranks by pnl — so a settling round can re-order those
+    // rows without changing the wallet set, and with no internal sort the assignment is free to move.
+    // It may only move THERE. Identities are spent from index zero, so a prefix's assignment is
+    // decided entirely by that prefix, and the round on screen is the prefix.
+    const round = roster(9);
+    const tail = Array.from({ length: 30 }, (_, i) => walletAt(100 + i));
+    const a = assignMockIdentities(identities(20), [...round, ...tail], round[0]);
+    const b = assignMockIdentities(identities(20), [...round, ...[...tail].reverse()], round[0]);
+    const onRound = (m: ReadonlyMap<string, MockIdentity>) =>
+      [...m].filter(([w]) => round.includes(w));
+    expect(onRound(b)).toEqual(onRound(a));
+    expect(onRound(a).length).toBeGreaterThan(1);
   });
 
   it("produces a genuine mix — not everybody, not nobody", () => {
@@ -415,5 +461,83 @@ describe("the committed public/links.mock.json", () => {
     expect(rejected).toEqual([]);
     expect(links.size).toBe(out.length);
     for (const record of links.values()) expect(record.handle).toMatch(/^mock_/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+// THE CAST HAS TO LAND ON THE ARENA — the fixture's actual composition, at unit-test cost.
+//
+// This block exists because `e2e/links.e2e.ts` depends on this property and cannot say so cheaply.
+// That test proves a linked fighter's avatar travels from a verified attestation into a paint frame,
+// and it discriminates the canvas from the DOM by SUBTRACTING every path an `<img>` already claims —
+// `ConnectPanel` renders the local player's own face, so `you`'s avatar is fetched whether or not the
+// canvas asks for anything at all. A cast that reaches only `you` therefore leaves that helper with
+// an empty set BY CONSTRUCTION, and the failure arrives sixty seconds later as "timed out waiting for
+// the canvas to request an avatar" — a browser, a build and a fake clock away from the one-line cause.
+//
+// It has already happened once. A house-wallet filter in `useLinks.ts` used to shrink the asked list
+// and, undocumented, concentrate the cast onto the fighters on screen; when the filter went, the cast
+// diluted across fifty-two mostly-leaderboard wallets and the arena kept exactly one face — `you`'s.
+// So the requirement is asserted here, against the real fixture, in milliseconds.
+describe("the fixture's cast, over the composition `ArenaProvider` actually builds", () => {
+  // Exactly what `FixtureArenaProvider` composes: the round on screen, then you, then the standings
+  // derived from the round log — then `rosterCast`, which dedupes and caps in that order.
+  const fighters = mockFightersAt(0).map((f) => f.wallet);
+  const composed = [
+    ...fighters,
+    MOCK_YOU,
+    ...deriveStandings(MOCK_HISTORY).map((r) => r.wallet),
+  ];
+  const cast = rosterCast(composed);
+  const committed: unknown = JSON.parse(
+    readFileSync(new URL("../../../public/links.mock.json", import.meta.url), "utf8"),
+  );
+  const fixtureIdentities = parseMockFixture(committed);
+  const onRound = (wallets: readonly string[]) => {
+    const inRound = new Set(fighters);
+    return [...assignMockIdentities(fixtureIdentities, wallets, MOCK_YOU)].filter(([w]) =>
+      inRound.has(w),
+    );
+  };
+
+  it("is the fixture the e2e drives — a short cast, a long leaderboard tail", () => {
+    // The premise, pinned, so the assertions below cannot go vacuous by the fixture changing shape.
+    // If the cast ever outgrows the round this is a different problem and these tests should be read
+    // again rather than trusted.
+    expect(fighters).toContain(MOCK_YOU);
+    expect(fixtureIdentities.length).toBeLessThan(fighters.length);
+    expect(cast.length).toBeGreaterThan(fighters.length * 2);
+  });
+
+  it("puts a face on a fighter who is NOT you", () => {
+    // THE EXACT PROPERTY `e2e/links.e2e.ts` RESTS ON. `you`'s avatar is claimed by a DOM `<img>` and
+    // subtracted, so at least one other fighter has to gain one or that test can only ever time out.
+    const others = onRound(cast).filter(([w]) => w !== MOCK_YOU);
+    expect(others.length).toBeGreaterThan(0);
+  });
+
+  it("puts a PICTURE on a fighter who is not you, not merely a handle", () => {
+    // One rung further, and it is the rung that fails: `mock_tern` is linked with no avatar (§7.3's
+    // "we do not have the picture") and draws the same flat disc as an unlinked fighter. A cast whose
+    // only non-`you` fighter drew that row would satisfy the test above and still make no request.
+    const withPicture = onRound(cast).filter(([w, id]) => w !== MOCK_YOU && id.avatarHash !== "");
+    expect(withPicture.length).toBeGreaterThan(0);
+  });
+
+  it("is a MIX on the round — not everybody wears a face", () => {
+    // §8.3: the mix is where a row layout that silently assumed an avatar column falls apart, and it
+    // is the honest picture besides, because most players never link. Concentrating the cast on the
+    // round must not tip into linking the whole lineup.
+    expect(onRound(cast).length).toBeLessThan(fighters.length);
+  });
+
+  it("would land nowhere useful if the cast were sorted, which is why it is not", () => {
+    // THE GUARD AGAINST THIS FILE GOING VACUOUS. `rosterKey` is the same wallets in base58 order — the
+    // form the query key needs and the form this assignment must never be handed. If this ever starts
+    // finding a non-`you` fighter, the tests above have stopped discriminating and the reason to walk
+    // the caller's order needs restating rather than the expectation flipping.
+    const sorted = onRound(rosterKey(composed)).filter(([w]) => w !== MOCK_YOU);
+    expect(sorted).toEqual([]);
   });
 });

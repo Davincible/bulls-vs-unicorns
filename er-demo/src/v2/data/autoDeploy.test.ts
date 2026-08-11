@@ -123,7 +123,6 @@ const YOU = {
   banked: 0n,
   dead: false,
   isYou: true,
-  house: false,
   avatarSrc: null,
 };
 

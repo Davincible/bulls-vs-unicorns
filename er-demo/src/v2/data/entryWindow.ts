@@ -31,7 +31,7 @@
 // fifty-nine minutes still on the chain's clock. So the round a late deposit lands on is in `Drawing`
 // or `Fight`, and the guard it trips is the FIRST one. `LobbyClosed` is reachable only where nobody
 // closes early — a hand-opened round, or a keeper that is down while the backstop runs out — and
-// `RoundFull` needs `MAX_FIGHTERS` (48) against a house target of ten. All three are answered here;
+// `RoundFull` needs the lobby to have reached `MAX_FIGHTERS` (48). All three are answered here;
 // only the first is common.
 //
 // AND THE ROLLUP SENDS BACK NO LOGS AND NO NAMES. This is the finding that decided how the classifier

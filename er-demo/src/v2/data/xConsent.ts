@@ -1,8 +1,8 @@
 // THE WORDS SAID TO A PLAYER ABOUT LINKING THEIR X ACCOUNT.
 //
-// Copy lives in the data layer here, as `abandonText()` and `houseNote()` do, because these
-// particular sentences are claims about what the system does and they have to be reviewable next to
-// the code that makes them true. A string inlined in a component is a claim nobody diffs.
+// Copy lives in the data layer here, as `abandonText()` does, because these particular sentences are
+// claims about what the system does and they have to be reviewable next to the code that makes them
+// true. A string inlined in a component is a claim nobody diffs.
 //
 // ================================================================================================
 // THE SENTENCE THAT MATTERS MOST IS `DEANONYMISATION`, AND IT IS DESIGNED TO REDUCE THE LINK RATE.
@@ -155,7 +155,19 @@ export const FAILURE_COPY = {
   alreadyLinked:
     "That X account is already linked to a different wallet. Unlink it there first — one X account "
     + "belongs to one wallet.",
-  house: "This wallet is one of the arena's own and cannot carry a face.",
+  /** THERE IS DELIBERATELY NO ENTRY HERE FOR "THIS WALLET IS ONE OF THE ARENA'S OWN", and its absence
+   *  is a rule rather than a gap somebody should helpfully fill.
+   *
+   *  One existed — "This wallet is one of the arena's own and cannot carry a face." — and nothing ever
+   *  rendered it. It could not be rendered now even if a surface wanted it, because a refusal that
+   *  names its reason is a MEMBERSHIP ORACLE: anyone could walk a candidate wallet up to the link
+   *  endpoint and read the arena's roster straight off the error text, one key at a time. That is
+   *  exactly what declining to publish the list was for, handed back through a different door, and
+   *  handed back to the one party motivated to go looking.
+   *
+   *  So if a surface ever does need to refuse for this reason, the sentence it shows MUST be
+   *  indistinguishable from the generic one below — same words, same timing, no extra hint. Saying
+   *  less is the entire point of `unavailable`, and this is the case it was already right for. */
   /** Deliberately vague, because the specific reasons are all ours and none is actionable. */
   unavailable: "X linking is unavailable right now. Nothing was changed. Try again in a minute.",
   retry: "Try again",

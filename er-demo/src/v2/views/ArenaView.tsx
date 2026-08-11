@@ -42,11 +42,10 @@ import {
 import { useArena } from "../data/useArena.ts";
 import { sessionNote } from "../data/autoSession.ts";
 import { abandonText, simBankrollUsd, type AmountRule } from "../data/autoDeploy.ts";
-import { houseNote } from "../data/houseFighters.ts";
 import { feePhrase } from "./feeCopy.ts";
 import { ArenaCanvas } from "../arena/ArenaCanvas.tsx";
 import { CombatLog } from "../ui/CombatLog.tsx";
-import { Bar, Dash, Empty, HouseTag, KV, KVs, Mark, Money, Section, Seg, Tag } from "../ui/primitives.tsx";
+import { Bar, Dash, Empty, KV, KVs, Mark, Money, Section, Seg, Tag } from "../ui/primitives.tsx";
 import { RoundClockSlot } from "../ui/RoundClockSlot.tsx";
 import { RoundPhaseNote } from "../ui/RoundPhaseNote.tsx";
 import { useDrawWatch } from "../ui/useDrawWatch.ts";
@@ -101,36 +100,6 @@ function healthPct(f: FighterView): number {
 
 function pnlOf(f: FighterView): bigint {
   return worth(f) - f.stake;
-}
-
-/** HOW MANY OF THESE ARE OURS. One helper rather than four `.filter(...).length` calls, because the
- *  hero line, the two rosters and the standings all state it and a disclosure that says a different
- *  number in two places is worse than one that says nothing. See `FighterView.house`. */
-function houseCount(fighters: FighterView[]): number {
-  return fighters.reduce((n, f) => (f.house ? n + 1 : n), 0);
-}
-
-/** THE HOUSE'S SHARE OF A SET OF FIGHTERS — `5 HOUSE`, or `HOUSE —` when the page has no basis for a
- *  number at all.
- *
- *  THE DASH IS THE WHOLE REASON THIS IS A COMPONENT. `house: false` on every fighter means one of two
- *  completely different things — nobody in this round is ours, or nothing is publishing a list to
- *  check against — and `HouseDisclosure` makes the second unrenderable as a figure by nulling both
- *  counts together. A caption reading "0 house" while the page is in that state claims the first, and
- *  is precisely the misrepresentation the disclosure exists to end. So the verdict is read from the
- *  context and the COUNT is taken locally: the hero and the standings want the whole round, each
- *  roster wants its own side, and both come from the same `f.house` marks the rows are drawn from —
- *  which is what stops a roster showing five marks under a caption reading four. */
-function HouseShare({ fighters }: { fighters: FighterView[] }) {
-  const { houseDisclosure } = useArena();
-  if (houseDisclosure.houseFighterCount === null) {
-    return (
-      <span className="u" title="Nothing is publishing a house list right now, so this page cannot say which fighters are ours. An unmarked fighter here is one we have not been able to check, not one we have cleared.">
-        house <Dash />
-      </span>
-    );
-  }
-  return <span className="u">{houseCount(fighters)} house</span>;
 }
 
 /** The pace THIS round runs at. It is per-fighter (`n * 2`), not a constant: a 2-fighter duel and a
@@ -243,14 +212,8 @@ function TheRound() {
                 node — `<h2>The round</h2>`, one line above, from `Section`. `.display` is a class and
                 carries its own `margin: 0`, so the box is unchanged. */}
             <div className="display display--mono">{live ? usd(live.pot, 2) : "—"}</div>
-            {/* THE SPLIT GOES ON THE HERO LINE, not into a tooltip. This sentence is where a
-                visitor forms their idea of how busy the arena is, and "8 fighters" under a $353 pot
-                reads as eight people — which is the misrepresentation `HouseDisclosure` exists to
-                end. It is always present, as a number or as a dash: an omitted disclosure and a
-                disclosure of nothing look identical, and only one of them is honest. */}
             <p className="u" style={{ marginTop: 14 }}>
-              Pot on the table · {counted(fighters.length, "fighter")} ·{" "}
-              <HouseShare fighters={fighters} /> · {alive} still alive
+              Pot on the table · {counted(fighters.length, "fighter")} · {alive} still alive
             </p>
             {/* WHEN IT CHANGES, IN WORDS, AT THE TOP OF THE PAGE — and this is the surface that owed
                 it. The hero prints the round's headline facts above the fold, and the only thing it
@@ -537,13 +500,10 @@ function FieldLeaders({ fighters }: { fighters: FighterView[] }) {
             dead={f.dead}
             label={`${SIDE_TOKEN[f.side].name}${f.dead ? " · out" : ""}`}
           />
-          {/* Same cell shape as the roster and the standings — the name truncates, the disclosure
-              does not. `FighterView.house`'s own comment asks every surface that lists fighters to
-              say which of them are ours, and this one lists five of them over the fight itself. */}
-          <span className="line" style={{ gap: 6, minWidth: 0 }}>
-            <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
-            {f.house ? <HouseTag /> : null}
-          </span>
+          {/* THE NAME GIVES WAY, NOT THE BOX. `.lead`'s name track is a fixed 118px (ArenaView.css
+              explains why an overlay cannot afford a `1fr` here), so a name longer than the track
+              ellipsises inside it rather than widening the panel mid-round. */}
+          <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
           {/* Compact, like every other money figure in a fixed track on this page: 58px does not
               hold a chain figure in full, and `Money` puts the exact one on the cell's title. */}
           <Money units={worth(f)} compact className="r" />
@@ -1585,9 +1545,6 @@ function Roster({ side }: { side: Side }) {
         <span className="u">
           {alive}/{rows.length} alive
         </span>
-        {/* Per side, not only in the hero's total: the sides are seated independently and "5 house"
-            across the round says nothing about whether they are all on one of them. */}
-        <HouseShare fighters={rows} />
       </div>
 
       <div className="row row--head roster">
@@ -1619,15 +1576,12 @@ function Roster({ side }: { side: Side }) {
           >
             <span className="idx">{(i + 1).toString().padStart(2, "0")}</span>
             <Mark side={f.side} dead={f.dead} />
-            {/* THE NAME CELL IS A ROW, NOT A WORD, so the disclosure can sit beside the name without
-                taking a grid track from the money columns — `.roster`'s template is fixed and adding
-                an eighth track would cost the health bar. The name keeps `.trunc` and the tag does
-                not, so a long name gives way to the mark rather than the other way round: which of
-                these is the house is the fact a reader must not lose. */}
-            <span className="line" style={{ gap: 7, minWidth: 0 }}>
-              <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
-              {f.house ? <HouseTag /> : null}
-            </span>
+            {/* THE NAME IS THE ONE CELL THAT MAY GIVE WAY. `.roster`'s money tracks are fixed and
+                this one is the `minmax(70px, 1fr)` that absorbs whatever is left, so `.trunc` is
+                what keeps a long name inside its column instead of pushing the row's figures out of
+                theirs. Nothing is lost by it: the full name is on the fighter inspector this row
+                opens. */}
+            <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
             {/* THE COLUMNS MAX REPORTED. `.roster`'s money tracks are 70px fixed (66px on a phone),
                 and a chain figure printed in full is ~133px of right-aligned text — which does not
                 widen the track, it spills backwards over the name and the column before it. Compact
@@ -1652,24 +1606,27 @@ function Roster({ side }: { side: Side }) {
 }
 
 function TheField() {
-  const { live, houseDisclosure } = useArena();
+  const { live } = useArena();
   const fighters = live?.fighters ?? [];
 
+  // THE EMPTY LOBBY IS THE ONLY STATE THIS SECTION OWES A SENTENCE. An empty pair of rosters shows
+  // nothing but two headings and two "no fighters yet" cells, and a reader cannot tell from that
+  // whether they have arrived too early or the page has failed to load — so the lede answers it.
+  // Once anyone has entered, the rosters below ARE the answer: they name every fighter, their side
+  // and what each is holding, and a paragraph above them could only restate the count they already
+  // carry. `Section` renders no `.lede` paragraph at all for an undefined one, so this leaves the
+  // heading sitting directly on the table rather than on an empty line.
+  //
+  // NOT "until an operator closes it" any more. Nobody closes a lobby on a schedule now: the keeper
+  // holds it open until a real player turns up, and only then commits to a time. The sentence says
+  // what is true of every way a lobby ends instead of naming one that stopped being the usual one.
+  const lede =
+    fighters.length === 0
+      ? "Nobody has entered yet. The lobby stays open and keeps taking deposits until entries are closed and the seed is drawn."
+      : undefined;
+
   return (
-    <Section
-      index="00-4"
-      title="The field"
-      tools={<RoundTag />}
-      lede={
-        fighters.length === 0
-          // NOT "until an operator closes it" any more. Nobody closes a lobby on a schedule now: the
-          // keeper holds it open until a real player turns up, and only then commits to a time. The
-          // sentence says what is true of every way a lobby ends instead of naming one that stopped
-          // being the usual one.
-          ? "Nobody has entered yet. The lobby stays open and keeps taking deposits until entries are closed and the seed is drawn."
-          : houseNote(houseDisclosure, fighters.length)
-      }
-    >
+    <Section index="00-4" title="The field" tools={<RoundTag />} lede={lede}>
       <div className="two">
         <Roster side={0} />
         <Roster side={1} />
@@ -1740,8 +1697,7 @@ function RoundStandings() {
       title="Standings"
       tools={
         <span className="u">
-          {caption} · {alive} alive / {rows.length - alive} out ·{" "}
-          <HouseShare fighters={rows} />
+          {caption} · {alive} alive / {rows.length - alive} out
         </span>
       }
     >
@@ -1792,11 +1748,8 @@ function RoundStandings() {
                 button, so the reader arrives at it by Tab without passing anything that could have
                 said it for them. */}
             <Mark side={f.side} dead={f.dead} label={SIDE_TOKEN[f.side].name} />
-            {/* Same shape as the roster's name cell, for the same reason — see the note there. */}
-            <span className="line" style={{ gap: 7, minWidth: 0 }}>
-              <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
-              {f.house ? <HouseTag /> : null}
-            </span>
+            {/* Same cell as the roster's name, for the same reason — see the note there. */}
+            <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
             {/* Five money columns across 76-88px tracks — the worst case on the page, and the other
                 half of Max's report. All five compact; all five carry the exact figure on a title. */}
             <Money units={f.stake} compact className="r col-opt" />

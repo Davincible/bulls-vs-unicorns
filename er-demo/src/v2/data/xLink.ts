@@ -407,8 +407,7 @@ export type LinkRejection =
   | "bad-wallet"
   | "bad-handle"
   | "bad-x-id"
-  | "bad-avatar-path"
-  | "house-wallet";
+  | "bad-avatar-path";
 
 /**
  * A STRING DISCRIMINANT, NOT A BOOLEAN `ok`, and the reason is a property of this project's compiler
@@ -564,18 +563,18 @@ export function verifyAttestation(
 /**
  * A batch of claims into a map of facts. Everything that fails is dropped, silently to the player.
  *
- * @param houseWallets wallets the keeper has published as its own. THE CLIENT HALF of the rule that a
- *   house wallet can never wear a face (`TWITTER-CONNECT.md` §6.3, `SOCIAL.md` §2.7). The durable
- *   guard is the server refusing to create the link at all, and the read path refusing to serve it;
- *   this is the third, here in one function rather than rediscovered at each of the five surfaces
- *   that render a face. An empty list filters nobody, which is `isHouseWallet`'s own rule — a browser
- *   that cannot read the disclosure list has no basis to accuse anyone of being a bot.
+ * IT USED TO TAKE A FOURTH ARGUMENT, and its absence is the point rather than an oversight: a list of
+ * the arena's own wallets, filtered out here as the client half of the rule that one of them can never
+ * wear a face. The browser is not given that list any more (`keeperStatus.ts`, schema 5), so the
+ * filter had nothing left to filter against — and a screen of it would have been an always-empty list
+ * quietly matching nobody. The rule is unchanged and is enforced where it can be: `/api/x/link`
+ * refuses to create such a link and `/api/links` refuses to serve one. `linkFighters.ts`'s header
+ * carries the full argument.
  */
 export function linkMapFrom(
   raw: unknown,
   trustedKeys: readonly string[],
   nowSec: number,
-  houseWallets: readonly string[] = [],
 ): { readonly links: LinkMap; readonly rejected: readonly LinkRejection[] } {
   const rejected: LinkRejection[] = [];
   if (typeof raw !== "object" || raw === null) return { links: NO_LINKS, rejected: ["malformed"] };
@@ -592,10 +591,6 @@ export function linkMapFrom(
     const v = verifyAttestation(entry, trustedKeys, nowSec);
     if (v.kind === "ok") {
       const record = v.record;
-      if (houseWallets.includes(record.wallet)) {
-        rejected.push("house-wallet");
-        continue;
-      }
       // FIRST WRITER WINS. Two attestations for one wallet is a server bug or a replay, and there is
       // no honest way to choose between them — so keep the first and count the second as malformed
       // rather than letting a later row overwrite an earlier one.

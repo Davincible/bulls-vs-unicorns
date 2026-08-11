@@ -68,7 +68,7 @@ export const FIGHT_ENDS_SEC = 104;
 // The keeper's status file
 // ---------------------------------------------------------------------------------------------
 
-/** A schema-4 status file (`data/keeperStatus.ts`), built at `T0` so the heartbeat is fresh.
+/** A schema-5 status file (`data/keeperStatus.ts`), built at `T0` so the heartbeat is fresh.
  *
  *  `staleAfterSeconds` is deliberately enormous. A test that fast-forwards two minutes of page time
  *  would otherwise age the heartbeat past a realistic 15s threshold mid-test and flip the cadence
@@ -76,7 +76,7 @@ export const FIGHT_ENDS_SEC = 104;
  *  by publishing an old heartbeat, never one it drifts into halfway through an assertion. */
 function baseStatus() {
   return {
-    schema: 4,
+    schema: 5,
     keeper: {
       startedAt: T0_SEC - 600,
       heartbeatAt: T0_SEC,
@@ -103,15 +103,12 @@ function baseStatus() {
       lobbyClosesAt: T0_SEC + 3540,
       fightStartedAt: 0,
       fighterCount: 9,
-      houseFighterCount: 6,
-      realFighterCount: 0,
       heldOpen: true,
       winner: 0,
       pot: "408000000",
     },
     entriesCloseAt: null as number | null,
     nextLobbyOpensAt: null as number | null,
-    house: { wallets: [] as string[], disclosure: "E2E fixture — no real house roster." },
   };
 }
 
@@ -121,17 +118,20 @@ function baseStatus() {
  *  `roundCadence`/`keeperCountdown` turn each of these into a different `Cadence`, and each `Cadence`
  *  puts something different in a clock slot. They are the input side of defect #1. */
 export const keeperStates = {
-  /** The lobby the keeper is holding open at no cost until a real person arrives. `heldOpen` and
-   *  nobody real in the room ⇒ `waiting-for-players` ⇒ the slot must say OPEN and must NOT count. */
+  /** The lobby the keeper is holding open at no cost until somebody arrives. `heldOpen` ⇒
+   *  `waiting-for-players` ⇒ the slot must say OPEN and must NOT count. */
   heldOpenLobby() {
     return baseStatus();
   },
   /** Somebody arrived, so the keeper has committed to a time and publishes it. ⇒ `entries-close` ⇒
-   *  a real, running countdown. */
+   *  a real, running countdown.
+   *
+   *  `heldOpen` going false IS the whole difference now. It used to be set alongside a
+   *  `realFighterCount` of 1, which the status file stopped carrying at schema 5 — and the pair was
+   *  always one fact written twice, so nothing about what this state MEANS has changed. */
   closingLobby(secondsFromT0: number) {
     const s = baseStatus();
     s.round.heldOpen = false;
-    s.round.realFighterCount = 1;
     s.entriesCloseAt = T0_SEC + secondsFromT0;
     return s;
   },
@@ -139,7 +139,6 @@ export const keeperStates = {
   silent() {
     const s = baseStatus();
     s.round.heldOpen = false;
-    s.round.realFighterCount = 1;
     return s;
   },
 } as const;

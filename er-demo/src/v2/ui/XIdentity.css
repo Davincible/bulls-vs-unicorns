@@ -26,7 +26,7 @@
    towers over a 12px line. Pulling the margin edge down drops the box onto the type's own optical
    centre — the same correction TokenIcon makes in inline flow, in the units flex leaves available.
    It also keeps `.xid`'s OWN baseline (which the leaderboard's `.sc-who` aligns against) on the
-   handle's text baseline, so `you`, `house` and the wallet key beside it stay on one line. */
+   handle's text baseline, so `you` and the wallet key beside it stay on one line. */
 .xid--16 .xav { margin-bottom: -3px; }
 .xid--24 .xav { margin-bottom: -5px; }
 

@@ -20,6 +20,12 @@
 // tick, so `live.fighters` is a fresh array four times a second even when nothing about it moved. An
 // effect keyed on that array re-fetches four times a second forever. Keyed on the sorted join of the
 // wallets, it fetches when the ROSTER changes, which is what it actually depends on.
+//
+// AND WHY THE SAME WALLETS TRAVEL THROUGH HERE TWICE, IN TWO ORDERS. That sorted form is the right
+// answer to "is this the same query" and the wrong answer to "who matters most", and the `?links=mock`
+// fixture has to ask the second one — it has six identities and up to fifty-two wallets to spend them
+// on. So `rosterCast` (the caller's priority order) and `rosterKey` (that, sorted) are both computed,
+// carried side by side to `fetchLinks`, and read by different halves of it. See `rosterCast`.
 
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { linkMapFrom, MAX_WALLETS_PER_QUERY, NO_LINKS, type LinkMap, type LinkRecord } from "./xLink.ts";
@@ -60,7 +66,8 @@ const REFRESH_MS = 60_000;
 const FETCH_TIMEOUT_MS = 10_000;
 
 /**
- * THE ROSTER AS A VALUE RATHER THAN AN IDENTITY — sorted, capped, joined.
+ * WHO WE MAY ASK ABOUT, IN THE ORDER THEY MATTER — deduped, capped, and otherwise exactly the list
+ * the caller composed.
  *
  * Exported because it is a decision rather than plumbing, and this codebase's rule is that a hook
  * exports its non-React decisions so they can be tested without a browser (`useActions.ts` exports
@@ -68,25 +75,60 @@ const FETCH_TIMEOUT_MS = 10_000;
  * vitest, oxlint and typescript are the entire devDependency list — so anything left inside a
  * `useMemo` is untestable by construction.
  *
- * DEDUPED, THEN CAPPED IN THE CALLER'S ORDER, THEN SORTED — and that order of operations is the
- * whole design, because each step answers a different question.
- *
- * The CAP comes before the sort so the CALLER decides who gets asked about. `/api/links` takes at
- * most `MAX_WALLETS_PER_QUERY` wallets, and the page can want more than that: a full 48-fighter round
- * plus the connected wallet plus a leaderboard's worth of past players is over the limit. Sorting
- * first and then truncating would hand the remaining slots to whoever happens to sort lowest, which
- * is a meaningless criterion — an accident of base58. Truncating first keeps the caller's priority
- * (the round on screen, then you, then the leaderboard) and makes the dropped tail predictable.
- *
- * The SORT comes last and exists only so the KEY is stable: the same set of players arriving in a
- * different order must not re-fetch, and `LiveRound` re-orders its roster on several surfaces.
- * `/api/links` itself does not care about order.
+ * THE CAP IS APPLIED IN THE CALLER'S ORDER, so the CALLER decides who gets asked about. `/api/links`
+ * takes at most `MAX_WALLETS_PER_QUERY` wallets, and the page can want more than that: a full
+ * 48-fighter round plus the connected wallet plus a leaderboard's worth of past players is over the
+ * limit. Sorting first and then truncating would hand the remaining slots to whoever happens to sort
+ * lowest, which is a meaningless criterion — an accident of base58. Truncating in the caller's order
+ * keeps its priority (the round on screen, then you, then the leaderboard) and makes the dropped tail
+ * predictable.
  *
  * Truncating at all is the right failure: an over-long query would be rejected wholesale and EVERY
  * player would render unlinked, which is far worse than a few missing faces at the bottom of a table.
+ *
+ * WHY THIS IS A VALUE OF ITS OWN RATHER THAN A STEP INSIDE `rosterKey`. Two things ask about these
+ * wallets and only one of them wants a canonical order. The QUERY wants the sorted form, because a
+ * key that changed when a view re-sorted the roster would re-fetch the whole board mid-fight — that
+ * is `rosterKey` below. The `?links=mock` FIXTURE wants this one, because with six identities and
+ * fifty-two wallets the question "who wears a face" is answered by whoever is at the front of the
+ * list, and base58 order is not an answer to it. Same members, two orders, one of them meaningful.
+ */
+export function rosterCast(wallets: readonly string[]): readonly string[] {
+  return [...new Set(wallets)].slice(0, MAX_WALLETS_PER_QUERY);
+}
+
+/**
+ * THE ROSTER AS A VALUE RATHER THAN AN IDENTITY — the cast above, sorted, ready to be joined.
+ *
+ * The SORT is the whole of the difference and it exists only so the KEY is stable: the same set of
+ * players arriving in a different order must not re-fetch, and `LiveRound` re-orders its roster on
+ * several surfaces. `/api/links` itself does not care about order.
+ *
+ * IT IS DEFINED IN TERMS OF `rosterCast` so that the two can never describe different SETS. They are
+ * threaded separately from here to `fetchLinks` — one becomes the URL and the effect key, the other
+ * decides who the fixture casts — and a pair of independently-built lists is a pair that can silently
+ * disagree about membership after somebody edits one of them.
  */
 export function rosterKey(wallets: readonly string[]): readonly string[] {
-  return [...new Set(wallets)].slice(0, MAX_WALLETS_PER_QUERY).sort();
+  return [...rosterCast(wallets)].sort();
+}
+
+/** One poll's question. An object rather than five positional arguments for one specific reason:
+ *  `asked` and `cast` are the same wallets in two different orders and have the same type, so
+ *  positionally they are one transposition away from a defect that nothing would report — the URL
+ *  would carry an uncanonical order (a fresh edge-cache key on every re-sort) and the fixture would
+ *  cast by base58, which is the exact failure `mockLinks.ts#assignMockIdentities` documents. Named
+ *  fields make that swap unwritable. */
+export interface LinkQuery {
+  readonly source: LinkSource;
+  /** `rosterKey` — sorted. THE QUERY: the URL's wallet list and, joined, the effect's key. */
+  readonly asked: readonly string[];
+  /** `rosterCast` — the caller's priority order, same members. Read by the `mock` branch and by
+   *  nothing else; on the `api` path the server decides nothing by order and this is unused. */
+  readonly cast: readonly string[];
+  /** The connected wallet, or null. `mock` always links it (see `assignMockIdentities`). */
+  readonly you: string | null;
+  readonly signal: AbortSignal;
 }
 
 /**
@@ -96,13 +138,8 @@ export function rosterKey(wallets: readonly string[]): readonly string[] {
  * fixture and production diverge, and a divergence nothing can test is where the two quietly stop
  * agreeing.
  */
-export async function fetchLinks(
-  source: LinkSource,
-  wallets: readonly string[],
-  you: string | null,
-  signal: AbortSignal,
-): Promise<unknown> {
-  const url = linksUrlFor(source, wallets);
+export async function fetchLinks({ source, asked, cast, you, signal }: LinkQuery): Promise<unknown> {
+  const url = linksUrlFor(source, asked);
   // An empty body rather than null: `linkMapFrom` reads null as a malformed response and logs a
   // warning about it, and "there was nobody to ask about" is not a malformed response. It is an
   // answer, and the answer is nobody.
@@ -136,8 +173,14 @@ export async function fetchLinks(
   // from the default bundle rather than merely unused in it. `xLinkSign.ts`'s header claims the
   // browser has no import path to a function that takes a secret key; a static import here made that
   // claim false for every visitor, `?links=off` or not.
+  //
+  // `cast`, NOT `asked`, AND THAT IS THE ONE INTERESTING LINE IN THIS FUNCTION. Both name the same
+  // wallets; only the cast names them in the order the page cares about. Handing the sorted form here
+  // spends the fixture's six identities on whatever sorts first — overwhelmingly leaderboard rows —
+  // and leaves the arena screen, which is the only screen `?links=mock` exists to make reviewable,
+  // with no linked faces on it. `assignMockIdentities` carries the whole of that argument.
   const { mockAttestations, parseMockFixture } = await import("./mockLinks.ts");
-  return { links: mockAttestations(parseMockFixture(body), wallets, you, Math.floor(Date.now() / 1000)) };
+  return { links: mockAttestations(parseMockFixture(body), cast, you, Math.floor(Date.now() / 1000)) };
 }
 
 /**
@@ -146,46 +189,31 @@ export async function fetchLinks(
  * IT LIVES IN THE PROVIDER RATHER THAN IN A PROVIDER OF ITS OWN, and the reason is a cycle. The feed
  * needs the round's roster in order to know what to ask about, and the canvas needs the answer
  * stamped back onto the fighters it draws. A provider mounted below `ArenaProvider` could do the
- * first but could never feed the second back up. `useHouseRoster` sits in the same place for the same
- * reason.
+ * first but could never feed the second back up.
  *
- * @param wallets every wallet on screen that might have an identity. The caller passes the round's
- *   roster plus itself; there is no enumeration route, so the query is always an explicit list.
- * @param houseWallets the keeper's published list. Client-side guard three — see `linkFighters.ts`.
+ * @param wallets every wallet on screen that might have an identity, IN PRIORITY ORDER — the round on
+ *   screen, then you, then the leaderboard's rows. The caller passes the round's roster plus itself;
+ *   there is no enumeration route, so the query is always an explicit list. The order is not
+ *   decoration: it decides which wallets survive the cap, and under `?links=mock` it decides who
+ *   wears a face.
  */
-export function useLinkFeed(
-  wallets: readonly string[],
-  you: string | null,
-  houseWallets: readonly string[],
-): LinksApi {
+export function useLinkFeed(wallets: readonly string[], you: string | null): LinksApi {
   const [map, setMap] = useState<LinkMap>(NO_LINKS);
   const [loading, setLoading] = useState(false);
 
-  // HOUSE WALLETS ARE NEVER ASKED ABOUT — they cannot have a face, so a slot spent on one is a slot
-  // taken from a player who can.
-  //
-  // This started as an optimisation and turned out to be a correctness fix. The three house guards
-  // all run at RENDER time (`linkFighters.ts`), so asking about a house wallet and then discarding
-  // the answer is correct but wasteful — and in the `?links=mock` fixture it was worse than wasteful:
-  // the fixture marks two thirds of its lineup as house, the mock cast landed mostly on those, and
-  // every one of them was correctly stripped on the way out. The guard was working perfectly and the
-  // feature was invisible, which is the most expensive kind of "working".
-  //
-  // Filtering here means the cast lands on wallets that can actually wear it, and production stops
-  // spending query slots on the keeper's own wallets. The render-time guards stay exactly where they
-  // are: this is an optimisation of what we ask, never a substitute for checking what we are told.
-  const asked = useMemo(
-    () => rosterKey(houseWallets.length === 0 ? wallets : wallets.filter((w) => !houseWallets.includes(w))),
-    [wallets, houseWallets],
-  );
+  const asked = useMemo(() => rosterKey(wallets), [wallets]);
+  // The same members as `asked`, in the caller's order — see `rosterCast`. Computed on every path
+  // rather than only under `?links=mock`, because a value that is the priority order on one flag and
+  // the base58 order on another is a value nobody can reason about; it is a dedupe and a slice over
+  // at most `MAX_WALLETS_PER_QUERY` strings, and only when the roster itself changes.
+  const cast = useMemo(() => rosterCast(wallets), [wallets]);
   const key = useMemo(() => asked.join(","), [asked]);
-  const houseKey = useMemo(() => [...houseWallets].sort().join(","), [houseWallets]);
 
   // Read inside the effect rather than listed as a dependency: these are the CURRENT values at fetch
   // time, and adding them to the dependency list would re-fetch the entire roster every time the
   // connected wallet's own object identity changed.
-  const latest = useRef({ wallets: asked, you, houseWallets });
-  latest.current = { wallets: asked, you, houseWallets };
+  const latest = useRef({ asked, cast, you });
+  latest.current = { asked, cast, you };
 
   useEffect(() => {
     if (LINK_SOURCE === "off" || key === "") {
@@ -205,13 +233,18 @@ export function useLinkFeed(
     const poll = async (first: boolean): Promise<void> => {
       if (first) setLoading(true);
       try {
-        const body = await fetchLinks(LINK_SOURCE, latest.current.wallets, latest.current.you, abort.signal);
+        const body = await fetchLinks({
+          source: LINK_SOURCE,
+          asked: latest.current.asked,
+          cast: latest.current.cast,
+          you: latest.current.you,
+          signal: abort.signal,
+        });
         if (cancelled) return;
         const { links, rejected } = linkMapFrom(
           body,
           trustedKeysFor(LINK_SOURCE),
           Math.floor(Date.now() / 1000),
-          latest.current.houseWallets,
         );
         if (rejected.length > 0) {
           // One line, for whoever is holding the console. Never a screen — see the header.
@@ -237,7 +270,7 @@ export function useLinkFeed(
       abort.abort();
       if (timer !== null) clearTimeout(timer);
     };
-  }, [key, houseKey]);
+  }, [key]);
 
   return useMemo<LinksApi>(
     () => ({

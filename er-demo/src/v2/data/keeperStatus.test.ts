@@ -1,6 +1,6 @@
 // Whether the page is allowed to promise a player that another round is coming.
 //
-// Every test here is about the same failure: a number on screen that nothing is backing. The keeper
+// Most of this file is about one failure: a number on screen that nothing is backing. The keeper
 // status file is the only thing that can back one, so these check the three ways it can fail to — by
 // being unreadable (`parseKeeperStatus`), by being OLD (`isKeeperStale`), and by being written by a
 // keeper that is up and no longer getting anywhere (`isKeeperStalled`) — and then check that
@@ -8,6 +8,16 @@
 // say. The last two are the interesting cases throughout, because their files still look perfectly
 // healthy: well-formed, a lobby deadline comfortably in the future, and written either by a process
 // that stopped running four minutes ago or by one whose every pass has thrown since.
+//
+// THERE IS A SECOND SUBJECT NOW, and it is worth saying out loud rather than leaving somebody to
+// infer it from three tests that look like the others. Schema 5 took fields AWAY — the house
+// disclosure, the two fighter counts, and the text of whatever exception the keeper last caught —
+// because a status file is a thing every browser fetches and nothing about "the UI stopped rendering
+// it" keeps bytes out of a browser. Those tests assert what does NOT come out of the parser, which
+// makes them inverted in shape and easy to write vacuously: an assertion that a key is absent passes
+// beautifully against a value that was never built. So each of them either proves the file it fed in
+// was accepted before checking what survived, or is paired with a rejection test that proves the
+// opposite half. Read them together; alone, each says less than it appears to.
 //
 // All fixtures come off ONE base object, so a field added to the contract is added in one place.
 // Phases are set through `inPhase()` rather than by hand, because a fixture whose `phase` and
@@ -17,7 +27,6 @@ import { describe, expect, it } from "vitest";
 import { PHASE_NAME } from "../../chain/constants.ts";
 import {
   KEEPER_STATUS_SCHEMA,
-  isHouseWallet,
   isKeeperOutOfFunds,
   isKeeperStale,
   isKeeperStalled,
@@ -31,6 +40,14 @@ import {
 /** A fixed unix SECOND to hang every fixture off, so no test depends on when it was run. */
 const NOW = 1_800_000_000;
 const STALE_AFTER = 10;
+
+/** A stand-in for one of the arena's own wallets, and it now appears only in files the parser must
+ *  refuse to hand on whole or in part: the v4 file a keeper that has not been redeployed is still
+ *  writing, the regressed v5 file that started republishing the disclosure under the new schema
+ *  number, and — in the place an RPC error would really have put it — the exception text inside a
+ *  `lastError`. There is deliberately no fixture in which it reaches a parsed status, because "this
+ *  string never comes out the other end, by whichever door it went in" is the whole of what the three
+ *  inversions in `parseKeeperStatus` exist to hold. */
 const HOUSE_WALLET = "H0useWa11etAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 const BASE_ROUND: KeeperRoundStatus = {
@@ -41,9 +58,9 @@ const BASE_ROUND: KeeperRoundStatus = {
   lobbyOpenedAt: NOW - 30,
   lobbyClosesAt: NOW + 30,
   fightStartedAt: 0,
+  // The only fighter count the file carries, and it is the CHAIN's — a copy of the `Round` account
+  // anybody can read for themselves. Nothing here splits it into house and real; see schema 5.
   fighterCount: 4,
-  houseFighterCount: 4,
-  realFighterCount: 0,
   // The base fixture is the pre-hold-open shape on purpose: a lobby with a real deadline the keeper
   // is going to let run out. The held-open cases set it explicitly, so every test that draws a
   // `lobbyClosesAt` countdown is visibly a test about a lobby that has one.
@@ -74,7 +91,6 @@ const BASE: KeeperStatus = {
   round: BASE_ROUND,
   entriesCloseAt: null,
   nextLobbyOpensAt: null,
-  house: { wallets: [HOUSE_WALLET], disclosure: "House-operated fighters, disclosed per README." },
 };
 
 /** Both encodings of a phase at once — see this file's header. */
@@ -151,12 +167,20 @@ describe("keeperCountdown", () => {
   });
 
   it("says waiting-for-players for a held-open lobby, and never counts its hour-away backstop", () => {
-    // THE REGRESSION THIS WHOLE SCHEMA BUMP EXISTS FOR. The keeper opens one lobby with an hour of
-    // backstop and holds it until somebody arrives; the house is already in the room. Reading
-    // `lobbyClosesAt` here would put "closes in 59:59" in front of a player — a countdown to a
-    // non-event (the keeper abandoning this round and opening another), which reads as a dead arena.
+    // THE REGRESSION `round.heldOpen` WAS ADDED TO THIS FILE FOR. The keeper opens one lobby with an
+    // hour of backstop and holds it until somebody arrives; the room is not empty while it waits, it
+    // is simply not going anywhere. Reading `lobbyClosesAt` here would put "closes in 59:59" in front
+    // of a player — a countdown to a non-event (the keeper abandoning this round and opening
+    // another), which reads as a dead arena.
+    //
+    // NOTHING IN THIS FIXTURE SAYS HOW MANY OF THE FOUR FIGHTERS THE ARENA PUT THERE, and nothing
+    // needs to: `keeperCountdown` branches on `heldOpen` and on `entriesCloseAt`, never on a count of
+    // anybody. The flag is the keeper stating its own intention, which since schema 5 is the only
+    // form of this fact the file carries — and it is the better one to branch on regardless, because
+    // "I am still waiting" is a claim the writer owns, whereas a count is a thing a reader would have
+    // to interpret. The same goes for the two tests below.
     const held = status({
-      round: round({ heldOpen: true, lobbyClosesAt: NOW + 3_600, realFighterCount: 0 }),
+      round: round({ heldOpen: true, lobbyClosesAt: NOW + 3_600 }),
     });
     expect(keeperCountdown(held, NOW)).toEqual({ kind: "waiting-for-players" });
 
@@ -169,8 +193,12 @@ describe("keeperCountdown", () => {
   it("counts to the keeper's own close once a real player has arrived and the grace is running", () => {
     // The moment that ends the hold. `entriesCloseAt` is seconds away and `lobbyClosesAt` is still an
     // hour away; the number a player is owed is the one the keeper is about to act on.
+    //
+    // The arrival shows up in this file as two things and only two: the chain's `fighterCount` up by
+    // one, and a `heldOpen` the keeper has cleared in favour of a time it has committed to. Which of
+    // those five fighters is the new one is not something the file says any more.
     const arrived = status({
-      round: round({ heldOpen: false, lobbyClosesAt: NOW + 3_600, realFighterCount: 1, fighterCount: 5 }),
+      round: round({ heldOpen: false, lobbyClosesAt: NOW + 3_600, fighterCount: 5 }),
       entriesCloseAt: NOW + 18,
     });
     expect(keeperCountdown(arrived, NOW)).toEqual({ kind: "entries-close", seconds: 18 });
@@ -181,8 +209,10 @@ describe("keeperCountdown", () => {
     // sending the close. If this branch fell through to `lobbyClosesAt` the page would jump from
     // "0:01" to "59:42" at the exact instant the fight was about to start — the hour-away lie
     // arriving three lines later than the one `heldOpen` deletes.
+    // Same lobby as the test above, one grace window later — hence the same `fighterCount: 5`, which
+    // is the whole of what this file now says about somebody having turned up.
     const due = status({
-      round: round({ heldOpen: false, lobbyClosesAt: NOW + 3_600, realFighterCount: 1 }),
+      round: round({ heldOpen: false, lobbyClosesAt: NOW + 3_600, fighterCount: 5 }),
       entriesCloseAt: NOW,
     });
     expect(keeperCountdown(due, NOW)).toEqual({ kind: "none" });
@@ -330,6 +360,131 @@ describe("parseKeeperStatus", () => {
     }
   });
 
+  it("rejects the v4 file a not-yet-redeployed keeper is still writing, pubkeys and all", () => {
+    // The literal 4, for the reason the v2 and v1 cases below use their literals: v4 files exist —
+    // on disk in `public/`, in any browser cache holding one, and coming out of a keeper process that
+    // nobody has restarted yet — and they go on being v4 files forever, whereas `SCHEMA - 1` stops
+    // naming them the moment somebody bumps to 6.
+    //
+    // AND THE DIRECTION OF THE TRADE INVERTS HERE, which is the whole reason this belongs beside
+    // those two rather than being one more entry in the same list. Every earlier bump rejected an old
+    // file to protect its READER: a v1 file has no way to say "stalled", a v2 file none to say "held
+    // open", a v3 file none to say "out of funds", and letting any of them through with the absent
+    // field defaulted would have the page assert a fact the keeper never asserted — this module's own
+    // failure mode arriving through the back door. NOTHING IS MISSING FROM THE FILE BELOW. It is
+    // complete, well-formed, internally consistent, and every field the UI reads is correct. The only
+    // thing wrong with it is that it still SAYS the thing we stopped saying, and it is turned away to
+    // protect its SUBJECT rather than its reader. First bump that has ever done that.
+    //
+    // WHICH IS ALSO WHY IT HAD TO BE A BUMP AND NOT A QUIETER FIX. A parser that merely ignored
+    // `house` and the two counts would hand this file's ordinary fields to the page and the
+    // forty-eight pubkeys would go on being fetched, cached and sitting in memory in every browser
+    // exactly as before — the only thing changed being that nothing rendered them. Refusing the file
+    // outright is what makes the removal a property of the SYSTEM rather than a habit of the UI, and
+    // this assertion is the place that stays checkable when somebody later decides the reject is
+    // inconvenient during a deploy.
+    //
+    // BUILT WITH BOTH LEAKS IN IT, because that is what a v4 file on disk actually looks like: the
+    // disclosure it was written to publish, and the caught exception text it published without anyone
+    // deciding to. The second one is why a reject beats a field-by-field fix here even in principle —
+    // `house` is a leak you can enumerate, `lastError.message` was found by reading, and a v4 file is
+    // turned away for the ones nobody has looked for yet as well as for these two.
+    const raw = rawStatus();
+    raw.schema = 4;
+    raw.house = { wallets: [HOUSE_WALLET], disclosure: "House-operated fighters, disclosed per README." };
+    (raw.round as Record<string, unknown>).houseFighterCount = 4;
+    (raw.round as Record<string, unknown>).realFighterCount = 0;
+    (raw.keeper as Record<string, unknown>).lastError = {
+      at: NOW - 12,
+      context: "house entries",
+      message: `3 of 12 house entries failed on round #23: ${HOUSE_WALLET} insufficient funds`,
+    };
+    expect(parseKeeperStatus(raw)).toBeNull();
+  });
+
+  it("hands back no house identification, however much of it the file it parsed was carrying", () => {
+    // THE OTHER HALF OF THE REMOVAL, and the half the schema number does not enforce.
+    //
+    // The first assertion is the cheap one: the ordinary file the keeper writes has no `house` key,
+    // so neither does the value the UI holds. The second is the one worth having. That raw body is a
+    // valid v5 — right schema number, every required field present and well-typed — written by a
+    // keeper that has REGRESSED and started republishing the disclosure and the two counts under the
+    // new number. The schema check does not turn it away and should not: it is a current file, and
+    // everything the page reads out of it is right. So the reject tested above cannot be what protects
+    // us here, and something else has to.
+    //
+    // WHAT PROTECTS US HERE IS ONE SENTENCE IN `parseKeeperStatus`'s DOC COMMENT — that the returned
+    // object is BUILT FIELD BY FIELD, never the parsed `raw` with a type assertion on top. That rule
+    // has been written down since the parser was, where it was a claim about type HONESTY: the type
+    // should describe what is actually in the value rather than assert it. It is now load-bearing for
+    // a privacy property, which is a great deal of weight for a sentence nobody had ever checked, and
+    // that is exactly why it gets a test it never needed before. `return raw as KeeperStatus` written
+    // by somebody in a hurry passes every other test in this file.
+    expect(Object.keys(parseKeeperStatus(rawStatus())!)).not.toContain("house");
+
+    const regressed = rawStatus();
+    regressed.house = { wallets: [HOUSE_WALLET], disclosure: "House-operated fighters." };
+    (regressed.round as Record<string, unknown>).houseFighterCount = 4;
+    (regressed.round as Record<string, unknown>).realFighterCount = 1;
+
+    const parsed = parseKeeperStatus(regressed);
+    // Asserted BEFORE the interesting checks, and not as a formality: if this file were rejected
+    // outright, every `not.toContain` below would hold for a reason that has nothing to do with what
+    // it is testing, and the test would go on passing while proving nothing.
+    expect(parsed).not.toBeNull();
+    expect(Object.keys(parsed!)).not.toContain("house");
+    for (const field of ["houseFighterCount", "realFighterCount"]) {
+      expect(Object.keys(parsed!.round!), field).not.toContain(field);
+    }
+    // And the round came through otherwise intact, so it is genuinely the extra fields being left
+    // behind rather than the round having been dropped on the way past.
+    expect(parsed!.round!.fighterCount).toBe(BASE_ROUND.fighterCount);
+  });
+
+  it("hands back an error with no exception text in it, even when the file it parsed had some", () => {
+    // THE SAME GUARANTEE AS THE TEST ABOVE, ONE FIELD ALONG — and the field is worth a test of its
+    // own because it is the one that was not found by looking for the word "house".
+    //
+    // `lastError.message` used to be `describeError(e)`: whatever exception the main loop caught,
+    // truncated and forwarded verbatim to every browser polling the file. Nobody wrote those bytes.
+    // Libraries write them, the RPC writes them, the chain writes them, and they name whatever
+    // account the failing instruction happened to touch — so a failed house `enter` is an exception
+    // with one of the arena's own wallets inside it, which is why the fixture below puts
+    // `HOUSE_WALLET` in exactly the place an RPC simulation failure would have put it. A sampled
+    // status file really did carry a full simulation failure here, program id and transaction logs
+    // and all, out of the process that holds the arena authority key, into a field no view has ever
+    // rendered.
+    //
+    // AND THE SHAPE OF THE FIX IS WHAT THIS TEST PINS. Sanitising the text was the alternative, and a
+    // filter over strings you did not write has to be right every time forever, against every library
+    // that ever rewords a message — the one time it is wrong, the leak is silent and permanent. So
+    // the field was removed and `context` was closed to a fixed vocabulary written at the call sites,
+    // which has no inputs and therefore nothing to get wrong. Here, as with `house`, what actually
+    // keeps the bytes out of the browser is `parseError` building its result from named fields rather
+    // than spreading `raw` — the second field for which "built field by field" has become a privacy
+    // property rather than only a statement about type honesty.
+    const raw = rawStatus();
+    (raw.keeper as Record<string, unknown>).lastError = {
+      at: NOW - 12,
+      context: "enter",
+      message: `Transaction simulation failed: Error processing Instruction 0: custom program error: 0x1 [account ${HOUSE_WALLET}]`,
+    };
+    const parsed = parseKeeperStatus(raw);
+    // It PARSES — `message` is ignored, not rejected, so a v5 keeper that has not caught up on this
+    // detail still produces a usable file rather than reading as "keeper down". The schema check is
+    // what turns away the v4 file that carries one; this is the hand-written and half-written case.
+    expect(parsed!.keeper.lastError).toEqual({ at: NOW - 12, context: "enter" });
+    // ASSERTED ON THE KEY SET AS WELL, and the second assertion is not the first one restated:
+    // `toEqual` treats a property whose value is `undefined` as absent, so an implementation that
+    // wrote `message: undefined` into the returned object would satisfy the line above while still
+    // being one careless edit away from writing `raw.message` there instead. The claim is that the
+    // key does not exist, so that is what gets checked. Sorted, because the claim is about which keys
+    // are there and not about the order `parseError` happens to write them in — a test that failed
+    // when somebody swapped two lines of a return statement would be teaching the next person that
+    // this file is noise.
+    expect(Object.keys(parsed!.keeper.lastError!).sort()).toEqual(["at", "context"]);
+  });
+
   it("rejects the v2 file a deployed keeper really wrote, which is what the bump to 3 was for", () => {
     // The literal 2, for the same reason the v1 case below uses the literal 1: v2 files exist on disk
     // and in browser caches and go on being v2 files forever. A v2 file is a v3 file minus
@@ -365,7 +520,6 @@ describe("parseKeeperStatus", () => {
   it("rejects a file missing or mistyping any field the UI will read", () => {
     const broken: Array<(raw: Record<string, unknown>) => void> = [
       (raw) => delete raw.keeper,
-      (raw) => delete raw.house,
       (raw) => delete raw.round,          // absent is NOT the same as an explicit null
       (raw) => delete raw.nextLobbyOpensAt,
       (raw) => delete raw.entriesCloseAt,
@@ -383,13 +537,19 @@ describe("parseKeeperStatus", () => {
       (raw) => ((raw.keeper as Record<string, unknown>).stalledSince = "yes"),
       (raw) => ((raw.keeper as Record<string, unknown>).stalledSince = false),
       (raw) => ((raw.keeper as Record<string, unknown>).wedgedRounds = ["12"]),
-      (raw) => ((raw.keeper as Record<string, unknown>).lastError = { at: NOW }),
+      // A `lastError` with no `context`, carrying instead the one field that stopped counting for
+      // anything. It used to be enough to write `{ at: NOW }` here, back when the entry was pinning
+      // "half an error object is rejected" against a shape with three required fields; that mutator
+      // no longer says which of the missing two did the rejecting. Since `message` is now IGNORED
+      // rather than required — see `KeeperError` — an error that has only `at` and `message` is an
+      // error with nothing in it the parser reads, and this is the entry that keeps `context`'s
+      // absence fatal after somebody has stopped thinking of `message` as a field at all.
+      (raw) => ((raw.keeper as Record<string, unknown>).lastError = { at: NOW, message: "boom" }),
       (raw) => ((raw.chain as Record<string, unknown>).cluster = "mainnet-beta"),
       (raw) => ((raw.chain as Record<string, unknown>).erValidator = { identity: "x" }),
       (raw) => ((raw.round as Record<string, unknown>).pot = 4_000_000),
       (raw) => delete (raw.round as Record<string, unknown>).pda,
       (raw) => ((raw.round as Record<string, unknown>).lobbyClosesAt = null),
-      (raw) => ((raw.house as Record<string, unknown>).wallets = HOUSE_WALLET),
       (raw) => (raw.nextLobbyOpensAt = "soon"),
     ];
     for (const [i, breakIt] of broken.entries()) {
@@ -446,23 +606,6 @@ describe("parseKeeperStatus", () => {
       (raw.round as Record<string, unknown>).pot = pot;
       expect(parseKeeperStatus(raw), JSON.stringify(pot)).toBeNull();
     }
-  });
-});
-
-describe("isHouseWallet", () => {
-  it("marks the keeper's own fighters and nobody else's", () => {
-    // A false negative here is an undisclosed bot in a list of players, which README.md's "Bot
-    // disclosure in UI" exists to prevent.
-    expect(isHouseWallet(BASE, HOUSE_WALLET)).toBe(true);
-    expect(isHouseWallet(BASE, "P1ayerWa11etAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")).toBe(false);
-    // Base58 is case-sensitive, and so is this.
-    expect(isHouseWallet(BASE, HOUSE_WALLET.toLowerCase())).toBe(false);
-  });
-
-  it("marks nobody when there is no status to mark them from", () => {
-    // No keeper means no disclosure list, which is the honest answer — not a claim that every
-    // fighter on screen is human.
-    expect(isHouseWallet(null, HOUSE_WALLET)).toBe(false);
   });
 });
 

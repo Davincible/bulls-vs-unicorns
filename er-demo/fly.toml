@@ -87,6 +87,31 @@ primary_region = "fra"
 # `fly secrets`, which is read from the environment at boot and never appears in a diff:
 #   fly secrets set KEEPER_OPERATOR_KEY="$(cat ../.devnet/fork-payer.json)"
 #   fly secrets set KEEPER_HOUSE_WALLETS="$(cat ../.devnet/keeper-house-wallets.json)"
+#   fly secrets set KEEPER_HOUSE_TOKEN="$(openssl rand -base64 32)"
+#
+# KEEPER_HOUSE_TOKEN IS THE ONE THAT IS NOT KEY MATERIAL, AND IT IS STILL A SECRET. It is the bearer
+# credential on `GET /house-wallets.json`, the authenticated endpoint that serves the arena's own
+# wallet list. That list used to be published to every browser inside /keeper-status.json; it is now
+# internal, and this token is the whole of the boundary. The keeper enforces a 32-character minimum
+# and refuses to enable the route below that, because a token short enough to guess is a list that is
+# only nominally private.
+#
+# UNSET IS NOT "OPEN", IT IS "ABSENT": with no token the keeper does not serve the route at all, and
+# answers as though the path were unknown — a 404 rather than a 401, so an anonymous caller is not
+# even told there is a list here to attack.
+#
+# AND THE BLAST RADIUS OF FORGETTING IT REACHES A DIFFERENT APP ENTIRELY, which is the part worth
+# knowing before you skip this line. The Vercel identity API reads the roster from this endpoint to
+# keep a person's face off one of these wallets. It cannot make that check without the token, and it
+# fails CLOSED rather than guessing — so it serves NO avatars at all, site-wide, for every player.
+# That is the correct direction (the fallback is the ordinary rendering: a side coin and a pseudonym,
+# what most players see anyway) and it is silent, because nothing on any screen distinguishes "no
+# avatars" from "nobody has linked". So: the same value must be set on BOTH sides, under this same
+# name, and `api/links.ts` throws at cold start when its copy is missing — which turns half of the
+# mistake into a loud 500 on /api/links instead of a blank that nobody notices. The other half, a
+# token set here and stale on Vercel, surfaces as a 401 that the API diagnoses as a wrong credential
+# rather than as a keeper outage. Fly cannot read a secret back, by design; rotate by setting both
+# sides, not by trying to recover the old value.
 [env]
   KEEPER_HTTP_PORT = "8080"
 
@@ -209,9 +234,21 @@ primary_region = "fra"
 
   # KEEPER_CORS_ORIGIN is intentionally NOT set here, and this deployment is not finished until it
   # is. It is a comma-separated list of EXACT browser origins allowed to read /keeper-status.json —
-  # the Vercel origin serving the arena, e.g. "https://<project>.vercel.app". Never "*": the status
-  # file is this keeper's own bot disclosure and its heartbeat, and a wildcard hands both to any
-  # page on the internet to embed as if it were theirs.
+  # the Vercel origin serving the arena, e.g. "https://<project>.vercel.app". Never "*".
+  #
+  # THE ARGUMENT USED TO REST PARTLY ON DISCLOSURE — "the status file is this keeper's own bot
+  # disclosure and its heartbeat" — and that half is simply no longer true: as of
+  # `KEEPER_STATUS_SCHEMA` 5 the file carries no house wallets, no disclosure sentence and no split
+  # of the fighter count. It does not need that half. What the file still is, on its own, is THIS
+  # KEEPER'S LIVENESS AND THE STATE OF THE ROUND IT IS DRIVING: the heartbeat that lets a page tell
+  # "next lobby in 0:08" from "the keeper is down", plus the phase, the pot, the fighter count and
+  # the clock. A wildcard hands all of that to any page on the internet to poll and re-present as its
+  # own — a live mirror of our arena, wearing somebody else's chrome, that we serve and pay for and
+  # cannot switch off. That is reason enough by itself, and it is the same reason it always was
+  # underneath the disclosure framing: an origin list is about who may EMBED this, not about who may
+  # learn a secret. Nothing in the file is confidential; the round is public on chain. What an exact
+  # origin list protects is the relationship between this keeper and the one front end it exists to
+  # serve.
   # Unset means local-dev origins only, and the keeper logs a loud warning at boot that no
   # production origin is configured — so the failure mode is a page that cannot read the status and
   # a log line saying exactly why, rather than silence. Set it with:

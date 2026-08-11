@@ -30,7 +30,7 @@
 import { handleLinks } from "../er-demo/api/src/linksHandler.ts";
 import { neonStore } from "../er-demo/api/src/neonStore.ts";
 import { HouseListCache } from "../er-demo/api/src/houseWallets.ts";
-import { keeperStatusUrl, loadAttestationKey } from "../er-demo/api/src/env.ts";
+import { keeperHouseUrl, loadAttestationKey, requireHouseToken } from "../er-demo/api/src/env.ts";
 
 // MODULE SCOPE, DELIBERATELY. A missing or malformed signing key throws during cold start, which
 // Vercel surfaces as a function error with the message intact, on the first request after the
@@ -39,11 +39,17 @@ import { keeperStatusUrl, loadAttestationKey } from "../er-demo/api/src/env.ts";
 // like "nobody has linked" and would never be noticed at all.
 const key = loadAttestationKey(process.env);
 const store = neonStore(process.env);
+// Same rule, same reason: a missing house token makes every list read a 401, the fail-closed path
+// withholds every row, and the page renders as though nobody had ever linked. Read here rather than
+// inside the fetch so the throw lands during cold start alongside the other two.
+const houseToken = requireHouseToken(process.env);
 
 // One cache per worker, constructed once so it survives warm invocations — which is the only reason
-// a 60-second TTL is worth anything. See `houseWallets.ts`.
+// a 60-second TTL is worth anything. It reads the keeper's AUTHENTICATED house-list endpoint, not
+// the public status file, which no longer carries the list at all. See `houseWallets.ts`.
 const house = new HouseListCache({
-  url: keeperStatusUrl(process.env),
+  url: keeperHouseUrl(process.env),
+  token: houseToken,
   fetch: globalThis.fetch,
   nowSec: () => Math.floor(Date.now() / 1000),
 });

@@ -25,7 +25,6 @@ function fighterAt(id: number): FighterView {
     stake: 1000n,
     hp: 1000n,
     banked: 0n,
-    house: false,
     dead: false,
     isYou: wallet === YOU,
     avatarSrc: null,

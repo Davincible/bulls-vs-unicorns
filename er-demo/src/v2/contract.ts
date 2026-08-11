@@ -139,20 +139,6 @@ export interface FighterView {
   hp: bigint;
   /** Value raided off the other side (and, after an extract, the ring value that was pulled out). */
   banked: bigint;
-  /** TRUE FOR A HOUSE WALLET the keeper seated to keep the lobby from being empty.
-   *
-   *  Resolved in `data/houseFighters.ts` from `keeperStatus.ts`'s `isHouseWallet()`, against the list
-   *  the keeper publishes in its own status file. Until that was wired a six-fighter lobby read as
-   *  six people; that helper's own comment calls an undisclosed house fighter "a misrepresentation of
-   *  who is in the round", and README's go-live list carries bot disclosure as an obligation. Every
-   *  surface that lists fighters is expected to say which ones are ours.
-   *
-   *  `false` when the keeper is silent or absent: the honest default is "not known to be house", and
-   *  a page with no keeper has no basis to accuse anyone of being one. WHICH MEANS `false` ALONE IS
-   *  NOT A CLAIM THAT A FIGHTER IS A PERSON — a roster of them means either "none of these are ours"
-   *  or "nothing told us". `houseDisclosure` on the context is the field that tells those two apart,
-   *  and any caption counting these marks must read it rather than counting them itself. */
-  house: boolean;
   dead: boolean;
   /** True for the local burner wallet's own fighter. */
   isYou: boolean;
@@ -374,30 +360,6 @@ export interface CombatFeed {
   /** The replay cursor this window was cut at (`LiveRound.stepsNow`). Everything above has
    *  `step <= at`. */
   at: number;
-}
-
-/** WHO IS ACTUALLY IN THE ROUND ON SCREEN — the house's share of it, stated.
- *
- *  The keeper seats house wallets so a lobby is never empty, and README's go-live list carries "Bot
- *  disclosure in UI" as an obligation rather than a feature. This is the counted form of
- *  `FighterView.house`: the marks and the count come out of one pass in `data/`, so a roster showing
- *  five marks and a caption reading "5 house" can never disagree.
- *
- *  BOTH COUNTS ARE NULL TOGETHER, AND NULL IS THE WHOLE POINT OF THE TYPE. `house: false` on every
- *  fighter means one of two completely different things — nobody in this round is ours, or nothing is
- *  publishing a list to check against — and a caption reading "0 house" claims the first while the
- *  page is in the second. Null makes that unrenderable as a number: a view has to reach for `—`,
- *  which is UI-SPEC's rule for an unbacked figure and the honest sentence here. */
-export interface HouseDisclosure {
-  /** Fighters in the round on screen resolved as the house's. Null when nothing backs the claim. */
-  houseFighterCount: number | null;
-  /** The rest. Null on exactly the same condition — with no list, "how many are real people" is
-   *  equally unanswerable. */
-  realFighterCount: number | null;
-  /** The keeper's own sentence about why it seats them (`KeeperStatus.house.disclosure`), so the
-   *  page quotes the party making the claim rather than paraphrasing it. Null when nothing is
-   *  disclosing. */
-  note: string | null;
 }
 
 /** HOW MUCH OF THIS ARENA'S HISTORY THE FIGURES ON SCREEN WERE COMPUTED OVER.
@@ -875,8 +837,8 @@ export function nameFor(wallet: string): string {
  *
  * IT IS HERE, BESIDE THE MONEY AND THE CLOCK, because it is the same kind of thing they are: a number
  * this page states about the chain, formatted once so two surfaces cannot state it two ways. It went
- * in after the hero shipped `POT ON THE TABLE · 1 FIGHTERS · 1 HOUSE · 1 STILL ALIVE` to production —
- * a one-entrant lobby is not an edge case here, it is the state a held-open lobby spends most of its
+ * in after the hero shipped `POT ON THE TABLE · 1 FIGHTERS · 1 STILL ALIVE` to production — a
+ * one-entrant lobby is not an edge case here, it is the state a held-open lobby spends most of its
  * life in, so the singular was the reading a visitor was most likely to get.
  *
  * `bigint` IS ACCEPTED because half the counts on this page are chain-shaped and the other half are

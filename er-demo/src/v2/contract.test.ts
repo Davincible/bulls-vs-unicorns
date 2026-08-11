@@ -279,10 +279,10 @@ describe("unit conversion", () => {
 // -------------------------------------------------------------------------------------------
 // `counted` — a count and its noun, agreeing.
 //
-// It exists because `POT ON THE TABLE · 1 FIGHTERS · 1 HOUSE · 1 STILL ALIVE` shipped to production.
-// A one-entrant lobby is not an edge case in this arena: the keeper holds a lobby open with a single
-// house fighter in it until a real player arrives, so the singular is the reading a visitor is MOST
-// likely to get, and it was the only one nobody had written.
+// It exists because `POT ON THE TABLE · 1 FIGHTERS · 1 STILL ALIVE` shipped to production. A
+// one-entrant lobby is not an edge case in this arena: the keeper holds a lobby open until somebody
+// arrives rather than cycling it on a clock, so the singular is the reading a visitor is MOST likely
+// to get, and it was the only one nobody had written.
 
 describe("counted", () => {
   it("agrees at one, which is the case that shipped wrong", () => {

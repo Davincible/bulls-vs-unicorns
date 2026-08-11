@@ -36,7 +36,6 @@ function fighter(over: Partial<FighterView> = {}): FighterView {
   return {
     id: 0,
     wallet: "w0",
-    house: false,
     short: "w0",
     name: "W0",
     side: 0,
@@ -107,8 +106,8 @@ const EVERY_STATE: { name: string; input: Partial<RoundPhaseInput> }[] = [
     input: { live: round({ phase: "Lobby", lobbyClosesAtMs: NOW - 1 }) },
   },
   {
-    // The hold-open lobby: an hour of on-chain backstop, the house already in the room, and no clock
-    // running because the keeper is waiting for a person rather than for a time.
+    // The hold-open lobby: an hour of on-chain backstop and no clock running, because the keeper is
+    // waiting for a person rather than for a time.
     name: "lobby, held open for players",
     input: {
       live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 3_600_000 }),
@@ -303,24 +302,42 @@ describe("lobby", () => {
   });
 
   it("reads as an invitation while the lobby is held open, not as a fault or a stuck timer", () => {
-    // The state has to say: the room is not empty, YOU are what it is waiting for, and here is what
-    // changes it. A player who reads this and does nothing has misread it.
+    // The state has to say: nothing is counting down, YOU are what it is waiting for, and here is
+    // what changes it. A player who reads this and does nothing has misread it.
     const c = copy({
       live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 3_600_000 }),
       cadence: { kind: "waiting-for-players" },
     });
     expect(c.label).toBe("Open");
-    expect(c.now).toMatch(/house fighters/i);
+    expect(c.now).toMatch(/nothing is counting down/i);
     expect(c.action).toMatch(/deploy/i);
+    // AND IT IS ABOUT THE READER, never about the room. Their entry is what starts the clock, which
+    // is true from where they are standing and is the whole of what this state promises.
+    expect(c.action).toMatch(/your entry starts the clock/i);
     if (c.timing.kind !== "waiting") throw new Error("a held-open lobby has no number to count");
     // NAMES THE TRIGGER, not just the absence of a clock. Every surface showing an OPEN lobby prints
     // the timing clause ALONE (`detail="timing"`), so this one sentence is the entire state as a
     // player reads it — "no countdown" by itself would read as a fault rather than as an invitation.
-    expect(c.timing.text).toMatch(/starts when a real player joins/i);
+    expect(c.timing.text).toMatch(/deploying is what starts the clock/i);
     // Nothing in it may read as broken, stalled or errored — this is the healthy resting state of an
     // arena between players, and the copy is the only thing distinguishing it from a dead one.
     const all = `${c.now} ${c.action} ${c.timing.text}`;
     expect(all).not.toMatch(/\b(error|failed|offline|unavailable|stuck|broken|sorry)\b|0:00/i);
+
+    // AND IT SAYS NOTHING ABOUT WHO ELSE IS IN THE ROOM — the rule this branch's comment in
+    // `roundPhaseCopy.ts` argues at length, pinned here because it is a rule about words and nothing
+    // else can enforce it. This copy used to read "with only house fighters in it so far" and "the
+    // first real player starts the clock", off a wallet list the keeper no longer publishes to a
+    // browser. Both halves are guarded:
+    //
+    //   * no characterisation of the other fighters, in either direction. "real player" is in the
+    //     list because it is the subtle one — it implies unreal ones, which is the disclosure
+    //     arriving by inference rather than by statement;
+    //   * and no claim that the room is EMPTY, which is the tempting rewrite and the worse one. A
+    //     fighter is seated in this state and the roster below the sentence is showing it, so "nobody
+    //     is here yet" would have the page contradicting itself on one screen.
+    expect(all).not.toMatch(/\b(house|bot|bots|automated|real player|real players)\b/i);
+    expect(all).not.toMatch(/\b(empty|nobody|no one|no-one)\b/i);
   });
 
   it("says so plainly when the round carries no deadline at all", () => {
@@ -542,11 +559,11 @@ describe("the compact clock slot", () => {
     // slot naming the same state differently would be two readings of one round.
     expect(c.clockSlot.word).toBe(c.label.toUpperCase());
     // And the sentence behind the word is the one that names the trigger.
-    expect(c.clockSlot.title).toMatch(/starts when a real player joins/i);
+    expect(c.clockSlot.title).toMatch(/deploying is what starts the clock/i);
   });
 
   it("shows a real countdown the moment one genuinely applies", () => {
-    // A real player has arrived, the keeper has committed to a time, and this is the number that
+    // Somebody has arrived, the keeper has committed to a time, and this is the number that
     // matters. The point of the fix is not to delete countdowns — it is to delete the fake one.
     const c = copy({
       live: round({ phase: "Lobby", lobbyClosesAtMs: NOW + 3_600_000 }),

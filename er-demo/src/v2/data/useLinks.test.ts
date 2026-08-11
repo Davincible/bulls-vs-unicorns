@@ -13,6 +13,14 @@
 // non-mutation (it is handed an array derived from `live.fighters`, and `.sort()` applied in place
 // would reorder the roster the canvas draws — where positional ids name the parties in every hit).
 //
+// WHAT `rosterCast` IS FOR, and why there are two of these. It is the same wallets, capped the same
+// way, in the CALLER'S order rather than base58's — and that order is a decision the sorted form
+// destroys. `ArenaProvider` composes `[the round on screen, you, the leaderboard's rows]`, and under
+// `?links=mock` the fixture spends six identities down that list: sorted, they scatter over fifty-two
+// mostly-leaderboard wallets and the arena screen ends up with no faces on it, which is the exact
+// picture the flag exists to make impossible. So both orders are carried to `fetchLinks` and read by
+// different halves of it, and the tests below pin which half believes which.
+//
 // WHAT `fetchLinks` IS FOR. It holds the ONE place the mock and production diverge, and a divergence
 // nothing can test is where two things quietly stop agreeing. The load-bearing case is the reverse of
 // the one you would write first: not "does the mock branch sign" but **does the api branch leave the
@@ -25,8 +33,8 @@
 // a fault.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchLinks, rosterKey } from "./useLinks.ts";
-import { trustedKeysFor } from "./linkSource.ts";
+import { fetchLinks, rosterCast, rosterKey, type LinkQuery } from "./useLinks.ts";
+import { trustedKeysFor, type LinkSource } from "./linkSource.ts";
 import { linkMapFrom, MAX_WALLETS_PER_QUERY } from "./xLink.ts";
 
 /** Base58, 44 characters, distinct per index — the alphabet excludes `0`, `O`, `I` and `l`, and
@@ -97,6 +105,55 @@ function stubUnparseableFetch() {
 }
 
 const signal = () => new AbortController().signal;
+
+/** One poll's question, where the two ORDERS of the wallet list do not matter to what is being
+ *  asserted — the same list serves as both. The two tests that turn on the difference build the
+ *  object by hand and name which field they are moving, because that difference is the whole reason
+ *  `LinkQuery` has two wallet fields instead of one. */
+const query = (source: LinkSource, wallets: readonly string[], you: string | null): LinkQuery => ({
+  source,
+  asked: wallets,
+  cast: wallets,
+  you,
+  signal: signal(),
+});
+
+describe("rosterCast", () => {
+  it("hands back the caller's own order, deduped", () => {
+    // THE ORDER IS THE POINT — see `rosterKey` below for the one that sorts and why. The caller
+    // composes `[the round on screen, you, the leaderboard's rows]`, and under `?links=mock` that
+    // order is what puts the fixture's six identities on the fighters a reviewer is looking at.
+    const wallets = shuffled(roster(20));
+    expect(rosterCast([...wallets, wallets[0], wallets[3]])).toEqual(wallets);
+  });
+
+  it("caps in that order, so the caller decides who is dropped", () => {
+    // The tail that falls off must be the caller's lowest priority — the bottom of the leaderboard —
+    // and never "whoever sorts highest in base58", which would drop fighters who are on the board
+    // right now in favour of arbitrary past players.
+    const wallets = roster(200);
+    expect(rosterCast(wallets)).toEqual(wallets.slice(0, MAX_WALLETS_PER_QUERY));
+  });
+
+  it("does not touch the array it was handed", () => {
+    // Same rule as `rosterKey`: this is handed a list derived from `live.fighters`, where positional
+    // ids name the parties in every hit event.
+    const wallets = shuffled(roster(20));
+    const before = [...wallets];
+    rosterCast(wallets);
+    expect(wallets).toEqual(before);
+  });
+
+  it("describes the same SET as `rosterKey`, always", () => {
+    // The invariant that makes it safe to carry both to `fetchLinks` — one becomes the URL, the other
+    // decides who the fixture casts, and they must never disagree about membership. `rosterKey` is
+    // defined in terms of this function so that the property is structural rather than a coincidence
+    // two edits could end; this asserts the structure held.
+    for (const wallets of [roster(20), shuffled(roster(200)), [...roster(5), ...roster(5)], []]) {
+      expect([...rosterCast(wallets)].sort()).toEqual([...rosterKey(wallets)]);
+    }
+  });
+});
 
 describe("rosterKey", () => {
   it("answers the same thing for the same players in a different order", () => {
@@ -183,7 +240,7 @@ describe("fetchLinks when there is nobody to ask about", () => {
     // `?links=off` is the default for every visitor. It must cost zero requests — not one that is
     // fetched and discarded, and not one that tells a server which wallets are on somebody's screen.
     const spy = stubFetch({ links: [] });
-    await expect(fetchLinks("off", roster(4), walletAt(0), signal())).resolves.toEqual({ links: [] });
+    await expect(fetchLinks(query("off", roster(4), walletAt(0)))).resolves.toEqual({ links: [] });
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -191,7 +248,7 @@ describe("fetchLinks when there is nobody to ask about", () => {
     // There is no enumeration route (§6.4): the wallet list IS the query, so an empty list is not
     // "ask about everyone".
     const spy = stubFetch({ links: [] });
-    await expect(fetchLinks("api", [], null, signal())).resolves.toEqual({ links: [] });
+    await expect(fetchLinks(query("api", [], null))).resolves.toEqual({ links: [] });
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -200,8 +257,8 @@ describe("fetchLinks when there is nobody to ask about", () => {
     // warns on it — so a null here would put "1 record(s) not shown: malformed" in the console of
     // every page that has no round yet, on every poll, describing a fault that did not happen.
     for (const body of [
-      await fetchLinks("off", roster(4), null, signal()),
-      await fetchLinks("api", [], null, signal()),
+      await fetchLinks(query("off", roster(4), null)),
+      await fetchLinks(query("api", [], null)),
     ]) {
       const { links, rejected } = linkMapFrom(body, trustedKeysFor("api"), 1_800_000_000);
       expect(rejected).toEqual([]);
@@ -221,16 +278,37 @@ describe("fetchLinks on the api path", () => {
     // whatever came back is the body itself, not something rebuilt from it.
     const body = { links: [{ wallet: "not even verified", handle: "someone" }] };
     stubFetch(body);
-    return expect(fetchLinks("api", roster(3), null, signal())).resolves.toBe(body);
+    return expect(fetchLinks(query("api", roster(3), null))).resolves.toBe(body);
   });
 
   it("asks the endpoint for exactly the wallets it was given", async () => {
     const spy = stubFetch({ links: [] });
     const wallets = [walletAt(1), walletAt(2)];
-    await fetchLinks("api", wallets, null, signal());
+    await fetchLinks(query("api", wallets, null));
     expect(spy).toHaveBeenCalledTimes(1);
     const [url] = spy.mock.calls[0];
     expect(new URL(url, "https://arena.example").searchParams.get("wallets")).toBe(wallets.join(","));
+  });
+
+  it("builds the URL from `asked`, never from `cast`", async () => {
+    // THE HALF OF THE SEAM PRODUCTION CARES ABOUT. Both fields name the same wallets; only `asked` is
+    // canonical, and the URL is a cache key — at the edge and in every proxy between. Building it
+    // from the priority order instead would mint a fresh key every time the leaderboard re-ranked or
+    // a view re-sorted, which is precisely the re-fetch `rosterKey` exists to prevent, and nothing
+    // would look wrong from the outside.
+    const spy = stubFetch({ links: [] });
+    const wallets = [walletAt(1), walletAt(2), walletAt(3)];
+    await fetchLinks({
+      source: "api",
+      asked: rosterKey(wallets),
+      cast: [...wallets].reverse(),
+      you: null,
+      signal: signal(),
+    });
+    const [url] = spy.mock.calls[0];
+    expect(new URL(url, "https://arena.example").searchParams.get("wallets")).toBe(
+      rosterKey(wallets).join(","),
+    );
   });
 
   it("gives the request a deadline of its own rather than the caller's bare signal", async () => {
@@ -249,7 +327,7 @@ describe("fetchLinks on the api path", () => {
     // an edit would delete.
     const spy = stubFetch({ links: [] });
     const s = signal();
-    await fetchLinks("api", roster(3), null, s);
+    await fetchLinks({ ...query("api", roster(3), null), signal: s });
     const [, init] = spy.mock.calls[0];
     expect(init.signal).not.toBe(s);
     expect(init.signal.aborted).toBe(false);
@@ -269,7 +347,7 @@ describe("fetchLinks on the api path", () => {
       }),
     );
     const controller = new AbortController();
-    void fetchLinks("api", roster(3), null, controller.signal);
+    void fetchLinks({ ...query("api", roster(3), null), signal: controller.signal });
     await Promise.resolve();
     expect(captured).not.toBeNull();
     expect((captured as unknown as AbortSignal).aborted).toBe(false);
@@ -284,14 +362,14 @@ describe("fetchLinks on the api path", () => {
     // would strip every face on the board on the first hiccup — withholding is the API's only power
     // and there is no reason to help it.
     stubFetch({ links: [] }, false, 503);
-    await expect(fetchLinks("api", roster(3), null, signal())).rejects.toThrow("503");
+    await expect(fetchLinks(query("api", roster(3), null))).rejects.toThrow("503");
   });
 
   it("throws rather than half-answering when the body is not JSON", async () => {
     // A proxy's HTML error page, a truncated response. Same destination: the caller catches, the
     // board renders unlinked, nothing on screen says anything.
     stubUnparseableFetch();
-    await expect(fetchLinks("api", roster(3), null, signal())).rejects.toThrow(SyntaxError);
+    await expect(fetchLinks(query("api", roster(3), null))).rejects.toThrow(SyntaxError);
   });
 });
 
@@ -307,7 +385,7 @@ describe("fetchLinks on the mock path", () => {
     // `linkMapFrom` reads as malformed, `?links=mock` would render an unlinked board — which is
     // exactly what a correctly-working unlinked board looks like, so nothing would report it.
     stubFetch(FIXTURE);
-    const body = await fetchLinks("mock", wallets, you, signal());
+    const body = await fetchLinks(query("mock", wallets, you));
     const { links, rejected } = linkMapFrom(
       body,
       trustedKeysFor("mock"),
@@ -318,9 +396,34 @@ describe("fetchLinks on the mock path", () => {
     for (const record of links.values()) expect(record.handle).toMatch(/^mock_/);
   });
 
+  it("casts its identities over `cast`, never over `asked`", async () => {
+    // THE OTHER HALF OF THE SEAM, and the one that goes silently wrong. The fixture has a handful of
+    // identities and a capped fifty-two wallets to spend them on, so the ORDER is the whole decision:
+    // the caller composes `[the round on screen, you, the leaderboard]` and the faces have to land on
+    // the front of that. Handed `asked` — the same wallets in base58 order — the cast scatters across
+    // leaderboard rows and the arena screen renders exactly as it does with the feature off, which is
+    // the failure `mockLinks.ts#assignMockIdentities` documents at length.
+    //
+    // Pinned by making the two orders disagree and asserting which one was believed: `cast` names
+    // three wallets that `asked` puts last.
+    const front = [walletAt(90), walletAt(91), walletAt(92)];
+    const rest = roster(40);
+    stubFetch(FIXTURE);
+    const body = await fetchLinks({
+      source: "mock",
+      asked: rosterKey([...front, ...rest]),
+      cast: rosterCast([...front, ...rest]),
+      you: null,
+      signal: signal(),
+    });
+    const { links } = linkMapFrom(body, trustedKeysFor("mock"), Math.floor(Date.now() / 1000));
+    expect(links.size).toBeGreaterThan(0);
+    for (const wallet of links.keys()) expect(front, wallet).toContain(wallet);
+  });
+
   it("reads the fixture from the static file, with no wallet list in the request", async () => {
     const spy = stubFetch(FIXTURE);
-    await fetchLinks("mock", wallets, you, signal());
+    await fetchLinks(query("mock", wallets, you));
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0][0]).toBe("/links.mock.json");
   });
@@ -329,7 +432,7 @@ describe("fetchLinks on the mock path", () => {
     // Also the cheapest check that `wallets` and `you` reached `assignMockIdentities` in their right
     // roles: `you` is the one wallet the rate check does not get a say over.
     stubFetch(FIXTURE);
-    const body = await fetchLinks("mock", wallets, you, signal());
+    const body = await fetchLinks(query("mock", wallets, you));
     const { links } = linkMapFrom(body, trustedKeysFor("mock"), Math.floor(Date.now() / 1000));
     expect(links.has(you)).toBe(true);
   });
@@ -339,7 +442,7 @@ describe("fetchLinks on the mock path", () => {
     // seed is printed in `linkSource.ts`, so this is the line between "a fake face in your own tab"
     // and "any handle on any wallet on the live site".
     stubFetch(FIXTURE);
-    const body = await fetchLinks("mock", wallets, you, signal());
+    const body = await fetchLinks(query("mock", wallets, you));
     const { links, rejected } = linkMapFrom(body, trustedKeysFor("api"), Math.floor(Date.now() / 1000));
     expect(links.size).toBe(0);
     expect(new Set(rejected)).toEqual(new Set(["untrusted-key"]));
@@ -351,7 +454,7 @@ describe("fetchLinks on the mock path", () => {
     // which is the main path — never an exception thrown inside a poll.
     for (const body of [{}, null, [], "nonsense", 42, { identities: "not a list" }, { links: [] }]) {
       stubFetch(body);
-      const out = await fetchLinks("mock", wallets, you, signal());
+      const out = await fetchLinks(query("mock", wallets, you));
       expect(out, JSON.stringify(body) ?? "undefined").toEqual({ links: [] });
       const { links, rejected } = linkMapFrom(out, trustedKeysFor("mock"), Math.floor(Date.now() / 1000));
       expect(links.size).toBe(0);
@@ -367,6 +470,6 @@ describe("fetchLinks on the mock path", () => {
     // ever sees it. Both end at the same place for a player — everybody unlinked, nothing said — but
     // only the first is a value this function returns.
     stubUnparseableFetch();
-    await expect(fetchLinks("mock", wallets, you, signal())).rejects.toThrow(SyntaxError);
+    await expect(fetchLinks(query("mock", wallets, you))).rejects.toThrow(SyntaxError);
   });
 });

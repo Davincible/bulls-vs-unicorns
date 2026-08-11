@@ -72,7 +72,6 @@ export function DashboardView() {
     standings,
     history,
     logCoverage,
-    houseDisclosure,
     treasury,
     fee,
     you,
@@ -187,11 +186,6 @@ export function DashboardView() {
 
   const [tokA, tokB] = SIDE_TOKEN;
   const fighters = live?.fighters.length ?? 0;
-  // HOUSE FIGHTERS IN THE LIVE ROUND, straight off `houseDisclosure` rather than counted here. Null
-  // is the answer that matters and only the data layer can give it: `house: false` on every fighter
-  // means EITHER nobody in this round is ours OR nothing is publishing a list to check against, and
-  // a view counting the flags itself would render both as a confident `0`.
-  const houseFighters = houseDisclosure.houseFighterCount;
   const ringTotal = log.stakedA + log.stakedB;
   const pctA = ringTotal > 0n ? (Number(log.stakedA) / Number(ringTotal)) * 100 : 50;
 
@@ -288,23 +282,7 @@ export function DashboardView() {
               }
               note="stakes plus everything raided so far"
             />
-            <Fx
-              n="Fighters"
-              v={live ? `${fighters}` : <Dash />}
-              // THE BOT DISCLOSURE, on the screen that counts the field. `README.md`'s go-live list
-              // still carries "Bot disclosure in UI" open; 01-1 names the house fighters row by row
-              // and this says how many of the count are ours. Silent when NOTHING IS DISCLOSING
-              // (`houseFighterCount === null`) — a note reading "0 seated by the house" would be a
-              // claim this page cannot check. Loud at zero when a keeper IS disclosing, because
-              // "none of these are ours" is then a real and reassuring fact.
-              note={
-                live && houseFighters !== null
-                  ? houseFighters > 0
-                    ? `${houseFighters} seated by the house — named on the leaderboard's this-round board`
-                    : "none seated by the house — every fighter here is someone else"
-                  : undefined
-              }
-            />
+            <Fx n="Fighters" v={live ? `${fighters}` : <Dash />} />
             <Fx n="Phase" v={live ? live.phase.toUpperCase() : <Dash />} />
             <Fx
               n="Fight clock"

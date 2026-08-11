@@ -91,10 +91,17 @@ function ok(links: readonly LinkAttestation[], houseListKnown: boolean): Respons
     Vary: "Accept-Encoding",
   };
   if (!houseListKnown) {
-    // OPERABLE, NOT VISIBLE. The player sees the ordinary unlinked page and nothing tells them
-    // anything (§8.5). Whoever is looking at response headers during an incident sees the reason
-    // every avatar vanished, which is the audience that can act on it.
-    headers["X-XLink-House-List"] = "unavailable";
+    // OPERABLE, NOT VISIBLE, AND IT NO LONGER NAMES WHAT IT IS ABOUT. The player sees the ordinary
+    // unlinked page and nothing tells them anything (§8.5). Whoever is reading response headers
+    // during an incident sees that rows are being suppressed and why the avatars vanished, which is
+    // the audience that can act on it.
+    //
+    // Renamed from `X-XLink-House-List`. That spelling announced to anyone who ever looked at a
+    // response — no incident required, no privilege required — that this site keeps a list of house
+    // wallets, which is precisely the fact that is now internal (see `houseWallets.ts`). A debugging
+    // aid must not leak the thing it is helping you debug. `Suppression` says the same operational
+    // sentence to the same operator without naming the mechanism.
+    headers["X-XLink-Suppression"] = "unavailable";
   }
   return new Response(JSON.stringify(body), { status: 200, headers });
 }
@@ -126,10 +133,15 @@ export async function handleLinks(request: Request, deps: LinksDeps): Promise<Re
 
   const links: LinkAttestation[] = [];
   for (const row of rows) {
-    // §6.3's hard rule, enforced on the read path as well as the write path. The write path is the
-    // durable guard; this is the one that still holds after a row is inserted by hand, after a
-    // wallet is promoted to house AFTER it linked, and after a restore from a backup taken before
-    // either. Three chances to get it right, and this is the cheapest of them.
+    // §6.3's hard rule — a house wallet must never wear a person's face — enforced on the read path
+    // as well as the write path. The write path is the durable guard; this is the one that still
+    // holds after a row is inserted by hand, after a wallet is promoted to house AFTER it linked,
+    // and after a restore from a backup taken before either. Three chances to get it right, and this
+    // is the cheapest of them.
+    //
+    // `house.wallets` is an internal list read from the keeper over an authenticated channel; it is
+    // never published to a browser and nothing in this response discloses membership. A suppressed
+    // row is indistinguishable, from the outside, from a wallet that never linked.
     if (house.wallets.has(row.wallet)) continue;
     // A fixture id can never be minted here — see `reserved.ts`.
     if (isReservedXId(row.xId, reserved)) continue;

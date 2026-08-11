@@ -316,16 +316,6 @@ describe("linkMapFrom", () => {
     expect(rejected).toEqual([]);
   });
 
-  it("drops a house wallet even though it verified", () => {
-    // Client guard three. The durable guards are the server refusing to create the link and refusing
-    // to serve it; this one keys off the same published list the rest of the page renders from. A
-    // house wallet wearing a person's photograph is an actual misrepresentation — the failure mode
-    // that costs the most trust, because a fan believes they beat a person.
-    const { links, rejected } = linkMapFrom({ links: [signed()] }, TRUSTED, NOW, [WALLET]);
-    expect(links.size).toBe(0);
-    expect(rejected).toEqual(["house-wallet"]);
-  });
-
   it("keeps the first of two records claiming one wallet", () => {
     // Two rows for one wallet is a server bug or a replay and there is no honest way to choose
     // between them. Taking the last would let a later row overwrite an earlier one, which is exactly

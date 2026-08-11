@@ -15,7 +15,6 @@ function fighter(over: Partial<FighterView> & Pick<FighterView, "id" | "name">):
     stake: 10n * UNITS_PER_USD,
     hp: 10n * UNITS_PER_USD,
     banked: 0n,
-    house: false,
     dead: false,
     isYou: false,
     avatarSrc: null,

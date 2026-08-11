@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import { PublicKey } from "@solana/web3.js";
 import {
   CLIENT_TRUSTED_KEYS_ENV,
-  DEFAULT_KEEPER_STATUS_URL,
+  DEFAULT_KEEPER_HOUSE_URL,
   decodeSecret,
-  keeperStatusUrl,
+  HOUSE_TOKEN_ENV,
+  keeperHouseUrl,
   loadAttestationKey,
   requireDatabaseUrl,
+  requireHouseToken,
   SECRET_ENV,
 } from "./env.ts";
 import { TEST_SECRET } from "./testKit.ts";
@@ -77,20 +79,47 @@ describe("requireDatabaseUrl", () => {
   });
 });
 
-describe("keeperStatusUrl", () => {
+describe("keeperHouseUrl", () => {
   it("defaults to the keeper's LIVE endpoint, never the committed snapshot", () => {
     // `er-demo/public/keeper-status.json` is a build artefact and goes stale; a stale house list is
-    // precisely a house wallet that can wear a face.
-    expect(keeperStatusUrl({})).toBe(DEFAULT_KEEPER_STATUS_URL);
-    expect(DEFAULT_KEEPER_STATUS_URL).toMatch(/^https:\/\/bulls-arena-keeper-devnet\.fly\.dev\//);
-    expect(keeperStatusUrl({ KEEPER_STATUS_URL: "https://other/x.json" })).toBe("https://other/x.json");
+    // precisely a house wallet that can wear a face. As of `KEEPER_STATUS_SCHEMA` 5 it does not
+    // carry the list at all, so it is not even a degraded option.
+    expect(keeperHouseUrl({})).toBe(DEFAULT_KEEPER_HOUSE_URL);
+    expect(DEFAULT_KEEPER_HOUSE_URL).toMatch(/^https:\/\/bulls-arena-keeper-devnet\.fly\.dev\//);
+    expect(keeperHouseUrl({ KEEPER_HOUSE_URL: "https://other/x.json" })).toBe("https://other/x.json");
   });
 
   it("is NOT a VITE_ variable, so it can never be inlined into the public bundle", () => {
     // `VITE_` is the entire mechanism by which a value ships to every browser. The client's own
     // trusted-key list is the only half of this feature that belongs there.
-    expect(keeperStatusUrl.toString()).not.toContain("VITE_");
+    //
+    // The rule is older than this endpoint and it survived the endpoint being replaced, which is why
+    // the test did too. It also got sharper: the house list is now internal, so this URL is one half
+    // of a private channel rather than the address of a public document, and the token below is the
+    // other half. Neither may be `VITE_`-prefixed, and neither is.
+    expect(keeperHouseUrl.toString()).not.toContain("VITE_");
+    expect(HOUSE_TOKEN_ENV.startsWith("VITE_")).toBe(false);
     expect(CLIENT_TRUSTED_KEYS_ENV.startsWith("VITE_")).toBe(true);
     expect(SECRET_ENV.startsWith("VITE_")).toBe(false);
+  });
+});
+
+describe("requireHouseToken", () => {
+  it("REFUSES TO START without one", () => {
+    // The same argument as the signing key, arriving by a different road. No token means every
+    // house-list read is a 401, the fail-closed path withholds every attestation, and the
+    // leaderboard renders exactly as it does when nobody has linked — a total, silent, indefinite
+    // loss of the feature that no screen and no uptime check can show as broken. So it has to be a
+    // cold-start throw, at the origin, on the first request after the deploy.
+    expect(() => requireHouseToken({})).toThrow(HOUSE_TOKEN_ENV);
+    expect(() => requireHouseToken({ [HOUSE_TOKEN_ENV]: "" })).toThrow(HOUSE_TOKEN_ENV);
+    expect(() => requireHouseToken({ [HOUSE_TOKEN_ENV]: "  \n " })).toThrow(HOUSE_TOKEN_ENV);
+  });
+
+  it("trims, because a pasted secret carries whatever the clipboard carried", () => {
+    // A trailing newline from a shell here is a byte the keeper's comparison would not forgive, and
+    // the resulting 401 looks identical to a genuinely wrong token.
+    const token = "b".repeat(32);
+    expect(requireHouseToken({ [HOUSE_TOKEN_ENV]: `\n  ${token}  \n` })).toBe(token);
   });
 });

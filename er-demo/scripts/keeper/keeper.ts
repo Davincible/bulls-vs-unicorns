@@ -123,8 +123,8 @@ import {
 import { describeEndpoints } from "./endpoints.ts";
 import { asSecretKeyBytes, parseSecretJson, readSecretText } from "./secrets.ts";
 import {
-  BIND_HOSTNAME, HEALTH_PATH, STATUS_PATH, originPolicyWarnings, resolveAllowedOrigins,
-  startStatusServer,
+  BIND_HOSTNAME, HEALTH_PATH, HOUSE_PATH, HOUSE_TOKEN_ENV, STATUS_PATH, originPolicyWarnings,
+  resolveAllowedOrigins, resolveHouseTokenPolicy, startStatusServer,
 } from "./statusServer.ts";
 import { HOUSE_MAX_WITHOUT_REAL_PLAYER } from "./houseSizing.ts";
 import { lobbyIsHeldOpen, planLobby, type LobbyPlan } from "./lobbyPolicy.ts";
@@ -135,7 +135,7 @@ import {
   type ChainClient, type ErValidator, type KeeperChainState,
 } from "./chainClient.ts";
 import {
-  HOUSE_DISCLOSURE, enterHouseFighters, fundHouseBank, loadOrCreateHouseBank, plannedHouseEntries,
+  enterHouseFighters, fundHouseBank, loadOrCreateHouseBank, plannedHouseEntries,
   type HouseBank,
 } from "./houseBank.ts";
 import { createStatusPublisher, roundStatusFrom, type StatusPublisher } from "./statusFile.ts";
@@ -537,18 +537,28 @@ async function fieldHouseFighters(
     // it is a lobby that ran out of clock — and backing off would only make the NEXT round's fill late
     // as well, for a condition that has already resolved itself by then.
     if (result.failed > 0) ctx.timeline.houseRetryAfterSec = state.nowSec + HOUSE_ENTRY_RETRY_SECONDS;
-    // Surfaced to the status file, not just the log. A house wallet that has run dry fails every entry
-    // of every round without throwing, so `lastError` would otherwise stay null while the arena
-    // quietly emptied and every lobby died under-subscribed — the exact 3am failure this file's
-    // design is meant to make impossible to have silently.
+    // THE DETAIL GOES TO THE LOG; ONLY THE FACT THAT SOMETHING WENT WRONG IS PUBLISHED.
+    //
+    // The operator signal is real and unchanged: a house wallet that has run dry fails every entry of
+    // every round without throwing, so a `lastError` that stayed null would leave the arena quietly
+    // emptying while every lobby died under-subscribed — the exact 3am failure this file's design
+    // exists to make impossible to have silently. What changed is where the numbers go. The published
+    // message used to interpolate `entries.length`, which is a count of the arena's OWN fighters: the
+    // same disclosure the round's `houseFighterCount` was removed for, arriving through a field with
+    // no "house" in its name. See `recordError` for the rule that came out of that.
+    //
+    // Nothing is lost internally. Fly logs are the keeper's own and are not published, so the line
+    // below carries the whole story — how many, of how many, in what way, on which round.
     const how = result.dropped === 0 ? "failed"
       : result.failed === 0 ? "ran out of lobby time"
       : `failed (${result.failed}) or ran out of lobby time (${result.dropped})`;
-    ctx.publisher.setLastError({
-      at: state.nowSec,
-      context: "house-enter",
-      message: `${short} of ${entries.length} house entries ${how} on round #${round.roundNo}`,
-    });
+    warn(`${short} of ${entries.length} house entries ${how} on round #${round.roundNo}`);
+    // `entry-fill`, not `house-enter`. The context string is published, so the VOCABULARY is published
+    // too — and a keeper announcing that it has a "house-enter" step is announcing that some of the
+    // fighters are its own. It names the keeper's job (filling a lobby's entries) rather than whose
+    // entries they are, which is the same fact an operator needs and none of the fact a reader does
+    // not get to have.
+    ctx.publisher.setLastError({ at: state.nowSec, context: "entry-fill" });
   }
 }
 
@@ -998,11 +1008,13 @@ async function sweepHouseTake(
     // Recorded rather than thrown — see the doc comment. Surfaced to the status file because the
     // alternative is a treasury that silently stops accruing while every round looks perfect.
     error(`sweep_house_take #${round.roundNo} failed (the take stays on the round and can be swept later): ${describeError(e)}`);
-    ctx.publisher.setLastError({
-      at: state.nowSec,
-      context: "house-sweep",
-      message: `sweep_house_take #${round.roundNo}: ${describeError(e)}`,
-    });
+    // `take-sweep`, not `house-sweep`, and this one is renamed for CONSISTENCY rather than because it
+    // leaked. The house's fee TAKE is a public on-chain concept — `house_swept` is a field on the
+    // Round account and the UI already shows "House fee · per deploy" — so this context never said
+    // anything about the fighter split. It is renamed anyway, because a vocabulary with one word that
+    // is fine and one that is not is a rule the next person has to remember rather than read. One
+    // rule: no context string names the house. The full error text stays in the log line above.
+    ctx.publisher.setLastError({ at: state.nowSec, context: "take-sweep" });
   }
 }
 
@@ -1365,10 +1377,17 @@ function publishRoundSnapshot(ctx: KeeperContext, state: KeeperChainState): void
     ctx.publisher.setRound(null);
     return;
   }
+  // STILL CLASSIFIED, AND THE CLASSIFICATION IS STILL LOAD-BEARING — it just no longer reaches the
+  // file. The split used to be published as `houseFighterCount` / `realFighterCount` AND consumed
+  // here; only the first of those is gone. `lobbyIsHeldOpen` is a function of `realFighterCount`, so
+  // deleting this call to tidy up after the removal would silently make `heldOpen` always-true and put
+  // "waiting for players" on screen in front of a full lobby. The keeper's own use of the numbers is
+  // untouched everywhere in this file, deliberately: the treasury rule is built on them.
   const split = ctx.bank.classify(state.round);
-  // Computed from THIS snapshot, beside the counts it is consistent with, through the same predicate
-  // the phase machine branches on. That is what makes `heldOpen` incapable of contradicting the
-  // `phase` and `realFighterCount` published next to it.
+  // Computed from THIS snapshot, from the same split, through the same predicate the phase machine
+  // branches on. That is what makes `heldOpen` incapable of contradicting the `phase` published next
+  // to it — and it is the reason `heldOpen` survives a change that deleted every other field derived
+  // from who the fighters are. See `roundStatusFrom`.
   const heldOpen = lobbyIsHeldOpen({
     phaseCode: state.round.phase,
     lobbyClosesAt: Number(state.round.lobbyClosesAt.toString()),
@@ -1376,23 +1395,47 @@ function publishRoundSnapshot(ctx: KeeperContext, state: KeeperChainState): void
     realFighterCount: split.realCount,
     holdOpen: ctx.options.holdOpen,
   });
-  ctx.publisher.setRound(
-    roundStatusFrom(state.round, state.roundPda, split.houseCount, split.realCount, heldOpen),
-  );
+  ctx.publisher.setRound(roundStatusFrom(state.round, state.roundPda, heldOpen));
 }
 
-/** The status file is fetched by a browser, so a failure message carrying twelve lines of program logs
- *  would be a payload rather than a signal. The full text always reaches the log; this is the summary. */
-const STATUS_ERROR_MAX_CHARS = 400;
-
+/**
+ * Record a failure: the whole of it to the log, and the BARE FACT of it to the published status.
+ *
+ * IT USED TO PUBLISH THE EXCEPTION TEXT, truncated to four hundred characters, and the truncation was
+ * the tell that nobody had asked the right question about it. `describeError` returns whatever the
+ * thrower wrote — and the throwers here are libraries, the RPC and the chain, none of which have any
+ * idea what this project considers private. An RPC simulation failure names the program, the accounts
+ * the failing instruction touched and the transaction logs; a house `enter` that fails is an exception
+ * with one of the arena's OWN wallets inside it. A sampled status file had exactly that in it. So the
+ * field was publishing forty-eight pubkeys' worth of potential disclosure through a name — `message` —
+ * that gave nobody a reason to look, one field along from the `house` block that was removed on
+ * purpose.
+ *
+ * SANITISING IT WAS CONSIDERED AND REJECTED, and the reasoning generalises past this field. A filter
+ * over text you did not write has to be right every time, forever, against every future version of
+ * every library in the path — and the one time it is wrong, the leak is silent, published, and cached
+ * by whoever fetched it. A field with no inputs cannot be got wrong. So the message is gone from the
+ * shape (see `KeeperError` in `src/v2/data/keeperStatus.ts`) and what remains is `at` and a `context`
+ * chosen from a small fixed vocabulary.
+ *
+ * THE RULE THAT CAME OUT OF IT, which is the part worth carrying to whoever adds the next field:
+ * NOTHING INTERPOLATED FROM AN EXCEPTION, AN ACCOUNT, OR A COUNT MAY EVER ENTER THIS PAYLOAD. Every
+ * `setLastError` call site in this file passes a literal `context` and nothing else. A template string
+ * in one of them is the regression, and `statusFile.test.ts` asserts over the serialized bytes because
+ * that is the only check that catches it arriving through a field nobody thought to look at.
+ *
+ * WHAT IS LOST AND WHY IT IS AFFORDABLE: an operator can no longer read the cause out of the status
+ * file, and has to open the logs. The log line below is untruncated and always emitted, so the
+ * information still exists in full — it moved from a public channel to a private one, which for
+ * diagnostic text is where it belonged in the first place. What the file still says is the part a
+ * BROWSER can act on: that this keeper hit a problem, in which part of itself, and when.
+ */
 function recordError(ctx: KeeperContext, context: string, e: unknown): void {
-  const full = describeError(e);
-  error(`${context}: ${full}`);
-  ctx.publisher.setLastError({
-    at: ctx.client.nowSec(),
-    context,
-    message: full.length > STATUS_ERROR_MAX_CHARS ? `${full.slice(0, STATUS_ERROR_MAX_CHARS)}…` : full,
-  });
+  // Untruncated, and this is now the only copy. The four-hundred-character cap existed solely to keep
+  // twelve lines of program logs out of a payload a browser fetches; with nothing published there is
+  // nothing to cap, and capping the LOG would delete the one place the detail still lives.
+  error(`${context}: ${describeError(e)}`);
+  ctx.publisher.setLastError({ at: ctx.client.nowSec(), context });
   ctx.publisher.publish();
 }
 
@@ -1461,17 +1504,19 @@ async function main(): Promise<void> {
   // dead port, and on a one-machine app with a bounded grace period that is a machine killed for
   // being slow to start rather than for being broken.
   //
-  // `loadOrCreateHouseBank` moves up with it because the publisher needs the disclosure list, and it
-  // is purely local — a file read (or an env var) and possibly a keygen. Nothing it does is worth
-  // waiting on. `fundHouseBank` stays below: it spends, and nothing should spend before the process
-  // has said it is alive.
+  // `loadOrCreateHouseBank` moves up with it because the ROSTER ENDPOINT needs the bank — it used to
+  // be the publisher that needed it, for the disclosure list, and that consumer is gone. The ordering
+  // argument is unchanged and the new consumer needs it just as early: a status server that started
+  // before the bank existed would answer `/house-wallets.json` with an empty list during exactly the
+  // window in which boot is slow, and the identity API would cache that empty list for a minute and
+  // serve a face to every house wallet in it. It is purely local anyway — a file read (or an env var)
+  // and possibly a keygen — so nothing it does is worth waiting on. `fundHouseBank` stays below: it
+  // spends, and nothing should spend before the process has said it is alive.
   const bank = loadOrCreateHouseBank(options.dryRun);
 
   const publisher = createStatusPublisher({
     programId: PROGRAM_ID.toBase58(),
     arenaPda: client.arenaPda.toBase58(),
-    houseWallets: bank.disclosedPubkeys,
-    disclosure: HOUSE_DISCLOSURE,
     nowSec: client.nowSec,
   });
 
@@ -1486,11 +1531,22 @@ async function main(): Promise<void> {
   // `KEEPER_HTTP_PORT` that disagrees with `fly.toml` all surface here, before any SOL is spent.
   const originPolicy = resolveAllowedOrigins(process.env.KEEPER_CORS_ORIGIN);
   for (const line of originPolicyWarnings(originPolicy)) warn(line);
+  // THE ENV IS READ HERE, ONCE, AND NEVER ON THE REQUEST PATH — see `StatusServerDeps.houseToken`.
+  // Same shape as the CORS policy directly above it, and for the same reason: the rules stay pure
+  // functions of values, so they can be tested under vitest, which has no `Bun` global at all.
+  const houseTokenPolicy = resolveHouseTokenPolicy(process.env[HOUSE_TOKEN_ENV]);
+  for (const line of houseTokenPolicy.warnings) warn(line);
   const statusServer = startStatusServer({
     port: HTTP_PORT,
     policy: originPolicy,
     body: publisher.body,
     heartbeatAgeSeconds: publisher.heartbeatAgeSeconds,
+    houseToken: houseTokenPolicy.token,
+    // Read through a closure rather than passed as an array, so the endpoint always answers from the
+    // bank this process actually holds. It cannot change today — the bank is loaded once at boot —
+    // and that is exactly why the indirection is worth its one line: the day it can, the roster will
+    // be right without anybody remembering that it needed to be.
+    houseWallets: () => bank.bankPubkeys,
   });
 
   heading("choosing an ER validator");
@@ -1534,7 +1590,16 @@ async function main(): Promise<void> {
   // it" and "it is configured" are the same sentence. API keys are masked — see `describeEndpoints`.
   for (const { label, text } of describeEndpoints()) plain(`  ${label.padEnd(15)}${text}`);
   plain(`  clock          ${client.clockOffsetSeconds() === 0 ? "in step with the chain" : `${Math.abs(client.clockOffsetSeconds())}s ${client.clockOffsetSeconds() > 0 ? "behind" : "ahead of"} the chain — corrected`}`);
-  plain(`  house wallets  ${bank.active.length} active of ${bank.disclosedPubkeys.length} disclosed`);
+  // "in the bank", not "disclosed". Nothing about these wallets is disclosed any more — the status
+  // file no longer names, lists or counts them — and a banner that still said so would be the first
+  // thing an operator read and the last place anybody would look for a stale claim.
+  plain(`  house wallets  ${bank.active.length} active of ${bank.bankPubkeys.length} in the bank`);
+  // THE PUBKEYS AND THEIR BALANCES STAY, AND THAT IS NOT AN OVERSIGHT. This is the process's own
+  // stdout — Fly's log stream, reachable only by somebody who can already `fly ssh` into the machine
+  // and read the wallet file itself. It is not a published channel, and the distinction this whole
+  // change turns on is PUBLISHED versus INTERNAL rather than secret versus not. An operator funding a
+  // bank needs to see which wallet is empty, and taking that away would buy no privacy from anyone
+  // who did not already have the keys.
   bank.active.forEach((wallet, i) => {
     plain(`    [${wallet.index}] ${wallet.keypair.publicKey.toBase58()}  ${fmtSol(houseBalances[i]!)}`);
   });
@@ -1545,6 +1610,18 @@ async function main(): Promise<void> {
   plain(`  status http    ${statusServer === null
     ? `${c.r}NOT SERVING — the port could not be bound (see the error above). A deployed page will read this keeper as down.${c.x}`
     : `http://${BIND_HOSTNAME}:${statusServer.port}${STATUS_PATH}  ${c.d}(health: ${HEALTH_PATH})${c.x}`}`);
+  // THE ROSTER ENDPOINT, IN THE BANNER AND NOT ONLY IN `startStatusServer`'s OWN LOG LINE. The two
+  // are not redundant: a bind failure returns null from that function before it logs anything, so on
+  // the one boot where the operator most needs to know the state of every endpoint, its line is the
+  // one that did not print. The banner always prints. Same argument as the `status http` line above,
+  // which exists for exactly this reason.
+  //
+  // WHAT THE OFF CASE COSTS IS STATED HERE RATHER THAN LEFT TO BE INFERRED, because it is a total
+  // feature outage at a different host: the identity API fails closed, so no token means no avatars
+  // for anybody, and nothing on either side renders an error a person would notice.
+  plain(`  house roster   ${houseTokenPolicy.enabled
+    ? `${HOUSE_PATH} ${c.d}(authenticated; ${HOUSE_TOKEN_ENV} is set)${c.x}`
+    : `${c.y}NOT served — no ${HOUSE_TOKEN_ENV}. The identity API fails closed and will show NO avatars at all.${c.x}`}`);
   plain(`  cors           ${originPolicy.configured
     ? originPolicy.origins.join(", ")
     : `${c.y}local development only (${originPolicy.origins.join(", ")}) — set KEEPER_CORS_ORIGIN for a deployment${c.x}`}`);

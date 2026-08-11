@@ -24,7 +24,7 @@ import { ASSUMED_SESSION_MINUTES, type SessionLife } from "../data/sessionExpiry
 import { CombatLog } from "./CombatLog.tsx";
 import { ConnectPanel, XLinkPanel } from "./ConnectPanel.tsx";
 import { PaperTheme } from "./PaperTheme.tsx";
-import { Bar, Dash, HouseTag, Mark, Seg, Tag } from "./primitives.tsx";
+import { Bar, Dash, Mark, Seg, Tag } from "./primitives.tsx";
 import { feeNote } from "../views/feeCopy.ts";
 import { coverageFigure, coverageNote, coveragePhrase } from "../views/coverage.ts";
 import { useShell, type Rail } from "./shell.ts";
@@ -386,21 +386,27 @@ function AutoDeployBlock() {
 
       {/* SAID ONCE, PLAINLY, AND NOWHERE ELSE ON THE PAGE. Somebody leaving this running overnight is
           entitled to know what their deposit actually does to a round, and it is not what the phrase
-          "join a round" implies: `scripts/keeper/houseBank.ts` seats exactly ONE house fighter into
-          an empty room (at one fighter the chain refuses to draw the round at all, which is the
-          invariant that number comes from), holds the lobby open for a person rather than a clock
-          (`keeperStatus.ts`'s `waiting-for-players`), and fills the board in around the first real
-          entrant before closing entries itself.
+          "join a round" implies: the keeper holds a lobby open for a PERSON rather than for a clock
+          (`keeperStatus.ts`'s `waiting-for-players`), so an unattended entry is itself the thing that
+          closes entries and starts the fight, and the rest of the board arrives after that rather
+          than before it. That is a surprising enough sequence to be worth a paragraph.
+
+          IT DESCRIBES THE MECHANISM AND NEVER THE ROOM. An earlier version said an automatic entry
+          was "usually the only real one in the round" and went on to name what the keeper had seated
+          in there. Both were claims about who the OTHER fighters were, and this page has no basis for
+          any such claim — the arena's own wallets are not published anywhere a browser can read them
+          (`keeperStatus.ts`, schema 5). What survives is the half that was always about the reader:
+          their deposit, its timing, and what it sets off.
 
           NO OPPONENT COUNT, AND THAT IS THE POINT OF THE LAST SENTENCE. At lobby time the board is
           not drawn, so any figure for "who you would be fighting" would be invented — which SPEC
-          forbids outright. The honest version is the mechanism in words. */}
+          forbids outright. The honest version is the mechanism in words, and that closing sentence is
+          more true now than when it was written, not less. */}
       <p className="lede" style={{ marginTop: 14, fontSize: 12 }}>
-        Worth knowing before you leave one running: an automatic entry is usually the only real one in
-        the round. The keeper holds a lobby open with a single house fighter and waits for a person
-        rather than a clock, so your deposit is what closes entries and starts the fight — and the
-        rest of the board is filled in around you, after you are in. Who that turns out to be is not
-        knowable at lobby time, so this page will not put a number on it.
+        Worth knowing before you leave one running: the keeper holds a lobby open for a person rather
+        than a clock, so your deposit is what closes entries and starts the fight — and the rest of
+        the board is filled in around you, after you are in. Who that turns out to be is not knowable
+        at lobby time, so this page will not put a number on it.
       </p>
 
       {/* THE STATEMENT. The only copy on this page written for somebody who was not present for any
@@ -859,9 +865,6 @@ function FighterTenant({ wallet }: { wallet: string }) {
         {f ? <Mark side={f.side} dead={f.dead} /> : null}
         <span className="h">{f?.name ?? record?.name ?? "—"}</span>
         {f?.isYou ? <span className="u u--ink">· you</span> : null}
-        {/* The disclosure follows the fighter into every surface that names one — this is the panel a
-            reader opens to ask "who is this", and it is the last place the answer may be left out. */}
-        {f?.house ? <HouseTag /> : null}
       </div>
       <p className="key" style={{ margin: "0 0 4px" }}>
         {wallet}

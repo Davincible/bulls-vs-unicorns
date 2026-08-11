@@ -11,15 +11,7 @@ import type { VerifyResult } from "../../ui/verifyRound.ts";
 import type { ArenaContextValue, ToastKind } from "./types.ts";
 import { combatFeed } from "./combatFeed.ts";
 import { extractEligibility } from "./extractTerms.ts";
-import { houseDisclosureOf } from "./houseFighters.ts";
-import {
-  MOCK_HISTORY,
-  MOCK_HOUSE_DISCLOSURE,
-  MOCK_HOUSE_WALLETS,
-  MOCK_SEED,
-  MOCK_TREASURY,
-  MOCK_YOU,
-} from "./mockData.ts";
+import { MOCK_HISTORY, MOCK_SEED, MOCK_TREASURY, MOCK_YOU } from "./mockData.ts";
 import {
   deriveBigWins,
   deriveHall,
@@ -51,7 +43,6 @@ export type FixtureArena = Pick<
   | "live"
   | "hitEvents"
   | "combat"
-  | "houseDisclosure"
   | "treasury"
   | "history"
   | "standings"
@@ -83,18 +74,6 @@ export function useFixtureArena({ active, push, recordDeploy }: FixtureArenaPara
   // sixteen rounds ARE every round this invented arena ever had — so it is the one place on the page
   // entitled to say "all time", and the coverage says so rather than the screens assuming it.
   const logCoverage = useMemo(() => deriveLogCoverage(MOCK_HISTORY, BigInt(MOCK_HISTORY.length)), []);
-
-  // THE FIXTURE DISCLOSES ITS OWN HOUSE, through the same counter the chain path runs. The marks are
-  // already on the lineup (`mockData.ts`); this is the caption's half of the same fact, and it is
-  // never null here because the fixture's list is a module constant that is always present. The note
-  // it carries opens with the word FIXTURE — see `MOCK_HOUSE_DISCLOSURE`.
-  const houseDisclosure = useMemo(
-    () =>
-      houseDisclosureOf(live.fighters, {
-        house: { wallets: MOCK_HOUSE_WALLETS, disclosure: MOCK_HOUSE_DISCLOSURE },
-      }),
-    [live.fighters],
-  );
 
   const combat = useMemo(
     () => combatFeed({ hitEvents, fighters: live.fighters, stepsNow: live.stepsNow }),
@@ -189,7 +168,6 @@ export function useFixtureArena({ active, push, recordDeploy }: FixtureArenaPara
     live,
     hitEvents,
     combat,
-    houseDisclosure,
     // THE FIXTURE'S TREASURY IS DERIVED FROM ITS OWN LOG, and is zero because every round in that log
     // charged nothing — see `MOCK_TREASURY` for why that is the honest figure rather than `null` and
     // rather than an invented one.

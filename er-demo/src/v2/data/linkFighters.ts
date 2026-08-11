@@ -1,32 +1,37 @@
 // PUTTING A FACE ON A FIGHTER — the join between a verified link and the round on screen.
 //
-// Pure and React-free, so every rule below is a unit test rather than a browser session. It is a
-// deliberate mirror of `houseFighters.ts`, down to the identity-preservation trick, because the two
-// do the same shape of job on the same object four times a second and a second, subtly different
-// implementation of "stamp a field onto every fighter" is how two of them end up disagreeing.
+// Pure and React-free, so every rule below is a unit test rather than a browser session. The
+// identity-preservation trick it is built around — hand back the very same array when nothing
+// changed — is load-bearing rather than tidy, and `markLinkedFighters` below says why.
 //
 // ================================================================================================
-// THE HOUSE HAS NO FACE, AND THIS IS THE ONE PLACE THE CLIENT ENFORCES IT.
+// THE HOUSE HAS NO FACE — AND THIS FILE NO LONGER ENFORCES IT. THE GUARD MOVED TO THE SERVER; IT WAS
+// NOT DROPPED, AND THE NEXT READER SHOULD NOT HAVE TO REDISCOVER THAT.
 //
-// The keeper seats house wallets so a lobby is never empty, and a lobby holding a single house
-// fighter is most of an idle arena's life. A photograph of a person on one of those would not be a
-// cosmetic slip — it is a misrepresentation, and the specific one that costs the most trust: a
-// player believing they beat a human when they beat the house.
+// The obligation itself has not changed, so it is restated here rather than left to be re-derived: a
+// photograph of a person on one of the arena's own fighters is not a cosmetic slip. It is a
+// misrepresentation, and the specific one that costs the most trust — a player believing they beat a
+// human when they beat the house.
 //
-// There are three guards, and they are independent on purpose:
+// THERE USED TO BE THREE GUARDS AND THE THIRD ONE LIVED RIGHT HERE. `linkFor` took a `house` flag and
+// nulled the profile for any fighter carrying it, at one call site, keyed off the very same mark the
+// roster rendered from — so a fighter labelled HOUSE could not simultaneously wear a face. THAT GUARD
+// CANNOT EXIST ANY MORE. It was never stronger than the browser's copy of the house wallet list, and
+// the arena's wallets are no longer published anywhere a browser can read them (`keeperStatus.ts`,
+// schema 5, has the decision and its consequences). A check with nothing left to check against does
+// not become a weak guard; it becomes a parameter that is always `false` and a branch that never
+// fires. Keeping it would have left something shaped like protection, passing every wallet, with a
+// test suite still green around it. So it is gone.
 //
-//   1. `/api/x/link` refuses to CREATE a link for a wallet on the keeper's published house list.
-//   2. `/api/links` refuses to SERVE one, and `xLink.ts#linkMapFrom` drops one that arrives anyway.
-//   3. Here — the profile is nulled for any fighter already marked `house`, at ONE call site.
+// THE TWO GUARDS THAT REMAIN ARE BOTH ON THE SERVER, AND BETWEEN THEM THEY COVER THE WRITE PATH AND
+// THE READ PATH:
 //
-// Guard 3 exists because it is the only one that keys off the same `house` mark the rest of the page
-// renders from, so a fighter that is labelled `house` in the roster cannot simultaneously wear a
-// face. Guards 1 and 2 key off the wallet list; this one keys off the consequence. If they ever
-// disagree, this is the one the player is looking at.
+//   1. `/api/x/link` refuses to CREATE a link for one of the arena's own wallets.
+//   2. `/api/links` refuses to SERVE one.
 //
-// It is only as good as `isHouseWallet`, which is disclosure on the keeper's own word —
-// `keeperStatus.ts` says so and is right to. The durable version is operational: the house wallets
-// are ours and we simply never link them.
+// That is the durable form of the rule, and the old note here already said as much in its last line:
+// the wallets are ours, so the answer that actually holds is operational — we never link them. What
+// is left for the client is to render what the server was willing to hand it, and nothing more.
 // ================================================================================================
 
 import type { FighterView, LiveRound } from "../contract.ts";
@@ -35,11 +40,11 @@ import { isVerifiedRecord, type LinkMap, type LinkRecord } from "./xLink.ts";
 /**
  * Stamp `avatarSrc` onto every fighter from the verified link map.
  *
- * RETURNS THE INPUT ARRAY WHEN NOTHING CHANGED, exactly as `markHouseFighters` does and for exactly
- * its reason: `LiveRound` is rebuilt on every poll and every 250ms clock tick, and the canvas, the
- * extract terms and the combat feed are all memoised against `live.fighters`. A fresh array with
- * identical contents four times a second invalidates all three for nothing. The overwhelmingly
- * common case — nobody in this round has linked — allocates nothing at all.
+ * RETURNS THE INPUT ARRAY WHEN NOTHING CHANGED, and that is not a micro-optimisation — it is what
+ * keeps this out of the memo graph. `LiveRound` is rebuilt on every poll and every 250ms clock tick,
+ * and the canvas, the extract terms and the combat feed are all memoised against `live.fighters`. A
+ * fresh array with identical contents four times a second invalidates all three for nothing. The
+ * overwhelmingly common case — nobody in this round has linked — allocates nothing at all.
  *
  * ONLY `avatarSrc` CROSSES INTO THE ROUND. The handle, the display name and the linked date stay in
  * the map and are looked up by wallet at the DOM surfaces that need them. That is `SPEC.md`'s rule
@@ -64,7 +69,7 @@ export function markLinkedFighters(fighters: FighterView[], links: LinkMap): Fig
 
   let changed = false;
   const marked = fighters.map((f) => {
-    const avatarSrc = avatarFor(links, f.wallet, f.house);
+    const avatarSrc = avatarFor(links, f.wallet);
     if (avatarSrc === f.avatarSrc) return f;
     changed = true;
     return { ...f, avatarSrc };
@@ -72,23 +77,20 @@ export function markLinkedFighters(fighters: FighterView[], links: LinkMap): Fig
   return changed ? marked : fighters;
 }
 
-/** The one lookup, so the house guard and the verification guard cannot be applied in one place and
- *  forgotten in another. */
-function avatarFor(links: LinkMap, wallet: string, house: boolean): string | null {
-  const record = linkFor(links, wallet, house);
+/** The one lookup, so the verification guard cannot be applied in one place and forgotten in
+ *  another. */
+function avatarFor(links: LinkMap, wallet: string): string | null {
+  const record = linkFor(links, wallet);
   return record === null ? null : (record.avatarPath ?? null);
 }
 
 /**
  * The same, for a whole round — the form the provider calls.
  *
- * MUST RUN AFTER `withHouseMarks`. It reads `FighterView.house`, which that function is what stamps;
- * run in the other order every fighter is `house: false` and the house guard above silently passes
- * everybody. The provider composes them as `markLinkedFighters(markHouseFighters(...))` for that
- * reason, and `linkFighters.test.ts` pins the failure so the ordering is a red test rather than a
- * comment somebody trusted.
- *
- * Identity preserved all the way up to the `LiveRound` itself, as `withHouseMarks` does.
+ * Identity is preserved all the way up to the `LiveRound` itself, for the reason spelled out on
+ * `markLinkedFighters`: a fresh round object with identical contents would invalidate every memo
+ * keyed on `live` four times a second. Null passes straight through — there is nothing to stamp on a
+ * page with no round.
  */
 export function withLinks(live: LiveRound | null, links: LinkMap): LiveRound | null {
   if (live === null) return null;
@@ -97,20 +99,18 @@ export function withLinks(live: LiveRound | null, links: LinkMap): LiveRound | n
 }
 
 /**
- * The identity to render beside a wallet, ANYWHERE ON THE DOM — one lookup, so the house rule and
- * the "absent means unlinked" rule are answered the same way on every surface.
+ * The identity to render beside a wallet, ANYWHERE ON THE DOM — one lookup, so the verification rule
+ * and the "absent means unlinked" rule are answered the same way on every surface.
  *
- * `house` is a parameter rather than something this function digs out, because the three DOM
- * surfaces that call it hold three different row types — `FighterView` on the round tab,
- * `StandingsRow` on standings, `RoundPlayer` in history — and only the first carries a house mark.
- * The other two are aggregates over rounds whose house membership was already excluded upstream.
- * Making the caller state it is what stops a row type quietly acquiring a face because nobody
- * noticed it had no `house` field to check.
+ * IT TAKES A WALLET AND NOTHING ELSE, which is a narrowing worth noting because it used to take more.
+ * A `house` flag rode alongside the wallet so each caller could assert that its row was not one of the
+ * arena's own fighters; the browser can no longer know that about anybody, and the guard now sits on
+ * the server at both ends of the link's life. See this file's header — that is where the argument
+ * lives, and it is worth reading before anything like it is reintroduced here.
  *
  * Returns `null` for unlinked, which is the ordinary state and never an error.
  */
-export function linkFor(links: LinkMap, wallet: string, house: boolean): LinkRecord | null {
-  if (house) return null;
+export function linkFor(links: LinkMap, wallet: string): LinkRecord | null {
   const record = links.get(wallet) ?? null;
   if (record === null) return null;
   // THE VERIFICATION GUARD. `LinkRecord`'s compile-time brand blocks the accidental construction but

@@ -41,20 +41,12 @@ export function toFighterViews(fighters: FighterState[], youPubkey: string): Fig
       banked: f.banked,
       dead: f.dead,
       isYou: wallet === youPubkey,
-      // NULL HERE FOR THE SAME REASON `house` IS FALSE HERE. A round account carries a wallet, a
-      // side, a stake and its hp; it has never heard of an X account, and the wallet -> avatar
-      // mapping is a separately-fetched, separately-verified fact. Threading it through a pure
-      // decoder would put a network read inside a mapper. `null` is also the honest answer for the
-      // overwhelming majority of fighters — see `FighterView.avatarSrc`.
+      // NULL HERE, RESOLVED ONE LAYER UP. A round account carries a wallet, a side, a stake and its
+      // hp; it has never heard of an X account, and the wallet -> avatar mapping is a
+      // separately-fetched, separately-verified fact. Threading it through a pure decoder would put a
+      // network read inside a mapper. `null` is also the honest answer for the overwhelming majority
+      // of fighters — see `FighterView.avatarSrc`.
       avatarSrc: null,
-      // FALSE HERE, RESOLVED ONE LAYER UP. This function maps a round ACCOUNT, and a round account
-      // says nothing about whose wallets are in it — the disclosure list is the keeper's, published
-      // separately, and threading it through every caller of this mapper (including the four tests
-      // that build a round without one) to set a field on a fighter would put a network-derived fact
-      // inside a pure decoder. `ArenaProvider` stamps it via `markHouseFighters`, which returns this
-      // very array untouched whenever no keeper is publishing — so `false` is not a placeholder that
-      // gets overwritten, it is the answer in the common case. See `FighterView.house`.
-      house: false,
     };
   });
 }

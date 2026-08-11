@@ -59,17 +59,18 @@ export function parseMockFixture(raw: unknown): readonly MockIdentity[] {
   return out;
 }
 
-/** EVERY OTHER ELIGIBLE WALLET gets a face — by position in the sorted list, not by hashing the
- *  wallet.
+/** EVERY OTHER ELIGIBLE WALLET gets a face — by position in the list it is handed, not by hashing
+ *  the wallet.
  *
  *  A MIXED board is the layout that actually needs reviewing (`TWITTER-CONNECT.md` §8.3: "the mix is
  *  where a row layout that silently assumed an avatar column falls apart"), and it is the honest
  *  picture of a real board, because most players never link.
  *
  *  IT USED TO BE `hash32(wallet) % 3 === 0`, AND THAT FAILED IN THE ONE PLACE IT MATTERED. A hash
- *  filter only approximates its rate over a large pool. The fixture's eligible pool is small — two
- *  thirds of the lineup is house, and the house can never wear a face — so at nine fighters there
- *  were three eligible wallets and the hash happened to select none of them. The fixture rendered
+ *  filter only approximates its rate over a large pool. The fixture's eligible pool was small at the
+ *  time — most of the lineup was being filtered out before this question was even asked — so at nine
+ *  fighters there were three eligible wallets and the hash happened to select none of them. The
+ *  fixture rendered
  *  exactly one face, the player's own, and looked like a broken feature while every guard beneath it
  *  worked perfectly. Position is exact at every size: 3 eligible gives 2, 48 gives 24, and it can
  *  never round down to nothing. */
@@ -77,6 +78,25 @@ const MOCK_LINK_STRIDE = 2;
 
 /**
  * Decide who wears which identity.
+ *
+ * THE CAST MUST LAND ON THE ROUND ON SCREEN, because reviewing the linked state of the arena is the
+ * entire reason this fixture exists. Six identities against fifty-two wallets is not a rate question,
+ * it is a priority question, and the answer is stated here rather than left to fall out of whatever
+ * happens to be filtering the list upstream this month.
+ *
+ * SO `wallets` ARRIVES IN THE CALLER'S PRIORITY ORDER AND IS WALKED IN IT — the round on screen
+ * first, then the connected player, then the leaderboard's rows (`ArenaProvider` composes it, both
+ * providers, and `rosterCast` preserves that composition through the dedupe and the cap).
+ *
+ * IT USED TO SORT THE LIST ITSELF, AND THAT SORT EMPTIED THE ONE SCREEN THE FLAG IS FOR. `rosterKey`
+ * sorts because a canonical key is what stops a re-fetch when a view re-orders the roster; that is
+ * the right shape for a cache key and a meaningless one for casting. Handed the sorted form, this
+ * function walked fifty-two wallets that are mostly leaderboard aggregate rows and spent five of its
+ * six identities off the arena — the round on screen kept exactly one, `you`, whose picture the wallet
+ * panel renders as an ordinary `<img>` anyway. Every layer beneath was correct: the records verified,
+ * the map was built, the canvas was ready to draw faces nobody had been given. It is the same failure
+ * `useLinks.ts` recorded from the other side when a house filter made a working feature invisible,
+ * and it survived that filter's removal because nothing had ever said the requirement out loud.
  *
  * `you` is ALWAYS linked when present, because the single most useful thing this flag does for a
  * developer is show them the linked state of their own wallet panel and their own disc.
@@ -86,8 +106,26 @@ const MOCK_LINK_STRIDE = 2;
  * put `@mock_otter` on two fighters would be showing a state the real system cannot produce, and
  * somebody would eventually debug it as if it were real.
  *
- * Deterministic: the same wallet set produces the same assignment on every reload, which is what
- * makes two screenshots comparable.
+ * DETERMINISTIC — the same wallets in the same order produce the same assignment on every reload,
+ * which is what makes two screenshots comparable. That guarantee has not been dropped, it has changed
+ * hands: it used to be bought by the internal sort and is now owed by the caller, and under
+ * `?fixture=1` — the path `?links=mock` is actually reviewed on — the caller pays it trivially,
+ * because the round, `you` and the standings are all derived from module constants and the list is
+ * fixed for the life of the page.
+ *
+ * WHAT THE SORT DID PROTECT AGAINST, AND WHAT IS LEFT OF THAT. Several views re-sort the roster, and
+ * the sort meant none of them could shuffle the faces. The provider does not hand this a view's copy
+ * — it hands it the composition above — but on the CHAIN path the tail of that composition is
+ * genuinely dynamic: `deriveStandings` ranks by pnl, so a settling round can re-rank the leaderboard
+ * without changing the wallet SET, and the next poll would then cast the leftover identities onto
+ * different rows. What that cannot reach is the arena. The fighters occupy the FRONT of the list,
+ * identities are spent from index zero, and a prefix's assignment is decided entirely by that prefix
+ * — so faces on the round on screen are stable for as long as the round is, which is the stability
+ * that was actually being asked for. Re-sorting the tail to buy back the rest was considered and
+ * rejected: it would hand the leftover identities to whoever sorts lowest in base58, which is the
+ * meaningless criterion this whole change exists to stop applying.
+ *
+ * @param wallets in priority order, already deduped and capped. See `useLinks.ts#rosterCast`.
  */
 export function assignMockIdentities(
   identities: readonly MockIdentity[],
@@ -100,9 +138,9 @@ export function assignMockIdentities(
   const remaining = [...identities];
   if (you !== null && wallets.includes(you)) out.set(you, remaining.shift() as MockIdentity);
 
-  // Sorted, so the assignment does not depend on the order the round happened to list its fighters
-  // in — the roster is re-sorted by several views and the fixture should not shuffle underneath them.
-  const others = [...wallets].filter((w) => w !== you).sort();
+  // `filter` copies, so the caller's array is untouched — which matters because the list it derives
+  // from is `live.fighters`, where positional ids name the parties in every hit event.
+  const others = wallets.filter((w) => w !== you);
   for (let i = 0; i < others.length; i += MOCK_LINK_STRIDE) {
     if (remaining.length === 0) break;
     out.set(others[i], remaining.shift() as MockIdentity);
@@ -127,6 +165,8 @@ function mockKey(): AttestationKey {
  * source are indistinguishable to every line of code downstream — which is the property that makes
  * Stage 0 worth building rather than a detour.
  *
+ * @param wallets in the caller's priority order — handed straight to `assignMockIdentities`, which
+ *   walks it as given and documents why the order is the decision.
  * @param nowSec unix SECONDS, threaded through rather than read here so a test can sign something
  *   already expired and watch it be rejected.
  */

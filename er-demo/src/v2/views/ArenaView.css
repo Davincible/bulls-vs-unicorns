@@ -214,9 +214,15 @@
    resolves against the longest name currently in the top five — which means the box would resize
    every time the ranking changed, on a surface whose neighbours are being laid out around its live
    rect once a frame (`arena/chrome.ts`). Fixed tracks make the box one width for the whole round.
-   118px is `nameFor()`'s longest output (`KESTREL_42`, 10 glyphs of 12px mono ≈ 72px) plus the
-   `HOUSE` disclosure tag beside it (~37px at `.u`'s tracking) plus their gap; 58px holds
-   `usdCompact`'s widest realistic figure (`$13.2k`) with a glyph to spare.
+   118px holds `nameFor()`'s longest output (`KESTREL_42`, 10 glyphs of 12px mono ≈ 72px) with
+   headroom, and the headroom is history rather than a number measured for the name on its own: this
+   track was sized to fit that name AND a tag beside it — a marker on fighters the keeper had seated
+   — and the tag has since been removed from this overlay. The width is deliberately kept. 118px is
+   what this box renders at today, and `arena/chrome.ts` lays every fighter label on the field around
+   its rect, so narrowing the track would shift that rect and move labels across the whole field in
+   exchange for nothing a reader can see. There is also no measurement here that says which narrower
+   number would be right, and inventing one is worse than keeping the one that has been on screen.
+   58px holds `usdCompact`'s widest realistic figure (`$13.2k`) with a glyph to spare.
 
    `padding-left`/`margin-left` are a matched pair and cancel: the content box starts exactly where
    the caption above it does, and the 5px the row extends leftward is where `.row--you`'s 2px inset

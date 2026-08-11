@@ -43,7 +43,6 @@ function fighter(id: number, over: Partial<FighterView> = {}): FighterView {
     stake: 10_000_000n,
     hp: 10_000_000n,
     banked: 0n,
-    house: false,
     dead: false,
     isYou: false,
     ...over,

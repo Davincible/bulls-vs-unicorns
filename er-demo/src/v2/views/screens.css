@@ -188,31 +188,6 @@
 .scr .sc-who-n { overflow: hidden; text-overflow: ellipsis; }
 .scr .sc-who-k { font: 400 10px/1 var(--mono); color: var(--ink-3); flex: none; }
 
-/* THE HOUSE MARKER — a fighter the keeper seated so a lobby is never empty.
-   IT IS A WORD, NOT A TREATMENT. The obligation here (README's go-live list, and `isHouseFighter`'s
-   own comment calling an undisclosed house fighter "a misrepresentation of who is in the round") is
-   that a reader KNOWS, and a shade or a colour is not knowing: it fails a screen reader, it fails a
-   print, and it fails anyone who has not been taught the legend. So the cell says "house".
-   A hairline box rather than the `.sim`/`.live` badges' filled block: those two are provenance —
-   where a NUMBER came from — and this is an attribute of a person. Reusing their weight would put
-   the loudest mark on the page beside sixteen names at once, and a lobby of house fighters would
-   read as sixteen warnings. `--ink-3` is the faintest ink that may carry a word (4.54:1 on the
-   sheet); `flex: none` keeps it whole while the name beside it ellipsises, because the name is
-   recoverable from the row's `title` and this is the fact that must not be lost to a narrow column.
-   It also renders INSIDE PROSE, in the notice above the board, where `display: inline-block` and the
-   baseline nudge keep it sitting in the line rather than on it. */
-.scr .sc-bot {
-  display: inline-block;
-  flex: none;
-  font: 400 9px/1 var(--mono);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-  border: 1px solid var(--rule-2);
-  padding: 2px 4px;
-  vertical-align: 1px;
-}
-
 /* One line of a round's own books, above the field it belongs to: what the players were charged,
    what reached the ring, and what the house kept. Prose, not a table row — it wraps, and it is the
    caption to the table under it rather than a column of it. */
@@ -427,8 +402,11 @@
      taken. The side cell is a 7px mark, a 5px gap and the longer token name at 10px tracked mono —
      47px, in a 58px track. The worth cell is `usdCompact`, bounded at eight characters by
      construction (`$999.9k`), which is 56px at 12px tabular mono in a track of 82px. Neither loses
-     a character at 54px and 74px; the fighter column gains the width the house marker costs, which
-     is the difference between `BRACKEN_79 HOUSE` and `BRACK… HOUSE` on five rows at once. */
+     a character at 54px and 74px, and the 12px goes where it is actually spent: the fighter column
+     is the only `1fr` on the row and therefore the only cell that ellipsises. It was under more
+     pressure when this was measured — it then carried a marker beside the name on fighters the
+     keeper had seated, since removed — so the name has more room today than it did when these
+     tracks were chosen, never less. */
   .scr .sc-tbl--lbr { --cols: 22px 54px minmax(0, 1fr) 74px 50px; }
   .scr .sc-tbl--lba { --cols: 22px minmax(0, 1fr) 60px 90px 54px; }
   .scr .sc-tbl--lbh { --cols: 22px 58px minmax(0, 1fr) 50px 90px; }
@@ -461,15 +439,18 @@
      full key is still on the row's `title`. */
   .scr .sc-who-k { display: none; }
 
-  /* THE HOUSE MARKER STAYS; IT JUST STOPS COSTING A NAME. At 390px the fighter column is one `1fr`
-     track of ~118px, and `HOUSE` at desktop metrics takes 40px of it plus an 8px gap — enough to
-     ellipsise `HOLLOW_52`, `BRACKEN_79` and `GRAVEL_81` on the one board where five rows carry the
-     marker at once. Measured, and 13px is what it costs to fix: the gap comes down to 5px and the
-     marker gives up its horizontal padding and half its tracking. It is the last thing on the row
-     that may be dropped — the name is recoverable from the row's `title` and the wallet key already
-     is, but who is a house wallet is not recoverable from anything on a phone. */
+  /* THE NAME CELL IS TIGHTER THAN THE BASE RULE, and the reason is history rather than a fresh
+     measurement — which is worth saying plainly so nobody re-derives it from the cell as it stands
+     today. At 390px the fighter column is one `1fr` track of ~118px, and this cell used to seat a
+     third item beside the name: a marker on fighters the keeper had seated. That was enough to
+     ellipsise `HOLLOW_52`, `BRACKEN_79` and `GRAVEL_81` on the busiest board, and 3px off the gap
+     was part of the 13px measured to fix it. The marker is gone from every board on this screen, so
+     what the gap now separates is the name and the `you` mark — a pair, not a trio, and under less
+     pressure than the measurement assumed. It stays at 5px anyway: this is what these rows render
+     at today, and going back to the 8px base would be an unmeasured change to a phone layout in
+     exchange for nothing but symmetry with the desktop rule. The wallet key that would otherwise
+     sit third in this cell is dropped by the rule immediately above. */
   .scr .sc-who { gap: 5px; }
-  .scr .sc-bot { padding: 2px 3px; letter-spacing: 0.06em; }
 
   /* A section's tools (tabs, totals) drop under its heading rather than fighting it for a line —
      scoped to this screen so the shared `.sec-head` keeps its desktop behaviour everywhere else. */

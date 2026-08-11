@@ -270,10 +270,17 @@ describe("what the page claims", () => {
     // applied to every `N <noun>` pair the five screens render.
     //
     // RUN AT EVERY LINEUP, WHICH IS THE HALF THAT EARNS IT. At the fixture's default 9 there is
-    // nothing to find; at `?fighters=2` the leaderboard's house sentence rendered "1 of 2 FIGHTER
-    // is ours", because the noun and the verb were both keyed to the numerator when only the verb
-    // belongs to it. That is a live defect this net caught the first time it was pointed at the
+    // nothing to find; at `?fighters=2` the leaderboard's house-disclosure sentence rendered "1 of 2
+    // FIGHTER is ours", because the noun and the verb were both keyed to the numerator when only the
+    // verb belongs to it. That is a live defect this net caught the first time it was pointed at the
     // right state, and it is why the loop below walks the bounds rather than the default.
+    //
+    // THAT SENTENCE NO LONGER EXISTS — the house disclosure was removed from the product — so the
+    // instance above is now history rather than a case this net still covers. The net is kept at full
+    // strength anyway, and deliberately: what it guards is the RULE (a noun and a verb that agree with
+    // the count they belong to), which every remaining `N <noun>` pair on five screens is still
+    // capable of breaking. A net retired because its first catch was deleted is a net that only ever
+    // tested one bug.
     const nouns = new Set([
       "fighter", "fighters", "round", "rounds", "player", "players",
       "step", "steps", "exchange", "exchanges", "win", "wins",

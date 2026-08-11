@@ -178,9 +178,15 @@ strangers. The entire feature is that you can see *other people*. That requires 
 mapping, which requires a server.
 
 What exists today: nothing. `er-demo` is a static Vercel build (`vercel.json`: `framework: "vite"`,
-no `functions`, no `/api`), and `public/keeper-status.json` — including the house wallet list — is a
-committed static file. There are two Fly machines (the legacy engine, and the keeper), and neither is
-right:
+no `functions`, no `/api`). Nor is `public/keeper-status.json` the counter-example it was once
+described as here: it is **not a committed file at all**. It is gitignored
+(`.gitignore` → `er-demo/public/keeper-status.json`) and untracked, and the copy on any given laptop
+is a build artefact rather than a source file. `Dockerfile` carries the reason it must stay that way:
+a snapshot baked into the image would ship a permanently stale heartbeat that reads as a LIVE keeper,
+when the whole design has the front end read a 404 as "no keeper is running here". It used to carry
+the arena's own wallet list as well; `KEEPER_STATUS_SCHEMA` 5 took that out, along with the per-round
+house and real fighter counts, and §2.7 is where that decision lands on this document. There are two
+Fly machines (the legacy engine, and the keeper), and neither is right:
 
 - **The keeper** (`bulls-arena-keeper-devnet`) holds the arena authority key and signs rounds. Adding
   a public write endpoint to the process that has round-write authority is not a trade worth making
@@ -311,26 +317,78 @@ goes ragged.
 
 ### 2.7 The house must never have a face
 
-The keeper seats house wallets so a lobby is never empty; a lobby holding a single house fighter is
-most of an idle arena's life. Faces would turn those into fake friends. Two independent guards:
+The keeper seats the arena's own fighters so a lobby is never empty; a lobby holding a single one of
+them is most of an idle arena's life. Faces would turn those into fake friends. That is not a
+cosmetic slip — it is the one misrepresentation on this page that costs the most trust: a player
+believing they beat a human when they beat the arena.
 
-1. **Server-side:** `POST /api/x/link` refuses any wallet on the published house list — read from the
-   keeper's live endpoint (`https://bulls-arena-keeper-devnet.fly.dev/keeper-status.json`, cached 60s),
-   **not** from `public/keeper-status.json`, which is a committed snapshot that goes stale.
-2. **Client-side:** the provider nulls the profile for any fighter with `house === true`, in one
-   place (§6.1), regardless of what the server returned.
+**Invariant: a face means a person, and the arena's own wallets may not wear one.**
 
-**Invariant: a face means a person. The house has no face.** House fighters keep the coin, the
-`HOUSE` tag and `houseNote()`'s disclosure, exactly as today.
+Two guards, both on the server, and between them they cover the whole life of a link — the moment it
+is created and every moment it is served:
 
-Be honest about the limit: `isHouseWallet()` checks the keeper's own self-published list, and
-`keeperStatus.ts` says so — "disclosure on the keeper's word". Guard 2 is only as good as that list.
-Guard 1 is the durable one, and the durable-est version is operational: the house wallets are ours
-and we simply never link them. All three, because the failure mode — an influencer's fan believing
-they beat a person — is the one that costs the most trust.
+1. **The write path.** `POST /api/x/link` refuses to create a link for one of the arena's own
+   wallets. Nothing is written, so there is nothing to serve.
+2. **The read path.** `/api/links` refuses to serve one, filtering every response rather than
+   trusting that guard 1 held. It has to be both: a row inserted by hand, a wallet promoted to the
+   house *after* it linked, and a bug in the write path all end at the same place, and only a filter
+   at the point of reading catches all three.
 
-Every social surface (lobby presence, rivalry ledger, leaderboard faces) filters on the same
-`isHouseWallet` call that already exists, rather than each rediscovering the rule.
+**Status, since this section reads as though both were built.** Guard 2 is built, tested and live
+(`api/src/linksHandler.ts` — which answers `GET`/`HEAD` and 405s everything else). Guard 1 is **not
+built yet**: there is no write route anywhere under `api/`, so `POST /api/x/link` is at this moment a
+specification in this document rather than code, which is exactly why §6.4 says start with the
+server. Until it lands, the read filter is the only thing standing between a row that reaches the
+table by any route and a face on one of these wallets — which it does catch, because it filters at
+the point of reading. Delete this paragraph when the route exists. Do not delete it before.
+
+Both read the list from the keeper's live endpoint over an authenticated channel:
+`GET /house-wallets.json`, carrying `Authorization: Bearer $KEEPER_HOUSE_TOKEN`. **Not** from
+`public/keeper-status.json` — which is not a committed file at all (§2.3: gitignored, untracked, a
+runtime artefact of whichever keeper last wrote it) and which, since `KEEPER_STATUS_SCHEMA` 5, does
+not carry the list at any age. `api/src/houseWallets.ts` holds the
+argument for reading it live rather than baking in a copy (the bank grows, and a wallet added after
+the copy was taken is exactly and only the case this rule exists for) and the fail direction: a
+worker that has never once read the list serves *no* links at all, because the cost of failing closed
+is the ordinary rendering of this page — a flat side-coloured disc and a `nameFor()` pseudonym, which
+is what the great majority of players see anyway.
+
+**There used to be a third guard, in the client, and it is gone. Why, not merely that.** The provider
+nulled the profile for any fighter carrying `house === true`, at one call site, keyed off the very
+mark the roster drew its `HOUSE` tag from — so a fighter labelled as the arena's could not
+simultaneously wear a face. That guard was never stronger than the browser's copy of the wallet list,
+and the arena's wallets are no longer published, named or counted anywhere a browser can read
+(`keeperStatus.ts`, schema 5, has the decision and its consequences, including the hard reject that
+stops a not-yet-redeployed keeper's older file being cached by a new page). A check with nothing left
+to check against does not degrade into a weak guard; it becomes a parameter that is always `false`
+and a branch that never fires, with a green test suite around it and the shape of protection standing
+where the protection used to be. `data/linkFighters.ts`'s header now carries this argument at the
+site the code left behind, so the next reader learns the guard **moved** rather than that it was
+forgotten.
+
+**The disclosure went with it, necessarily and completely.** The `HOUSE` tag, `houseNote()`'s
+sentence, `FighterView.house`, the per-round house and real fighter counts and `isHouseWallet()` no
+longer exist. This is not a softening of the invariant above; it is the withdrawal of a claim we no
+longer have the evidence to make. A `house: false` left behind on a fighter would read as *checked,
+and this one is a person* — a stronger claim than the disclosure ever made, made with no evidence, on
+every row. "0 house" in a caption reads the same way. A concept this shape cannot be half-removed: it
+goes completely or it lies. So the arena's own fighters now render as every unlinked fighter renders
+— the side's coin, circle-clipped, and a `nameFor()` pseudonym — which asserts nothing about anybody,
+and is the honest state rather than a degraded one.
+
+**Be honest about what is left.** Both guards run on the keeper's own account of which wallets are
+its own. That was always the ceiling — `keeperStatus.ts` used to call it "disclosure on the keeper's
+word" — and what changed is only that the word is now handed to our API over a channel the browser
+cannot use, instead of published to everyone. So the answer that actually holds is the operational
+one, and it is the one the old note here already ended on: the wallets are ours, and we never link
+them. The two server guards exist to make that a property of the system rather than a promise about
+our own discipline.
+
+**No social surface makes this check.** Lobby presence, the rivalry ledger and leaderboard faces
+render what `/api/links` was willing to hand them and nothing more — there is no per-surface list to
+consult and no call for a new view to forget. Do not reintroduce one. A client-side membership test
+needs a client-side copy of the list, and shipping that list to every browser in order to re-check a
+rule the server has already enforced would spend the anonymity to buy nothing.
 
 ---
 
@@ -468,7 +526,7 @@ because the link is *about* the wallet. Three states:
 | `00-2 The arena` (canvas) | Faces on discs. No other canvas change. The existing click-to-select fighter inspector gains `@handle · open on X ↗ · linked <date>` and the §2.6 disclosure sentence. |
 | `00-2` result plate (settled) | **`Share this round`** — the one share control in 00. At the emotional peak, nowhere else. Copies the `?round=N&ref=<you>` permalink and opens the X intent with prefilled text. |
 | `00-3 Deploy` | The `Repeat every round` control is promoted and rewritten as **auto-play** (§5.4): budget, stop conditions, and the wall-clock end time. |
-| `00-4 The field` | Face column in both rosters. During Lobby the lede becomes the presence line — who is here, how many slots are left, when it closes. `houseNote()` is unchanged and still runs. |
+| `00-4 The field` | Face column in both rosters. During Lobby the lede becomes the presence line — who is here, how many slots are left, when it closes. The roster says nothing about whether a fighter is a person: a face is the whole of that claim, it appears only where the server served one, and §2.7 is what keeps that true. |
 | `00-4.1 Exchanges` | `@handle` in place of `OTTER_42` for linked wallets. No faces — this is a dense log and 24 rows of avatars is soup. |
 | `00-5 Standings` | Face column. |
 | Chrome (black bars) | **Handles as text in the wins ticker. No avatars.** A 20px black instrument bar is not somewhere a raster face belongs, and at that size it would not be recognisable anyway. |
@@ -483,7 +541,11 @@ stay put). The all-time tab's retention-window caption is unaffected and stays.
 - `02-2 Your position` gains the **live auto-play run status**: armed or not, budget remaining, rounds
   entered this run, wall-clock end time.
 - **New `02-4 Your rivals`** — the pairwise ledger (§3.5), best and worst counterparties, with the
-  coverage caption. House wallets excluded and the exclusion stated.
+  coverage caption. It aggregates every counterparty the round log reports, and it neither excludes
+  any of them nor says anything about which are people. The browser has no list to exclude by
+  (§2.7), and a *stated* exclusion would be worse than none: "the arena's own fighters are not shown
+  here" is a count of them by subtraction, which is the disclosure we removed arriving through a
+  caption. A rival with no link is a `nameFor()` pseudonym, exactly as everywhere else on the page.
 
 ### 4.4 — 03 REFERRALS
 
@@ -805,15 +867,32 @@ New: `data/profiles.ts` (pure, React-free, testable) and `data/useProfiles.ts` (
 signing, and a second meaning on the same word in the same folder is how two workstreams end up
 editing each other's file.
 
-`data/profiles.ts` exports `withProfiles(live, map)`, and it must **mirror `houseFighters.ts`
-exactly**, including the part that looks like a micro-optimisation and is not:
+`data/profiles.ts` exports `withProfiles(live, map)`, and it must **mirror `data/linkFighters.ts`
+exactly** — the surviving implementation of this exact pattern, `markLinkedFighters` for the array
+and `withLinks` for the round — including the part that looks like a micro-optimisation and is not:
 
 - Return the input array — and the input `LiveRound` — when nothing changed. `LiveRound` is rebuilt on
   every poll and every 250ms clock tick, and the canvas, the extract terms and the combat feed are all
   memoised against `live.fighters`. A fresh array with identical contents four times a second
   invalidates all three for nothing.
-- **Null the profile for any fighter with `house === true`, here, in this one function.** §2.7's
-  second guard lives at exactly one call site or it is not a guard.
+- **Do not add a client-side house check here.** This bullet used to say the opposite — "null the
+  profile for any fighter with `house === true`, here, in this one function" — and it is called out
+  rather than quietly deleted, because it is the instruction a future implementer is most likely to
+  follow out of habit. `FighterView.house` no longer exists and neither does the list it was resolved
+  from: the arena's own wallets are not published anywhere a browser can read (`KEEPER_STATUS_SCHEMA`
+  5, which rejects an older file outright rather than ignoring the extra fields). A guard written
+  against a flag that is always absent is not a weak guard — it is a branch that never fires, wearing
+  the appearance of protection and carrying a green test beside it.
+
+  **The invariant is unchanged: a face means a person, and the arena's own wallets may not wear one.**
+  It is enforced on the server at both ends of a link's life — `/api/x/link` refuses to create such a
+  link, `/api/links` refuses to serve one — which is where §2.7 always said the durable version lived.
+  Read §2.7's status paragraph before relying on that sentence: only the read half is built today, and
+  this bullet is describing the design rather than reporting the tree.
+  If a refusal ever needs a user-facing message, it must be **indistinguishable from the generic one**
+  (`FAILURE_COPY.unavailable`); a message that names its reason is a membership oracle, and anyone
+  could read the roster off it one wallet at a time. `data/linkFighters.ts`'s header carries the full
+  argument at the place the guard used to be.
 
 `ArenaContextValue` gains:
 

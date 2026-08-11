@@ -49,8 +49,6 @@ function roundIn(phase: number, no = 7): KeeperRoundStatus {
     lobbyClosesAt: NOW,
     fightStartedAt: NOW + 2,
     fighterCount: 4,
-    houseFighterCount: 4,
-    realFighterCount: 0,
     heldOpen: false,
     winner: 1,
     pot: "4000000",
@@ -105,7 +103,7 @@ describe("what the keeper writes is what the browser can read", () => {
   const pda = new PublicKey("11111111111111111111111111111112");
 
   it("round-trips a held-open round through JSON and the reader's own parser", () => {
-    const written = roundStatusFrom(roundAccount, pda, 1, 1, true);
+    const written = roundStatusFrom(roundAccount, pda, true);
     const document = {
       schema: KEEPER_STATUS_SCHEMA,
       keeper: {
@@ -117,7 +115,6 @@ describe("what the keeper writes is what the browser can read", () => {
       round: written,
       entriesCloseAt: NOW + 18,
       nextLobbyOpensAt: null,
-      house: { wallets: [], disclosure: "" },
     };
     const parsed = parseKeeperStatus(JSON.parse(JSON.stringify(document)) as unknown);
     expect(parsed).not.toBeNull();
@@ -128,7 +125,7 @@ describe("what the keeper writes is what the browser can read", () => {
   });
 
   it("round-trips a lobby that is not held open, so the flag is genuinely carried either way", () => {
-    const written = roundStatusFrom(roundAccount, pda, 2, 0, false);
+    const written = roundStatusFrom(roundAccount, pda, false);
     expect(written.heldOpen).toBe(false);
     expect(JSON.parse(JSON.stringify(written)).heldOpen).toBe(false); // survives, not dropped
   });
@@ -248,8 +245,6 @@ describe("one serializer, two channels", () => {
     const publisher = createStatusPublisher({
       programId: "Pr0gram11111111111111111111111111111111111",
       arenaPda: "Aren4Pda1111111111111111111111111111111111",
-      houseWallets: ["H0use11111111111111111111111111111111111111"],
-      disclosure: "test",
       nowSec: () => NOW,
       filePath: path,
     });
@@ -287,8 +282,6 @@ describe("one serializer, two channels", () => {
     const publisher = createStatusPublisher({
       programId: "Pr0gram11111111111111111111111111111111111",
       arenaPda: "Aren4Pda1111111111111111111111111111111111",
-      houseWallets: [],
-      disclosure: "test",
       nowSec: () => NOW,
       filePath: join(notADirectory, "keeper-status.json"),
     });
@@ -311,8 +304,6 @@ describe("one serializer, two channels", () => {
     const publisher = createStatusPublisher({
       programId: "Pr0gram11111111111111111111111111111111111",
       arenaPda: "Aren4Pda1111111111111111111111111111111111",
-      houseWallets: [],
-      disclosure: "test",
       nowSec: () => NOW,
       filePath: join(dir, "keeper-status.json"),
     });
@@ -320,5 +311,132 @@ describe("one serializer, two channels", () => {
     expect(parsed).not.toBeNull();
     expect(parsed!.keeper.heartbeatAt).toBe(NOW);
     expect(publisher.heartbeatAgeSeconds()).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("the published status identifies none of the arena's own wallets", () => {
+  // WHY THIS IS ASSERTED OVER THE SERIALIZED BYTES RATHER THAN FIELD BY FIELD, which is the unusual
+  // choice here and the whole reason the block exists.
+  //
+  // The FIELDS are already the compiler's job and it does that job better than a test could:
+  // `KeeperStatus` has no `house` and `KeeperRoundStatus` has no `houseFighterCount`, so a line
+  // putting either back does not compile, and no assertion is going to beat that. Writing a test for
+  // it would be writing a test for the type checker.
+  //
+  // The leak this guards is the OTHER one, which the type system cannot see: some future field
+  // carrying the same fact under a name with no "house" in it. That is not hypothetical — it is
+  // exactly what happened. `keeper.lastError.message` was `describeError(e)`, arbitrary text written
+  // by libraries, the RPC and the chain, published to every browser and rendered by nothing; a house
+  // `enter` that fails throws an exception with one of the arena's own wallets inside it, and a
+  // sampled status file had precisely that in it. Every field-by-field assertion anyone had written
+  // passed throughout, because `message` was not a field anybody thought to check. Only the bytes
+  // catch that, because the bytes are the thing that actually reaches the browser and they do not
+  // care what the leaking field is called.
+  //
+  // NOT VACUOUS, WHICH IS THE FAILURE MODE OF EVERY INVERTED TEST: an assertion that a string does
+  // not contain something passes beautifully against an empty string. So each case below proves the
+  // payload is real first — it parses, and it carries the round and the state the case put into it —
+  // and only then checks what is absent.
+
+  /** Stand-ins for the bank, in the shape the classifier actually holds: base58, 32-byte-ish, the
+   *  thing that would appear verbatim in a leak. */
+  const BANK = [
+    "H0use11111111111111111111111111111111111111",
+    "H0use22222222222222222222222222222222222222",
+    "H0use33333333333333333333333333333333333333",
+  ];
+
+  function publisherInTempDir() {
+    const dir = mkdtempSync(join(tmpdir(), "keeper-status-"));
+    return createStatusPublisher({
+      programId: "Pr0gram11111111111111111111111111111111111",
+      arenaPda: "Aren4Pda1111111111111111111111111111111111",
+      nowSec: () => NOW,
+      filePath: join(dir, "keeper-status.json"),
+    });
+  }
+
+  /** Every absence, in one place, so a new case cannot check three of the four by accident. */
+  function expectNothingIdentifying(body: string): void {
+    // The WORDS, case-insensitively — they would appear in any field name, any prose, any error text.
+    expect(body).not.toMatch(/house/i);
+    expect(body).not.toMatch(/disclos/i);
+    // The removed field names specifically, because a writer re-adding one under the old spelling is
+    // the most likely single regression and it should fail with an obvious message.
+    expect(body).not.toContain("realFighterCount");
+    expect(body).not.toContain("houseFighterCount");
+    // AND THE PUBKEYS THEMSELVES, which is the assertion that actually matters. The three above are
+    // about vocabulary and could all pass while a field called `participants` carried the bank.
+    for (const wallet of BANK) expect(body).not.toContain(wallet);
+  }
+
+  it("publishes nothing that identifies the arena's own wallets", () => {
+    const publisher = publisherInTempDir();
+    publisher.setRound(roundIn(Phase.Lobby));
+    publisher.setEntriesCloseAt(NOW + 18);
+    publisher.publish();
+
+    const body = publisher.body();
+    // Real first — see the block comment. A payload that failed to parse would satisfy every
+    // assertion below while proving nothing at all.
+    const parsed = parseKeeperStatus(JSON.parse(body));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.round!.fighterCount).toBe(4);
+    expectNothingIdentifying(body);
+  });
+
+  it("publishes nothing identifying after an entry fill has failed", () => {
+    // THE CASE THAT WOULD HAVE CAUGHT THE REAL LEAK. `lastError` used to interpolate the house entry
+    // count and the exception text into a published string; the failure path is therefore the one
+    // where the payload is most likely to start carrying something it should not, and it is the path
+    // a happy-path fixture never visits.
+    const publisher = publisherInTempDir();
+    publisher.setRound(roundIn(Phase.Lobby));
+    publisher.setLastError({ at: NOW, context: "entry-fill" });
+    publisher.publish();
+
+    const body = publisher.body();
+    const parsed = parseKeeperStatus(JSON.parse(body));
+    expect(parsed).not.toBeNull();
+    // The error genuinely reached the payload — without this the absences below are vacuous, because
+    // a `setLastError` that silently did nothing would pass every one of them.
+    expect(parsed!.keeper.lastError).toEqual({ at: NOW, context: "entry-fill" });
+    expectNothingIdentifying(body);
+  });
+
+  it("carries no exception text at all, whatever the context is called", () => {
+    // The complement of the case above, and the stronger statement: the guarantee is not "the message
+    // is sanitised", it is "there is no message". A field with no inputs cannot be got wrong, which is
+    // why a closed vocabulary was chosen over a filter — see `recordError` in keeper.ts.
+    const publisher = publisherInTempDir();
+    publisher.setLastError({ at: NOW, context: "main-loop" });
+    publisher.publish();
+
+    const raw = JSON.parse(publisher.body()) as { keeper: { lastError: Record<string, unknown> } };
+    expect(Object.keys(raw.keeper.lastError).sort()).toEqual(["at", "context"]);
+  });
+
+  it("publishes nothing identifying in the states a keeper spends its bad days in", () => {
+    // Every optional branch of the payload at once — stalled, out of funds, wedged rounds, a settled
+    // round with a winner. These are the fields added latest and therefore the ones with the least
+    // scrutiny behind them, and a status file is at its longest here.
+    const publisher = publisherInTempDir();
+    publisher.setRound(roundIn(Phase.Settled));
+    publisher.setErValidator({ identity: "Val1dat0r111111111111111111111111111111111", fqdn: "er.example" });
+    publisher.setStalledSince(NOW - 300);
+    publisher.setLowBalance({ lamports: 1n, floorLamports: 2n, nowSec: NOW });
+    publisher.addWedgedRound(4);
+    publisher.setRoundsCompleted(11);
+    publisher.publish();
+
+    const body = publisher.body();
+    const parsed = parseKeeperStatus(JSON.parse(body));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.keeper.stalledSince).toBe(NOW - 300);
+    expect(parsed!.keeper.lowBalance).not.toBeNull();
+    expect(parsed!.keeper.wedgedRounds).toEqual([4]);
+    expectNothingIdentifying(body);
   });
 });

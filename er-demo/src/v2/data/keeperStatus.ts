@@ -62,8 +62,37 @@ import { PHASE_NAME } from "../../chain/constants.ts";
  *  defaulting the absent field to `null` would be the reader inventing "the arena is funded" about a
  *  keeper it knows nothing about — and the page would go on promising a next lobby that will not
  *  arrive until somebody sends SOL. Rejected outright instead; writer and reader ship together, so
- *  the cost is one deploy of silence, which is this module's standing trade. */
-export const KEEPER_STATUS_SCHEMA = 4;
+ *  the cost is one deploy of silence, which is this module's standing trade.
+ *
+ *  5 — REMOVED the house disclosure: `house` (the wallet list and its prose) and the round's
+ *  `houseFighterCount` / `realFighterCount`. This is the first bump that takes a field away rather
+ *  than adding one, and the reason is a decision about the product rather than about this file: the
+ *  arena's own wallets are not published, named, or counted anywhere a browser can read. What is left
+ *  of the round is what the CHAIN reports — `fighterCount`, `pot`, `phase`, `winner` — every field of
+ *  which is a copy of a public account anybody can read for themselves. This file adds nothing to it
+ *  about who those fighters are.
+ *
+ *  IT ALSO REMOVED `keeper.lastError.message`, and that one was not found by looking for the word
+ *  "house". The published error text was `describeError(e)` — an exception this process caught,
+ *  truncated and forwarded verbatim — and one of its call sites interpolated the house entry count
+ *  into it directly ("3 of 12 house entries failed on round #23"), which is the same disclosure the
+ *  round fields above were removed for, arriving through a field nobody thinks of as a field. See
+ *  `KeeperError` for why the answer was a closed vocabulary rather than a sanitiser.
+ *
+ *  IT IS A HARD REJECT RATHER THAN A TOLERATED ABSENCE, and here the direction of the trade inverts.
+ *  Every bump above rejected an OLD file to stop a reader inventing a fact it had no basis for. This
+ *  one rejects it so that a v4 file — written by a keeper that has not been redeployed yet, and still
+ *  carrying all forty-eight pubkeys — cannot be fetched, cached or rendered by a page built after
+ *  this change. A parser that merely ignored the extra fields would leave the disclosure travelling
+ *  to every browser exactly as before; the only thing that would have changed is that nothing
+ *  displayed it. Refusing the file outright is what makes the removal a property of the SYSTEM rather
+ *  than a habit of the UI.
+ *
+ *  The cost is this module's standing one: writer and reader ship together, so there is one deploy's
+ *  stretch in which the page says "keeper is down". That is silence, which is the failure direction
+ *  this file always chooses, and it is the right price for not serving a file that still says the
+ *  thing we stopped saying. */
+export const KEEPER_STATUS_SCHEMA = 5;
 
 /** WHERE THE BROWSER FETCHES THE STATUS FROM. Relative by default; absolute in production.
  *
@@ -123,13 +152,11 @@ export interface KeeperRoundStatus {
    *  0 is the program's own way of saying so. */
   fightStartedAt: number;
   fighterCount: number;
-  houseFighterCount: number;
-  realFighterCount: number;
   /** IS THIS LOBBY'S DEADLINE A BACKSTOP RATHER THAN A SCHEDULE?
    *
-   *  True while the keeper is holding the lobby open waiting for a real player: the round is in
-   *  `Lobby`, `lobbyClosesAt` is still in the future, and `realFighterCount` is 0. The house is in
-   *  there — the room is not empty — but nothing is going to happen until a person arrives.
+   *  True while the keeper is holding the lobby open waiting for a player: the round is in `Lobby`,
+   *  `lobbyClosesAt` is still in the future, and nobody has arrived to start the clock. The room is
+   *  not empty — but nothing is going to happen until somebody turns up.
    *
    *  IT EXISTS TO STOP A COUNTDOWN, WHICH IS THE ONLY REASON A BOOLEAN GOES IN THIS FILE. A held-open
    *  lobby carries a deadline an hour away, and nothing happens at it except the keeper abandoning
@@ -148,11 +175,44 @@ export interface KeeperRoundStatus {
   pot: string;
 }
 
+/**
+ * SOMETHING WENT WRONG, WHEN, AND ROUGHLY WHERE — AND DELIBERATELY NOT WHAT.
+ *
+ * THE `message` FIELD IS GONE, and its removal is the point of this comment rather than a footnote.
+ * It used to carry `describeError(e)` — the text of whatever exception the main loop caught, truncated
+ * to four hundred characters and published, verbatim, to every browser polling this file. That is an
+ * UNCONTROLLED CHANNEL out of a process that holds the arena authority key, and it was already
+ * carrying more than anybody intended: a sampled status file shows a full RPC simulation failure
+ * complete with program id and transaction logs. Exception text is written by libraries, by the RPC,
+ * and by the chain, and it names whatever account the failing instruction happened to touch. Nobody
+ * chose those bytes, and a keeper whose house entry fails is a keeper holding an exception with one of
+ * the arena's own wallets inside it.
+ *
+ * SANITISING IT WAS THE OTHER OPTION AND IT IS THE WRONG SHAPE. A filter over text you did not write
+ * is a guess that has to be right every time, forever, against every library that ever changes a
+ * message — and the one time it is wrong, the leak is silent and permanent. A closed vocabulary is
+ * right by construction: `context` is a short fixed set of strings written HERE, in this repository,
+ * by us, and there is no input to it.
+ *
+ * WHAT IS LOST, HONESTLY: an operator curling this endpoint during an incident used to read the error
+ * text without shell access, and now reads only that there was one and where. The full text still goes
+ * to the log, unchanged and untruncated, which is where the surrounding context lives anyway — the
+ * lines either side of a failure are most of the diagnosis, and this field never had those. So the
+ * cost is one hop to `fly logs` for a reader who is already in a terminal.
+ *
+ * NOTHING IN THE BROWSER EVER RENDERED THE TEXT. No view reads this field at all; the page's liveness
+ * story is told by `heartbeatAt`, `stalledSince` and `lowBalance`, each of which is a decided fact
+ * rather than a string. This was published for an operator, and the operator keeps everything they
+ * actually used.
+ */
 export interface KeeperError {
   /** Unix seconds. */
   at: number;
+  /** WHICH PART OF THE KEEPER, from a small fixed vocabulary written at the call sites in
+   *  `scripts/keeper/keeper.ts` — never interpolated from an exception, an account, a count or
+   *  anything else the keeper observed rather than chose. See this interface's doc comment: the fact
+   *  that this string has no inputs is the entire property that makes it safe to publish. */
   context: string;
-  message: string;
 }
 
 /** THE ARENA HAS RUN OUT OF MONEY — non-null only while the keeper is refusing to open new rounds
@@ -263,7 +323,6 @@ export interface KeeperStatus {
    *  time is genuinely known. Null at every other moment — during a Fight there is no honest answer,
    *  because a fight ends when it ends. */
   nextLobbyOpensAt: number | null;
-  house: { wallets: string[]; disclosure: string };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -302,14 +361,14 @@ function isNumberArray(v: unknown): v is number[] {
   return Array.isArray(v) && v.every(isNumber);
 }
 
-function isStringArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every(isString);
-}
-
 function parseError(raw: unknown): KeeperError | null {
   if (!isRecord(raw)) return null;
-  if (!isNumber(raw.at) || !isString(raw.context) || !isString(raw.message)) return null;
-  return { at: raw.at, context: raw.context, message: raw.message };
+  if (!isNumber(raw.at) || !isString(raw.context)) return null;
+  // `message` is NOT read even when a writer sends one — see `KeeperError`. A v4 keeper still writes
+  // it, and the schema check above already turns that whole file away; this is what makes the field
+  // unreachable even from a hand-written v5 file, because the returned object is built from named
+  // fields rather than spread from `raw`.
+  return { at: raw.at, context: raw.context };
 }
 
 function parseLowBalance(raw: unknown): KeeperLowBalance | null {
@@ -331,10 +390,10 @@ function parseLowBalance(raw: unknown): KeeperLowBalance | null {
 function parseRound(raw: unknown): KeeperRoundStatus | null {
   if (!isRecord(raw)) return null;
   const { no, pda, phase, phaseCode, lobbyOpenedAt, lobbyClosesAt, fightStartedAt } = raw;
-  const { fighterCount, houseFighterCount, realFighterCount, heldOpen, winner, pot } = raw;
+  const { fighterCount, heldOpen, winner, pot } = raw;
   if (!isNumber(no) || !isNumber(phaseCode)) return null;
   if (!isNumber(lobbyOpenedAt) || !isNumber(lobbyClosesAt) || !isNumber(fightStartedAt)) return null;
-  if (!isNumber(fighterCount) || !isNumber(houseFighterCount) || !isNumber(realFighterCount)) return null;
+  if (!isNumber(fighterCount)) return null;
   // REQUIRED, and `false` is not a safe default for an absent key. A writer that has never heard of
   // held-open lobbies is a writer whose `lobbyClosesAt` might be an hour of backstop; reading its
   // silence as "not held open" is what would put the 59:47 countdown on screen. The schema check
@@ -357,8 +416,6 @@ function parseRound(raw: unknown): KeeperRoundStatus | null {
     lobbyClosesAt,
     fightStartedAt,
     fighterCount,
-    houseFighterCount,
-    realFighterCount,
     heldOpen,
     winner,
     pot,
@@ -429,11 +486,6 @@ export function parseKeeperStatus(raw: unknown): KeeperStatus | null {
     erValidator = { identity: v.identity, fqdn: v.fqdn };
   }
 
-  const h = raw.house;
-  if (!isRecord(h)) return null;
-  const { wallets, disclosure } = h;
-  if (!isStringArray(wallets) || !isString(disclosure)) return null;
-
   // `round: null` is a normal, frequent state — the keeper between rounds — so an explicit null is
   // accepted, and anything else that fails to parse (an absent field included) is not.
   const round = raw.round === null ? null : parseRound(raw.round);
@@ -471,7 +523,6 @@ export function parseKeeperStatus(raw: unknown): KeeperStatus | null {
     round,
     entriesCloseAt,
     nextLobbyOpensAt,
-    house: { wallets: [...wallets], disclosure },
   };
 }
 
@@ -565,8 +616,8 @@ export type KeeperCountdown =
   /** THE LOBBY IS OPEN AND WAITING FOR A PERSON, AND THERE IS NOTHING TO COUNT. Carries no `seconds`,
    *  because none exists: the keeper will close entries when somebody arrives, and nobody knows when
    *  that is. It is a separate kind rather than `none` because the two are different sentences — the
-   *  page has something specific and true to say here ("waiting for players", with the house already
-   *  in the room), whereas `none` is the state in which it should say nothing at all. */
+   *  page has something specific and true to say here — the round is open and a deploy is what starts
+   *  the clock — whereas `none` is the state in which it should say nothing at all. */
   | { kind: "waiting-for-players" }
   | { kind: "none" };
 
@@ -665,44 +716,4 @@ export function keeperCountdown(status: KeeperStatus | null, nowSec: number): Ke
 
 function secondsUntil(deadlineSec: number, nowSec: number): number {
   return Math.max(0, Math.ceil(deadlineSec - nowSec));
-}
-
-/** THE SLICE OF A STATUS FILE THE ROSTER ACTUALLY DEPENDS ON — one field, not the whole heartbeat.
- *
- *  `KeeperStatus` is assignable to it, so `isHouseWallet(status, wallet)` still reads exactly as it
- *  did. What the narrower type buys is a caller that can hold a roster WITHOUT holding a status: the
- *  status file is rewritten every two seconds and the house's wallet list changes approximately
- *  never, so anything that re-renders on a fresh `KeeperStatus` re-renders twice a second for a fact
- *  that did not move. `data/keeperFeed.ts` republishes one of these only when its contents change,
- *  and the fixture builds one out of thin air — neither of which can produce a `KeeperStatus`, and
- *  neither of which should have to. */
-export interface HouseRoster {
-  house: { wallets: readonly string[]; disclosure: string };
-}
-
-/**
- * Is this fighter one of the house's?
- *
- * The roster has to be able to mark bots, because README.md carries "Bot disclosure in UI" as a
- * requirement and an undisclosed house fighter in a list of players is a misrepresentation of who
- * a player is up against.
- *
- * THE PUBLISHED LIST IS THE INTERIM MECHANISM, and it is worth being clear about why. It is a claim
- * made by the same process that runs the bots, in a file it writes itself — believable, but not
- * verifiable by anyone reading the chain. The better design is to register the house wallets on the
- * Arena account on-chain, where the disclosure is as public and as tamper-evident as the round it
- * describes and where a client can check it without trusting the keeper at all. That is planned
- * separately; until it lands, this is disclosure on the keeper's word.
- *
- * Base58 is case-sensitive, so the comparison is too — a case-insensitive match here would be a
- * different (and wrong) claim about which key is which.
- *
- * NULL MARKS NOBODY, and that is the whole rule for a page with no keeper: "not known to be house" is
- * the honest default, and a browser that cannot read a disclosure list has no basis to accuse anyone
- * of being a bot. Callers pass null for every version of that — no status file, a stale one, a schema
- * this build cannot parse.
- */
-export function isHouseWallet(roster: HouseRoster | null, pubkey: string): boolean {
-  if (roster === null) return false;
-  return roster.house.wallets.includes(pubkey);
 }

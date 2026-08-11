@@ -21,10 +21,20 @@
 // is now usually about `MIN_RETAINED_ROUNDS`, so it is no longer a bug waiting for the arena to get
 // popular. Every board here states the coverage it was counted over.
 //
-// AND WHO IS ACTUALLY A PERSON. The keeper seats house wallets so a lobby is never empty, and 01-1
-// listed them indistinguishably from players — a six-fighter lobby reading as six people.
-// `FighterView.house` carries that fact now, and this board prints it. It is an obligation, not a
-// feature: `README.md`'s go-live list has had "Bot disclosure in UI" open since the keeper existed.
+// AND WHO IS BEHIND A ROW — NOTHING HERE ANSWERS THAT, ON PURPOSE. 01-1 used to mark the fighters
+// the keeper had seated for the arena, off a per-fighter flag stamped from a wallet list the keeper
+// published. `KEEPER_STATUS_SCHEMA` 5 took that list away along with the prose beside it and the
+// round's own counts, and it REJECTS an older status file outright rather than ignoring the extra
+// fields — so there is nothing a browser can read that backs a claim about whether a row is a
+// person, and no version of this page that can quietly start reading one again. Every column below
+// is a copy of the round account: a wallet, a side, its money, its status. Who is holding it is not
+// among the facts this screen has.
+//
+// IF THAT MARK EVER RETURNS IT MAY NOT RETURN AS A BOOLEAN. The flag this board read defaulted to
+// `false` whenever nothing was disclosing, and `false` renders identically to "checked, and this one
+// is a person" — a confident claim about the single thing nobody had checked, which is a worse
+// untruth than the silence that replaced it. Whatever restores the mark has to be able to say "not
+// known" as a third answer, and the boards here have to render that third answer as `—`.
 
 import { useId, useMemo, useState } from "react";
 import { useArena } from "../data/useArena.ts";
@@ -41,7 +51,6 @@ import {
   usdCompact,
   worth,
   type FighterView,
-  type HouseDisclosure,
   type LogCoverage,
   type RoundPlayer,
   type StandingsRow,
@@ -71,7 +80,7 @@ const HEAD: Record<
     index: "01-1",
     title: "This round",
     lede: () =>
-      "Everyone in the ring right now, ranked by what they are worth — value still fighting plus value already raided. It moves while you watch it. Fighters the keeper seated for the house are marked as such.",
+      "Everyone in the ring right now, ranked by what they are worth — value still fighting plus value already raided. It moves while you watch it.",
     source: "round account",
   },
   alltime: {
@@ -134,7 +143,7 @@ function NameCell({ link, name }: { link: LinkRecord | null; name: string }) {
 }
 
 export function LeaderboardView() {
-  const { live, standings, hall, history, logCoverage, houseDisclosure, you, source } = useArena();
+  const { live, standings, hall, history, logCoverage, you, source } = useArena();
   const [tab, setTab] = useState<TabId>("round");
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "pnl", desc: true });
 
@@ -195,12 +204,6 @@ export function LeaderboardView() {
   const count =
     tab === "round" ? ranked.length : tab === "alltime" ? standings.length : hall.length;
 
-  // HOW MANY OF THE FIGHTERS ON 01-1 ARE OURS — from `houseDisclosure`, never counted off the flags
-  // here. `null` is the answer this screen most needs and the one a local count cannot produce: with
-  // nothing publishing a list, every fighter reads `house: false` and a tally of them would print a
-  // confident "0 house fighters" over a round nobody has checked.
-  const house = houseDisclosure.houseFighterCount;
-
   // WHAT THE BOARD IS READ FROM has to survive the fallback. `head.source` names the account these
   // rows came out of — but in fixture mode that account is `mockData.ts`, and "READ FROM · ROUND LOG"
   // beside a grey marker was still a chain claim in the only place a reader looks for one. Say
@@ -235,29 +238,12 @@ export function LeaderboardView() {
           <span className="u" title={coverageNote(logCoverage)}>
             Rounds logged · <span className="u--ink">{coverageFigure(logCoverage)}</span>
           </span>
-          {tab === "round" ? (
-            // `—` and not `0` when nothing is disclosing, per UI-SPEC's rule for an unbacked figure
-            // and per `HouseDisclosure`'s own note: with no list to check against, "0 house
-            // fighters" is a claim and not a count.
-            <span
-              className="u"
-              title={
-                house === null
-                  ? "Nothing is publishing a list of house wallets right now, so how many of these fighters are ours cannot be checked. The page will not print a zero for a fact it has not verified."
-                  : houseDisclosure.note ??
-                    "Fighters the keeper seated for the house, so a lobby is never empty. They are marked in the board below."
-              }
-            >
-              House-seated ·{" "}
-              <span className={house === null ? "none" : "u--ink"}>
-                {house === null ? "—" : `${house} of ${ranked.length}`}
-              </span>
-            </span>
-          ) : (
-            <span className="u">
-              Rows · <span className="u--ink">{count}</span>
-            </span>
-          )}
+          {/* HOW MANY ROWS THE BOARD ON SCREEN IS SHOWING — on all three tabs, and `count` already
+              tracks which one is mounted. This slot was a per-tab split until 01-1 got its own
+              figure here; it is one fact again. */}
+          <span className="u">
+            Rows · <span className="u--ink">{count}</span>
+          </span>
         </div>
       </header>
 
@@ -295,7 +281,7 @@ export function LeaderboardView() {
             the same box. Harmless, but it is one line to drop once that module is free. */}
         {tab === "round" ? (
           <TabPanel ns={tabsNs} id="round">
-            <RoundBoard fighters={ranked} label={head.title} disclosure={houseDisclosure} />
+            <RoundBoard fighters={ranked} label={head.title} />
           </TabPanel>
         ) : null}
         {tab === "alltime" ? (
@@ -339,15 +325,7 @@ function statusOf(f: FighterView): { label: string; dim: boolean } {
   return { label: "alive", dim: false };
 }
 
-function RoundBoard({
-  fighters,
-  label,
-  disclosure,
-}: {
-  fighters: FighterView[];
-  label: string;
-  disclosure: HouseDisclosure;
-}) {
+function RoundBoard({ fighters, label }: { fighters: FighterView[]; label: string }) {
   // THE IDENTITY MAP, READ HERE RATHER THAN THREADED THROUGH. It is a context value, so this costs
   // one lookup and keeps the three boards' prop lists as they were. `loading` is deliberately not
   // consulted: nothing on this board may wait on the identity feed (`useLinks.ts`), and a round
@@ -359,121 +337,82 @@ function RoundBoard({
   if (!fighters.length) {
     return <Empty>No fighters in the ring — the board fills the moment someone deploys.</Empty>;
   }
-  const house = disclosure.houseFighterCount;
   return (
-    <>
-      {house !== null && house > 0 ? (
-        // Said in prose as well as marked per row. A reader who scans the money columns and never
-        // reaches the name column should still not leave this board believing the field is all
-        // players — which is the exact misreading the marker exists to prevent.
-        //
-        // THE KEEPER'S OWN SENTENCE WHERE IT HAS ONE. The party seating these wallets is the party
-        // whose account of why they are there should be quoted; this page paraphrases only when
-        // nothing is offered.
-        <p className="lede" style={{ marginTop: -6, marginBottom: 12 }}>
-          <b>
-            {house} of {fighters.length}
-          </b>{" "}
-          {/* TWO WORDS, TWO DIFFERENT NUMBERS, and they were both keyed to the same one — which
-              rendered "1 of 2 fighter is ours" on any round holding a single house fighter. That is
-              not a hypothetical lineup: it is the keeper's own hold-open state the moment one real
-              player joins a lobby the house was sitting in alone, and `?fighters=2` reproduces it
-              exactly (`e2e/copy.e2e.ts`, which is what found it).
-              The NOUN belongs to the DENOMINATOR — "1 of 2 fighters" — because it is what the "of"
-              counts out of. The VERB belongs to the NUMERATOR — "1 … is" — because that is the
-              subject of the sentence. `houseFighters.ts#houseNote` gets this right in its own
-              rendering of the same claim, which is the other half of the lesson: this is a second
-              hand-written copy of one sentence, and it is the copy that rotted. */}
-          {fighters.length === 1 ? "fighter" : "fighters"} {house === 1 ? "is" : "are"} ours.{" "}
-          {disclosure.note ??
-            "The keeper seats house wallets so a round is never empty. They stake, fight and lose real value like anyone else."}{" "}
-          They are marked <span className="sc-bot">house</span> below.
-        </p>
-      ) : null}
-      <ScrollBox label={label}>
-        <div className="rows sc-tbl sc-tbl--lbr" role="table" aria-label="This round">
-          <div className="row row--head" role="row">
-            <div role="columnheader">#</div>
-            <div role="columnheader">Side</div>
-            <div role="columnheader">Fighter</div>
-            {/* `sc-hp`, not `sc-s`: health is this board's rail — the equivalent of 01-2's P/L scale —
-                and it is the one column that MOVES during a fight. It outlives the workings columns
-                beside it and is dropped only on a phone. */}
-            <div role="columnheader" className="sc-hp">
-              Health
-            </div>
-            <div role="columnheader" className="r sc-s">
-              In the ring
-            </div>
-            <div role="columnheader" className="r sc-s">
-              Banked
-            </div>
-            <div role="columnheader" className="r">
-              Worth
-            </div>
-            <div role="columnheader" className="sc-st">
-              Status
-            </div>
+    <ScrollBox label={label}>
+      <div className="rows sc-tbl sc-tbl--lbr" role="table" aria-label="This round">
+        <div className="row row--head" role="row">
+          <div role="columnheader">#</div>
+          <div role="columnheader">Side</div>
+          <div role="columnheader">Fighter</div>
+          {/* `sc-hp`, not `sc-s`: health is this board's rail — the equivalent of 01-2's P/L scale —
+              and it is the one column that MOVES during a fight. It outlives the workings columns
+              beside it and is dropped only on a phone. */}
+          <div role="columnheader" className="sc-hp">
+            Health
           </div>
-          {fighters.map((f, i) => {
-            const st = statusOf(f);
-            return (
-              <div
-                key={f.id}
-                role="row"
-                className={`row${f.isYou ? " row--you" : ""}${st.dim ? " row--dead" : ""}`}
-              >
-                <div role="cell" className="num dim">
-                  {i + 1}
-                </div>
-                <div role="cell" className="sc-side">
-                  <Mark side={f.side} dead={f.dead} />
-                  <span className="u">{SIDE_TOKEN[f.side].name}</span>
-                </div>
-                <div role="cell" className="sc-who" title={f.wallet}>
-                  {/* `linkFor`, NEVER `map.get`. It is the single client-side guard that keeps a
-                      face off a house wallet, and it is a guard only because it lives at one call
-                      site — `linkFighters.ts`'s header is the argument. `f.house` is stamped by
-                      `withHouseMarks` upstream, so this reads the same fact the `house` marker two
-                      lines below prints. */}
-                  <NameCell link={linkFor(map, f.wallet, f.house)} name={f.name} />
-                  {f.isYou ? <span className="u u--ink">you</span> : null}
-                  {/* THE DISCLOSURE. Real text, not a colour or a shade: it is announced by a screen
-                      reader, it survives a monochrome print, and it says the word rather than asking a
-                      reader to decode a treatment. It sits where "you" sits because it answers the
-                      same question about the same row — who is this. */}
-                  {f.house ? (
-                    <span className="sc-bot" title="Seated by the keeper for the house — not another player">
-                      house
-                    </span>
-                  ) : null}
-                  <span className="sc-who-k">{f.short}</span>
-                </div>
-                <div role="cell" className="sc-hp">
-                  <Bar value={f.hp} max={f.stake} side={f.side} />
-                </div>
-                {/* This board is the widest live table on the page (three money columns plus a health
-                    bar) against fixed 70-88px tracks — on the chain path a live fighter's ring/bank/
-                    worth are all up to twenty characters and right-aligned, so a full `usd()` here
-                    spills leftward into the column beside it. Compact. */}
-                <div role="cell" className="num r sc-s">
-                  {usdCompact(f.hp)}
-                </div>
-                <div role="cell" className="num r sc-s">
-                  {f.banked > 0n ? usdCompact(f.banked) : <span className="none">—</span>}
-                </div>
-                <div role="cell" className="num r">
-                  {usdCompact(worth(f))}
-                </div>
-                <div role="cell" className="u sc-st">
-                  {st.label}
-                </div>
-              </div>
-            );
-          })}
+          <div role="columnheader" className="r sc-s">
+            In the ring
+          </div>
+          <div role="columnheader" className="r sc-s">
+            Banked
+          </div>
+          <div role="columnheader" className="r">
+            Worth
+          </div>
+          <div role="columnheader" className="sc-st">
+            Status
+          </div>
         </div>
-      </ScrollBox>
-    </>
+        {fighters.map((f, i) => {
+          const st = statusOf(f);
+          return (
+            <div
+              key={f.id}
+              role="row"
+              className={`row${f.isYou ? " row--you" : ""}${st.dim ? " row--dead" : ""}`}
+            >
+              <div role="cell" className="num dim">
+                {i + 1}
+              </div>
+              <div role="cell" className="sc-side">
+                <Mark side={f.side} dead={f.dead} />
+                <span className="u">{SIDE_TOKEN[f.side].name}</span>
+              </div>
+              <div role="cell" className="sc-who" title={f.wallet}>
+                {/* `linkFor`, NEVER `map.get`, on all three boards. A `LinkRecord`'s compile-time
+                    brand does not survive a spread, so the map alone cannot answer whether the
+                    record in it is one the client actually verified — `linkFor` asks the runtime
+                    register and renders an unverified copy as unlinked. Holding that at one call
+                    site is what makes it a guard rather than a habit; `linkFighters.ts`'s header is
+                    the argument. */}
+                <NameCell link={linkFor(map, f.wallet)} name={f.name} />
+                {f.isYou ? <span className="u u--ink">you</span> : null}
+                <span className="sc-who-k">{f.short}</span>
+              </div>
+              <div role="cell" className="sc-hp">
+                <Bar value={f.hp} max={f.stake} side={f.side} />
+              </div>
+              {/* This board is the widest live table on the page (three money columns plus a health
+                  bar) against fixed 70-88px tracks — on the chain path a live fighter's ring/bank/
+                  worth are all up to twenty characters and right-aligned, so a full `usd()` here
+                  spills leftward into the column beside it. Compact. */}
+              <div role="cell" className="num r sc-s">
+                {usdCompact(f.hp)}
+              </div>
+              <div role="cell" className="num r sc-s">
+                {f.banked > 0n ? usdCompact(f.banked) : <span className="none">—</span>}
+              </div>
+              <div role="cell" className="num r">
+                {usdCompact(worth(f))}
+              </div>
+              <div role="cell" className="u sc-st">
+                {st.label}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </ScrollBox>
   );
 }
 
@@ -532,10 +471,7 @@ function AllTime({
   loading: boolean;
   label: string;
 }) {
-  // See `RoundBoard`. `house` is `false` here and that is not an oversight: `StandingsRow` is an
-  // aggregate over settled rounds whose house membership was already excluded upstream, so there is
-  // no per-row house mark on this board to key off. `linkFor` takes it as a parameter precisely so
-  // each surface has to state which of the two it is (`linkFighters.ts`).
+  // See `RoundBoard` — read from context here rather than threaded down, and never waited on.
   const { map } = useLinks();
   if (!rows.length) {
     return (
@@ -603,7 +539,7 @@ function AllTime({
               {i + 1}
             </div>
             <div role="cell" className="sc-who" title={r.wallet}>
-              <NameCell link={linkFor(map, r.wallet, false)} name={r.name} />
+              <NameCell link={linkFor(map, r.wallet)} name={r.name} />
               {r.wallet === youKey ? <span className="u u--ink">you</span> : null}
               <span className="sc-who-k">{r.short}</span>
             </div>
@@ -670,7 +606,7 @@ function Hall({
   roundOf(p: RoundPlayer): bigint | null;
   label: string;
 }) {
-  // See `AllTime` — `RoundPlayer` is a settled-round row and carries no house mark either.
+  // See `RoundBoard` — read from context here rather than threaded down, and never waited on.
   const { map } = useLinks();
   if (!rows.length) {
     return (
@@ -735,7 +671,7 @@ function Hall({
                 <span className="u">{SIDE_TOKEN[p.side].name}</span>
               </div>
               <div role="cell" className="sc-who" title={p.wallet}>
-                <NameCell link={linkFor(map, p.wallet, false)} name={p.name} />
+                <NameCell link={linkFor(map, p.wallet)} name={p.name} />
                 {p.wallet === youKey ? <span className="u u--ink">you</span> : null}
                 <span className="sc-who-k">{p.short}</span>
               </div>

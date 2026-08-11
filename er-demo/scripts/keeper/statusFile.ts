@@ -47,6 +47,27 @@
 //     are null. An absent key reads as malformed, and `JSON.stringify` drops `undefined` — so these
 //     are assigned real nulls rather than left off;
 //   * `chain.cluster` is exactly `"devnet"`.
+//
+// AND ONE RULE ABOUT WHAT MUST NOT BE IN IT, which is newer than the four above and is the only one
+// whose violation is silent in BOTH directions. THIS PAYLOAD IDENTIFIES NO WALLET THE ARENA OWNS.
+// It used to: a `house` block carrying all forty-eight pubkeys and a paragraph of prose, plus
+// `houseFighterCount` / `realFighterCount` on every round. The keeper still computes the split on
+// every pass — the treasury rule is made of it — but the arena's own wallets are anonymous now, and
+// none of that leaves this process by either channel.
+//
+// THE REMOVAL IS NOT SELF-ENFORCING, AND THAT IS WHY IT IS WRITTEN DOWN HERE RATHER THAN LEFT TO THE
+// TYPE. `KeeperStatus` no longer has a field to put a pubkey in, so the compiler stops the obvious
+// mistake — but it cannot stop the interesting one, which is some future field carrying the same fact
+// under a name with no "house" in it. That already happened once: `keeper.lastError.message` was
+// arbitrary caught-exception text, and a failed house `enter` is an exception with one of the arena's
+// own wallets inside it. Sanitising it was rejected — a filter over text you did not write has to be
+// right every time forever, and the one time it is wrong the leak is silent and permanent — so the
+// message was deleted from the shape and `context` became a closed vocabulary with no inputs.
+//
+// The standing rule that came out of that: NOTHING INTERPOLATED FROM AN EXCEPTION, AN ACCOUNT, OR A
+// FIGHTER COUNT MAY EVER ENTER THIS PAYLOAD. `statusFile.test.ts` asserts it over the SERIALIZED
+// BYTES rather than field by field, because the bytes are the only thing that can catch a leak
+// arriving through a field nobody thought to check.
 
 import { readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -89,12 +110,18 @@ export function serializeKeeperStatus(status: KeeperStatus): string {
 /** Build the round half of the status from the account as the chain reports it.
  *
  *  Everything here is copied, not computed. The one derived field is `phase`, and it is derived from
- *  `phaseCode` through `PHASE_NAME` precisely so the two cannot disagree. */
+ *  `phaseCode` through `PHASE_NAME` precisely so the two cannot disagree.
+ *
+ *  IT USED TO TAKE THE HOUSE/REAL SPLIT TOO, and losing those two parameters is the whole shape of
+ *  this change at the writer's end. The keeper still computes the split on every pass — the treasury
+ *  rule is made of it, and `lobbyIsHeldOpen` branches on it — but it is no longer anybody else's
+ *  business how many of the fighters in a round belong to the arena. What survives is `fighterCount`,
+ *  which is a copy of the account's own field: every number this function now publishes is one a
+ *  reader could have got from the chain themselves, which is a cleaner boundary than the one it
+ *  replaced. `heldOpen` is the single exception and earns it — see its own comment below. */
 export function roundStatusFrom(
   round: RawRoundAccount,
   roundPda: PublicKey,
-  houseFighters: number,
-  realFighters: number,
   heldOpen: boolean,
 ): KeeperRoundStatus {
   const phaseName = PHASE_NAME[round.phase];
@@ -110,11 +137,17 @@ export function roundStatusFrom(
     lobbyClosesAt: Number(round.lobbyClosesAt.toString()),
     fightStartedAt: Number(round.fightStartedAt.toString()),
     fighterCount: round.fighterCount,
-    houseFighterCount: houseFighters,
-    realFighterCount: realFighters,
     // Decided by `lobbyIsHeldOpen` in lobbyPolicy.ts and passed in, not recomputed here: it is the
     // same predicate the keeper's own branch runs on, and a second copy of it in the publisher is how
     // the file would come to disagree with what the keeper is actually doing.
+    //
+    // IT IS DERIVED FROM THE REAL FIGHTER COUNT AND IS NOT A WAY OF READING IT. `lobbyIsHeldOpen` is
+    // true only while the keeper is waiting for a person, which does narrow the count to zero — and
+    // that is a fact about the arena's own behaviour rather than about any wallet: it names nobody,
+    // and the moment a real fighter arrives it goes false and says nothing further about how many
+    // arrived. The alternative was deleting it with the counts, and that was rejected: it exists to
+    // STOP a countdown, and without it the page draws "closes in 59:47" off an hour of backstop —
+    // the invented number this whole contract was written to delete.
     heldOpen,
     // The account's own `winner`, unmodified — 0 until `resolve` writes it, exactly as the chain
     // stores it. Reporting anything else before settlement would be this keeper inventing a result.
@@ -208,8 +241,6 @@ export function honestEntriesCloseAt(
 export interface StatusPublisherOptions {
   programId: string;
   arenaPda: string;
-  houseWallets: string[];
-  disclosure: string;
   /** The CHAIN's clock, in unix seconds. Every timestamp in the file comes from here so a reader
    *  comparing them against its own clock has ONE offset to contend with rather than two: the round's
    *  own fields are chain-stamped, and a heartbeat on a different clock would make "how stale is
@@ -294,7 +325,6 @@ export function createStatusPublisher(options: StatusPublisherOptions): StatusPu
     round: null,
     entriesCloseAt: null,
     nextLobbyOpensAt: null,
-    house: { wallets: options.houseWallets, disclosure: options.disclosure },
   };
 
   let heartbeat: ReturnType<typeof setInterval> | null = null;

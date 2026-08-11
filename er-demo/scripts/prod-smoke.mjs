@@ -34,7 +34,7 @@ log("operator", operator.publicKey.toBase58());
 log("burner  ", burner.publicKey.toBase58());
 
 const before = await status();
-log(`round #${before.round.no} phase=${before.round.phase} fighters=${before.round.fighterCount} real=${before.round.realFighterCount} heldOpen=${before.round.heldOpen}`);
+log(`round #${before.round.no} phase=${before.round.phase} fighters=${before.round.fighterCount} heldOpen=${before.round.heldOpen}`);
 
 const fundSig = await sendAndConfirmTransaction(conn, new Transaction().add(SystemProgram.transfer({
   fromPubkey: operator.publicKey, toPubkey: burner.publicKey, lamports: FUND_SOL * LAMPORTS_PER_SOL,
@@ -103,7 +103,20 @@ let last = "";
 while (Date.now() < deadline) {
   const s = await status().catch(() => null);
   if (s) {
-    const key = `#${s.round.no}:${s.round.phase}:${s.round.fighterCount}f/${s.round.realFighterCount}r`;
+    // THREE COMPONENTS, AND THEY STILL CATCH EVERY TRANSITION THIS SCRIPT IS WATCHING FOR. The key
+    // used to carry a fourth, `/<realFighterCount>r`, which `KEEPER_STATUS_SCHEMA` 5 no longer
+    // publishes — the arena's own wallets are internal now, so the keeper reports how many fighters
+    // are in the round and says nothing about which are which.
+    //
+    // That is a loss of detail in the log, not of detection, and the difference matters enough to
+    // state rather than assume. The real count was a SUBTRACTION off the same fighter count already
+    // in this key: a player entering and a house fighter being seated both increment
+    // `fighterCount`, so no arrival could ever have moved the dropped component without moving the
+    // one that remains. The only thing it could have caught alone is a wallet being reclassified
+    // mid-round — the roster growing between two polls — which is not an event this script exists to
+    // observe and is not observable from here any more in any case. Round number, phase and fighter
+    // count still change on every open, every entry, every draw, every settle.
+    const key = `#${s.round.no}:${s.round.phase}:${s.round.fighterCount}f`;
     if (key !== last) { last = key; phases.push({ at: new Date().toISOString().slice(11, 19), key, pot: s.round.pot }); log("KEEPER", key, "pot", s.round.pot); }
     if (s.round.phase === "Settled" && s.round.no >= before.round.no) break;
   }

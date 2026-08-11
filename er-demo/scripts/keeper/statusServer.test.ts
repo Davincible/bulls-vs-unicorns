@@ -18,19 +18,44 @@
 
 import { describe, expect, it, vi } from "vitest";
 import {
-  HEALTH_PATH, LOCAL_DEV_ORIGINS, STATUS_PATH, corsHeaders, handleKeeperRequest,
-  originPolicyWarnings, resolveAllowedOrigins,
+  HEALTH_PATH, HOUSE_PATH, HOUSE_TOKEN_MIN_LENGTH, LOCAL_DEV_ORIGINS, STATUS_PATH, bearerMatches,
+  corsHeaders, handleKeeperRequest, originPolicyWarnings, resolveAllowedOrigins,
+  resolveHouseTokenPolicy,
 } from "./statusServer.ts";
 
 const BODY = '{"schema":3}\n';
 
+/** Long enough to pass `HOUSE_TOKEN_MIN_LENGTH`, and DERIVED from that constant rather than a literal
+ *  of the right length — a hand-counted fixture is one edit away from silently testing the refusal
+ *  path instead of the success path, and the two look identical from the assertion's side. */
+const TOKEN = "t".repeat(HOUSE_TOKEN_MIN_LENGTH);
+
+/** Two of the arena's own wallets. Base58-shaped so an assertion that the 404/status bodies do not
+ *  contain them is testing the thing it looks like it is testing. */
+const HOUSE_WALLETS = [
+  "H0use11111111111111111111111111111111111111",
+  "H0use22222222222222222222222222222222222222",
+];
+
+/** THE ROSTER ROUTE IS OFF BY DEFAULT HERE, which mirrors the keeper an operator gets before they set
+ *  the secret and keeps every pre-existing test in this file describing the same server it always
+ *  did. Each roster test opts in explicitly, so "the route is enabled" is never something a reader has
+ *  to infer from a helper. */
 function deps(overrides: Partial<Parameters<typeof handleKeeperRequest>[1]> = {}) {
   return {
     body: () => BODY,
     heartbeatAgeSeconds: () => 1,
     policy: resolveAllowedOrigins("https://arena.example"),
+    houseToken: null as string | null,
+    houseWallets: () => HOUSE_WALLETS as readonly string[],
     ...overrides,
   };
+}
+
+function bearer(path: string, token: string, headers: Record<string, string> = {}): Request {
+  return new Request(`http://keeper.internal${path}`, {
+    headers: { authorization: `Bearer ${token}`, ...headers },
+  });
 }
 
 function get(path: string, headers: Record<string, string> = {}): Request {
@@ -198,13 +223,187 @@ describe("everything else", () => {
     expect(res.headers.get("allow")).toBe("GET, HEAD, OPTIONS");
   });
 
-  it("404s an unknown path while naming both real ones", async () => {
+  it("404s an unknown path while naming both PUBLIC ones", async () => {
     // This is what somebody gets when they curl the bare hostname to check a deploy worked, and a
-    // bare "404" at that moment is a dead end.
+    // bare "404" at that moment is a dead end. It names the two public routes and deliberately not
+    // the roster — see the roster describe block below.
     const res = handleKeeperRequest(get("/"), deps());
     expect(res.status).toBe(404);
     const text = await res.text();
     expect(text).toContain(STATUS_PATH);
     expect(text).toContain(HEALTH_PATH);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The roster endpoint
+// ---------------------------------------------------------------------------------------------
+
+describe("whether the roster route exists at all", () => {
+  it("is off when nothing is configured, and says what that costs at the other end", () => {
+    // NOT AN ERROR — a local keeper, a dry run and a second devnet instance are all legitimately
+    // tokenless. It is warned about because the CONSEQUENCE lands on a different host and is invisible
+    // from both: the identity API fails closed, so no token means no avatars for anybody.
+    const policy = resolveHouseTokenPolicy(undefined);
+    expect(policy.token).toBeNull();
+    expect(policy.enabled).toBe(false);
+    expect(policy.warnings).toHaveLength(1);
+    expect(policy.warnings[0]).toContain("NO avatars");
+  });
+
+  it("REFUSES a token shorter than the minimum rather than accepting a guessable one", () => {
+    // The route is public on a public hostname with no rate limit in front of it, so the token's
+    // entropy is the whole of its security. Accepting a short one "for now" is how a three-character
+    // secret reaches production — nothing after the day it is set will remind anybody. Refusing makes
+    // it loud at boot, where it costs a log line.
+    const policy = resolveHouseTokenPolicy("short");
+    expect(policy.token).toBeNull();
+    expect(policy.enabled).toBe(false);
+    // The ACTUAL LENGTH, because "too short" without the number sends the operator to re-read the
+    // docs instead of counting their paste — and an accidental shell truncation is the realistic
+    // cause, which only the number reveals.
+    expect(policy.warnings[0]).toContain("only 5 characters");
+  });
+
+  it("trims, because the realistic way this arrives is a shell", () => {
+    // `fly secrets set X="$(cat …)"` carries the trailing newline. Untrimmed, every request would 401
+    // against a token that looks character-for-character identical to the one in the Vercel dashboard
+    // — a mismatch nobody can see by reading either side.
+    expect(resolveHouseTokenPolicy(`  ${TOKEN}\n`).token).toBe(TOKEN);
+  });
+
+  it("does not let whitespace pad a short token past the floor", () => {
+    // The length is measured after trimming. Measuring before it would make the minimum a formality
+    // that any accidental leading space defeats.
+    expect(resolveHouseTokenPolicy(`${" ".repeat(40)}abc`).token).toBeNull();
+  });
+
+  it("enables the route and warns about nothing when the token is long enough", () => {
+    const policy = resolveHouseTokenPolicy(TOKEN);
+    expect(policy).toEqual({ token: TOKEN, enabled: true, warnings: [] });
+  });
+});
+
+describe("comparing the credential", () => {
+  it("accepts the exact token and rejects a wrong one of the same length", () => {
+    expect(bearerMatches(`Bearer ${TOKEN}`, TOKEN)).toBe(true);
+    expect(bearerMatches(`Bearer ${"x".repeat(HOUSE_TOKEN_MIN_LENGTH)}`, TOKEN)).toBe(false);
+  });
+
+  it("rejects a wrong-length credential rather than throwing", () => {
+    // THE POINT OF THIS TEST. `timingSafeEqual` THROWS on unequal lengths, so a missing length check
+    // would turn a wrong password into a 500 — a different response, which is a far louder oracle
+    // than the timing difference the constant-time comparison exists to remove.
+    expect(() => bearerMatches("Bearer short", TOKEN)).not.toThrow();
+    expect(bearerMatches("Bearer short", TOKEN)).toBe(false);
+    expect(bearerMatches(`Bearer ${TOKEN}${TOKEN}`, TOKEN)).toBe(false);
+  });
+
+  it("accepts any casing of the scheme but no variation at all in the token", () => {
+    // RFC 7235 makes the scheme case-insensitive and clients genuinely differ. The credential is
+    // opaque bytes: every transformation applied to it is a way for two byte sequences a human reads
+    // as identical to compare equal, which is the property this must not have.
+    expect(bearerMatches(`bearer ${TOKEN}`, TOKEN)).toBe(true);
+    expect(bearerMatches(`BEARER ${TOKEN}`, TOKEN)).toBe(true);
+    expect(bearerMatches(`Bearer ${TOKEN.toUpperCase()}`, TOKEN)).toBe(false);
+  });
+
+  it("rejects a missing header, a bare token and the wrong scheme", () => {
+    expect(bearerMatches(null, TOKEN)).toBe(false);
+    expect(bearerMatches(TOKEN, TOKEN)).toBe(false);
+    expect(bearerMatches(`Basic ${TOKEN}`, TOKEN)).toBe(false);
+  });
+});
+
+describe("the roster endpoint", () => {
+  it("serves the wallets to a caller holding the token", async () => {
+    const res = handleKeeperRequest(bearer(HOUSE_PATH, TOKEN), deps({ houseToken: TOKEN }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/json");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await res.json()).toEqual({ wallets: HOUSE_WALLETS });
+  });
+
+  it("401s a wrong or missing credential, with a challenge and no detail", async () => {
+    // No distinction between "you sent nothing" and "you sent the wrong thing": the only audience for
+    // a more specific message is somebody who does not have the token. The operator debugging a real
+    // mismatch reads the API's own log line, which says which end it was talking to.
+    for (const req of [get(HOUSE_PATH), bearer(HOUSE_PATH, "wrong"), bearer(HOUSE_PATH, `${TOKEN}x`)]) {
+      const res = handleKeeperRequest(req, deps({ houseToken: TOKEN }));
+      expect(res.status).toBe(401);
+      expect(res.headers.get("www-authenticate")).toBe("Bearer");
+      const text = await res.text();
+      expect(text).toBe("unauthorized\n");
+      // The refusal must not leak the thing it is refusing.
+      for (const wallet of HOUSE_WALLETS) expect(text).not.toContain(wallet);
+    }
+  });
+
+  it("404s — not 401s — when no token is configured, and never reads the wallets", async () => {
+    // THE TWO NEGATIVES ARE DIFFERENT ANSWERS AND THIS IS THE ONE THAT IS EASY TO GET WRONG. A 401 is
+    // a claim: "this route is here, you just cannot have it" — which tells an anonymous caller that
+    // this keeper holds a roster worth protecting, and invites them back with guesses. With no token
+    // the route GENUINELY DOES NOT EXIST on this process, so it must be indistinguishable from any
+    // unknown path on a keeper built before the feature.
+    const houseWallets = vi.fn(() => HOUSE_WALLETS as readonly string[]);
+    const res = handleKeeperRequest(bearer(HOUSE_PATH, TOKEN), deps({ houseToken: null, houseWallets }));
+    expect(res.status).toBe(404);
+    expect(res.headers.get("www-authenticate")).toBeNull();
+    expect(houseWallets).not.toHaveBeenCalled();
+    // Byte-for-byte the same body an unknown path gets — the check that makes "indistinguishable"
+    // a fact rather than an intention.
+    expect(await res.text())
+      .toBe(await handleKeeperRequest(get(HOUSE_PATH), deps({ houseToken: null })).text());
+  });
+
+  it("keeps the roster out of the 404 body even on a keeper that serves it", async () => {
+    // An endpoint that advertises itself to callers who cannot use it is advertising to exactly the
+    // people it is hiding from.
+    const text = await handleKeeperRequest(get("/"), deps({ houseToken: TOKEN })).text();
+    expect(text).not.toContain(HOUSE_PATH);
+    expect(text).toContain(STATUS_PATH);
+    expect(text).toContain(HEALTH_PATH);
+  });
+
+  it("NEVER sends an allow header — not even to an allowed origin — but does send Vary", () => {
+    // THE MOST IMPORTANT ASSERTION ON THIS ROUTE, and the one whose absence would look completely
+    // reasonable: `https://arena.example` is on the allowlist and every other endpoint here echoes it
+    // back. The allowlist and the token protect different things. The allowlist decides which PAGES
+    // may read public telemetry; the token decides which SERVICES may read the roster, and a browser
+    // is never in the second category. If a page on the allowed origin ever came to hold this token —
+    // inlined by a build misconfiguration, pasted into a console, leaked by a dependency — the missing
+    // allow header is the last thing between that and the same-origin policy handing it the bank.
+    const res = handleKeeperRequest(
+      bearer(HOUSE_PATH, TOKEN, { origin: "https://arena.example" }),
+      deps({ houseToken: TOKEN }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
+    // Still Vary: the other routes on this server DO differ by origin, so a cache keyed without it
+    // could store one of their responses and serve it here, or the reverse.
+    expect(res.headers.get("vary")).toBe("Origin");
+  });
+
+  it("401s an allowed origin holding no token, still with no allow header", () => {
+    // The refusal path must not be the hole in the rule above.
+    const res = handleKeeperRequest(
+      get(HOUSE_PATH, { origin: "https://arena.example" }),
+      deps({ houseToken: TOKEN }),
+    );
+    expect(res.status).toBe(401);
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
+    expect(res.headers.get("vary")).toBe("Origin");
+  });
+
+  it("keeps the roster out of the public status and health responses", async () => {
+    // The whole point of the change, asserted at the transport rather than at the serializer: whatever
+    // the publisher does, these two routes must not carry a wallet. `statusFile.test.ts` makes the
+    // same assertion over the bytes the publisher renders; this one covers the case where a future
+    // edit to THIS file starts merging something into a public response.
+    const d = deps({ houseToken: TOKEN });
+    for (const path of [STATUS_PATH, HEALTH_PATH]) {
+      const text = await handleKeeperRequest(get(path), d).text();
+      for (const wallet of HOUSE_WALLETS) expect(text).not.toContain(wallet);
+    }
   });
 });

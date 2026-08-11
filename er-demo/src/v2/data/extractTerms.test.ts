@@ -20,7 +20,6 @@ function fighters(over: Partial<FighterView> = {}): FighterView[] {
   const base = (id: number, isYou: boolean): FighterView => ({
     id,
     wallet: `w${id}`,
-    house: false,
     short: `w${id}`,
     name: `W${id}`,
     side: (id % 2) as 0 | 1,

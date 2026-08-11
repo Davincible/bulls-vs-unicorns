@@ -76,7 +76,23 @@ The owner sets these in the Vercel project. **All of them; the feature is silent
 | `XLINK_ATTESTATION_SECRET` | Server, all environments, mark Sensitive | 32-byte ed25519 secret, base64 or base58. Generated offline. **Never in the repo.** |
 | `VITE_XLINK_TRUSTED_KEYS` | Client (build-time), all environments | Comma-separated base58 **public** keys the browser will believe. |
 | `DATABASE_URL` | Server | Neon Postgres connection string. Neon's Vercel integration sets this for you. |
-| `KEEPER_STATUS_URL` | Server, optional | Defaults to `https://bulls-arena-keeper-devnet.fly.dev/keeper-status.json`. Deliberately **not** `VITE_`-prefixed — that prefix is what inlines a value into the public bundle. |
+| `KEEPER_HOUSE_TOKEN` | Server, **required**, mark Sensitive | Bearer token for the keeper's roster endpoint. Must be **byte-identical** to the `KEEPER_HOUSE_TOKEN` fly secret on `bulls-arena-keeper-devnet`. Missing → the API **throws at cold start**, deliberately: see below. |
+| `KEEPER_HOUSE_URL` | Server, optional | Defaults to `https://bulls-arena-keeper-devnet.fly.dev/house-wallets.json`. Deliberately **not** `VITE_`-prefixed — that prefix is what inlines a value into the public bundle, and this is one half of a private channel. |
+
+> **Changed.** `KEEPER_STATUS_URL` is **gone**. The API used to read the house wallet list out of the
+> keeper's public `keeper-status.json`; that file no longer contains it, because the arena's own
+> wallets are not published anywhere a browser can read. The list now comes from the keeper's
+> authenticated `GET /house-wallets.json`, which is why there is a token above. A deploy that still
+> sets `KEEPER_STATUS_URL` is not broken by it — nothing reads it — but it should be removed, and
+> `KEEPER_HOUSE_TOKEN` **must** be added or the first request after deploy is a 500.
+
+### Why a missing `KEEPER_HOUSE_TOKEN` is a 500 rather than a warning
+
+Same argument as `XLINK_ATTESTATION_SECRET` below, arriving from the other direction. Without the
+token the API cannot ask which wallets are the arena's own; it **fails closed**, so it withholds every
+avatar — and "no avatars" is indistinguishable from "nobody has linked", which is what the leaderboard
+looks like for most players anyway. There is no screen that shows the difference. So the difference has
+to be a 500 at the origin, on the first request after the deploy, where somebody is looking.
 
 ### The invariant no error will warn you about
 

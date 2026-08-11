@@ -364,16 +364,31 @@ function phaseCopy(input: RoundPhaseInput): Omit<RoundPhaseCopy, "blocked" | "cl
   switch (live.phase) {
     case "Lobby": {
       if (entriesOpen(live, nowMs)) {
-        // THE ROOM IS NOT EMPTY AND NOTHING IS WRONG — the state that used to have no words at all,
-        // and the one most likely to be read as broken if it borrowed any. The keeper has fielded the
-        // house so nobody arrives to an empty arena, and it will keep this lobby open at no cost
-        // until a real person turns up; there is no clock running, because it is not waiting on one.
+        // NOTHING IS COUNTING DOWN AND NOTHING IS WRONG — the state that used to have no words at
+        // all, and the one most likely to be read as broken if it borrowed any. `heldOpen` is the
+        // keeper saying it is holding this lobby open and waiting for a PERSON rather than for a
+        // clock, at no marginal cost, for as long as that takes.
         //
         // A COUNTDOWN HERE WOULD BE THE WORST AVAILABLE ANSWER in both directions: `lobby_closes_at`
         // reads "closes in 59:47", which says nothing is happening, and a timer parked at 0:00 says
-        // something is stuck. So the words carry it — what is true (house only), what to do (deploy,
-        // and it is YOU that starts it), and when it changes (the moment a real player joins). The
-        // player is not waiting on this state; they are the thing it is waiting for.
+        // something is stuck. So the words carry it — what is true (nothing is counting down), what
+        // to do (deploy), and what changes it (your own entry, which is the thing that starts the
+        // clock). The player is not waiting on this state; they are what it is waiting for.
+        //
+        // IT SAYS NOTHING ABOUT WHO ELSE IS IN THE ROOM, and that is a rule now rather than an
+        // oversight. This copy used to name the house outright — "with only house fighters in it so
+        // far", "the first real player starts the clock" — off a wallet list the keeper published.
+        // That list is not published to a browser any more (`keeperStatus.ts`, schema 5), so the page
+        // has no basis for any claim about who the other fighters are, and it makes none.
+        //
+        // THE TWO WAYS OF GETTING THIS WRONG ARE NOT SYMMETRIC, which is worth spelling out because
+        // the tempting rewrite is the worse one. Claiming the room is EMPTY would be a fresh false
+        // statement rather than a retreat to silence: a fighter is seated and the roster directly
+        // below this sentence is showing it, so the page would be contradicting itself on one screen.
+        // Every clause below is instead true from the reader's own position — in this state their
+        // entry genuinely does begin the grace window that closes entries — and none of it describes
+        // anybody else. "Real player" must not come back in any form: it is a phrase that implies
+        // unreal ones, which is the disclosure arriving by inference.
         //
         // THE TIMING CLAUSE HAS TO SURVIVE ON ITS OWN, which is why it names the trigger rather than
         // just reporting the absence of a clock. Every surface that shows an OPEN lobby renders
@@ -385,11 +400,11 @@ function phaseCopy(input: RoundPhaseInput): Omit<RoundPhaseCopy, "blocked" | "cl
           return {
             control: "deploy",
             label: "Open",
-            now: `Round ${no} is open, with only house fighters in it so far.`,
-            action: "Pick a side and deploy — the first real player starts the clock.",
+            now: `Round ${no} is open, and nothing is counting down yet.`,
+            action: "Pick a side and deploy — your entry starts the clock.",
             timing: {
               kind: "waiting",
-              text: "Nothing is counting down — the clock starts when a real player joins.",
+              text: "Nothing is counting down — deploying is what starts the clock.",
             },
           };
         }

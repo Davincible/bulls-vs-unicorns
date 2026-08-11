@@ -11,7 +11,7 @@
 // So the keeper serves the same bytes itself. `statusFile.ts` renders them once per publish and both
 // channels emit that one payload; this file is a transport and holds no opinion about the content.
 //
-// TWO ENDPOINTS, AND THEY ANSWER DIFFERENT QUESTIONS.
+// THREE ENDPOINTS, AND THEY ANSWER DIFFERENT QUESTIONS.
 //
 //   GET /keeper-status.json   the schema-3 payload, `Cache-Control: no-store`. A CACHED LIVENESS
 //                             REPORT IS A LIE ABOUT LIVENESS, and reporting liveness is the entire
@@ -29,6 +29,15 @@
 //                             the platform would KILL A PERFECTLY HEALTHY KEEPER, mid-round,
 //                             stranding a delegated round whose rent nothing reclaims. The blip is
 //                             transient and the restart is not. So it answers from memory only.
+//
+//   GET /house-wallets.json   the arena's OWN wallets, to a caller holding the bearer token and to
+//                             nobody else. See `HOUSE_PATH` for why this exists and why it is a live
+//                             endpoint rather than a copy of the list handed to the API at build
+//                             time. It is the one route here that is not public telemetry, and it is
+//                             deliberately the odd one out in every way that matters: never a CORS
+//                             allow header, a constant-time credential comparison, and a 404 rather
+//                             than a 401 when no token is configured — so a keeper without the
+//                             feature is indistinguishable from one that never had the route.
 //
 // WHY `/health` IS ALWAYS 200 WHILE THE PROCESS ANSWERS. Answering an HTTP request at all already
 // proves the thing a liveness probe is for: the process is up and its event loop is turning. The
@@ -70,6 +79,53 @@ export const BIND_HOSTNAME = "0.0.0.0";
  *  deployed keeper serving this endpoint, with only the origin changing. */
 export const STATUS_PATH = "/keeper-status.json";
 export const HEALTH_PATH = "/health";
+
+/** THE ARENA'S OWN WALLETS, TO AN AUTHENTICATED CALLER ONLY — the third route, and the only one on
+ *  this server that answers a question the public one deliberately stopped answering.
+ *
+ *  WHO ASKS. The Vercel identity API (`er-demo/api/src/houseWallets.ts`), and nothing else. It has one
+ *  rule to enforce — `TWITTER-CONNECT.md` §6.3: a house wallet must never wear a person's face — and
+ *  it cannot enforce it without knowing which wallets are the house's. It uses the answer ONLY to
+ *  withhold.
+ *
+ *  WHY A LIVE ENDPOINT RATHER THAN A COPY OF THE LIST. Two cheaper designs were evaluated and both
+ *  were rejected for the same reason. A build-time environment variable holding the pubkeys, and a
+ *  static list committed to the repo, each put a SNAPSHOT of the bank somewhere the API can read it —
+ *  and the bank GROWS. `extendHouseBank.ts` exists precisely to grow it, and production is already
+ *  running forty-eight wallets against a code default of ten. So a baked-in copy goes stale at exactly
+ *  the moment a wallet is added, and a house wallet the API has never heard of is precisely and only
+ *  the case the §6.3 check exists for. The failure mode is the check silently not applying to the
+ *  newest bots, discovered by seeing one of them wearing somebody's avatar.
+ *
+ *  This process is the only one that knows its own bank. One source of truth, read live, at the cost
+ *  of one authenticated request a minute — the API caches for sixty seconds and coalesces concurrent
+ *  refreshes, so a warm worker under load is still one request.
+ *
+ *  IT IS NOT PART OF THE STATUS CONTRACT AND CARRIES NO SCHEMA FIELD. `keeper-status.json` is versioned
+ *  because a reader DRAWS from it and a half-understood status becomes a confidently-wrong number in
+ *  front of a player. This body is a bare list of strings with exactly one shape, read by one caller
+ *  that only ever refuses from it. A version would be ceremony, and worse than ceremony: pinning one
+ *  would mean a keeper deploy silently removes every avatar on the site until the API is redeployed to
+ *  agree with it. */
+export const HOUSE_PATH = "/house-wallets.json";
+
+/** The environment variable holding the bearer token. Set on the keeper with
+ *  `fly secrets set KEEPER_HOUSE_TOKEN=…`, and to the SAME value in the Vercel project, where
+ *  `requireHouseToken` refuses to cold-start without it. */
+export const HOUSE_TOKEN_ENV = "KEEPER_HOUSE_TOKEN";
+
+/** SHORTEST TOKEN THIS SERVER WILL ACCEPT AS CONFIGURED, in characters.
+ *
+ *  This is a public endpoint on a public hostname with no rate limit in front of it, so the only thing
+ *  standing between the internet and the roster is the token's entropy. Thirty-two characters is the
+ *  length of the `openssl rand -base64 24` most operators reach for and is far past anything guessable
+ *  at any rate a single Fly machine could be made to answer.
+ *
+ *  A SHORT TOKEN DISABLES THE ROUTE RATHER THAN WEAKENING IT. Accepting `dev` "just for now" is how a
+ *  guessable secret reaches production, because nothing after the day it is set will ever remind
+ *  anybody. Refusing makes the mistake loud at boot, where it costs a log line, instead of silent
+ *  forever. */
+export const HOUSE_TOKEN_MIN_LENGTH = 32;
 
 /** The origins allowed when `KEEPER_CORS_ORIGIN` is not set: local development, and nothing else.
  *
@@ -221,6 +277,81 @@ export function corsHeaders(requestOrigin: string | null, policy: OriginPolicy):
 }
 
 // ---------------------------------------------------------------------------------------------
+// The roster token — resolved once, at boot, so the request path has no env access
+// ---------------------------------------------------------------------------------------------
+
+/** What the operator gets told about the roster endpoint at boot, and what the handler is given. */
+export interface HouseTokenPolicy {
+  /** The token to compare against, or null when the route is not enabled. */
+  token: string | null;
+  /** Log lines for the boot banner — see `originPolicyWarnings`, which this deliberately mirrors.
+   *  Returned rather than printed so the rules and their warnings can be checked in one test without
+   *  capturing stdout. */
+  warnings: string[];
+  /** For the banner's one-line summary. Separate from `token !== null` only so a caller never has to
+   *  hold a secret in order to say whether there is one. */
+  enabled: boolean;
+}
+
+/**
+ * Decide whether the roster route exists on this keeper, from the raw `KEEPER_HOUSE_TOKEN`.
+ *
+ * THREE OUTCOMES, AND THE MIDDLE ONE IS THE INTERESTING ONE.
+ *
+ *   unset or empty   the feature is not configured. The route does not exist — a request for it gets
+ *                    the ordinary 404, identical to any unknown path. This is a legitimate way to run
+ *                    a keeper (a local one, a dry run, a second devnet instance nothing points at),
+ *                    so it is not an error. It IS warned about, loudly, because of what it costs at
+ *                    the other end: the identity API fails CLOSED, so a keeper with no token means a
+ *                    site with no avatars at all. That consequence is invisible from here and
+ *                    invisible from there, which is exactly the kind of thing a boot banner is for.
+ *
+ *   shorter than     REFUSED, and treated as unconfigured rather than accepted. This is a public
+ *   the minimum      endpoint on a public hostname; a short token is a guessable one, and the whole
+ *                    security of the route is the token's entropy. Accepting it "for now" is how a
+ *                    three-character secret reaches production and stays there — nothing after the
+ *                    day it is set will remind anybody. The warning names the ACTUAL LENGTH, because
+ *                    "too short" without the number sends the operator to re-read the docs instead of
+ *                    counting their paste, and because an accidental shell truncation is the
+ *                    realistic cause and the number is what reveals it.
+ *
+ *   long enough      the route is live.
+ *
+ * TRIMMED, because the realistic way this arrives is `fly secrets set` from a shell, and a trailing
+ * newline from a `$(…)` or a copied line would otherwise make every request 401 against a token that
+ * looks identical to the one in the Vercel dashboard — a mismatch nobody can see by reading either
+ * side. The length is measured AFTER trimming, so whitespace cannot pad a short token past the floor.
+ */
+export function resolveHouseTokenPolicy(raw: string | undefined): HouseTokenPolicy {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") {
+    return { token: null, enabled: false, warnings: [houseRouteDisabledWarning(
+      `${HOUSE_TOKEN_ENV} is not set, so ${HOUSE_PATH} is not served`,
+    )] };
+  }
+  if (trimmed.length < HOUSE_TOKEN_MIN_LENGTH) {
+    return { token: null, enabled: false, warnings: [houseRouteDisabledWarning(
+      `${HOUSE_TOKEN_ENV} is only ${trimmed.length} characters and at least ${HOUSE_TOKEN_MIN_LENGTH} are ` +
+      `required, so ${HOUSE_PATH} is NOT being served. ${HOUSE_PATH} is public on a public hostname and the ` +
+      `token is the only thing protecting it. Generate one with \`openssl rand -base64 24\``,
+    )] };
+  }
+  return { token: trimmed, enabled: true, warnings: [] };
+}
+
+/** The consequence half of every "the route is off" warning, written once because it is the part the
+ *  operator actually needs and the part neither end can show them. The identity API fails CLOSED by
+ *  design — see `api/src/houseWallets.ts` — so "cannot read the roster" and "serves no avatars at
+ *  all" are the same sentence, and a warning that stopped at the first half would read as a detail. */
+function houseRouteDisabledWarning(cause: string): string {
+  return (
+    `${cause}. The identity API cannot check which wallets are the arena's own, and it fails CLOSED — ` +
+    `so it will serve NO avatars at all, for everybody, not just for house wallets. Set the same value ` +
+    `on both ends: fly secrets set ${HOUSE_TOKEN_ENV}=… here, and ${HOUSE_TOKEN_ENV} in the Vercel project.`
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
 // Routing — a request in, a response out, no I/O
 // ---------------------------------------------------------------------------------------------
 
@@ -231,6 +362,21 @@ export interface StatusServerDeps {
    *  `publisher.heartbeatAgeSeconds`. */
   heartbeatAgeSeconds: () => number;
   policy: OriginPolicy;
+  /** The roster token, ALREADY RESOLVED — `resolveHouseTokenPolicy(process.env.KEEPER_HOUSE_TOKEN)`,
+   *  called once where the server is started. Null means the route does not exist on this keeper.
+   *
+   *  PASSED IN RATHER THAN READ FROM `process.env` IN THE HANDLER, and that is the whole reason the
+   *  routing in this file is testable. `handleKeeperRequest` is a pure function — values in, a value
+   *  out, no I/O and no globals — which is what lets the rules that matter (never `*`, no-store on the
+   *  status, never an allow header on this route) be checked under vitest, which runs on Node and has
+   *  no `Bun` global at all. One `process.env` read inside it would make every one of those tests
+   *  depend on ambient process state, and the first symptom would be a test that passes alone and
+   *  fails in a suite. */
+  houseToken: string | null;
+  /** The arena's own wallets, base58 — `bank.bankPubkeys`. A function rather than an array so the
+   *  handler holds no copy that could go stale against a bank the keeper extended, and so nothing
+   *  captures the list at wiring time. */
+  houseWallets: () => readonly string[];
 }
 
 /** How long a browser may cache the preflight answer. Ten minutes: the policy only changes on a
@@ -245,6 +391,89 @@ const PREFLIGHT_MAX_AGE_SECONDS = 600;
  *  the health check because a cached 200 would answer for a process that has since stopped, which is
  *  the one thing a health check must never do. */
 const NO_STORE = "no-store";
+
+/**
+ * Are these two strings equal — decided in time that does not depend on HOW MUCH of the first one is
+ * right.
+ *
+ * `a === b` ON A SECRET IS A TIMING ORACLE. String comparison returns at the first differing byte, so
+ * the time it takes leaks the length of the correct prefix — and an attacker who can measure that
+ * recovers a token one character at a time, in a number of requests LINEAR in its length instead of
+ * exponential. Over a network the margin is small; it is not zero, and there is no reason to be
+ * standing on the interesting side of that argument for a comparison that costs nothing to do right.
+ *
+ * WHY THIS IS HAND-WRITTEN INSTEAD OF `timingSafeEqual` FROM `node:crypto`, WHICH IS WHAT IT SHOULD
+ * OBVIOUSLY BE. This module is imported by `statusServer.test.ts`, which runs under vitest, which
+ * loads the repo's `vite.config.ts` — and that config applies `nodePolyfills({ include: [… "crypto" …
+ * ] })`, which ALIASES `node:crypto` TO `crypto-browserify` FOR EVERYTHING IN THE UNIT TEST RUN.
+ * `crypto-browserify` does not implement `timingSafeEqual`; it is `undefined` there. That polyfill
+ * exists for the browser bundle's sake — `sim/erSim.ts` calls `createHash("sha256")`, and the config's
+ * own comment explains it at length — and it was never meant to reach a Node-run keeper test, but it
+ * does, because the unit tests have no vitest config of their own.
+ *
+ * The failure shape is the reason this is worth ten lines of comment rather than a one-line import.
+ * Under Bun, which is what actually runs the keeper, `node:crypto` is real and `timingSafeEqual`
+ * works perfectly. So the version of this file that imported it was CORRECT IN PRODUCTION AND BROKEN
+ * ONLY UNDER TEST — and had the test not happened to exercise the success path, it would have been
+ * the other trap instead: a green suite standing behind a call that throws `is not a function` on the
+ * first authenticated request after a deploy, turning every roster fetch into a 500 and every avatar
+ * on the site into nothing. A primitive whose availability depends on which bundler resolved the
+ * import is not a primitive this file can depend on.
+ *
+ * Retiring the polyfill for the unit tests would be the better fix and it is not this file's to make:
+ * it is a shared build config, the browser app needs the shim, and the blast radius is every test in
+ * the repo. So the dependency is removed instead of worked around, which leaves this module resolving
+ * identically under Bun, Node, vitest and any future bundler.
+ *
+ * WHAT THE LOOP GUARANTEES AND WHAT IT HONESTLY CANNOT. It is the same accumulate-the-difference
+ * construction `timingSafeEqual` uses: every byte is read and XORed into `diff` on every call, and
+ * there is no early exit, so the work done is a function of the LENGTH and not of the contents. What
+ * a JavaScript implementation cannot promise, and a native one can, is that the engine will not
+ * outsmart it — a JIT is entitled to optimise, and nothing in the language pins this. That residual
+ * risk is accepted here with its eyes open: the alternative available in this environment is `===`,
+ * which leaks the prefix length by construction rather than by the compiler's permission, and this is
+ * strictly better than that. It guards a devnet bot roster, not a signing key.
+ *
+ * LENGTH IS CHECKED FIRST AND RETURNS EARLY, which does leak the length — deliberately, and it costs
+ * nothing: `HOUSE_TOKEN_MIN_LENGTH` already makes the lower bound public, and a token's length is not
+ * what protects it. (It is also why this returns false rather than throwing, unlike `timingSafeEqual`,
+ * which raises on unequal lengths — a throw here would become a 500 where a 401 belongs, and a
+ * DIFFERENT STATUS CODE is a far louder oracle than any timing difference.)
+ *
+ * UTF-8 BYTES, from the header exactly as it arrived. No case folding, no unicode normalisation: the
+ * token is an opaque string chosen by the operator and set identically at both ends, and every
+ * transformation applied here would be one more way for two byte sequences a human reads as identical
+ * to compare equal — which is the property this function must not have. `TextEncoder` rather than
+ * `Buffer` because it is a genuine global in every runtime involved and is therefore not something a
+ * bundler can substitute underneath this file, which is the whole lesson above.
+ */
+function constantTimeEquals(presented: string, expected: string): boolean {
+  const a = new TextEncoder().encode(presented);
+  const b = new TextEncoder().encode(expected);
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  // `|=` over the whole array with no `break`: every byte is read whatever the first one said.
+  for (let i = 0; i < a.length; i += 1) diff |= a[i]! ^ b[i]!;
+  return diff === 0;
+}
+
+/**
+ * Does the request carry this exact bearer token?
+ *
+ * Exported for its own tests: the credential check is the entire security of `HOUSE_PATH`, and a rule
+ * that is only reachable through a `Request` is a rule whose edge cases nobody writes cases for.
+ */
+export function bearerMatches(authorization: string | null, token: string): boolean {
+  if (authorization === null) return false;
+  // The SCHEME is matched case-insensitively because RFC 7235 says it is case-insensitive and clients
+  // genuinely differ; the CREDENTIAL after it is not touched at all. Split on the FIRST space only, so
+  // a token that happens to contain one is compared whole rather than silently truncated to its first
+  // word — which would be a token that authenticates on a prefix.
+  const space = authorization.indexOf(" ");
+  if (space === -1) return false;
+  if (authorization.slice(0, space).toLowerCase() !== "bearer") return false;
+  return constantTimeEquals(authorization.slice(space + 1), token);
+}
 
 export function handleKeeperRequest(request: Request, deps: StatusServerDeps): Response {
   const origin = request.headers.get("origin");
@@ -301,8 +530,69 @@ export function handleKeeperRequest(request: Request, deps: StatusServerDeps): R
     });
   }
 
-  // Names both real routes. This response is what somebody gets when they curl the bare hostname to
-  // check the deploy worked, and "404" alone at that moment is a dead end.
+  // THE ROSTER, AND IT IS THE ODD ONE OUT ON PURPOSE — see `HOUSE_PATH` for why it exists.
+  //
+  // THE UNCONFIGURED CASE FALLS THROUGH TO THE 404 BELOW RATHER THAN ANSWERING 401, and the
+  // difference matters. A 401 is a claim: "this route is here, you just cannot have it" — which tells
+  // an anonymous caller that this keeper holds a roster worth protecting, and invites them to come
+  // back with guesses. When no token is configured the route GENUINELY DOES NOT EXIST on this process,
+  // and the honest answer is the same 404 any unknown path gets, indistinguishable from a keeper built
+  // before the feature. That is also why the 404 body below still names only the two public routes:
+  // an endpoint that advertises itself to callers who cannot use it is advertising to exactly the
+  // people it is hiding from.
+  if (path === HOUSE_PATH && deps.houseToken !== null) {
+    if (!bearerMatches(request.headers.get("authorization"), deps.houseToken)) {
+      // NO DETAIL, and no distinction between "you sent nothing" and "you sent the wrong thing". Both
+      // are the same 401 with the same body, because the only audience for a more specific message is
+      // somebody who does not have the token — the operator debugging a real mismatch reads the
+      // Vercel side's own log line, which says which end it was talking to.
+      return new Response("unauthorized\n", {
+        status: 401,
+        headers: {
+          Vary: "Origin",
+          // The challenge, because a 401 without one is not a well-formed 401 and a client library
+          // is entitled to be confused by it. No `realm`: it would name this arena to an anonymous
+          // caller for no benefit, since nothing here is going to prompt a human for credentials.
+          "WWW-Authenticate": "Bearer",
+          "Content-Type": "text/plain",
+          "Cache-Control": NO_STORE,
+        },
+      });
+    }
+    return new Response(`${JSON.stringify({ wallets: deps.houseWallets() })}\n`, {
+      status: 200,
+      // BUILT WITHOUT THE `cors` SPREAD, WHICH IS THE ONE LINE IN THIS FILE MOST WORTH DEFENDING.
+      //
+      // Every other response here echoes `Access-Control-Allow-Origin` back to an allowed origin. This
+      // one must NEVER carry it — not for an unknown origin, not for a misconfigured one, and not for
+      // the arena's own production origin, which is the case that makes it feel wrong. The reasoning
+      // is that the allowlist and this token protect different things: the allowlist decides which
+      // PAGES may read public telemetry, and the token decides which SERVICES may read the roster. A
+      // browser is never in the second category. If a page on the allowed origin somehow came to hold
+      // this token — inlined by a build misconfiguration, pasted into a console, leaked by a
+      // dependency — the missing allow header is the last thing standing between that and the same-
+      // origin policy handing it forty-eight pubkeys. It costs nothing, because the one legitimate
+      // caller is a Vercel function, and a server-to-server fetch has no `Origin` and no interest in
+      // CORS at all.
+      //
+      // `Vary: Origin` IS STILL SET, and it is not a leftover. The other routes on this server DO vary
+      // by origin, so a cache keyed without it could store one of their responses and serve it here or
+      // the reverse. It is also the honest header: this response would be identical for every origin,
+      // and saying so is what stops a shared cache from ever needing to guess.
+      //
+      // AN OPTIONS PREFLIGHT FOR THIS PATH IS ANSWERED BY THE GENERIC HANDLER ABOVE, and that is
+      // harmless rather than an oversight worth special-casing. A preflight that succeeds only earns
+      // the browser the right to SEND the request; the response it then gets carries no allow header,
+      // so the browser refuses to hand the body to script. Refusing at the response is the check that
+      // actually holds, and putting a second one in the preflight would be a rule enforced in two
+      // places that can disagree.
+      headers: { Vary: "Origin", "Content-Type": "application/json", "Cache-Control": NO_STORE },
+    });
+  }
+
+  // Names both PUBLIC routes — see the roster branch above for why it is deliberately not listed here
+  // even on a keeper that serves it. This response is what somebody gets when they curl the bare
+  // hostname to check the deploy worked, and "404" alone at that moment is a dead end.
   return new Response(
     `no such path: ${path}\nThis is the arena round keeper. It serves ${STATUS_PATH} and ${HEALTH_PATH}.\n`,
     { status: 404, headers: { ...cors, "Content-Type": "text/plain", "Cache-Control": NO_STORE } },
@@ -379,6 +669,13 @@ export function startStatusServer(options: StatusServerOptions): StatusServer | 
       },
     });
     ok(`status server on http://${BIND_HOSTNAME}:${server.port}${STATUS_PATH}  ${c.d}(health: ${HEALTH_PATH})${c.x}`);
+    // THE ROSTER ROUTE'S STATE, ON ITS OWN LINE AND ALWAYS — including, and especially, when it is
+    // off. "Enabled" is the boring half; the off case is a silent, total feature outage at a
+    // completely different host, and this is the only place either process says so out loud. The
+    // token itself never reaches a log line, only whether there is one.
+    ok(options.houseToken === null
+      ? `${c.y}${HOUSE_PATH} NOT served${c.x} — no ${HOUSE_TOKEN_ENV}; the identity API will serve no avatars (see the warning above)`
+      : `${HOUSE_PATH} served to authenticated callers  ${c.d}(${HOUSE_TOKEN_ENV} is set)${c.x}`);
     return { port: server.port, stop: () => server.stop(true) };
   } catch (e) {
     logError(

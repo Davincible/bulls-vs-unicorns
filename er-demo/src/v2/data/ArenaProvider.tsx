@@ -53,11 +53,9 @@ import { shouldDriveFight } from "./fightPace.ts";
 import { burnerIdentity, newTickerPlaceholder, walletIdentity, type ChainIdentity } from "./identity.ts";
 import { playBlock, type PlayBlock } from "./playGate.ts";
 import { NO_COMBAT, combatFeed } from "./combatFeed.ts";
-import { houseDisclosureOf, withHouseMarks } from "./houseFighters.ts";
 import { withLinks } from "./linkFighters.ts";
 import { LinksContext, useLinkFeed } from "./useLinks.ts";
-import { useHouseRoster } from "./keeperFeed.ts";
-import { MOCK_FEE_BPS, MOCK_HOUSE_WALLETS } from "./mockData.ts";
+import { MOCK_FEE_BPS } from "./mockData.ts";
 import { useTreasury } from "./useTreasury.ts";
 import { forgetSession, noteSessionStarted, readSessionStartedAt, sessionLife } from "./sessionExpiry.ts";
 import {
@@ -203,7 +201,7 @@ function FixtureArenaProvider({ children }: { children: ReactNode }) {
   const shell = useShell();
   // KNOWN, AND INVENTED, AND BOTH ARE TRUE. There is no arena account to be waiting on here, so
   // `known: false` would describe a read that is never going to happen; the fixture's rate is simply
-  // present, exactly as its treasury and its house roster are. `MOCK_FEE_BPS` says why it is 20.
+  // present, exactly as its treasury and its round are. `MOCK_FEE_BPS` says why it is 20.
   const fee = useMemo(() => feeRate(MOCK_FEE_BPS), []);
   const { onEntered, noteDeployRef } = useOnEntered(shell.simLedger.recordDeploy, fee);
   // THE FIXTURE'S DEPLOY BUTTON KNOWS NOTHING ABOUT ROUNDS, so this supplies the one it is standing
@@ -262,12 +260,20 @@ function FixtureArenaProvider({ children }: { children: ReactNode }) {
   // `?links=mock` has to work here or the mock has nowhere to be looked at. `mockLinks.ts` assigns
   // its cast to whatever wallets are on screen, which is exactly what the fixture supplies.
   //
-  // The house list is the fixture's own (`mockData.ts` builds one), reached through the same context
-  // shape the chain path uses; `?links=off` — the default — makes all of this a no-op.
+  // `?links=off` — the default — makes all of this a no-op.
+  //
   // Same priority order as the chain path: the round on screen, then you, then the leaderboard's
-  // rows — `rosterKey` dedupes and caps in the order given. Standings are included so 01-2 and 01-3
+  // rows — `rosterCast` dedupes and caps in the order given. Standings are included so 01-2 and 01-3
   // can carry faces at all; without them those boards aggregate over the round LOG and their wallets
   // are mostly not in the round on screen.
+  //
+  // ON THIS PATH THE ORDER DECIDES MORE THAN THE CAP. `?links=mock` casts six invented identities
+  // over this list in the order it is given (`mockLinks.ts#assignMockIdentities`), so putting the
+  // round first is what puts faces on the arena — the screen the flag exists to make reviewable.
+  // Fifty-two wallets reach the cast and nine of them are fighting; a list composed the other way
+  // round would spend the cast on leaderboard rows and leave the canvas exactly as it looks with the
+  // feature switched off. The leaderboard's own faces are the remainder, and under this fixture that
+  // is one row: with six identities, priority order genuinely costs the boards that sit behind it.
   const fixtureLinkWallets = useMemo(
     () => [
       ...(fixture.live === null ? [] : fixture.live.fighters.map((f) => f.wallet)),
@@ -276,10 +282,7 @@ function FixtureArenaProvider({ children }: { children: ReactNode }) {
     ],
     [fixture.live, fixture.you.pubkey, fixture.standings],
   );
-  // The fixture's OWN house list, not an empty one. `mockData.ts` seats house fighters at two thirds
-  // of the lineup, and passing `[]` here meant the mock cast was assigned to wallets that the render
-  // guards then correctly stripped — a working guard making the feature invisible.
-  const fixtureLinks = useLinkFeed(fixtureLinkWallets, fixture.you.pubkey, MOCK_HOUSE_WALLETS);
+  const fixtureLinks = useLinkFeed(fixtureLinkWallets, fixture.you.pubkey);
   const fixtureLive = useMemo(() => withLinks(fixture.live, fixtureLinks.map), [fixture.live, fixtureLinks.map]);
 
   const value: ArenaContextValue = {
@@ -447,26 +450,10 @@ function ChainArena({
   // this costs no request; `known` is false only until that first read lands, or if it failed.
   const fee = useMemo(() => feeRate(chain.feeBps), [chain.feeBps]);
 
-  // WHO IN THIS ROUND IS THE HOUSE'S. Subscribed here, at the top of the data layer, rather than read
-  // from `ui/KeeperStatusProvider`'s context — that provider is mounted BELOW this one and its
-  // context is therefore unreachable from here. `keeperFeed.ts` explains why the answer was to move
-  // the single poll into the module instead of reordering the tree, and why this particular
-  // subscription re-renders only when the wallet LIST changes rather than on every heartbeat.
-  const roster = useHouseRoster();
-  // Substituted for `live` from here down, so nothing below can accidentally read the unmarked
-  // rosters: `markHouseFighters` hands back the very same object when no marks changed (the common
-  // case — no keeper, or a lobby with no house in it), so the memo graph underneath is untouched.
-  const liveHoused = useMemo(() => withHouseMarks(liveRaw, roster), [liveRaw, roster]);
-  const houseDisclosure = useMemo(
-    () => houseDisclosureOf(liveHoused?.fighters ?? [], roster),
-    [liveHoused, roster],
-  );
-
   // X IDENTITIES — fetched here rather than from a provider mounted below, and the reason is a cycle.
   // The feed needs the round's roster to ask about, and the canvas needs the answer stamped back onto
   // the fighters it draws; a child provider could do the first but could never feed the second back
-  // up. So it lives at the top of the data layer beside `useHouseRoster`, which is the same shape of
-  // problem with the same answer.
+  // up. So it lives at the top of the data layer, where both halves are in hand.
   //
   // OFF UNLESS ASKED FOR. `data/linkSource.ts` defaults to `off`, in which case this never fetches
   // and `withLinks` finds an empty map and hands back the very same object it was given — so the memo
@@ -477,26 +464,28 @@ function ChainArena({
   // round currently on screen.
   const standings = useMemo(() => deriveStandings(history.rounds), [history.rounds]);
 
-  // WHO WE ASK ABOUT, IN PRIORITY ORDER — `rosterKey` dedupes and caps this list IN THE ORDER GIVEN,
+  // WHO WE ASK ABOUT, IN PRIORITY ORDER — `rosterCast` dedupes and caps this list IN THE ORDER GIVEN,
   // so the order here is the policy. The round on screen first (those faces are the point of the
   // feature), then the connected player (their own wallet panel shows their identity whether or not
-  // they have entered), then the leaderboard's rows.
+  // they have entered), then the leaderboard's rows. Under `?links=mock` the same order also decides
+  // which wallets the fixture's identities land on; on the `api` path the server answers about all of
+  // them and the order only decides who survives the cap.
   //
   // The cap is `MAX_WALLETS_PER_QUERY`, so at a full 48-fighter round only the top handful of
   // standings rows fit. That is the honest trade for a single query; a second request per view is the
   // right answer once a screen other than the arena is the common destination, and is a follow-up
   // rather than something to guess at now.
   const linkWallets = useMemo(() => {
-    const inRound = liveHoused === null ? [] : liveHoused.fighters.map((f) => f.wallet);
+    const inRound = liveRaw === null ? [] : liveRaw.fighters.map((f) => f.wallet);
     const you = youPubkey === "" ? [] : [youPubkey];
     return [...inRound, ...you, ...standings.map((r) => r.wallet)];
-  }, [liveHoused, youPubkey, standings]);
-  const links = useLinkFeed(linkWallets, youPubkey === "" ? null : youPubkey, roster?.house.wallets ?? []);
-  // Substituted for `live` from here down, exactly as the house marks are and for the same reason:
-  // `markLinkedFighters` returns the very same array when nothing changed — the overwhelmingly common
-  // case, since most players never link — so nothing below re-renders for a poll that found nothing.
-  // MUST come after `withHouseMarks`: it reads `FighterView.house` to keep a face off a house wallet.
-  const live = useMemo(() => withLinks(liveHoused, links.map), [liveHoused, links.map]);
+  }, [liveRaw, youPubkey, standings]);
+  const links = useLinkFeed(linkWallets, youPubkey === "" ? null : youPubkey);
+  // Substituted for `live` from here down, so nothing below can accidentally read the unstamped
+  // rosters: `markLinkedFighters` returns the very same array when nothing changed — the
+  // overwhelmingly common case, since most players never link — so nothing below re-renders for a
+  // poll that found nothing.
+  const live = useMemo(() => withLinks(liveRaw, links.map), [liveRaw, links.map]);
 
   // THE FIGHT, IN EVENTS. Cut from the same memoised stream the canvas replays, at the same cursor —
   // see `combatFeed.ts` for why this cannot be a scan and how it stays cheap at `stepsPerSecond(16)`.
@@ -763,7 +752,6 @@ function ChainArena({
         live,
         hitEvents,
         combat,
-        houseDisclosure,
         treasury,
         fee,
         history,

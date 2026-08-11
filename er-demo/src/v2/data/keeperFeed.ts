@@ -1,17 +1,26 @@
 // ONE POLL OF `keeper-status.json` FOR THE WHOLE PAGE — held here, in the module, rather than in a
 // component near the top of the tree.
 //
-// WHY IT MOVED. The rule itself is not new: `ui/keeperCadence.ts` spells out why seven independent
-// two-second polls of the same file would be seven staleness clocks that disagree by up to a second,
-// and `ui/KeeperStatusProvider.tsx` is the component that enforced it by calling the hook exactly
-// once. What broke that arrangement is that the DATA layer now needs the same file: `FighterView.house`
-// is resolved from the keeper's published wallet list, so `ArenaProvider` has to read it — and
-// `ArenaProvider` sits ABOVE the keeper provider in `App.tsx`, so it cannot consume that context. The
-// three ways out were a second poll (breaks the rule), reordering the providers (makes the whole page
-// re-render on every heartbeat, which is precisely what the keeper provider exists to prevent), or
-// this: make "exactly one poll" a property of the module, so it stays true no matter who calls or
-// from where. The context above still does its own separate and still-useful job — it keeps a
-// heartbeat landing from re-rendering the four screens that show no countdown.
+// WHY IT IS A MODULE — AND THE FORCING REASON IS GONE, WHICH IS WORTH SAYING PLAINLY RATHER THAN
+// LEAVING A LIVE-SOUNDING JUSTIFICATION IN PLACE. The no-duplicate-polls rule itself is not new:
+// `ui/keeperCadence.ts` spells out why seven independent two-second polls of the same file would be
+// seven staleness clocks that disagree by up to a second, and `ui/KeeperStatusProvider.tsx` is the
+// component that enforced it by calling the hook exactly once. What broke THAT arrangement was a
+// second caller standing somewhere the component could not reach: the data layer resolved each
+// fighter against the keeper's published house-wallet list, so `ArenaProvider` needed this same file,
+// and `ArenaProvider` sits ABOVE the keeper provider in `App.tsx` where that context does not exist.
+// THAT CALLER NO LONGER EXISTS. The arena's own wallets are not published to a browser any more (see
+// `keeperStatus.ts`, schema 5), nothing under `data/` reads this file, and `useKeeperStatus` ->
+// `KeeperStatusProvider` is once again the only subscriber there is.
+//
+// IT STAYS A MODULE ANYWAY, as a decision and not as leftover scaffolding. Pushing the machine back
+// into a component would re-tie a page-wide invariant — exactly one fetch loop, exactly one staleness
+// clock — to where one component happens to sit in the tree, which is a fact any later refactor can
+// change without anyone noticing that it was load-bearing. Held here the invariant is true no matter
+// who calls or from where, it costs a module-level `let` and nothing else, and the next consumer that
+// turns up outside the provider's subtree is free instead of forcing this same migration a second
+// time. The context above still does its own separate and still-useful job — it keeps a heartbeat
+// landing from re-rendering the four screens that show no countdown.
 //
 // THE TWO CLOCKS ARE THE WHOLE DESIGN, and the second one is the part that is easy to leave out. A
 // naive version recomputes staleness whenever a fetch lands, which is correct for exactly as long as
@@ -31,12 +40,10 @@
 // them apart would only be useful if the page did something different for each, and it must not —
 // showing a countdown for any of them would be inventing the number.
 
-import { useSyncExternalStore } from "react";
 import {
   KEEPER_STATUS_URL,
   isKeeperStale,
   parseKeeperStatus,
-  type HouseRoster,
   type KeeperStatus,
 } from "./keeperStatus.ts";
 
@@ -177,69 +184,4 @@ export function subscribeKeeperFeed(listener: () => void): () => void {
 
 export function keeperFeedSnapshot(): KeeperFeedState {
   return state;
-}
-
-// ---------------------------------------------------------------------------------------------
-// The house roster — the one question the DATA layer asks of the keeper
-// ---------------------------------------------------------------------------------------------
-
-/**
- * WHOSE WALLETS THE KEEPER ADMITS TO, or null when nothing may be marked.
- *
- * NULL FOR AN ABSENT OR STALE KEEPER, and both collapse to the same answer for the same reason: a
- * page that cannot read a current disclosure list has no basis to call anyone a bot, so it calls
- * nobody one and says (through `HouseDisclosure`'s null counts) that it does not know. Marking off a
- * file the keeper stopped writing an hour ago would be an accusation backed by a heartbeat that has
- * expired.
- *
- * A STALLED KEEPER STILL DISCLOSES, and this is the one place this module deliberately parts company
- * with `keeperCountdown`, which treats stalled and stale alike. The two questions are different.
- * `keeperCountdown` is asking "will something happen at the time this file names", and a keeper whose
- * loop is failing every pass will not make it happen — so it says nothing. This is asking "whose
- * wallets are those in the round", and the answer is a FACT ABOUT THE PAST that a fresh file still
- * reports correctly: the bots the keeper seated are still standing there whether or not its next
- * `resolve` lands. Suppressing the marks would UN-disclose fighters that are in the round, which is
- * a failure in the exact direction this whole feature exists to prevent, and it would do so at the
- * moment a page is most confusing to look at.
- */
-export function houseRosterOf(feed: KeeperFeedState): HouseRoster | null {
-  if (feed.status === null || feed.stale) return null;
-  return { house: feed.status.house };
-}
-
-/** The cached roster `useHouseRoster` hands out, and the key it is cached against.
- *
- *  `getSnapshot` must return a value that is identical between renders when nothing changed —
- *  `useSyncExternalStore` re-renders on `Object.is` inequality and throws on a snapshot that is never
- *  stable. `houseRosterOf` builds a fresh object every call, so the derived value gets its own cache:
- *  the roster changes when the keeper adds a house wallet, which is somewhere between rarely and
- *  never, and everything downstream of it (`ArenaProvider`, and therefore every `useArena()`
- *  consumer on the page) re-renders when it does. */
-let rosterCache: HouseRoster | null = null;
-let rosterKey: string | null = null;
-
-/** The one sentinel that cannot collide with a real key: a roster is `wallets` + `disclosure`, and
- *  `null` (nothing is disclosing) has neither. */
-const NO_ROSTER_KEY = " none";
-
-function houseRosterSnapshot(): HouseRoster | null {
-  const next = houseRosterOf(state);
-  // Wallets are base58 and a disclosure is prose, so neither can contain a NUL — the separator is
-  // unambiguous, which a comma alone would not be.
-  const key =
-    next === null ? NO_ROSTER_KEY : `${next.house.wallets.join(" ")} |${next.house.disclosure}`;
-  if (key !== rosterKey) {
-    rosterKey = key;
-    rosterCache = next;
-  }
-  return rosterCache;
-}
-
-/** THE HOUSE'S WALLET LIST, subscribed to at the lowest churn it can be had at.
- *
- *  For `data/` only. Views wanting a countdown want `ui/keeperCadence.ts`'s `useSharedKeeperStatus`,
- *  which reads the same feed through the context above and therefore re-renders with the heartbeat —
- *  correct there, because a countdown is exactly the thing that changes every second. */
-export function useHouseRoster(): HouseRoster | null {
-  return useSyncExternalStore(subscribeKeeperFeed, houseRosterSnapshot, houseRosterSnapshot);
 }

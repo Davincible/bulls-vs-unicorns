@@ -18,8 +18,6 @@ import {
   MOCK_FIGHTER_SEEDS,
   MOCK_HISTORY,
   MOCK_HIT_EVENTS,
-  MOCK_HOUSE_DISCLOSURE,
-  MOCK_HOUSE_WALLETS,
   MOCK_TREASURY,
   MOCK_YOU,
   mockFightersAt,
@@ -207,55 +205,18 @@ describe("the fixture's past rounds", () => {
   });
 });
 
-// THE FIXTURE'S HOUSE, and the fixture's books. Both exist so the disclosure and the treasury tile
-// are reviewable with no keeper and no network — and both are held to the same rule as everything
-// else here: invented is fine, unfalsifiable is fine, INCONSISTENT WITH THE REST OF THE PAGE is not.
-describe("the fixture's house disclosure", () => {
-  it("never marks the local player as one of ours", () => {
-    // A roster that called "you" a bot would be teaching the page a state the keeper cannot produce
-    // — it seats house wallets, and the local wallet is by definition not one of them.
-    const you = MOCK_FIGHTER_SEEDS.find((f) => f.isYou);
-    expect(you?.house).toBe(false);
-  });
-
-  it("seats a house, and leaves real players in the room", () => {
-    // Both ends matter. All-house would make the disclosure trivially uniform and hide the mixed
-    // roster the marks exist to distinguish; no house at all would leave the UI unreviewable.
-    const house = MOCK_FIGHTER_SEEDS.filter((f) => f.house);
-    expect(house.length).toBeGreaterThan(0);
-    expect(house.length).toBeLessThan(MOCK_FIGHTER_SEEDS.length);
-  });
-
-  it("puts the house on both sides of the field", () => {
-    // The keeper fills whichever side is short, so a fixture with every bot on one side would be a
-    // lineup shape the real thing does not produce — and the one the side-strength bar renders.
-    const sides = new Set(MOCK_FIGHTER_SEEDS.filter((f) => f.house).map((f) => f.side));
-    expect(sides.size).toBe(2);
-  });
-
-  it("agrees with the wallet list the resolver is given", () => {
-    // `useFixtureArena` counts the disclosure off a `HouseRoster` built from `MOCK_HOUSE_WALLETS`
-    // while the canvas and the rosters read the marks on the lineup. Two derivations of one fact —
-    // they have to be the same fact.
-    const marked = MOCK_FIGHTER_SEEDS.filter((f) => f.house).map((f) => f.wallet);
-    expect([...marked].sort()).toEqual([...MOCK_HOUSE_WALLETS].sort());
-  });
-
-  it("says FIXTURE first, in the sentence the page quotes", () => {
-    // This string is rendered as the keeper's own disclosure. It is the one place on this path where
-    // a plausible sentence could read as though a real process wrote it.
-    expect(MOCK_HOUSE_DISCLOSURE.startsWith("Fixture")).toBe(true);
-  });
-
-  it("keeps the marks stable across a replay", () => {
-    // `mockFightersAt` rebuilds the roster at a cursor on every clock tick; a mark that moved with
-    // the fight would flicker under a reviewer.
-    expect(mockFightersAt(600).map((f) => f.house)).toEqual(
-      MOCK_FIGHTER_SEEDS.map((f) => f.house),
-    );
-  });
-});
-
+// THE FIXTURE'S BOOKS. They exist so the treasury tile is reviewable with no keeper and no network,
+// and they are held to the same rule as everything else here: invented is fine, unfalsifiable is
+// fine, INCONSISTENT WITH THE REST OF THE PAGE is not.
+//
+// A SECOND BLOCK USED TO SIT HERE, COVERING THE FIXTURE'S OWN HOUSE, and it is gone with the concept
+// rather than merely with the assertions. `MOCK_FIGHTER_SEEDS` carried a `house` mark, the fixture
+// published its own wallet list and its own disclosure sentence, and these tests checked that the two
+// agreed and that the local player was never marked. None of that may exist now: the arena's wallets
+// are not published to a browser at all (`keeperStatus.ts`, schema 5), so the live page has no house
+// concept — and a FIXTURE that kept one would be the lie running in the other direction, showing a
+// design reviewer a disclosure that production had already removed. The fixture's job is to be the
+// live page with invented numbers in it, never a page with an extra feature.
 describe("the fixture's treasury", () => {
   it("is exactly the sum of the take the log records, over every round in it", () => {
     // `sweep_house_take` books one finished round's two totals onto the arena, so a treasury covering

@@ -1,18 +1,10 @@
-// PUTTING A FACE ON A FIGHTER — the two rules that have no visible symptom when they break.
+// PUTTING A FACE ON A FIGHTER — the rules that have no visible symptom when they break.
 //
-// This is the mirror of `houseFighters.test.ts`, deliberately, because `linkFighters.ts` is the
-// mirror of `houseFighters.ts` and two subtly different implementations of "stamp a field onto every
-// fighter" is how the two end up disagreeing about one roster.
-//
-// RULE ONE: THE HOUSE HAS NO FACE. `SOCIAL.md` §2.7 — "a face means a person". The keeper seats house
-// wallets so a lobby is never empty, and a lobby holding a single house fighter is most of an idle
-// arena's life. A photograph on one of those is not cosmetic; it is the misrepresentation that costs
-// the most trust, because a fan believes they beat a person. Two of the three guards live on the
-// server; this is the third, and the only one that keys off the same `house` mark the roster renders,
-// so it is the one a player is actually looking at. Its whole correctness depends on an ORDERING —
-// `withLinks` after `withHouseMarks` — and an ordering is not a type. So the wrong order is executed
-// below and the face it produces is asserted, because `linkFighters.ts` promises in a comment that
-// this test exists and a promise in a comment is not a test.
+// RULE ONE: ONLY A VERIFIED RECORD BECOMES A FACE. `linkFor` asks the runtime register rather than
+// trusting the type, because `LinkRecord`'s compile-time brand stops the accidental construction and
+// not every one — `{ ...someoneElsesRecord, handle: "blknoiz06" }` is a value TypeScript accepts, and
+// it is the exact defect this whole feature exists to delete. A record that fails renders the player
+// as unlinked, which is the ordinary state for most of the board and never an error.
 //
 // RULE TWO: IDENTITY IS PRESERVED WHEN NOTHING CHANGED, and this is load-bearing rather than a
 // micro-optimisation. `LiveRound` is rebuilt on every poll and on every 250ms clock tick; the canvas,
@@ -20,6 +12,17 @@
 // identical fighters four times a second invalidates all three, forever, for no change — and the
 // common case on this page is exactly that: nobody in the round has linked. Nothing on screen shows
 // this failing. It shows up as a page that is inexplicably warm.
+//
+// THERE USED TO BE A THIRD RULE IN HERE — THE HOUSE HAS NO FACE — AND ITS TESTS WENT WITH THE GUARD
+// THEY COVERED RATHER THAN AHEAD OF IT. `linkFor` took a `house` flag, `markLinkedFighters` refused a
+// face to any fighter wearing one, and this file executed the WRONG composition order on purpose to
+// pin what that failure looked like on screen. The browser is no longer told which wallets are the
+// arena's own (`keeperStatus.ts`, schema 5), so the flag could only ever be false and the branch
+// could only ever pass everybody; the rule itself now sits on the server at both ends of a link's
+// life, and `linkFighters.ts`'s header carries the argument in full. Deleting a test whose subject
+// has been deleted is the honest move here. What would NOT be honest is leaving it green against a
+// guard that no longer decides anything — a passing test for a branch that cannot fire is worse than
+// no test, because it reads as coverage.
 //
 // The `LinkMap` here is minted by `verifyAttestation` through `linkMapFrom`, never hand-built: a
 // `LinkRecord` is branded precisely so that no test can invent one, and a fixture that cast its way
@@ -29,10 +32,8 @@ import { describe, expect, it } from "vitest";
 import { sha256 } from "@noble/hashes/sha256";
 import { nameFor, shortKey, type FighterView, type LiveRound, type Side } from "../contract.ts";
 import { linkFor, markLinkedFighters, withLinks } from "./linkFighters.ts";
-import { markHouseFighters, withHouseMarks } from "./houseFighters.ts";
 import { avatarPathFor, linkMapFrom, NO_LINKS, type LinkMap } from "./xLink.ts";
 import { attestationKeyFrom, signAttestation } from "./xLinkSign.ts";
-import type { HouseRoster } from "./keeperStatus.ts";
 
 const KEY = attestationKeyFrom(sha256(new TextEncoder().encode("linkFighters.test key")));
 const NOW = 1_800_000_000;
@@ -41,20 +42,20 @@ const NOW = 1_800_000_000;
  *  it — so a readable prefix is padded rather than spelled with the four ambiguous glyphs. */
 const wallet = (prefix: string) => prefix.padEnd(44, "x");
 
-const HOUSE_A = wallet("HouseWa11etA");
-const HOUSE_B = wallet("HouseWa11etB");
+/** Four wallets in one round: the reader, two other entrants who have linked, and one who never did.
+ *  `NEVER_LINKED` is not padding — "absent from the map" is the state most of a real board is in, and
+ *  several rules below are only interesting when at least one fighter is in it. */
+const RIVAL = wallet("Riva1Wa11et");
+const NEVER_LINKED = wallet("Un1inkedWa11et");
 const PLAYER = wallet("P1ayerWa11et");
 const YOU = wallet("YourWa11et");
-
-const DISCLOSURE = "The house seats wallets so a lobby is never empty.";
-const ROSTER: HouseRoster = { house: { wallets: [HOUSE_A, HOUSE_B], disclosure: DISCLOSURE } };
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 
 const AVATAR_PLAYER = avatarPathFor("111000000000000001", HASH_A);
 const AVATAR_YOU = avatarPathFor("111000000000000002", HASH_B);
-const AVATAR_HOUSE = avatarPathFor("111000000000000003", HASH_A);
+const AVATAR_RIVAL = avatarPathFor("111000000000000003", HASH_A);
 
 interface Claim {
   readonly wallet: string;
@@ -82,8 +83,9 @@ function linksOf(...claims: readonly Claim[]): LinkMap {
     ),
   );
   const { links, rejected } = linkMapFrom({ links: attestations }, [KEY.publicKey], NOW);
-  // A fixture that quietly failed verification would make every assertion below pass for the wrong
-  // reason — "no face" is what a rejected record and a correct house guard look like alike.
+  // A fixture that quietly failed verification would make half the assertions below pass for the
+  // wrong reason: "this wallet has no face" is what a correctly-unlinked player and a silently
+  // rejected record look like alike, and only one of those is what the test meant to set up.
   if (rejected.length > 0) throw new Error(`fixture did not verify: ${rejected.join(", ")}`);
   if (links.size !== claims.length) throw new Error("fixture lost a record");
   return links;
@@ -96,10 +98,12 @@ const PLAYER_LINKED = linksOf({
   avatarHash: HASH_A,
 });
 
+/** Everyone in the round who has linked — which is everyone except `NEVER_LINKED`, deliberately, so
+ *  every assertion made against this map still has one fighter that must come back with no face. */
 const EVERYONE_LINKED = linksOf(
   { wallet: PLAYER, xId: "111000000000000001", handle: "player", avatarHash: HASH_A },
   { wallet: YOU, xId: "111000000000000002", handle: "you", avatarHash: HASH_B },
-  { wallet: HOUSE_A, xId: "111000000000000003", handle: "house", avatarHash: HASH_A },
+  { wallet: RIVAL, xId: "111000000000000003", handle: "rival", avatarHash: HASH_A },
 );
 
 /** Somebody who linked, but whose picture has not been fetched yet — `avatarPath` is null. */
@@ -128,7 +132,6 @@ function fighterAt(id: number, w: string, over: Partial<FighterView> = {}): Figh
     stake: 100n,
     hp: 100n,
     banked: 0n,
-    house: false,
     dead: false,
     isYou: w === YOU,
     avatarSrc: null,
@@ -136,22 +139,20 @@ function fighterAt(id: number, w: string, over: Partial<FighterView> = {}): Figh
   };
 }
 
-/** The roster as it arrives — no house marks yet. `withHouseMarks` is what stamps them. */
-const RAW: FighterView[] = [
+/** The roster exactly as the provider hands it over: decoded off the round account, no avatars on it
+ *  yet. `withLinks` is the only thing that stamps anything onto a fighter after this point. */
+const ROSTER: FighterView[] = [
   fighterAt(0, YOU),
-  fighterAt(1, HOUSE_A),
+  fighterAt(1, RIVAL),
   fighterAt(2, PLAYER),
-  fighterAt(3, HOUSE_B),
+  fighterAt(3, NEVER_LINKED),
 ];
-
-/** The roster the provider actually hands to `markLinkedFighters`: house marks already stamped. */
-const MARKED: FighterView[] = markHouseFighters(RAW, ROSTER);
 
 const avatars = (fighters: readonly FighterView[]) => fighters.map((f) => f.avatarSrc);
 
 describe("markLinkedFighters", () => {
   it("stamps the verified avatar onto the wallet it belongs to, and onto nobody else", () => {
-    expect(avatars(markLinkedFighters(MARKED, PLAYER_LINKED))).toEqual([
+    expect(avatars(markLinkedFighters(ROSTER, PLAYER_LINKED))).toEqual([
       null,
       null,
       AVATAR_PLAYER,
@@ -159,33 +160,21 @@ describe("markLinkedFighters", () => {
     ]);
   });
 
-  it("never gives a house fighter a face, even holding a verified record for its wallet", () => {
-    // CLIENT GUARD THREE, and the record here is genuinely verified — signed by a trusted key, inside
-    // its seven days, same-origin path. It is refused anyway, because a fighter labelled HOUSE in the
-    // roster beside it cannot simultaneously wear a person's photograph. See `SOCIAL.md` §2.7.
-    const marked = markLinkedFighters(MARKED, EVERYONE_LINKED);
-    expect(marked[1].house).toBe(true);
-    expect(marked[1].avatarSrc).toBeNull();
-    expect(avatars(marked)).toEqual([AVATAR_YOU, null, AVATAR_PLAYER, null]);
-    // And the record is there to be found — the guard is doing the refusing, not an empty map.
-    expect(EVERYONE_LINKED.get(HOUSE_A)?.avatarPath).toBe(AVATAR_HOUSE);
-  });
-
   it("hands back the very same array when the map is empty", () => {
     // The overwhelmingly common case: nobody in this round has linked. It must allocate nothing.
-    expect(markLinkedFighters(MARKED, NO_LINKS)).toBe(MARKED);
+    expect(markLinkedFighters(ROSTER, NO_LINKS)).toBe(ROSTER);
   });
 
   it("hands back the very same array when the map holds nobody from this round", () => {
-    expect(markLinkedFighters(MARKED, STRANGER_LINKED)).toBe(MARKED);
+    expect(markLinkedFighters(ROSTER, STRANGER_LINKED)).toBe(ROSTER);
   });
 
   it("hands back the very same array on a second pass over unchanged input", () => {
     // The poll case. The first call lands the avatars; every one after it — four times a second, for
     // the rest of the round — must be a no-op, or the canvas, the extract terms and the combat feed
     // all rebuild for a fact that did not move.
-    const first = markLinkedFighters(MARKED, PLAYER_LINKED);
-    expect(first).not.toBe(MARKED);
+    const first = markLinkedFighters(ROSTER, PLAYER_LINKED);
+    expect(first).not.toBe(ROSTER);
     expect(markLinkedFighters(first, PLAYER_LINKED)).toBe(first);
   });
 
@@ -195,14 +184,14 @@ describe("markLinkedFighters", () => {
     // `links.get(w)?.avatarPath` WITHOUT the `?? null` yields `undefined` for a record whose
     // `avatarPath` is null, `undefined !== null` marks the array changed, and the round then churns
     // every 250ms for as long as that player stays unpictured. Nothing on screen would differ.
-    const marked = markLinkedFighters(MARKED, PLAYER_LINKED_NO_PICTURE);
-    expect(marked).toBe(MARKED);
+    const marked = markLinkedFighters(ROSTER, PLAYER_LINKED_NO_PICTURE);
+    expect(marked).toBe(ROSTER);
     expect(avatars(marked)).toEqual([null, null, null, null]);
   });
 
   it("produces a new array when a link arrives mid-round", () => {
     // The inverse of the identity cases: when something DID change, the memos must be invalidated.
-    const before = markLinkedFighters(MARKED, NO_LINKS);
+    const before = markLinkedFighters(ROSTER, NO_LINKS);
     const after = markLinkedFighters(before, PLAYER_LINKED);
     expect(after).not.toBe(before);
     expect(after[2].avatarSrc).toBe(AVATAR_PLAYER);
@@ -212,20 +201,31 @@ describe("markLinkedFighters", () => {
     // `TWITTER-CONNECT.md` §6.2: unlinking takes a face off within one refresh. A revocation arrives
     // as the record simply being absent from the next poll, and the face has to come off — an array
     // reused here would leave somebody's photograph on the board after they asked for it to go.
-    const linked = markLinkedFighters(MARKED, PLAYER_LINKED);
+    const linked = markLinkedFighters(ROSTER, PLAYER_LINKED);
     const revoked = markLinkedFighters(linked, NO_LINKS);
     expect(revoked).not.toBe(linked);
     expect(avatars(revoked)).toEqual([null, null, null, null]);
   });
 
+  it("stamps every linked wallet in one pass, and leaves the unlinked one alone", () => {
+    // Three faces landing together, which the single-record case above cannot show: a mapper that
+    // returned after its first hit, or that keyed the map by index instead of by wallet, passes that
+    // test and fails this one.
+    expect(avatars(markLinkedFighters(ROSTER, EVERYONE_LINKED))).toEqual([
+      AVATAR_YOU,
+      AVATAR_RIVAL,
+      AVATAR_PLAYER,
+      null,
+    ]);
+  });
+
   it("leaves every field except `avatarSrc` untouched", () => {
-    const marked = markLinkedFighters(MARKED, EVERYONE_LINKED);
+    const marked = markLinkedFighters(ROSTER, EVERYONE_LINKED);
     // Positional ids especially: the hit stream names its parties by index into this array, so a
     // reorder here would silently repoint every hit in the fight.
     expect(marked.map((f) => f.id)).toEqual([0, 1, 2, 3]);
-    expect(marked.map((f) => f.wallet)).toEqual(MARKED.map((f) => f.wallet));
-    expect(marked.map((f) => f.house)).toEqual([false, true, false, true]);
-    expect(marked[2]).toEqual({ ...MARKED[2], avatarSrc: AVATAR_PLAYER });
+    expect(marked.map((f) => f.wallet)).toEqual(ROSTER.map((f) => f.wallet));
+    expect(marked[2]).toEqual({ ...ROSTER[2], avatarSrc: AVATAR_PLAYER });
   });
 
   it("copes with an empty round without inventing a fighter", () => {
@@ -235,11 +235,11 @@ describe("markLinkedFighters", () => {
 });
 
 describe("withLinks", () => {
-  const live = { fighters: MARKED, roundNo: 7n } as unknown as LiveRound;
+  const live = { fighters: ROSTER, roundNo: 7n } as unknown as LiveRound;
 
   it("hands back the same round object when no avatar changed", () => {
-    // Identity all the way up to the `LiveRound`, as `withHouseMarks` does — every memo keyed on
-    // `live` rather than on `live.fighters` depends on it.
+    // Identity all the way up to the `LiveRound` itself — every memo keyed on `live` rather than on
+    // `live.fighters` depends on it.
     expect(withLinks(live, NO_LINKS)).toBe(live);
     expect(withLinks(live, STRANGER_LINKED)).toBe(live);
     expect(withLinks(live, PLAYER_LINKED_NO_PICTURE)).toBe(live);
@@ -257,48 +257,17 @@ describe("withLinks", () => {
   });
 });
 
-describe("the ordering `linkFighters.ts` promises", () => {
-  // THIS IS THE TEST THE COMMENT ON `withLinks` SAYS EXISTS. The house guard reads
-  // `FighterView.house`, which `withHouseMarks` is what stamps. Run the two in the other order and
-  // every fighter is still `house: false` when the guard runs, so the guard passes everybody — and
-  // the house mark then lands on top of a fighter that is already wearing a face.
-  //
-  // Nothing types this. Both compositions compile, both return a `LiveRound`, and the wrong one is
-  // wrong only for the fighters the keeper seated. So it is asserted rather than commented.
-  const raw = { fighters: RAW, roundNo: 7n } as unknown as LiveRound;
-
-  it("nulls the house fighter's avatar when links are applied after the house marks", () => {
-    const right = withLinks(withHouseMarks(raw, ROSTER), EVERYONE_LINKED);
-    const houseFighter = (right?.fighters ?? []).find((f) => f.wallet === HOUSE_A);
-    expect(houseFighter?.house).toBe(true);
-    expect(houseFighter?.avatarSrc).toBeNull();
-  });
-
-  it("would put a face on a HOUSE-tagged fighter if the two were composed the other way round", () => {
-    // The failure, executed. This is what the page renders if somebody reorders the provider: a row
-    // carrying the HOUSE tag and a real person's photograph at the same time.
-    const wrong = withHouseMarks(withLinks(raw, EVERYONE_LINKED), ROSTER);
-    const houseFighter = (wrong?.fighters ?? []).find((f) => f.wallet === HOUSE_A);
-    expect(houseFighter?.house).toBe(true);
-    expect(houseFighter?.avatarSrc).toBe(AVATAR_HOUSE);
-  });
-});
-
 describe("linkFor", () => {
-  it("returns nothing for a house fighter, whatever the map says", () => {
-    // The same rule as the array pass, at the DOM surfaces — so a leaderboard row or a history row
-    // cannot reach around the round's `avatarSrc` and render the handle instead.
-    expect(linkFor(EVERYONE_LINKED, HOUSE_A, true)).toBeNull();
-  });
-
   it("returns nothing for a wallet that never linked", () => {
-    // The ordinary state for most of the board, and never an error — `TWITTER-CONNECT.md` §8.
-    expect(linkFor(EVERYONE_LINKED, HOUSE_B, false)).toBeNull();
-    expect(linkFor(NO_LINKS, PLAYER, false)).toBeNull();
+    // The ordinary state for most of the board, and never an error — `TWITTER-CONNECT.md` §8. Both
+    // shapes of "no record" are covered: a populated map this wallet is simply absent from, and the
+    // empty map the page holds whenever the feed is off.
+    expect(linkFor(EVERYONE_LINKED, NEVER_LINKED)).toBeNull();
+    expect(linkFor(NO_LINKS, PLAYER)).toBeNull();
   });
 
   it("returns the record itself for a linked player", () => {
-    const record = linkFor(EVERYONE_LINKED, PLAYER, false);
+    const record = linkFor(EVERYONE_LINKED, PLAYER);
     expect(record?.handle).toBe("player");
     expect(record?.avatarPath).toBe(AVATAR_PLAYER);
     // The very record in the map, so every surface renders one identity rather than a copy that
@@ -310,9 +279,9 @@ describe("linkFor", () => {
     // The two paths — `avatarSrc` on the canvas, `linkFor` on the DOM — answer the same question and
     // must never disagree in front of a reader: a disc with a photograph beside a row with no handle,
     // or worse, the reverse.
-    const marked = markLinkedFighters(MARKED, EVERYONE_LINKED);
+    const marked = markLinkedFighters(ROSTER, EVERYONE_LINKED);
     for (const f of marked) {
-      expect(f.avatarSrc, f.wallet).toBe(linkFor(EVERYONE_LINKED, f.wallet, f.house)?.avatarPath ?? null);
+      expect(f.avatarSrc, f.wallet).toBe(linkFor(EVERYONE_LINKED, f.wallet)?.avatarPath ?? null);
     }
   });
 });

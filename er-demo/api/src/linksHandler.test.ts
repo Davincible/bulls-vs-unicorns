@@ -83,10 +83,14 @@ describe("GET /api/links", () => {
     expect((await body(await handleLinks(new Request(url([wallet(1)])), deps(store)))).links).toHaveLength(1);
   });
 
-  it("NEVER returns a wallet on the keeper's published house list", async () => {
-    // §6.3's hard rule. A house wallet wearing a person's face is not a privacy leak — the list is
-    // already printed on the leaderboard — it is an automated process misrepresenting itself as a
-    // person, in a game about money.
+  it("NEVER returns a wallet on the keeper's house list", async () => {
+    // §6.3's hard rule: a house wallet wearing a person's face is an automated process
+    // misrepresenting itself as a person, in a game about money.
+    //
+    // This comment used to add "not a privacy leak — the list is already printed on the
+    // leaderboard". It is not printed anywhere any more: the house wallets are anonymous and the
+    // list reaches this API only over an authenticated channel (see `houseWallets.ts`). The rule
+    // this test pins is unchanged; the reason it is not ALSO a disclosure question is what changed.
     const store = new MemoryLinkStore()
       .seed({ xId: "1", wallet: wallet(1), handle: "alice" })
       .seed({ xId: "2", wallet: wallet(2), handle: "housebot" });
@@ -109,7 +113,10 @@ describe("GET /api/links", () => {
       deps(store, { house: houseSource([], true) }),
     );
     expect(res.status).toBe(200);
-    expect(res.headers.get("X-XLink-House-List")).toBe("unavailable");
+    // `X-XLink-Suppression`, not `X-XLink-House-List`: the header must tell an operator that rows
+    // are being withheld without telling every reader of every response that a house list exists.
+    expect(res.headers.get("X-XLink-Suppression")).toBe("unavailable");
+    expect(res.headers.get("X-XLink-House-List")).toBeNull();
     expect((await body(res)).links).toEqual([]);
   });
 

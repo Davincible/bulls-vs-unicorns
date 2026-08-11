@@ -24,15 +24,32 @@ export const SECRET_ENV = "XLINK_ATTESTATION_SECRET";
  *  variable nobody has to remember to rotate by hand. */
 export const DATABASE_URL_ENV = "DATABASE_URL";
 
-/** Where the SERVER reads the house wallet disclosure from. Distinct from the browser's
- *  `VITE_KEEPER_STATUS_URL` and deliberately WITHOUT the `VITE_` prefix, because `VITE_` is exactly
- *  the mechanism that inlines a value into the public bundle and this one has no business there. */
-export const KEEPER_STATUS_URL_ENV = "KEEPER_STATUS_URL";
+/**
+ * Where the SERVER reads the house wallet list from. Deliberately WITHOUT the `VITE_` prefix,
+ * because `VITE_` is exactly the mechanism that inlines a value into the public bundle and this one
+ * has no business there.
+ *
+ * That was already the rule when this pointed at the public status file; it is MORE true now. The
+ * house list used to be published to every browser, so the worst a `VITE_`-prefixed URL could have
+ * leaked was the address of a public document. The list is now internal — served only to a caller
+ * holding `KEEPER_HOUSE_TOKEN` — so the endpoint's address is one half of a private channel, and
+ * shipping either half in the bundle is the whole point of what changed.
+ */
+export const KEEPER_HOUSE_URL_ENV = "KEEPER_HOUSE_URL";
 
-/** The keeper's live endpoint. NOT `er-demo/public/keeper-status.json`, which is a committed
- *  snapshot that goes stale the moment a house wallet is added or rotated — and a stale house list
- *  is precisely a house wallet that can wear a face. */
-export const DEFAULT_KEEPER_STATUS_URL = "https://bulls-arena-keeper-devnet.fly.dev/keeper-status.json";
+/** The keeper's authenticated house-list endpoint. NOT `er-demo/public/keeper-status.json`, and no
+ *  longer even a candidate: the committed snapshot is a build artefact that goes stale the moment a
+ *  wallet is added, and as of `KEEPER_STATUS_SCHEMA` 5 it does not carry the list at all. */
+export const DEFAULT_KEEPER_HOUSE_URL = "https://bulls-arena-keeper-devnet.fly.dev/house-wallets.json";
+
+/**
+ * The bearer token for the endpoint above. Must be byte-identical to the keeper's
+ * `KEEPER_HOUSE_TOKEN` fly secret, which enforces a 32-character minimum — a token short enough to
+ * guess is a list that is only nominally private.
+ *
+ * NOT defaulted, unlike the URL. The URL is an address; this is the credential.
+ */
+export const HOUSE_TOKEN_ENV = "KEEPER_HOUSE_TOKEN";
 
 /**
  * THE CLIENT'S HALF, published here so the two names live in one file.
@@ -132,9 +149,40 @@ export function requireDatabaseUrl(env: Record<string, string | undefined>): str
   return raw.trim();
 }
 
-/** The keeper status endpoint. The only value here with a default, because the default is a public
- *  URL that is already hardcoded in two other places in this repo and is not a secret. */
-export function keeperStatusUrl(env: Record<string, string | undefined>): string {
-  const raw = env[KEEPER_STATUS_URL_ENV];
-  return raw !== undefined && raw.trim() !== "" ? raw.trim() : DEFAULT_KEEPER_STATUS_URL;
+/** The keeper's house-list endpoint. The only value here with a default, because the default is an
+ *  address rather than a secret — knowing where the door is buys nothing without the key below. */
+export function keeperHouseUrl(env: Record<string, string | undefined>): string {
+  const raw = env[KEEPER_HOUSE_URL_ENV];
+  return raw !== undefined && raw.trim() !== "" ? raw.trim() : DEFAULT_KEEPER_HOUSE_URL;
+}
+
+/**
+ * The house-list bearer token, or a thrown cold start.
+ *
+ * EXACTLY THE ARGUMENT `loadAttestationKey` MAKES, arriving by a different road. Without the token
+ * every fetch of the list comes back 401, `HouseListCache` fails closed as it is designed to, and
+ * `/api/links` withholds every row — so the leaderboard renders exactly as it does when nobody has
+ * linked. No screen anywhere shows that as broken: not the player's (§8 says the unlinked page is
+ * the ordinary page), not an uptime check (the route still 200s), not the logs of anything that
+ * looks at status codes. A silent, indefinite, total loss of the feature.
+ *
+ * So it must be a 500 at the origin, on the first request after the deploy, where somebody is
+ * looking. Called at MODULE SCOPE in the entry points, like every other loader in this file.
+ *
+ * The value must match the keeper's `KEEPER_HOUSE_TOKEN` fly secret, which enforces a 32-character
+ * minimum. This function does NOT re-check that length: a token this side believes is fine and the
+ * keeper rejects is a 401, and a 401 is diagnosed loudly by `houseWallets.ts` — duplicating the rule
+ * here would give two places to change it and one of them would be missed.
+ */
+export function requireHouseToken(env: Record<string, string | undefined>): string {
+  const raw = env[HOUSE_TOKEN_ENV];
+  if (raw === undefined || raw.trim() === "") {
+    throw new Error(
+      `${HOUSE_TOKEN_ENV} is not set. It must match the keeper's \`${HOUSE_TOKEN_ENV}\` fly secret ` +
+        `(minimum 32 characters, enforced there). Refusing to start: without it every house-list read ` +
+        `is a 401, the fail-closed path withholds every attestation, and the result is ` +
+        `indistinguishable from "nobody has linked".`,
+    );
+  }
+  return raw.trim();
 }

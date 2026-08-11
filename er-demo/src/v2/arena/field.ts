@@ -872,8 +872,8 @@ export function createField(
  *  No allocation, no Map, no array: an id lookup and a string compare per fighter, and the compare
  *  is almost always between two references to the same value — `markLinkedFighters` returns its
  *  INPUT array untouched when nothing moved, so the `FighterView`s are the same objects too. The
- *  write only happens on the frame the link actually lands. Same discipline as `houseFighters.ts`
- *  and `linkFighters.ts`: do nothing at all in the common case.
+ *  write only happens on the frame the link actually lands. Same discipline as `linkFighters.ts`:
+ *  do nothing at all in the common case.
  *
  *  REVOCATION TRAVELS THIS PATH TOO, and needs no branch of its own — an unlinked, suppressed or
  *  deleted account arrives as `avatarSrc: null`, the compare notices, and the fighter is back to its

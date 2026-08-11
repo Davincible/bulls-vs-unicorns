@@ -35,8 +35,6 @@ const BASE_ROUND: KeeperRoundStatus = {
   lobbyClosesAt: NOW_SEC + 30,
   fightStartedAt: 0,
   fighterCount: 4,
-  houseFighterCount: 4,
-  realFighterCount: 0,
   heldOpen: false,
   winner: 0,
   pot: "4000000",
@@ -64,7 +62,6 @@ const BASE: KeeperStatus = {
   round: BASE_ROUND,
   entriesCloseAt: null,
   nextLobbyOpensAt: null,
-  house: { wallets: [], disclosure: "House-operated fighters, disclosed per README." },
 };
 
 function round(over: Partial<KeeperRoundStatus> = {}): KeeperRoundStatus {

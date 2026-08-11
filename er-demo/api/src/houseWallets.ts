@@ -1,16 +1,41 @@
-// THE HOUSE WALLET DISCLOSURE, READ LIVE, AND WHAT TO DO WHEN IT CANNOT BE READ.
+// THE HOUSE WALLET LIST, READ LIVE OVER AN AUTHENTICATED CHANNEL, AND WHAT TO DO WHEN IT CANNOT BE
+// READ.
 //
 // `TWITTER-CONNECT.md` §6.3 states one hard rule: a house wallet must never wear a person's face.
 // The keeper fields house fighters to keep a lobby from being empty; a house wallet rendering as
-// `@someone` would not be a privacy leak (the list is already published to every browser and printed
-// on the leaderboard) — it would be an actual misrepresentation, an automated process wearing a
-// person's name in a game about money.
+// `@someone` is an actual misrepresentation — an automated process wearing a person's name in a game
+// about money.
 //
-// FROM THE KEEPER'S LIVE ENDPOINT, NOT FROM `er-demo/public/keeper-status.json`. The committed
-// snapshot is a build artefact: it is whatever the keeper happened to be publishing when someone
-// last ran it locally, and it is already several program deploys out of date in this repo. A house
-// wallet added after that build is a house wallet the snapshot does not know about, which is exactly
-// and only the case the rule exists for.
+// THIS FILE USED TO SAY THE OPPOSITE OF WHAT IT NOW SAYS, AND THE INVERSION IS THE POINT. It argued
+// that such a rendering "would not be a privacy leak — the list is already published to every browser
+// and printed on the leaderboard". That is no longer true and is no longer wanted. The arena's house
+// wallets are ANONYMOUS: the keeper does not publish the list, `KEEPER_STATUS_SCHEMA` 5 removed the
+// `house` field from the status file entirely, and no browser ever sees which fighters are the
+// house's. The list did not go away — the keeper still uses it internally to tell a house fighter
+// from a real one — it went PRIVATE. What is preserved below is the rule and its fail direction;
+// what changed is where the list comes from and who is allowed to ask for it.
+//
+// FROM THE KEEPER'S LIVE ENDPOINT, NOT FROM `er-demo/public/keeper-status.json`, and now for two
+// reasons rather than one. The old reason still holds: the committed snapshot is a build artefact,
+// whatever the keeper happened to be publishing when someone last ran it locally, already several
+// program deploys out of date in this repo — and a house wallet added after that build is a house
+// wallet the snapshot does not know about, which is exactly and only the case the rule exists for.
+// The new reason is blunter: the snapshot does not contain the list at all any more, at any age.
+//
+// ------------------------------------------------------------------------------------------------
+// WHY AN AUTHENTICATED KEEPER ENDPOINT AND NOT A COPY.
+//
+// Two cheaper designs were evaluated and both were rejected for the same defect. A build-time env
+// var holding the wallet list, and a static list committed to this repo, are both COPIES — and the
+// bank GROWS. `scripts/keeper/extendHouseBank.ts` exists precisely to grow it, and production
+// already runs 48 wallets against a code default of 10. A baked-in copy goes stale at the exact
+// moment a wallet is added, which is the exact moment the §6.3 check has something to do. A house
+// wallet the API does not know about is the only case this whole module exists for; a design whose
+// failure mode is "does not know about the newest wallet" fails at its one job.
+//
+// So: one source of truth, read live, over a channel the browser cannot use. The keeper is the only
+// process that knows its own bank, and `Authorization: Bearer` is what lets it hand that knowledge
+// to this API without handing it to everyone.
 //
 // ------------------------------------------------------------------------------------------------
 // WHICH WAY THIS FAILS, AND WHY THAT DIRECTION.
@@ -37,8 +62,8 @@ const REFRESH_SECONDS = 60;
 const FETCH_TIMEOUT_MS = 2_000;
 
 export interface HouseList {
-  /** Wallets the keeper publishes as its own. Empty AND `unknown: false` means the keeper genuinely
-   *  publishes no house wallets, which is a different fact from not knowing. */
+  /** Wallets the keeper reports as its own. Empty AND `unknown: false` means the keeper genuinely
+   *  has no house wallets, which is a different fact from not knowing. */
   readonly wallets: ReadonlySet<string>;
   /** `true` only when this worker has never successfully read the list. The caller must serve no
    *  links at all — see the header. */
@@ -62,30 +87,33 @@ interface Cached {
 /** Injectable so tests never touch the network and never wait on a clock. */
 export interface HouseListDeps {
   readonly url: string;
+  /** The keeper's `KEEPER_HOUSE_TOKEN`. A constructor argument rather than a `process.env` read, for
+   *  the same reason the other three are: this class must be answerable in a unit test, and a module
+   *  that reaches for the environment on its own can only be tested by mutating it. */
+  readonly token: string;
   readonly fetch: typeof globalThis.fetch;
   readonly nowSec: () => number;
 }
 
 /**
- * Reads `house.wallets` out of a keeper status body — STRUCTURALLY, and without asserting the
- * schema version.
+ * Reads the top-level `wallets` array out of a house-list body: `{"wallets":["<base58>", …]}`.
  *
- * `keeperStatus.ts` deliberately does the opposite: it demands an exact `schema` match and reports
- * "keeper down" for anything else, because it draws a countdown from that file and a half-understood
- * status becomes a confidently-wrong number in front of a player. The asymmetry is intentional and
- * worth stating, because a reader who knows that module will expect the same rule here.
+ * THERE IS NO SCHEMA VERSION TO ARGUE ABOUT ANY MORE, and the paragraph that used to stand here is
+ * gone rather than merely edited. It explained at length why this function did NOT pin the keeper's
+ * `schema` field the way `keeperStatus.ts` does — that a half-understood status becomes a
+ * confidently-wrong countdown in front of a player, whereas this module asks one question and uses
+ * the answer only to WITHHOLD, so tolerating an unrecognised version was the safer half of a real
+ * asymmetry. That asymmetry is now MOOT, not resolved: the endpoint this reads carries no `schema`
+ * field and nothing else besides `wallets`.
  *
- * This module asks one question — "is this wallet the house's?" — and uses the answer only to
- * WITHHOLD. A keeper that bumps its schema for an unrelated field still answers that question
- * correctly, and pinning the version would mean a keeper deploy silently removes every avatar on the
- * site until this function is redeployed to agree with it. Half-understanding is dangerous when you
- * render from it and harmless when you only refuse from it.
+ * What replaces it is narrower and duller. This body has exactly one shape. A body that is not that
+ * shape is not a newer dialect to be tolerated — it is unreadable, and unreadable takes the
+ * fail-closed path in the header. There is no version skew to be generous about because there is no
+ * version.
  */
 export function houseWalletsFrom(body: unknown): ReadonlySet<string> | null {
   if (typeof body !== "object" || body === null) return null;
-  const house = (body as { house?: unknown }).house;
-  if (typeof house !== "object" || house === null) return null;
-  const wallets = (house as { wallets?: unknown }).wallets;
+  const wallets = (body as { wallets?: unknown }).wallets;
   if (!Array.isArray(wallets)) return null;
   // One bad entry invalidates the whole list rather than being skipped. A partially-parsed deny list
   // is a deny list with a hole in it, and the hole is invisible.
@@ -151,7 +179,39 @@ export class HouseListCache implements HouseListSource {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
     try {
-      const res = await this.deps.fetch(this.deps.url, { signal: ctl.signal, redirect: "error" });
+      const res = await this.deps.fetch(this.deps.url, {
+        signal: ctl.signal,
+        // `redirect: "error"` was already right and now it is load-bearing. Following a redirect
+        // means re-sending the `Authorization` header to whatever host the redirect names — a
+        // bearer token handed to somebody nobody vetted, on the strength of a 302 from a machine we
+        // are already failing to reach correctly. Refusing costs a fetch that returns null and
+        // falls back to the last good list; the alternative cost is the credential itself.
+        redirect: "error",
+        headers: { Authorization: `Bearer ${this.deps.token}` },
+      });
+      if (res.status === 401) {
+        // THE ONE FAILURE HERE THAT EARNS A LOG LINE, and the reason is that it is the only one that
+        // will never fix itself. Every other failure below is transient by nature — a timeout, a
+        // deploy, a DNS blip — and is answered correctly by returning the last good list and trying
+        // again in a minute; logging those would be noise proportional to the keeper's worst day.
+        // A 401 is not transient. It means the token this function was deployed with and the
+        // keeper's `KEEPER_HOUSE_TOKEN` secret disagree, which no amount of retrying resolves, and
+        // whose only outward symptom is that every avatar on the leaderboard is quietly missing —
+        // the exact silence §6.3's fail-closed path is designed to be indistinguishable from. So it
+        // gets said out loud, once per occurrence, to the one audience that can act on it.
+        //
+        // NOT deduplicated behind a "have I warned already" flag. The cache TTL and the in-flight
+        // collapse already bound this to at most one line per refresh interval per worker, and a
+        // one-shot flag would make a permanently broken deployment look like a single startup
+        // hiccup to anyone who opened the logs a minute late. Repetition is the signal.
+        console.warn(
+          `[houseWallets] ${this.deps.url} returned 401. KEEPER_HOUSE_TOKEN does not match the ` +
+            `keeper's secret; every X link is being withheld until it does.`,
+        );
+        // Fail closed anyway. A rejected token is not a reason to start trusting a list we did not
+        // manage to read.
+        return null;
+      }
       if (!res.ok) return null;
       return houseWalletsFrom(await res.json());
     } catch {

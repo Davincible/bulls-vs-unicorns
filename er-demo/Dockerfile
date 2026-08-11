@@ -107,21 +107,40 @@ ENV KEEPER_HOLD_OPEN=0
 # code change. An endpoint that carries an API key belongs in `fly secrets`, not in [env] or here.
 
 # ---------------------------------------------------------------------------------------------
-# SECRETS ARE NEVER IN THIS IMAGE. Both are read from the environment at boot, and both fall back to
-# a gitignored local path when unset so a laptop run still works unchanged:
+# SECRETS ARE NEVER IN THIS IMAGE. All three are read from the environment at boot. The first two
+# fall back to a gitignored local path when unset, so a laptop run still works unchanged; the third
+# has no fallback, because it is a credential rather than a file:
 #
 #   KEEPER_OPERATOR_KEY    the arena authority secret key — a JSON array of 64 numbers, the same
 #                          content as .devnet/fork-payer.json. open_round and delegate_round are
 #                          both has_one = authority; the keeper refuses to start if this key is not
 #                          the arena's authority.
-#   KEEPER_HOUSE_WALLETS   the six house-fighter keys — the verbatim contents of
+#   KEEPER_HOUSE_WALLETS   the house-fighter keys — the verbatim contents of
 #                          .devnet/keeper-house-wallets.json, shape
-#                          {"note": "...", "secretKeys": [[...], ...]}
+#                          {"note": "...", "secretKeys": [[...], ...]}. DELIBERATELY NOT NAMING A
+#                          COUNT: this line used to say "the six house-fighter keys" and production
+#                          has run forty-eight for some time. A number written into prose beside a
+#                          number that lives in KEEPER_HOUSE_WALLET_COUNT is a number that goes
+#                          stale silently, and the wrong one is the one a reader trusts because it
+#                          is the one with a sentence around it. The count is the pool file's
+#                          business; see fly.toml's [env] block for how it is actually set.
+#   KEEPER_HOUSE_TOKEN     the bearer credential on GET /house-wallets.json — the authenticated
+#                          endpoint serving the pubkeys of those wallets (never the keys). The
+#                          arena's own wallets are internal rather than published, and this token is
+#                          the whole of that boundary. Minimum 32 characters, enforced at boot.
+#                          UNSET DISABLES THE ROUTE ENTIRELY, and it 404s as an unknown path rather
+#                          than 401ing, so an anonymous caller is not told there is a list to attack.
+#                          The Vercel identity API holds a copy under this same name and uses it to
+#                          keep a person's face off one of these wallets; without it that check
+#                          cannot run, so it fails closed and serves NO avatars at all — correct, and
+#                          invisible, since nothing on screen distinguishes that from "nobody has
+#                          linked". Set it on both sides or on neither.
 #
 # Env beats file, and which source won is logged at boot; the key material never is.
 #
 #   fly secrets set KEEPER_OPERATOR_KEY="$(cat ../.devnet/fork-payer.json)"
 #   fly secrets set KEEPER_HOUSE_WALLETS="$(cat ../.devnet/keeper-house-wallets.json)"
+#   fly secrets set KEEPER_HOUSE_TOKEN="$(openssl rand -base64 32)"
 #
 # .devnet/ is gitignored, AND outside this build context, AND listed in .dockerignore — three
 # independent reasons a key cannot end up in a layer. Any one of them alone is a reason someone
