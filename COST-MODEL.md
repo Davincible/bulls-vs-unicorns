@@ -129,25 +129,43 @@ The risk is that closing *fails*, and it already does, in three known ways:
 **At 424 rounds/day, a reclamation outage costs 9.96 SOL/day.** Not eventually — immediately, at the
 rate rounds are opened.
 
-### The honest caveat on the headline figure
+### The caveat, and its resolution — 2026-08-15
 
-**Rent reclamation has never run at 48 fighters.** v8's counter is at 4 and the retention window is
-twenty, so nothing on this program has been closed yet. The 0.030 SOL/day depends on a mechanism that
-is built, tested and *unobserved at this account size* — where rent is 2.7× what it was when it was
-last observed working (0.008561 at sixteen fighters).
+**This section used to say rent reclamation had never run at 48 fighters, and that the 0.030 SOL/day
+headline therefore rested on a mechanism nobody had watched work at the current account size. That is
+no longer true, and the resolution is recorded here rather than by deleting the doubt.**
 
-**What has since been established, and what has not.** `scripts/reclaim-status.ts` simulates
-`close_round_account` against every live round without sending anything, and against v8 it shows the
-instruction is REACHABLE at the current 3,248-byte size: rounds 1–3 are terminal, swept and
-undelegated, and the only thing refusing them is `RoundTooRecent` (6021) — the retention guard doing
-its job. Round 4 is delegated and refuses with `AccountOwnedByWrongProgram` (3007), also correct.
+The proof came from continuous mode, which is most of why that mode exists. The arena ran unattended
+past the twenty-round retention window and closed its first round without anybody prompting it:
 
-So the gating is proven at this size and nothing structural has broken. **The lamport transfer itself
-is still unproven at 48 fighters**, and it cannot be proven without either running twenty rounds or
-opening twenty-two against the live arena — the latter being a second writer to `arena.round_counter`,
-which is the failure `extendHouseBank.ts` opens by warning about. Continuous mode reaches round 20 in
-about seventy minutes and exercises it in production, which is the better proof and the reason that
-mode exists.
+```
+close_round_account #1    err: null    landed in 668ms
+  operator delta   +0.023491960 SOL
+  expected         +0.023492000 SOL     (0.023497 rent - 0.000005 fee)
+  RECONCILES
+  signature 3UcCC7mnGhxhScuP4dMBcrr76xk3JLF5bR4Lv28ykm7JZVZhvAhu9m21GjZZvq7z7pvpMXhCNhgwhev5sUo3ht9q
+```
+
+Reconciled against the ledger's own record of that transaction rather than a `getBalance` pair, for
+the reason `verify-round-close.ts` gives at length. Round #1's account reads back gone. Closing has
+continued every round since, with the sweep gap flat at 1 and **zero stranded**.
+
+**Two things this does and does not settle.** It settles that the lamport transfer works at 3,248
+bytes, where rent is 2.7× what it was when the mechanism was last observed working (0.008561 at
+sixteen fighters). It does not settle the multi-day behaviour — §4's failure modes are about
+reclamation *stopping*, and a few hours of it working is not evidence that it cannot.
+
+**What established the gating first**, and remains the cheap check to reach for: `scripts/reclaim-status.ts`
+simulates `close_round_account` against every live round and sends nothing, so it is safe to run beside
+the keeper. Before the window opened it showed rounds 1–3 terminal, swept, undelegated and refused
+only by `RoundTooRecent` (6021), with the delegated live round refused by `AccountOwnedByWrongProgram`
+(3007) — both correct, and together they proved the instruction reachable at this size without
+spending anything.
+
+The path not taken, recorded because it is the tempting one: `verify-round-close.ts` proves the same
+instruction far more thoroughly, but does it by **opening twenty-two rounds against the live arena** —
+a second writer to `arena.round_counter`, which is the failure `extendHouseBank.ts` opens by warning
+about. Waiting seventy minutes for production to do it was both cheaper and better evidence.
 
 **Watch `Treasury.rounds_swept` against `Arena.round_counter` for the first day of continuous
 running** — `GET /reclamation.json`, or `scripts/reclaim-status.ts` locally. If the gap grows, the

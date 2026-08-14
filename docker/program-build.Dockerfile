@@ -26,7 +26,25 @@
 # `anchor-lang = "=1.0.2"` with an exact-equals for the reason its own comment gives — an unpinned
 # range silently resolved 1.1.2, which migrated an API. The CLI must match the crate, so it is
 # exact-equals here too.
-FROM --platform=linux/amd64 rust:1.85.1-slim-bookworm
+#
+# WHICH RUST VERSION ACTUALLY DETERMINES THE ARTIFACT, because the obvious answer is wrong and this
+# file was first written with the wrong one. The HOST rustc below does not compile the on-chain
+# object. `cargo-build-sbf` carries its own Rust inside Solana's platform-tools and uses it for the
+# SBF target; the host toolchain builds only proc-macros and build scripts, which do not end up in
+# the `.so`. So **SOLANA_VERSION is the pin that governs reproducibility of the bytecode**, and the
+# host rustc merely has to be new enough to compile the tooling.
+#
+# That is not a theory — it is why this image failed on its first build. It was pinned to 1.85.1 to
+# match the laptop, and `avm` refused:
+#
+#     rustc 1.85.1 is not supported by the following packages:
+#       cargo-platform@0.3.3 requires rustc 1.91
+#       cargo_metadata@0.23.1 requires rustc 1.86.0
+#
+# Matching the host rustc bought nothing (it does not touch the artifact) and cost the build. So the
+# host toolchain is now chosen to satisfy the tooling, and the reproducibility claim rests where it
+# actually belongs.
+FROM --platform=linux/amd64 rust:1.91-slim-bookworm
 
 # --platform is deliberate. Apple Silicon runs this under emulation, slowly, and that is the point:
 # the deployed artifact is x86_64 and a build that silently differed by host architecture would
