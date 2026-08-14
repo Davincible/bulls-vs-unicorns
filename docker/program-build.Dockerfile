@@ -67,8 +67,28 @@ ENV PATH="/root/.local/share/solana/install/active_release/bin:${PATH}"
 
 # --locked so the CLI itself is built from its own lockfile rather than whatever the registry has
 # resolved to today. Without it this line is a floating dependency pretending to be a pin.
+#
+# --from-source ON `avm install`, AND IT IS LOAD-BEARING TWICE.
+#
+# The mechanical reason: by default `avm install` DOWNLOADS a prebuilt binary, and the 1.0.2 build is
+# linked against a newer C library than this base image has. The failure is at exec time, not install
+# time, so the image builds "successfully" and then every `anchor` invocation dies with:
+#
+#     /root/.avm/bin/anchor-1.0.2: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.39' not found
+#
+# Bookworm ships 2.36. Moving to a trixie base would also fix it (2.41) and was rejected, because it
+# fixes this one binary's requirement rather than the class — the next pinned version can want
+# something newer again, and the symptom would return in a form that looks like a different problem.
+#
+# The better reason: this image exists so that the bytecode it emits can be attributed to a known
+# toolchain. A downloaded binary is an artifact nobody here built, from a chain nobody here checked,
+# sitting in the middle of that attribution. Compiling it means the compiler is the one pinned above
+# and the link is against this image's own libc, whatever the base later becomes.
+#
+# The cost is real and worth stating: this is the slow layer, several minutes under emulation. It
+# caches, so it is paid once per Dockerfile edit rather than once per build.
 RUN cargo install --git https://github.com/coral-xyz/anchor avm --locked \
-    && avm install ${ANCHOR_VERSION} \
+    && avm install ${ANCHOR_VERSION} --from-source \
     && avm use ${ANCHOR_VERSION}
 ENV PATH="/root/.avm/bin:${PATH}"
 

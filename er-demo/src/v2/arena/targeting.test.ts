@@ -628,11 +628,30 @@ describe("two fighters", () => {
     // flicker — a frame of `null` between appointments, a fighter briefly holding itself — would be
     // this file's most visible possible defect, on the one lineup where both fighters fill the
     // screen.
+    //
+    // THE LOOP HAD TO LEARN WHEN THE DUEL IS OVER, and the new die is what taught it. This ran a flat
+    // 1,500 frames and asserted `[1, 0]` on every one of them, which was fine while the roll was
+    // 4..27: a duel of two $10 rings took far longer than 1,500 steps to reach `DUST`, so the window
+    // never outlived the fight. The die is now `1..22, or 90 one time in 32` (`rollOf` in erSim.ts),
+    // a crit takes ninety percent of a ring at a stroke, and a duel ends well inside the window. Once
+    // one fighter is dead there is no pair, the tracker correctly returns nulls, and the assertion
+    // failed for the one reason it should never be silenced over: it was asserting past the end of
+    // the fight.
+    //
+    // So the property is stated as what it always meant — WHILE BOTH ARE STANDING, the pairing is
+    // exactly the one pairing there is — and the frame at which the duel ends is derived from the
+    // events rather than assumed, so this cannot rot again the next time the die moves.
     const count = 2;
     const events = fight(count, 1500);
     const driver = replayDriver(count, events);
+    let framesChecked = 0;
     for (let frame = 0; frame < 1500; frame++) {
-      expect(driver.frameAt(frame * FRAME_MS)).toEqual([1, 0]);
+      const held = driver.frameAt(frame * FRAME_MS);
+      if (driver.isDeadNow(0) || driver.isDeadNow(1)) break;
+      expect(held).toEqual([1, 0]);
+      framesChecked++;
     }
+    // Non-vacuity: a duel that ended on frame one would satisfy the loop above and prove nothing.
+    expect(framesChecked).toBeGreaterThan(100);
   });
 });

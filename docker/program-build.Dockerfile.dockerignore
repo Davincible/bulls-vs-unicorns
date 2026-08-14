@@ -33,6 +33,7 @@
 !programs/
 !Cargo.toml
 !Cargo.lock
+!Anchor.toml
 
 # The entrypoint script the Dockerfile installs.
 !docker/program-build.sh

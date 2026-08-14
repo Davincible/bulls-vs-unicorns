@@ -237,6 +237,15 @@ test("an extracted fighter cannot be raided afterwards", () => {
 test("you cannot extract twice, or extract nothing", () => {
   const r = lobby(seedOf("twice"), 4);
   tick(r, 100);
-  extract(r, r.fighters[0].wallet);
-  assert.throws(() => extract(r, r.fighters[0].wallet), /NothingToExtract/);
+  // THE FIGHTER HAS TO STILL BE IN THE RING FOR "extract twice" TO MEAN ANYTHING, and this test used
+  // to take slot 0 on the assumption that it would be. Under the die shipped with the variance change
+  // (`rollOf`: 1..22, or 90 one time in 32) a crit can empty a ring in a couple of blows, and slot 0
+  // is already dead at 100 ticks on this seed — so the FIRST extract threw `NothingToExtract` and the
+  // test failed asserting that the SECOND one would. It was right about the rule and wrong about the
+  // fixture. Picking the first fighter who is actually still standing says what was always meant, and
+  // does not care what the die does next.
+  const alive = r.fighters.find((f) => f.dead === 0 && f.hp > 0n);
+  assert.ok(alive, "nobody survived 100 ticks — this fixture can no longer test double extraction");
+  extract(r, alive.wallet);
+  assert.throws(() => extract(r, alive.wallet), /NothingToExtract/);
 });

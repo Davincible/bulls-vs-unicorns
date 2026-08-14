@@ -1,12 +1,41 @@
+# THE WORKSPACE-ROOT ANCHOR CONFIG. It was stale enough to be a trap and is repaired rather than
+# left for the next person to walk into.
+#
+# WHAT IT USED TO SAY, AND WHY IT COST AN HOUR. `anchor_version = "0.30.1"` against an installed
+# 1.0.2, and a single `[programs.devnet]` entry for `bulls_vault` at
+# "VauLt1111111111111111111111111111111111111" — a placeholder that is NOT a valid 32-byte pubkey,
+# for a program (`programs/vault`) that is not even a member of this workspace. `anchor build` here
+# therefore died with:
+#
+#     Error: String is the wrong size
+#
+# which names neither the file nor the field, and sends you looking at your Rust. The workaround was
+# to build from `programs/bulls-arena/`, which has its own correct Anchor.toml — and that in turn
+# makes THAT directory the anchor workspace root, so `[profile.release]` in this file stops applying
+# and a source-built anchor rejects the build with "`overflow-checks` is not enabled" even though
+# line 30 of Cargo.toml sets exactly that. Two confusing errors, one stale config.
+#
+# Fixed at the root so both go away: the real cargo workspace root and the anchor workspace root are
+# the same directory again, which is the only arrangement where `[profile.release]` means what it
+# says. `programs/bulls-arena/Anchor.toml` is kept and still works for building that program alone.
 [toolchain]
-anchor_version = "0.30.1"
+anchor_version = "1.0.2"
 
 [features]
 resolution = true
 skip-lint = false
 
 [programs.devnet]
-bulls_vault = "VauLt1111111111111111111111111111111111111"
+# The deployed v8 program, matching `declare_id!` in programs/bulls-arena/src/lib.rs and the
+# identical entry in programs/bulls-arena/Anchor.toml. `anchor build` verifies these agree and
+# rewrites them when they do not, which is why a wrong value here is worse than no value.
+bulls_arena = "ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe"
+
+# `bulls_vault` IS DELIBERATELY ABSENT. `programs/vault` is not a member of this workspace (see
+# Cargo.toml's [workspace] members), it is Anchor 0.30.1 and cannot share a dependency graph with the
+# ER program, and ARENA-VAULT.md §3.1 concludes it should be deleted rather than archived — custody
+# belongs in a new `programs/arena-vault` on a fresh id. Declaring a program here that this workspace
+# cannot build is what produced the "String is the wrong size" failure above.
 
 [registry]
 url = "https://api.apr.dev"

@@ -44,7 +44,7 @@
 //   cd engine && npx tsx ../sandbox/house-edge/check-variance-bell.ts [seeds] [n,n,...]
 
 import {
-  runFight, BASELINE, DUST_ABSOLUTE, stepBudget, rollMean, rollSd, MAX_FIGHTERS,
+  runFight, BASELINE, DEPLOYED_V6, DUST_ABSOLUTE, stepBudget, rollMean, rollSd, MAX_FIGHTERS,
   FIGHT_TIMEOUT_SECONDS, STEPS_PER_FIGHTER_PER_SECOND,
 } from "./fight-variant.ts";
 import type { FightConfig, RollSpec, Fighter } from "./fight-variant.ts";
@@ -95,34 +95,50 @@ function matchedSpike(pDen: number, spike: number): RollSpec {
 
 interface Cand { name: string; cfg: FightConfig; stepDiv: number; }
 
+/** A heavy-tail die written the way the shipped one is: a body that never rolls zero, plus a rare
+ *  spike. `lo = 1` is deliberate and is the one place this departs from the search grid in Part 4,
+ *  which swept `lo = 0` — a zero roll makes `dmg == 0` and the exchange is skipped entirely, so a
+ *  body starting at 0 silently deletes `1/(hi+1)` of the on-screen action for no statistical gain.
+ *  The shipped die starts at 4 for the same reason. Shifting the body up by one leaves the variance
+ *  untouched and moves the mean by exactly 1. */
+const die = (pDen: number, spike: number, lo: number, hi: number): RollSpec =>
+  ({ kind: "spike", pDen, spike, lo, hi });
+
 const CANDS: Cand[] = [
+  // `BASELINE` tracks the SHIPPED rule and now carries the new die, so the "before" row has to come
+  // from `DEPLOYED_V6` — the frozen copy of the flat 4..27 rule that every house study was measured
+  // against. Both rows are run on the SAME seeds and the same lineups, so the comparison is paired.
+  { name: "V6: flat 4..27 (was shipped)", cfg: DEPLOYED_V6, stepDiv: 1 },
   { name: "SHIPPED (baseline)", cfg: BASELINE, stepDiv: 1 },
 
-  // The mean-matched crit die, swept over its one parameter. `pDen >= 7` is forced: a spike of 100
-  // carries `100/pDen` of the mean on its own, and the deployed mean is 15.25, so at pDen = 6 the
-  // base range would have to have a NEGATIVE mean to match.
-  { name: "spike 1/8  @100 matched", cfg: base({ roll: matchedSpike(8, 100) }), stepDiv: 1 },
-  { name: "spike 1/10 @100 matched", cfg: base({ roll: matchedSpike(10, 100) }), stepDiv: 1 },
-  { name: "spike 1/12 @100 matched", cfg: base({ roll: matchedSpike(12, 100) }), stepDiv: 1 },
-  { name: "spike 1/16 @100 matched", cfg: base({ roll: matchedSpike(16, 100) }), stepDiv: 1 },
-  { name: "spike 1/24 @100 matched", cfg: base({ roll: matchedSpike(24, 100) }), stepDiv: 1 },
-  { name: "spike 1/32 @100 matched", cfg: base({ roll: matchedSpike(32, 100) }), stepDiv: 1 },
+  // THE SHORTLIST — the feasible frontier found by Part 4, re-run here at full resolution and with
+  // the body shifted off zero. Part 4's grid is what produced these (pDen, spike, width) triples;
+  // this table is what decides between them.
+  { name: "F: 1/8 @50 body 1..19", cfg: base({ roll: die(8, 50, 1, 19) }), stepDiv: 1 },
+  { name: "F: 1/8 @55 body 1..17", cfg: base({ roll: die(8, 55, 1, 17) }), stepDiv: 1 },
+  { name: "F: 1/16 @60 body 1..23", cfg: base({ roll: die(16, 60, 1, 23) }), stepDiv: 1 },
+  { name: "F: 1/16 @70 body 1..19", cfg: base({ roll: die(16, 70, 1, 19) }), stepDiv: 1 },
+  { name: "F: 1/32 @80 body 1..24", cfg: base({ roll: die(32, 80, 1, 24) }), stepDiv: 1 },
+  { name: "F: 1/32 @90 body 1..22", cfg: base({ roll: die(32, 90, 1, 22) }), stepDiv: 1 },
+  { name: "F: 1/32 @95 body 1..21", cfg: base({ roll: die(32, 95, 1, 21) }), stepDiv: 1 },
+  { name: "F: 1/64 @95 body 1..25", cfg: base({ roll: die(64, 95, 1, 25) }), stepDiv: 1 },
 
-  // The study's own recommendation, and the reason this script exists.
-  { name: "retain@stake", cfg: base({ retainBps: 10000n, retainCap: "stake" }), stepDiv: 1 },
-  { name: "retain@stake + spike 1/32", cfg: base({ retainBps: 10000n, retainCap: "stake", roll: matchedSpike(32, 100) }), stepDiv: 1 },
-  { name: "retain@stake + spike 1/16", cfg: base({ retainBps: 10000n, retainCap: "stake", roll: matchedSpike(16, 100) }), stepDiv: 1 },
-  { name: "retain@stake + spike 1/8", cfg: base({ retainBps: 10000n, retainCap: "stake", roll: matchedSpike(8, 100) }), stepDiv: 1 },
-  { name: "retain 50%@stake + spike 1/16", cfg: base({ retainBps: 5000n, retainCap: "stake", roll: matchedSpike(16, 100) }), stepDiv: 1 },
-  { name: "retain 25%@stake + spike 1/16", cfg: base({ retainBps: 2500n, retainCap: "stake", roll: matchedSpike(16, 100) }), stepDiv: 1 },
-
-  // For the record. These move the step budget itself, so they also move
-  // `STEPS_PER_FIGHTER_PER_SECOND` and every entry of `PENALTY_HORIZON_STEPS` — a far larger blast
-  // radius than a die. Seconds are converted at the divided pace, which is the only reading under
-  // which the bell column means anything for them.
-  { name: "fewer/bigger m=2", cfg: base({ rollMul: 2n }), stepDiv: 2 },
-  { name: "fewer/bigger m=3", cfg: base({ rollMul: 3n }), stepDiv: 3 },
+  // THE TWO DISQUALIFIED REFERENCES, kept in the same table as the shortlist so the whole argument
+  // is legible in one place rather than across four runs:
+  //   * `spike 1/16 @100 matched` — the arithmetic-mean-matched crit, HOUSE-SMALL-STAKE.md §7.2's
+  //     fallback (3b). It is the best row in this table on the deliverable AND it improves the bell,
+  //     and Part 2 disqualifies it anyway: 0.23x of the penalty horizon at a duel.
+  //   * `retain@stake + spike 1/32` — HOUSE-SMALL-STAKE.md §7.2's headline recommendation (3), which
+  //     concludes 8.3% of n=48 fights before the bell against the shipped 76.3%.
+  { name: "REJ spike 1/16 @100 matched", cfg: base({ roll: matchedSpike(16, 100) }), stepDiv: 1 },
+  { name: "REJ retain@stake + spike 1/32", cfg: base({ retainBps: 10000n, retainCap: "stake", roll: matchedSpike(32, 100) }), stepDiv: 1 },
 ];
+
+/** `HE_ONLY` keeps only the candidates whose name contains one of the comma-separated fragments, so
+ *  the two-row before/after sweep that produces the published `MAX_FIGHTERS` table can be run across
+ *  seven lineup sizes without paying for the whole shortlist at each one. */
+const ONLY = process.env.HE_ONLY;
+const ROWS = ONLY ? CANDS.filter(c => ONLY.split(",").some(t => c.name.includes(t.trim()))) : CANDS;
 
 // ------------------------------------------------------------------------------------------------
 // STATISTICS. Floats live here and only here.
@@ -188,9 +204,9 @@ console.log(`
 console.log(`\nTHE DICE, in closed form. A die is "matched" when its mean equals the deployed ${LEGACY_MEAN.toFixed(4)}.\n`);
 console.log("  die                        mean      sd    x base sd   support");
 console.log("  " + "-".repeat(72));
-for (const c of CANDS) {
+for (const c of ROWS) {
   const r = c.cfg.roll ?? "legacy";
-  if (c.name !== "SHIPPED (baseline)" && !c.name.startsWith("spike")) continue;
+  if (r === "legacy" && c.name !== "SHIPPED (baseline)") continue;
   const supp = r === "legacy" ? "4..27 (h[8] % 24 + 4)"
     : r.kind === "uniform" ? `${r.lo}..${r.hi}`
     : `${r.lo}..${r.hi}, and ${r.spike} one time in ${r.pDen}`;
@@ -208,9 +224,9 @@ for (const n of SIZES) {
   console.log(head);
   console.log("-".repeat(head.length));
   let baseSd = 0;
-  for (const c of CANDS) {
+  for (const c of ROWS) {
     const r = measure(c, n, hashes);
-    if (c.name === "SHIPPED (baseline)") baseSd = r.sdFinal;
+    if (baseSd === 0) baseSd = r.sdFinal;   // the first row is the reference, whichever it is
     console.log(
       `${c.name.padEnd(30)} ${r.medianSec.toFixed(0).padStart(5)}s ${r.p90Sec.toFixed(0).padStart(5)}s ` +
       `${r.beforeBell.toFixed(1).padStart(7)}%  | ` +
@@ -250,11 +266,8 @@ across ${SEEDS} seeds that all start at exactly 50.0.
 // The statistic is `median / horizon`, and the candidate is disqualified if it goes under 1.00
 // anywhere. The shipped rule's own worst cell is printed as the reference.
 
-const HORIZON_SWEEP = process.env.HE_HORIZON_ONLY ? process.env.HE_HORIZON_ONLY.split(",") : process.env.HE_SKIP_HORIZON ? [] : [
-  "SHIPPED (baseline)", "spike 1/8  @100 matched", "spike 1/10 @100 matched",
-  "spike 1/12 @100 matched", "spike 1/16 @100 matched", "spike 1/24 @100 matched",
-  "spike 1/32 @100 matched",
-];
+const HORIZON_SWEEP = process.env.HE_HORIZON_ONLY ? process.env.HE_HORIZON_ONLY.split(",")
+  : process.env.HE_SKIP_HORIZON ? [] : ROWS.map(c => c.name);
 const HORIZON_SEEDS = Math.min(SEEDS, 120);
 const STAKE_BAND = [5_000_000n, 10_000_000n, 20_000_000n];
 /** `tests/fight_length.rs`: every small lineup, a sample of the large ones. */
@@ -499,18 +512,29 @@ if (process.env.HE_PART4) {
   // slower) and a heavy die SHORTENS them, so a pairing can sit inside both bars that neither knob
   // reaches alone. `retain` alone measures 2.08x on the horizon against the shipped 1.22x — that
   // slack is the budget a faster die gets to spend.
-  const CHASSIS: { tag: string; cfg: Partial<FightConfig> }[] = [
-    { tag: "", cfg: {} },
-    { tag: " + retain@stake", cfg: { retainBps: 10000n, retainCap: "stake" } },
-    { tag: " + retain50@stake", cfg: { retainBps: 5000n, retainCap: "stake" } },
-  ];
+  //
+  // MEASURED, AND IT KILLS `retain` OUTRIGHT — the study's own recommendation. Swept against bodies
+  // up to `0..59` (an arithmetic mean of 31, TWICE the deployed pace, and far faster than anything
+  // the horizon bar would otherwise allow) `retain`@stake still concludes only 11-26% of n=48 fights
+  // before the bell, against the shipped 76%. The mechanism is not pace and cannot be bought back
+  // with one: a repaired ring means the LAST fighter standing on a side is topped back up every time
+  // it wins an exchange, and emptying a side is what ends a round. Rows kept below, run once, so the
+  // conclusion is reproducible rather than quoted.
+  const CHASSIS: { tag: string; cfg: Partial<FightConfig> }[] = process.env.HE_RETAIN
+    ? [{ tag: " + retain@stake", cfg: { retainBps: 10000n, retainCap: "stake" } },
+       { tag: " + retain50@stake", cfg: { retainBps: 5000n, retainCap: "stake" } }]
+    : [{ tag: "", cfg: {} }];
 
   console.log("die                                   sd(roll)  mean   |  horizon   bell   |  sd(final)   IQR   median   exch");
   console.log("-".repeat(118));
 
   for (const ch of CHASSIS) {
-    for (const pDen of [8, 16, 32]) {
-      for (const v of [50, 60, 70, 80, 90]) {
+    // The objective goes as `v / sqrt(pDen)` (a rare spike of `v` contributes `v*sqrt(p)` to the
+    // roll's sd), so it wants a big rare spike; the bell bar wants the opposite, because a big rare
+    // spike is exactly what makes the LAST fighter on a side take a long time to fall. The grid is
+    // densest where those two curves cross.
+    for (const pDen of [8, 12, 16, 24, 32]) {
+      for (const v of [50, 55, 60, 70, 80, 85, 90, 95]) {
         // The largest body the horizon bar will bear. Monotone in `hi` — a wider body is a faster
         // fight and a thinner margin — so scanning downward and stopping at the first pass finds the
         // FASTEST feasible die at this (chassis, pDen, v), which is the one with the best shot at

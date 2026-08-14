@@ -204,16 +204,32 @@ pub const MIN_RETAINED_ROUNDS: u64 = 20;
 /// BELL, and here it is, against the bell this program now rings:
 ///
 /// ```text
-///  n  | median fight | concludes before a 180s bell   (equal $10 stakes, 400 seeds)
-/// -----+--------------+-----------------------------
-///  16  |    83s       |   87.8%      <- the OLD cap, under the OLD 120s bell: 74.2%
-///  32  |   111s       |   81.2%
-///  40  |   121s       |   76.0%
-///  48  |   124s       |   76.2%      <- this cap
-///  52  |   133s       |   70.0%
-///  60  |   133s       |   67.2%
-///  64  |   151s       |   62.5%
+///        |      the flat 4..27 die      |    THIS DIE (1..22 + 90@1/32)   |  aggregate spread
+///   n    | median fight | before the bell | median fight | before the bell |  4..27  ->  now
+/// -------+--------------+-----------------+--------------+-----------------+-----------------
+///   16   |     83s      |     87.8%       |     91s      |     91.0%       |  7.36 -> 9.55
+///   32   |    111s      |     81.3%       |    114s      |     82.5%       |  5.02 -> 6.63
+///   40   |    120s      |     76.0%       |    121s      |     80.0%       |  4.60 -> 6.01
+///   48   |    124s      |     76.3%       |    127s      |     77.8%       |  4.19 -> 5.64   <- this cap
+///   52   |    133s      |     70.0%       |    134s      |     70.5%       |  4.10 -> 5.32
+///   60   |    133s      |     67.3%       |    141s      |     68.5%       |  3.82 -> 5.00
+///   64   |    151s      |     62.5%       |    140s      |     67.8%       |  3.41 -> 4.88
 /// ```
+///
+/// (Equal $10 stakes, sides alternating, 400 seeds per cell, `sandbox/house-edge/check-variance-bell.ts`.
+/// The 16-fighter row is the OLD cap; under the OLD 120s bell it concluded 74.2% of the time, which
+/// is the bar the whole derivation below is against. "Aggregate spread" is the standard deviation of
+/// the final side-vs-side split in points of the pot — the deliverable of the variance change, and
+/// the reason there are now two dice in this table at all.)
+///
+/// THE DIE CHANGED AND THIS TABLE HAD TO BE RE-MEASURED, not adjusted. The left half is the original
+/// measurement and it reproduces to the tenth of a percent, which is how the rig that produced the
+/// right half was validated before any of its numbers were believed. The result worth noticing is
+/// that the bell got BETTER at every single lineup size — 76.3% to 77.8% at this cap, and 62.5% to
+/// 67.8% at 64 — while the aggregate spread rose by about 1.3x throughout. A heavier tail kills
+/// faster than it drags, so the change that was supposed to cost fight length bought some. See
+/// `roll_of`, and note that the constraint which actually bound the die was NOT this table but
+/// `PENALTY_HORIZON_STEPS` at the SMALL lineups, in the opposite direction.
 ///
 /// 48 IS THE LARGEST LINEUP THAT STILL BEATS WHAT THE LIVE GAME ALREADY SHIPS. That is the whole
 /// derivation: 16 fighters against the old 120-second bell concluded 74.2% of the time, so 74.2% is
@@ -1041,8 +1057,12 @@ fn is_caught_up(r: &Round, now: i64) -> bool {
 /// the attacker; draw a rank in `0..n-1` and shift it past `a`. Every non-attacker gets exactly one
 /// rank, so each is picked with probability `1/(n-1)` whatever `a` is and wherever the sides sit —
 /// and because `a` itself is uniform, every ordered pair is equally likely. No retry loop to prove
-/// terminating, no second hash byte consumed, and `h[0..9]` still drives the whole step, so the
-/// hash-byte layout documented for this program is unchanged.
+/// terminating and no second hash byte consumed: this draw takes `h[0..8]` and nothing else.
+///
+/// THE HASH-BYTE LAYOUT DID LATER MOVE, and this comment used to claim it had not. It read
+/// "`h[0..9]` still drives the whole step" — true while the roll was `h[8] % 24 + 4`, and false from
+/// the moment `roll_of` started reading `h[20..24]` and `h[24..28]` instead. The pairing half is
+/// unchanged and that is the half this function is responsible for; `h[8]` is now unread by anything.
 ///
 /// Modulo bias is unchanged in kind and negligible in size: a 32-bit draw reduced mod at most 15
 /// skews a slot's share by under 2^-28.
@@ -1053,6 +1073,172 @@ fn draw_pair(h: &[u8; 32], n: usize) -> (usize, usize) {
     if d >= a { d += 1; }
     (a, d)
 }
+
+/// THE DIE: a body of 1..22, and one blow in thirty-two takes NINETY PERCENT of the smaller ring.
+///
+/// It replaced `let roll = (h[8] as u64) % 24 + 4;` — a flat 4..27 — and the reason is the operator's,
+/// stated in his own words and reproduced in `HOUSE-SMALL-STAKE.md` §5: *"the total sum of who is
+/// winning is relatively very stable and that's a bit boring."*
+///
+/// # The complaint is about the AGGREGATE, and the aggregate is a sum of many small independent moves
+///
+/// Side 0's share of the pot is `s(t) = sum(hp + banked over side 0) / pot` — literally what
+/// `settle_sides` computes. Every exchange moves it by `+-dmg/pot`, the ordered pair is uniform
+/// (`draw_pair`) and the basis is symmetric, so `s` is a driftless random walk and
+/// `Var(s_final) = sum(dmg^2) / pot^2`. Two facts follow, and they are the whole design:
+///
+///   * `sum(dmg)` is CAPPED BY THE RATCHET. `banked` is never at risk again, so total hp is
+///     monotonically non-increasing and the total value ever transferred is at most the pot. That
+///     puts a hard ceiling on the aggregate spread of `sqrt(max_blow / pot)`, and with the largest
+///     possible blow being one whole ring — `pot / n` — the ceiling at 48 seats is `1/sqrt(48)`, i.e.
+///     14.4 points. Measured shipped: 4.19. The room is real but it is finite, and NO die reaches
+///     the ceiling.
+///   * Therefore the only lever a die has is `E[dmg^2] / E[dmg]` — the SIZE-BIASED mean blow. Widen
+///     the die at a fixed mean and the aggregate spreads; that is the whole mechanism.
+///
+/// Measured at 48 seats, equal $10, 400 seeds, sides alternating
+/// (`sandbox/house-edge/check-variance-bell.ts`), the standard deviation of the FINAL side-vs-side
+/// split, in points of the pot, every lineup starting at exactly 50.0:
+///
+/// ```text
+///                              sd(final)   IQR    median fight   before the bell
+/// shipped, 4..27                  4.19     6.00       124s            76.3%
+/// THIS DIE, 1..22 + 90@1/32       5.64     8.55       127s            77.8%
+/// ```
+///
+/// **1.34x the aggregate spread, and the bell got BETTER rather than worse.** That second column is
+/// not a bonus, it is the constraint that picked this die out of eighteen — see below.
+///
+/// # Why the mean is NOT matched, and why that is safe
+///
+/// The obvious move is to hold `E[roll]` at the deployed 15.25 and widen around it. This die does
+/// not: its mean is 13.95, about 8.5% under. That is deliberate, and it costs nothing, because
+/// nothing downstream reads the arithmetic mean:
+///
+///   * THE FEE HALF OF THE HOUSE EDGE DOES NOT, EXACTLY. `fee_bps` is taken at the door by
+///     `split_entry`, before a single step runs, so no die can touch it. Measured rather than
+///     asserted, `check-house-accrual.ts` at 6,000 rounds x 8 fighters: the `hold` and `horizon`
+///     regimes — where nobody extracts early and the fee is the whole take — report **1.0000% of
+///     gross before and 1.0000% after**, to four decimal places, with conservation EXACT on every
+///     round in both.
+///   * THE PENALTY HALF MOVES SLIGHTLY, AND THE FIRST DRAFT OF THIS COMMENT CLAIMED IT COULD NOT.
+///     The claim was that each fighter's `hp + banked` is an exact martingale — which is TRUE, the
+///     ordered pair is uniform and `min(ring_a, ring_d)` is symmetric — and that the penalty is
+///     therefore die-independent, which does NOT follow. `extract` charges on `let taken = f.hp;`:
+///     the RING ALONE, not `hp + banked`. `hp` is not a martingale — it is the leg that drains into
+///     `banked` — so its expected value at a given cursor depends on how fast value leaves the ring,
+///     which is exactly what the die's ARITHMETIC mean sets. A die with a lower mean drains slower,
+///     leaves more in the ring at any cursor, and hands the penalty a bigger base.
+///
+///     This die's mean is 13.95 against the deployed 15.25, so the drift is upward, i.e. in the
+///     HOUSE's favour. Measured, same 6,000 rounds, before -> after:
+///
+///     ```text
+///     regime     house take as % of gross      95% CI (after)        change
+///     hold           1.0000% -> 1.0000%    [1.0000%, 1.0000%]     none, exactly
+///     horizon        1.0000% -> 1.0000%    [1.0000%, 1.0000%]     none, exactly
+///     random         2.0061% -> 2.0517%    [2.0149%, 2.0901%]     +0.046 pp  (+2.3% relative)
+///     quarter        2.3045% -> 2.3599%    [2.3156%, 2.4049%]     +0.055 pp  (+2.4% relative)
+///     ```
+///
+///     Small, one-directional, and REPORTED rather than rounded away, because "the house edge does
+///     not move" was the constraint this change was given and it moved by 2.3% of a secondary
+///     revenue line. Nulling it out is possible and was deliberately not done: widening the body to
+///     roughly `1..25` brings the arithmetic mean back to ~15.3 and would take the penalty base with
+///     it — but a wider body is a FASTER fight, and fight length is what the horizon margin is made
+///     of, which this die has already thinned from 1.22x to 1.13x (below). Trading a measured
+///     fairness margin for a 0.05-percentage-point revenue alignment is the wrong way round, so the
+///     drift stays and is written down. If it ever needs closing, `fee_bps` is settable without a
+///     deploy and is the instrument for it.
+///   * FIGHT LENGTH DOES NOT EITHER, and this is the part that was got wrong first. hp decays
+///     MULTIPLICATIVELY — `hp_d *= (1 - roll/100)` whenever the defender is the smaller ring — so the
+///     blows a fighter survives goes as `log(stake / DUST) / E[-log(1 - roll/100)]`, which is what
+///     `PENALTY_HORIZON_STEPS` and `MAX_FIGHTERS` already say in prose. Fight length is set by the
+///     mean of the LOG, and the arithmetic mean does not appear in it.
+///
+/// # REJECTED: the mean-matched crit, which is what the study actually recommended
+///
+/// `HOUSE-SMALL-STAKE.md` §7.2 recommends `retain`@stake plus a mean-matched 1-in-32 spike of 100,
+/// and offers "a mean-matched spike 1/16 alone" as the cheaper version. Both are rejected here, and
+/// both were rejected on a bar that study never measured.
+///
+///   * A SPIKE OF **100** IS NOT A BIG HIT, IT IS A GUARANTEED KILL. `roll = 100` gives
+///     `dmg = min(ring_a, ring_d)`, which is the defender's WHOLE ring whenever the defender is the
+///     smaller — and a kill costs a lineup one fighter however many it started with. So a crit die
+///     needs ~`n * pDen` steps to empty a side while `PENALTY_HORIZON_STEPS` grows as `n^1.5`; the
+///     two curves cross, and below the crossing the penalty outlasts the whole fight. Measured, as
+///     `median fight / horizon` at the worst cell of {n=2..48} x {$5,$10,$20}: shipped **1.22x**, the
+///     mean-matched 1-in-8 crit **0.14x**, 1-in-16 **0.23x**, 1-in-32 **0.59x**. Every one of them
+///     takes `the_penalty_table_still_errs_short_of_the_measured_fight` red. Lowering the density
+///     moves the crossing and never removes it, because the exponents differ. THIS die keeps the
+///     spike at 90 for exactly that reason: 90 leaves a tenth of the ring standing, so it is a
+///     maiming rather than an execution and fight length still scales with the lineup. Its worst
+///     cell is **1.13x** — thinner than the shipped 1.22x, and the assertion needs 1.00x.
+///   * `retain`@stake — crediting a hit back into the attacker's ring instead of into `banked`, up to
+///     their entry — is the study's headline, and it is the one knob that lifts the `sum(dmg) <= pot`
+///     ceiling above. It concludes **8.3%** of 48-fighter fights before the bell against the shipped
+///     76.3%, and it cannot be bought back with pace: swept against bodies up to `1..59` (an
+///     arithmetic mean of 31, twice the deployed pace) it still only reaches 11-26%. The mechanism is
+///     not pace. Emptying a side is what ends a round, and a repaired ring means the last fighter
+///     standing on a side is topped back up every time it wins. The study read `deaths` (71%, better
+///     than the shipped 65%) as evidence of termination; `deaths` counts FIGHTERS who reached zero
+///     and the bell counts FIGHTS in which a whole side did.
+///   * `surge` and `comeback` were rejected by the study itself, on fairness, and nothing here
+///     reopens them: `surge` opens a +44.6% band spread at 8 seats, `comeback` pays +370 points for
+///     joining the lighter side. `fewer/bigger` (multiply the roll, divide the step budget) survives
+///     on fairness but is a change to `STEPS_PER_FIGHTER_PER_SECOND` and therefore to every entry of
+///     `PENALTY_HORIZON_STEPS` — a far larger blast radius than a die, for 1.4x.
+///
+/// # What this die costs, stated rather than discovered
+///
+/// The horizon margin. The penalty must reach zero inside a real fight and it still does, but with
+/// 13% of room where it used to have 22%, and the thin cell is the same one it has always been —
+/// three fighters at $5. The frontier is genuinely tight: every candidate that bought more than
+/// ~1.4x either ran fights into the bell or ran the small ones out from under their own penalty
+/// schedule. If this is ever changed again, that is the number to watch, and
+/// `the_penalty_table_still_errs_short_of_the_measured_fight` is what watches it.
+///
+/// # A 10% modulo bias, deleted on the way past
+///
+/// `h[8] % 24` is a BYTE reduced mod 24, and 256 is not a multiple of 24: rolls 4..19 came up 11
+/// times in 256 and rolls 20..27 came up 10 — a 10% relative skew, which is why the deployed die's
+/// true mean is 15.25 rather than the 15.5 a uniform 4..27 would give. `check-dice.ts` documents it.
+/// Reducing a u32 instead takes the bias to under 1e-9 (`2^32 mod 22 = 4`), and the spike selector is
+/// EXACT: 32 divides 2^32, so one blow in thirty-two is one blow in thirty-two and not approximately.
+///
+/// # Cost, and the bytes it reads
+///
+/// Two u32 loads, two modulos, one branch — O(1), no new state, no account bytes. Against the
+/// measured profile (~3,000 CU fixed + ~214 CU/step, `tick` at 645,685 CU = 46.1% of the ceiling)
+/// this is noise. The bytes are `h[20..24]` for the magnitude and `h[24..28]` for the selector,
+/// chosen to match `sandbox/house-edge/fight-variant.ts`'s `ROLL_BYTE_LO`/`ROLL_BYTE_SEL` exactly, so
+/// the rig that measured this die and the chain that runs it are reading the same bits. `draw_pair`
+/// takes `h[0..8]`; `h[8]`, which used to carry the whole roll, is now unread.
+pub fn roll_of(h: &[u8; 32]) -> u64 {
+    if u32::from_le_bytes([h[24], h[25], h[26], h[27]]) % CRIT_ONE_IN == 0 {
+        return CRIT_ROLL;
+    }
+    ROLL_BODY_LO + (u32::from_le_bytes([h[20], h[21], h[22], h[23]]) as u64) % ROLL_BODY_SPAN
+}
+
+/// One blow in this many is a crit. A power of two on purpose: 32 divides `2^32`, so `u32 % 32` is
+/// exactly uniform and the advertised rate is the true rate.
+pub const CRIT_ONE_IN: u32 = 32;
+/// What a crit takes, as a percentage of the smaller ring. **It must stay below 100 for two separate
+/// reasons, and both are load-bearing.** At exactly 100 the blow is a guaranteed kill and fight
+/// length stops scaling with the lineup (see `roll_of`). Above 100 it wakes the asymmetric
+/// `dmg > hp_d` clamp that `advance_fight` currently does not need and does not pay for — the defect
+/// `HOUSE-SMALL-STAKE.md` §5.3 measured at a +31% band spread between whales and minnows.
+pub const CRIT_ROLL: u64 = 90;
+/// The body of the die: `ROLL_BODY_LO ..= ROLL_BODY_LO + ROLL_BODY_SPAN - 1`, i.e. 1..22.
+///
+/// IT STARTS AT ONE, NOT ZERO, and that is not cosmetic. A roll of 0 makes `dmg == 0`, which
+/// `advance_fight` skips — so a body starting at zero would silently delete `1/span` of the exchanges
+/// a viewer sees, for no gain in spread. The deployed die starts at 4 for the same reason. It also
+/// keeps the termination argument simple: every blow between two fighters above `DUST` still moves
+/// something.
+pub const ROLL_BODY_LO: u64 = 1;
+pub const ROLL_BODY_SPAN: u64 = 22;
 
 /// ER-051. The fight, pure: no `Context`, no account borrow, no Anchor. This is what the on-chain
 /// instructions call, and it is ALSO what a native `cargo test` calls off-chain — the same function,
@@ -1124,23 +1310,42 @@ fn draw_pair(h: &[u8; 32], n: usize) -> (usize, usize) {
 /// So: dust-finishing keys on the DEFENDER'S ring, and a blow that rounds to nothing simply moves
 /// nothing. Termination still holds. A fighter's ring only falls when they defend, `hp <= DUST`
 /// kills them the next time they are drawn as defender, and a blow between two fighters both above
-/// `DUST` always registers — `min > DUST` gives `dmg >= DUST*4/100 = 40`. A gnat below the floor can
-/// waste its own steps, but it dies the first time it is targeted.
+/// `DUST` always registers — `min > DUST` and the die's floor of `ROLL_BODY_LO = 1` give
+/// `dmg >= DUST*1/100 = 10`. A gnat below the floor can waste its own steps, but it dies the first
+/// time it is targeted.
+///
+/// THAT LOWER BOUND IS THINNER THAN IT WAS AND IT IS STILL A BOUND, which is the point of stating it
+/// as one. Under the flat 4..27 die the worst case was `DUST*4/100 = 40`; under `1..22 + 90@1/32` it
+/// is `DUST*1/100 = 10`. Four times thinner, still four times clear of the `dmg == 0` that would
+/// stall progress, and it is a floor rather than an average because `ROLL_BODY_LO` is 1 rather than
+/// 0 — which is exactly why that constant is 1. A die whose body started at zero would put a
+/// `dmg == 0` skip into the middle of the healthy-versus-healthy case, where today there is none.
 ///
 /// `dmg` can never exceed `hp_d`, so no clamp is needed and none is paid for: `basis <= hp_d` and
-/// `roll <= 27` give `dmg <= 0.27*hp_d`; and in the one case where `saturating_mul` clips, it clips
-/// to `u64::MAX/100`, which is smaller still than the `basis > u64::MAX/27` that provoked it. So
-/// `saturating_sub` below never truncates — it can reach exactly zero and no further — and
-/// conservation is exact per blow rather than approximately so.
+/// `roll <= CRIT_ROLL = 90` give `dmg <= 0.90*hp_d`; and in the one case where `saturating_mul`
+/// clips, it clips to `u64::MAX/100`, which is smaller still than the `basis > u64::MAX/90` that
+/// provoked it. So `saturating_sub` below never truncates — it can reach exactly zero and no further
+/// — and conservation is exact per blow rather than approximately so. **This is the entire reason
+/// `CRIT_ROLL` must stay under 100 and not merely under `u64` overflow**: at `roll > 100` the
+/// inequality `dmg <= hp_d` fails, a clamp becomes necessary, and the clamp is ASYMMETRIC — it fires
+/// when the defender is the smaller ring and not when the attacker is, which is the +31% whale-minnow
+/// band spread `HOUSE-SMALL-STAKE.md` §5.3 measured.
 ///
 /// WHERE THE MIRRORS STOP BEING BYTE-IDENTICAL, stated because "byte-identical" is this project's
 /// core fairness claim and an unqualified claim would be false. `saturating_mul` clips; the
-/// TypeScript mirrors use BigInt, which does not. The first input on which they disagree is
-/// `min(ring_a, ring_d) = 683_212_743_470_724_138` at `roll = 27` — Rust yields
-/// `184_467_440_737_095_516`, TypeScript `...517`. That needs BOTH fighters holding ~6.8e17 units,
-/// i.e. ~$683 billion each at `UNITS_PER_USD = 1e6`. Representable in `u64`, unreachable in this
-/// game. The class is older than this change and this change SHRANK it: the bound used to be on the
-/// defender's ring alone, and is now on the smaller of the two.
+/// TypeScript mirrors use BigInt, which does not. The first input on which they disagree is now
+/// `min(ring_a, ring_d) = 204_963_823_041_217_242` at `roll = 90` — that is where `basis * roll`
+/// first crosses `u64::MAX`. It needs BOTH fighters holding ~2.0e17 units, i.e. ~$205 billion each at
+/// `UNITS_PER_USD = 1e6`. Representable in `u64`, unreachable in this game.
+///
+/// THE DIE CHANGE MOVED THAT THRESHOLD DOWN, from ~$683 billion (the old `roll <= 27`) to ~$205
+/// billion, and the honest way to report a three-fold shrink in a safety margin is as a three-fold
+/// shrink rather than as "still unreachable". It is still unreachable — `STAKE_CAP_USD` is $100 and
+/// `MAX_FIGHTERS` is 48, so the largest pot this game can assemble is $4,800, nine orders of
+/// magnitude short — but the direction is the wrong one and the next change to `CRIT_ROLL` should
+/// carry this paragraph forward rather than rediscover it. The class itself is older than either
+/// change; the seat-law fix SHRANK it (the bound used to be on the defender's ring alone, and is now
+/// on the smaller of the two) and this one grew it back partway.
 ///
 /// THE ONE RESIDUAL STAKE-INDEPENDENT TRANSFER is the dust finish, and its size is worth naming
 /// rather than leaving implicit. Every other exchange is symmetric — `P(i attacks j)` equals
@@ -1160,7 +1365,7 @@ pub fn advance_fight(fighters: &mut [Fighter], n: usize, seed: &[u8; 32], cursor
         if fighters[a].wallet == fighters[d].wallet { continue; }
         if fighters[a].dead == 1 || fighters[d].dead == 1 { continue; }
 
-        let roll = (h[8] as u64) % 24 + 4;
+        let roll = roll_of(&h);
         let basis = fighters[a].hp.min(fighters[d].hp);
         let mut dmg = basis.saturating_mul(roll) / 100;
         // Finish off a defender already down to dust. This is the TERMINATION rule and it is
@@ -3315,16 +3520,27 @@ mod parity_tests {
 
         // From gen-parity-fixture.mjs against engine/src/er-sim.ts, same seed/entries/steps.
         //
-        // These numbers MOVED when the defender draw stopped favouring slot `a + 1` and the damage
-        // basis became `min(ring_a, ring_d)`. Both implementations changed in the same commit and
-        // this fixture was regenerated from the mirror rather than adjusted to fit — the old vectors
-        // are deleted, not commented out, because a stale expectation kept "for reference" is the
-        // one somebody eventually restores.
-        assert_eq!(winner, 0);
-        assert_eq!((fighters[0].hp, fighters[0].banked, fighters[0].dead), (20787, 93784, 0));
-        assert_eq!((fighters[1].hp, fighters[1].banked, fighters[1].dead), (220501, 103285, 0));
-        assert_eq!((fighters[2].hp, fighters[2].banked, fighters[2].dead), (52229, 59189, 0));
-        assert_eq!((fighters[3].hp, fighters[3].banked, fighters[3].dead), (20702, 49523, 0));
+        // These numbers MOVED twice. First when the defender draw stopped favouring slot `a + 1` and
+        // the damage basis became `min(ring_a, ring_d)`; then again when the die became
+        // `1..22 + 90@1/32` (see `roll_of`). Every time, both implementations changed in the same
+        // commit and this fixture was REGENERATED from the mirror rather than adjusted to fit — the
+        // old vectors are deleted, not commented out, because a stale expectation kept "for
+        // reference" is the one somebody eventually restores. The pre-die-change vector is not lost:
+        // it is pinned as `DEPLOYED_V6` in `sandbox/house-edge/parity.ts`, where it keeps every
+        // "before" column in the house studies reproducible.
+        //
+        // AND THIS FIXTURE STOPPED BEING "CALM", which is worth saying rather than leaving for the
+        // next reader to notice. Its comment above used to promise four healthy fighters and no
+        // deaths, and that was TRUE of the flat 4..27 die: over 50 steps the lowest ring reached was
+        // 20,702, twenty times `DUST`. Under the new die the same 50 steps contain 25 exchanges, TWO
+        // crits, one dust-finish and one death — `w1` is wiped out and the badge flips from side 0 to
+        // side 1. Nothing was chosen to make that happen; it is what a 1-in-32 crit does to a short
+        // vector, and it is the clearest single illustration of what this change is for.
+        assert_eq!(winner, 1);
+        assert_eq!((fighters[0].hp, fighters[0].banked, fighters[0].dead), (0, 25466, 1));
+        assert_eq!((fighters[1].hp, fighters[1].banked, fighters[1].dead), (182118, 99705, 0));
+        assert_eq!((fighters[2].hp, fighters[2].banked, fighters[2].dead), (100685, 132157, 0));
+        assert_eq!((fighters[3].hp, fighters[3].banked, fighters[3].dead), (44144, 35725, 0));
 
         // Conservation, restated here rather than trusted from elsewhere: this exact run must not
         // create or destroy value, on top of matching the TS mirror's numbers.
@@ -3391,18 +3607,30 @@ mod parity_tests {
 
     /// THE SAME CROSS-LANGUAGE VECTOR, ON A FIGHT THAT ACTUALLY REACHES THE INTERESTING BRANCHES.
     ///
-    /// `run_fight_matches_the_typescript_mirror_exactly` proves less than it looks. Its lineup runs
-    /// 50 steps, nobody dies, and the lowest hp any fighter reaches is 20,702 — twenty times `DUST`.
-    /// So it never executes `if hp_d <= DUST { dmg = hp_d }` and never executes
-    /// `if dmg == 0 { continue }`, which are the two branches the seat-law fix edited. For a while
-    /// those were the only lines in the fight with NO cross-language coverage at all: the Rust could
-    /// have disagreed with both TypeScript mirrors about either one, and every test in this repo
-    /// would still have been green. `mirrorParity.test.ts` does not close it either — it compares
-    /// the two mirrors to each other, so a mistake made in both by the same hand survives.
+    /// `run_fight_matches_the_typescript_mirror_exactly` proves less than it looks. Under the flat
+    /// 4..27 die its lineup ran 50 steps, nobody died, and the lowest hp any fighter reached was
+    /// 20,702 — twenty times `DUST`. So it never executed `if hp_d <= DUST { dmg = hp_d }` and never
+    /// executed `if dmg == 0 { continue }`, which are the two branches the seat-law fix edited. For a
+    /// while those were the only lines in the fight with NO cross-language coverage at all: the Rust
+    /// could have disagreed with both TypeScript mirrors about either one, and every test in this
+    /// repo would still have been green. `mirrorParity.test.ts` does not close it either — it
+    /// compares the two mirrors to each other, so a mistake made in both by the same hand survives.
     ///
-    /// This vector is chosen to reach them, and the coverage was measured rather than assumed:
-    /// 3 dust-finishes, 3 zero-damage skips, 3 deaths. The 3- and 7-unit entries are legal today
-    /// (`enter` requires only `stake > 0`) and are what drives a blow to round to nothing.
+    /// This vector is chosen to reach them, and the coverage is MEASURED rather than assumed —
+    /// re-measured for the new die rather than carried over, because a coverage claim that is not
+    /// re-run is exactly the "rumour with a number in it" `tests/compute.rs` opens by warning about.
+    /// Counted against `engine/src/er-sim.ts`'s own `tickHash`/`drawPair`/`rollOf`: **48 exchanges,
+    /// 1 crit, 3 dust-finishes, 3 zero-damage skips, 3 deaths** — the same three-of-each it had
+    /// before, so this vector's whole purpose survived the die change intact. The 3- and 7-unit
+    /// entries are legal today (`enter` requires only `stake > 0`) and are what drives a blow to
+    /// round to nothing.
+    ///
+    /// THE SIBLING FIXTURE NOW OVERLAPS THIS ONE, and that is a change worth recording rather than
+    /// enjoying quietly. Under the new die `run_fight_matches_the_typescript_mirror_exactly` reaches
+    /// a dust-finish and a death of its own, so the two vectors are no longer "calm" and "brawl" but
+    /// "short" and "long". The argument for keeping BOTH is unchanged and is not about coverage: they
+    /// are two independent cross-language vectors, and a single one that happened to agree by
+    /// coincidence is a weaker claim than two that both do.
     #[test]
     fn the_mirror_agrees_where_fighters_die_and_blows_round_to_nothing() {
         let seed: [u8; 32] = core::array::from_fn(|i| i as u8);
@@ -3416,10 +3644,10 @@ mod parity_tests {
         let winner = run_fight(&mut f, 4, &seed, 400);
 
         // From gen-parity-fixture.mjs against engine/src/er-sim.ts, same seed/entries/steps.
-        assert_eq!(winner, 0);
-        assert_eq!((f[0].hp, f[0].banked, f[0].dead), (22686, 40007, 0));
+        assert_eq!(winner, 1);
+        assert_eq!((f[0].hp, f[0].banked, f[0].dead), (0, 28449, 1));
         assert_eq!((f[1].hp, f[1].banked, f[1].dead), (0, 0, 1));
-        assert_eq!((f[2].hp, f[2].banked, f[2].dead), (0, 27317, 1));
+        assert_eq!((f[2].hp, f[2].banked, f[2].dead), (11558, 50003, 0));
         assert_eq!((f[3].hp, f[3].banked, f[3].dead), (0, 0, 1));
 
         let total: u64 = f[..4].iter().map(|x| x.hp + x.banked).sum();
@@ -3473,28 +3701,50 @@ mod parity_tests {
     ///
     /// IT USED TO ASSERT `banked < stake`, and that assertion was retired deliberately rather than
     /// because it became inconvenient. It was a PROXY that only tracked its intent while this
-    /// particular fighter happened to be losing: under the `min(ring_a, ring_d)` damage basis, slot 0
-    /// is ahead at step 40 (83,297 banked on a 100,000 stake), so a fighter who is winning and pulls
-    /// out now walks away with more than they brought — which is the game working, not a free undo.
-    /// What "not a free undo" actually means is asserted below, and it is lineup-independent: the
-    /// ring genuinely decayed, and the exit was priced. Both still fail against the one-shot
-    /// behaviour this test was written to catch, where `hp` never moved and `extract` returned the
-    /// whole stake.
+    /// particular fighter happened to be losing, so a fighter who is winning and pulls out walks away
+    /// with more than they brought — which is the game working, not a free undo. What "not a free
+    /// undo" actually means is asserted below, and it is lineup-independent: the ring genuinely
+    /// decayed, and the exit was priced. Both still fail against the one-shot behaviour this test was
+    /// written to catch, where `hp` never moved and `extract` returned the whole stake.
+    ///
+    /// # THE LEAVER IS SLOT 1 NOW, BECAUSE SLOT 0 STOPPED BEING ALIVE TO LEAVE
+    ///
+    /// This test extracted slot 0 at step 40 and, under the new die (`roll_of`), slot 0 is DEAD by
+    /// then — a crit at step ~30 takes its ring from 5,770 to 577, which is under `DUST`, and the
+    /// next blow finishes it. The failure that surfaced was `penalty > 0`, because
+    /// `split_extraction(0, ...)` charges nothing on nothing.
+    ///
+    /// Note WHICH assertion caught it, because it is the interesting part: `hp < stake` passed
+    /// happily on a corpse (`0 < 100_000`), so the test's own precondition was satisfied by the exact
+    /// state that made it meaningless. That is a gap the old die simply never reached. The fix is not
+    /// only to pick a fighter that survives to the cursor — it is to say `hp > 0` OUT LOUD, so the
+    /// test can never again quietly degenerate into extracting a dead man and calling it a priced
+    /// decision. Slot 1 is alive at step 40 with 206,490 of a 250,000 stake: genuinely decayed,
+    /// genuinely still in the ring.
     #[test]
     fn extracting_partway_through_is_a_priced_decision_not_a_free_undo() {
+        /// The slot that bails. Named rather than written as a literal in six places, because the
+        /// whole point of the paragraph above is that this choice is load-bearing.
+        const LEAVER: usize = 1;
+
         let seed: [u8; 32] = core::array::from_fn(|i| i as u8);
         let mut f = four_fighters();
-        let stake = f[0].stake;
+        let stake = f[LEAVER].stake;
 
         advance_fight(&mut f, 4, &seed, 0, 40);
-        assert!(f[0].hp < stake, "hp must have genuinely decayed by step 40, got {}", f[0].hp);
+        assert!(f[LEAVER].hp < stake, "hp must have genuinely decayed by step 40, got {}", f[LEAVER].hp);
+        assert!(
+            f[LEAVER].hp > 0 && f[LEAVER].dead == 0,
+            "the leaver must still BE in the ring at step 40 — extracting a fighter who is already \
+             dead prices nothing and would pass every assertion below vacuously",
+        );
 
         // `extract` itself, inlined — the instruction adds only the account plumbing and the guards.
-        let taken = f[0].hp;
+        let taken = f[LEAVER].hp;
         let (kept, penalty) = split_extraction(taken, 4, 40);
-        f[0].banked += kept;
-        f[0].hp = 0;
-        f[0].dead = 1;
+        f[LEAVER].banked += kept;
+        f[LEAVER].hp = 0;
+        f[LEAVER].dead = 1;
 
         assert!(penalty > 0, "leaving at step 40 of a 200-step horizon must cost something");
         assert!(
@@ -3511,10 +3761,10 @@ mod parity_tests {
         assert_eq!(total, 620_000);
 
         // Extracted fighters leave the ring: the rest of the fight must not touch them again.
-        let banked_at_extract = f[0].banked;
+        let banked_at_extract = f[LEAVER].banked;
         advance_fight(&mut f, 4, &seed, 40, final_cursor(4) - 40);
-        assert_eq!(f[0].hp, 0);
-        assert_eq!(f[0].banked, banked_at_extract);
+        assert_eq!(f[LEAVER].hp, 0);
+        assert_eq!(f[LEAVER].banked, banked_at_extract);
         let total: u64 = f[..4].iter().map(|x| x.hp + x.banked).sum::<u64>() + penalty;
         assert_eq!(total, 620_000);
     }
@@ -3528,12 +3778,31 @@ mod parity_tests {
     ///
     /// The lineup is deliberately lopsided (two small against two large, small side first) so that
     /// most exchanges have the attacker as the smaller party — the case the old rule got wrong.
+    ///
+    /// # THE SMALL SIDE HAD TO GET TEN TIMES BIGGER, AND THE REASON IS THE NEW DIE
+    ///
+    /// It used to stake 100,000 against the whales' 100,000,000. That worked while the die was a flat
+    /// 4..27: a 100,000-unit ring needed dozens of blows to reach `DUST`, so 2,000 steps produced
+    /// plenty of exchanges to inspect. Under `1..22 + 90@1/32` a crit takes ninety percent at a
+    /// stroke, so the same ring dies in about three of them — `100,000 -> 10,000 -> 1,000 -> dead` —
+    /// and once both small fighters are gone side 0 is empty, the fight is over, and the remaining
+    /// steps are all no-ops. Measured: **87 blows and 44 attacker-bound cases**, against thresholds of
+    /// 100 and 50. The test failed for the right reason and would have been WRONG to silence by
+    /// lowering the thresholds, which is the tempting fix — a non-vacuity guard that gets relaxed
+    /// every time it fires is not a guard.
+    ///
+    /// So the LINEUP moved instead and the guard kept its teeth. At 1,000,000 against 100,000,000 the
+    /// ratio is still 100:1 — the attacker is still the smaller party in every cross-side exchange,
+    /// which is the only property the test needs — and the small rings now survive long enough to be
+    /// worth inspecting: **168 blows and 82 attacker-bound cases**, comfortably clear of both bars.
+    /// (10,000,000 was also measured, at 227 and 113, and rejected: a 10:1 lineup is a weaker
+    /// illustration of "a $1 fighter against a $100 one", which is the shape of the defect.)
     #[test]
     fn no_blow_can_move_more_than_the_attackers_own_ring() {
         let seed: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_add(3));
         let mut f = [Fighter::default(); MAX_FIGHTERS];
-        f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake:     100_000, hp:     100_000, banked: 0, ..Default::default() };
-        f[1] = Fighter { wallet: pk(2), side: 0, dead: 0, stake:     100_000, hp:     100_000, banked: 0, ..Default::default() };
+        f[0] = Fighter { wallet: pk(1), side: 0, dead: 0, stake:   1_000_000, hp:   1_000_000, banked: 0, ..Default::default() };
+        f[1] = Fighter { wallet: pk(2), side: 0, dead: 0, stake:   1_000_000, hp:   1_000_000, banked: 0, ..Default::default() };
         f[2] = Fighter { wallet: pk(3), side: 1, dead: 0, stake: 100_000_000, hp: 100_000_000, banked: 0, ..Default::default() };
         f[3] = Fighter { wallet: pk(4), side: 1, dead: 0, stake: 100_000_000, hp: 100_000_000, banked: 0, ..Default::default() };
 
@@ -3581,6 +3850,181 @@ mod parity_tests {
         );
     }
 
+    /// THE DIE'S SHAPE, EXACTLY, over the hash chain the chain actually uses.
+    ///
+    /// `roll_of` is four constants and a branch, and every one of them is load-bearing in a way that
+    /// a reader six months from now will not reconstruct from the code. This pins all four against
+    /// the properties they were chosen for, so that changing one to see what happens produces a named
+    /// failure rather than a quietly different game.
+    ///
+    /// Deterministic despite being a counting argument: the hash chain is fixed, so this is one fixed
+    /// computation with one fixed answer, not a sample that might flake. Same reasoning as
+    /// `the_defender_draw_is_uniform_over_everyone_but_the_attacker`, and the same 6-sigma tolerance.
+    #[test]
+    fn the_die_is_the_one_that_was_measured() {
+        const DRAWS: u64 = 200_000;
+        let seed: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_mul(13).wrapping_add(2));
+
+        // THE INVARIANT THAT IS NOT ABOUT DISTRIBUTION AT ALL, and the most important one here.
+        // `advance_fight` needs no `dmg > hp_d` clamp, and the whole reason is `roll <= 100`:
+        // `dmg = min(ring_a, ring_d) * roll / 100 <= hp_d` holds if and only if the die cannot exceed
+        // 100. A clamp would have to be added the moment this stops being true, and that clamp is
+        // ASYMMETRIC — it bites when the defender is the smaller ring and not when the attacker is —
+        // which is the whale-versus-minnow defect measured at a +31% band spread in
+        // HOUSE-SMALL-STAKE.md §5.3. `< 100` rather than `<= 100` because at exactly 100 a crit is a
+        // guaranteed kill and fight length stops scaling with the lineup; see `roll_of`.
+        assert!(CRIT_ROLL < 100, "a die that can reach 100 changes the fight's termination law");
+        assert!(ROLL_BODY_LO >= 1, "a body that can roll zero deletes exchanges the canvas would draw");
+        assert!(ROLL_BODY_LO + ROLL_BODY_SPAN - 1 < CRIT_ROLL, "the body must sit under the spike");
+
+        let mut crits = 0u64;
+        let mut body_counts = vec![0u64; ROLL_BODY_SPAN as usize];
+        let (mut sum, mut sum_sq) = (0u128, 0u128);
+
+        for s in 0..DRAWS {
+            let h = hashv(&[seed.as_ref(), s.to_le_bytes().as_ref()]).to_bytes();
+            let roll = roll_of(&h);
+            assert!(roll >= ROLL_BODY_LO, "the die rolled {}, under its own floor", roll);
+            assert!(roll <= CRIT_ROLL, "the die rolled {}, over its own ceiling", roll);
+            if roll == CRIT_ROLL { crits += 1; } else { body_counts[(roll - ROLL_BODY_LO) as usize] += 1; }
+            sum += roll as u128;
+            sum_sq += (roll as u128) * (roll as u128);
+        }
+
+        // ONE BLOW IN THIRTY-TWO, and it is EXACT rather than approximate: 32 divides 2^32, so
+        // `u32 % 32` has no modulo bias at all. The only error here is sampling error.
+        let expected_crits = DRAWS as f64 / CRIT_ONE_IN as f64;
+        assert!(
+            (crits as f64 - expected_crits).abs() <= 6.0 * expected_crits.sqrt(),
+            "crit rate drifted: {} in {} draws, expected {:.0} +- {:.0}",
+            crits, DRAWS, expected_crits, 6.0 * expected_crits.sqrt(),
+        );
+
+        // The body is flat. `2^32 mod 22 = 4`, so the bias is ~1e-9 — four thousand times smaller
+        // than the byte-level bias this die replaced, where `h[8] % 24` gave rolls 4..19 an 11-in-256
+        // share against 10-in-256 for 20..27, a 10% skew (`check-dice.ts`).
+        let per_face = (DRAWS - crits) as f64 / ROLL_BODY_SPAN as f64;
+        for (i, &got) in body_counts.iter().enumerate() {
+            assert!(
+                (got as f64 - per_face).abs() <= 6.0 * per_face.sqrt(),
+                "body face {} came up {} times, expected {:.0} +- {:.0} — the die is not flat",
+                i as u64 + ROLL_BODY_LO, got, per_face, 6.0 * per_face.sqrt(),
+            );
+        }
+
+        // THE LEVER ITSELF, as a number. Aggregate spread is driven by `E[roll^2] / E[roll]` — the
+        // SIZE-BIASED mean blow — and not by `E[roll]`, which is the whole argument in `roll_of` for
+        // why the arithmetic mean did not need matching. The deployed 4..27 die scored 18.35; this
+        // one scores ~30.1, and 1.34x of aggregate standard deviation is what that bought. Asserted
+        // as an inequality against the OLD die's value, because the point is the direction and the
+        // margin, not a number somebody would re-fit after the next change.
+        const LEGACY_SIZE_BIASED_MEAN: f64 = 18.35;
+        let mean = sum as f64 / DRAWS as f64;
+        let size_biased = sum_sq as f64 / sum as f64;
+        assert!(
+            size_biased > LEGACY_SIZE_BIASED_MEAN * 1.5,
+            "E[roll^2]/E[roll] is {:.2}, against the deployed die's {:.2} — the variance lever this \
+             change exists for has gone slack, and the scoreboard will be flat again",
+            size_biased, LEGACY_SIZE_BIASED_MEAN,
+        );
+        // And the mean is DOWN, deliberately, which is the counter-intuitive half. Stated so that a
+        // future reader who "fixes" the mean back to 15.25 has to delete an assertion that explains
+        // why they should not: holding the mean while widening the die is what forces the tail to
+        // 100, and a tail at 100 is a guaranteed kill.
+        assert!(mean < 15.25, "the die's mean is {:.2}; see `roll_of` on why it is not matched", mean);
+    }
+
+    /// THE DELIVERABLE, AS AN EXECUTABLE ASSERTION — does the AGGREGATE actually swing?
+    ///
+    /// The complaint this change answers was never about individual fights. It was *"the total sum of
+    /// who is winning is relatively very stable and that's a bit boring"* — a statement about
+    /// `s = (sum of hp + banked over side 0) / pot`, the number `settle_sides` reduces to a badge.
+    /// With 48 fighters that sum behaves like a large sample and concentrates, so the scoreboard
+    /// creeps instead of swinging.
+    ///
+    /// So the thing to assert is the DISPERSION OF `s` ACROSS SEEDS, not anything about one fight. A
+    /// change that adds per-fight drama and leaves the side totals concentrated has not solved the
+    /// problem, and would pass any test written about a single lineup.
+    ///
+    /// Every lineup here starts at exactly `s = 50.0` (equal stakes, sides alternating), so the
+    /// spread at the end is the whole distribution of "how lopsided did it get", with no lobby noise
+    /// mixed in. Measured at 400 seeds by `sandbox/house-edge/check-variance-bell.ts`: the shipped
+    /// 4..27 die gave **4.19 points** and this die gives **5.64**. At the 100 seeds this test can
+    /// afford it is a fixed computation with a fixed answer — the seeds and the hash chain are both
+    /// fixed, so there is no sampling flake, only a coarser estimate of the same quantity.
+    ///
+    /// THE FLOOR IS SET AT THE OLD DIE'S 400-SEED NUMBER, which makes this a regression test with a
+    /// meaning rather than a fitted constant: if a future change to the die drops the aggregate
+    /// spread back to what the deployed game already had, this fails and says so.
+    #[test]
+    fn the_aggregate_score_actually_swings() {
+        const SEEDS: usize = 100;
+        const N: usize = MAX_FIGHTERS;
+        const STAKE: u64 = 10_000_000;              // $10 each, the shape the studies measure
+        const LEGACY_SPREAD_POINTS: f64 = 4.19;     // the deployed 4..27 die, 400 seeds
+
+        let pot = (N as u64) * STAKE;
+        let mut finals = Vec::with_capacity(SEEDS);
+
+        for s in 0..SEEDS as u64 {
+            let seed = hashv(&[b"variance", s.to_le_bytes().as_ref()]).to_bytes();
+            let mut f = [Fighter::default(); MAX_FIGHTERS];
+            for (i, slot) in f[..N].iter_mut().enumerate() {
+                *slot = Fighter {
+                    wallet: Pubkey::new_from_array([(i as u8).wrapping_add(1); 32]),
+                    side: (i % 2) as u8, dead: 0, stake: STAKE, hp: STAKE, banked: 0,
+                    ..Default::default()
+                };
+            }
+
+            // To the bell, in chunks, stopping once a side is empty — the same stopping rule
+            // `fight_is_over` gives `resolve`.
+            let bell = final_cursor(N);
+            let mut cursor = 0u64;
+            while cursor < bell && !fight_is_over(&f, N) {
+                let step = (bell - cursor).min(256);
+                advance_fight(&mut f, N, &seed, cursor, step);
+                cursor += step;
+
+                // CONSERVATION, UNDER THE NEW DYNAMICS, CHECKED MID-FIGHT AND NOT ONLY AT THE END.
+                // This is the identity `apply_sweep` now gates on, so breaking it does not fail a
+                // test somewhere — it strands a round on chain with no way to sweep it. The crit is
+                // exactly the kind of change that could break it: it is the first roll large enough
+                // to drive `basis * roll` near a `saturating_mul` clip, and a saturating multiply
+                // that silently truncated would show up here as value quietly vanishing.
+                let held: u64 = f[..N].iter().map(|x| x.hp + x.banked).sum();
+                assert_eq!(held, pot, "seed {}: conservation broke at cursor {}", s, cursor);
+            }
+
+            let (mut v0, mut total) = (0u64, 0u64);
+            for x in f[..N].iter() {
+                let v = x.hp + x.banked;
+                total += v;
+                if x.side == 0 { v0 += v; }
+            }
+            assert_eq!(total, pot, "seed {}: conservation broke at the end", s);
+            finals.push(100.0 * v0 as f64 / pot as f64);
+        }
+
+        let mean = finals.iter().sum::<f64>() / SEEDS as f64;
+        let spread = (finals.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+            / (SEEDS - 1) as f64).sqrt();
+
+        assert!(
+            spread > LEGACY_SPREAD_POINTS,
+            "the final side-vs-side split has a standard deviation of {:.2} points, against the \
+             {:.2} the deployed 4..27 die already gave. The aggregate has gone flat again, which is \
+             the exact complaint this die exists to answer — see `roll_of`.",
+            spread, LEGACY_SPREAD_POINTS,
+        );
+        // Non-vacuity: a lineup that never fought would score zero spread and also never trip the
+        // bound above if the bound were the only assertion. Every seed must have been a real fight.
+        assert!(
+            finals.iter().any(|&x| (x - 50.0).abs() > 5.0),
+            "no seed ever moved the score more than 5 points off even — these were not fights",
+        );
+    }
+
     /// THE TRAP IN THE OBVIOUS VERSION OF THE FIX, as an assertion.
     ///
     /// `min(ring_a, ring_d)` combined with the OLD dust clause — `if hp_d <= DUST || dmg == 0` — is
@@ -3590,17 +4034,39 @@ mod parity_tests {
     /// ring.
     ///
     /// It needs no exotic state to reach. `enter` requires only `stake > 0`, so a 3-unit entry — a
-    /// third of a millionth of a dollar — has a ring so small that `3 * roll / 100` floors to zero
-    /// for every legal roll. Under the old clause that fighter one-shots whoever it is drawn
-    /// against, for a 33,000,000x return.
+    /// third of a millionth of a dollar — has a ring small enough that `3 * roll / 100` floors to
+    /// almost nothing. Under the old clause that fighter one-shots whoever it is drawn against, for
+    /// a 33,000,000x return.
     ///
     /// Restore `|| dmg == 0` to that branch and this test fails on the seeds where the gnat swings
     /// first, which is about half of them.
+    ///
+    /// # THIS TEST USED TO ASSERT AN ARTIFACT, AND THE NEW DIE EXPOSED IT
+    ///
+    /// It asserted `(f[0].hp, f[0].banked, f[0].dead) == (WHALE, GNAT, 0)` — the whale's ring
+    /// EXACTLY untouched — and justified it with "a blow the gnat cannot afford moves nothing at
+    /// all". That sentence was true only of the flat 4..27 die, where `3 * 27 / 100` floors to zero
+    /// for every roll it could produce. It was a fact about the old die's ceiling, not about the rule
+    /// this test exists to defend, and nothing said so.
+    ///
+    /// Under `1..22 + 90@1/32` a crit gives `3 * 90 / 100 = 2`, so a gnat CAN now land a blow, and it
+    /// lands one on seed 11. That is the fight working correctly: `dmg <= basis = min(ring_a, ring_d)`
+    /// still holds, and the gnat took two of its own three units, not the whale's hundred dollars.
+    /// The defect this test is named for — a spent attacker taking the defender's WHOLE ring — is
+    /// untouched, and asserting exact equality would have failed the change for succeeding.
+    ///
+    /// So the assertion is now the RULE rather than one die's rounding: whatever the whale loses is
+    /// bounded by what the gnat brought. Measured across these 200 seeds, the worst the whale ever
+    /// gives up is **2 units** — a five-hundred-millionth of its ring — from **8 gnat blows in total**
+    /// across all 200 fights, because a 3-unit ring is under `DUST` and the gnat dies the first time
+    /// it is drawn as defender. The old exact-equality is kept as the non-vacuity check it always
+    /// secretly was: the gnat must still end up dead with nothing.
     #[test]
     fn an_exhausted_attacker_cannot_annihilate_a_healthy_defender() {
         const WHALE: u64 = 100_000_000;   // $100
         const GNAT: u64 = 3;              // three raw units, and a legal entry today
 
+        let mut worst_loss = 0u64;
         for s in 0..200u8 {
             let seed: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_mul(31).wrapping_add(s));
             let mut f = [Fighter::default(); MAX_FIGHTERS];
@@ -3609,16 +4075,38 @@ mod parity_tests {
 
             advance_fight(&mut f, 2, &seed, 0, 500);
 
-            // A blow the gnat cannot afford moves nothing at all, so the only exchange that ever
-            // lands is the whale finishing the gnat off. The whale keeps everything it brought and
-            // collects the gnat's three units; the gnat leaves with nothing.
-            assert_eq!(
-                (f[0].hp, f[0].banked, f[0].dead), (WHALE, GNAT, 0),
-                "seed {}: a 3-unit fighter moved a $100 ring", s,
+            // THE RULE: you cannot take more than you brought. The gnat brought three units, so three
+            // units is the most the whale's ring can ever lose to it — however many times it swings,
+            // and whatever the die rolls.
+            let lost = WHALE - f[0].hp;
+            assert!(
+                lost <= GNAT,
+                "seed {}: a {}-unit fighter moved {} units of a $100 ring — an attacker took more \
+                 than it had at risk, which is the seat law this fix exists to kill",
+                s, GNAT, lost,
             );
-            assert_eq!((f[1].hp, f[1].banked, f[1].dead), (0, 0, 1), "seed {}", s);
+            worst_loss = worst_loss.max(lost);
+
+            // ...and it always DIES, which is what makes the bound above non-vacuous: the gnat is
+            // under `DUST`, so the first time it is drawn as DEFENDER it is finished off whole. A
+            // gnat that survived would be a gnat still able to nibble, and the bound would then be a
+            // statement about 500 steps rather than about the rule.
+            //
+            // What it dies HOLDING is the other half of the same fact, and this assertion used to
+            // read `banked == 0` — true of the flat 4..27 die, which could not give a 3-unit ring a
+            // blow at all. It banks exactly what the whale lost, because in a two-fighter fight there
+            // is nowhere else for value to come from; asserting the identity rather than the constant
+            // is what makes this survive the next change to the die.
+            assert_eq!(f[1].hp, 0, "seed {}: the gnat must not survive", s);
+            assert_eq!(f[1].dead, 1, "seed {}: a fighter at zero must be marked dead", s);
+            assert_eq!(f[1].banked, lost, "seed {}: the gnat's take must be exactly the whale's loss", s);
             assert_eq!(f[0].hp + f[0].banked + f[1].hp + f[1].banked, WHALE + GNAT, "seed {}", s);
         }
+
+        // Pinned rather than merely bounded, so that a die change which made a sub-dust attacker
+        // materially more dangerous would show up here as a number instead of passing silently
+        // inside a bound three units wide.
+        assert_eq!(worst_loss, 2, "the worst a 3-unit attacker can do to a $100 ring has moved");
     }
 
     /// THE MECHANIC THIS SESSION EXISTS TO PRICE, as an assertion. Two fighters, identical stakes,

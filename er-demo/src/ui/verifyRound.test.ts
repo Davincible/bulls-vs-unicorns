@@ -53,13 +53,16 @@ function mockRound(fighters: FighterState[], overrides: Partial<RoundState> = {}
 describe("verifyRound — verified", () => {
   test("an exact replay of the checked-in parity fixture reports 'verified'", () => {
     // From sim/hitEvents.test.ts's EXPECTED_FIGHTERS / EXPECTED_WINNER, 50 steps, no extraction.
+    // Regenerated with the die (`rollOf` in erSim.ts): w1 is now wiped out inside these 50 steps
+    // and the badge sits on side 1. Kept in step with that file deliberately — this panel's whole
+    // claim is that a viewer can replay the chain, so its fixture has to BE the chain's.
     const fighters: FighterState[] = [
-      { wallet: pubkey("w1"), side: 0, dead: false, stake: 100_000n, hp: 20_787n, banked: 93_784n },
-      { wallet: pubkey("w2"), side: 0, dead: false, stake: 250_000n, hp: 220_501n, banked: 103_285n },
-      { wallet: pubkey("w3"), side: 1, dead: false, stake: 180_000n, hp: 52_229n, banked: 59_189n },
-      { wallet: pubkey("w4"), side: 1, dead: false, stake: 90_000n, hp: 20_702n, banked: 49_523n },
+      { wallet: pubkey("w1"), side: 0, dead: true, stake: 100_000n, hp: 0n, banked: 25_466n },
+      { wallet: pubkey("w2"), side: 0, dead: false, stake: 250_000n, hp: 182_118n, banked: 99_705n },
+      { wallet: pubkey("w3"), side: 1, dead: false, stake: 180_000n, hp: 100_685n, banked: 132_157n },
+      { wallet: pubkey("w4"), side: 1, dead: false, stake: 90_000n, hp: 44_144n, banked: 35_725n },
     ];
-    const result = verifyRound(mockRound(fighters, { winner: 0, tickCount: 50n }));
+    const result = verifyRound(mockRound(fighters, { winner: 1, tickCount: 50n }));
 
     expect(result.verdict).toBe("verified");
     expect(result.winnerMatches).toBe(true);
@@ -258,14 +261,14 @@ describe("verifyRound — the house's take", () => {
 describe("verifyRound — the recorded pot against the stakes it is the sum of", () => {
   // The parity fixture, again: 100_000 + 250_000 + 180_000 + 90_000 = 620_000.
   const cleanFighters: FighterState[] = [
-    { wallet: pubkey("w1"), side: 0, dead: false, stake: 100_000n, hp: 20_787n, banked: 93_784n },
-    { wallet: pubkey("w2"), side: 0, dead: false, stake: 250_000n, hp: 220_501n, banked: 103_285n },
-    { wallet: pubkey("w3"), side: 1, dead: false, stake: 180_000n, hp: 52_229n, banked: 59_189n },
-    { wallet: pubkey("w4"), side: 1, dead: false, stake: 90_000n, hp: 20_702n, banked: 49_523n },
+    { wallet: pubkey("w1"), side: 0, dead: true, stake: 100_000n, hp: 0n, banked: 25_466n },
+    { wallet: pubkey("w2"), side: 0, dead: false, stake: 250_000n, hp: 182_118n, banked: 99_705n },
+    { wallet: pubkey("w3"), side: 1, dead: false, stake: 180_000n, hp: 100_685n, banked: 132_157n },
+    { wallet: pubkey("w4"), side: 1, dead: false, stake: 90_000n, hp: 44_144n, banked: 35_725n },
   ];
 
   test("a round whose recorded pot equals its summed stakes reports the two agreeing", () => {
-    const result = verifyRound(mockRound(cleanFighters, { winner: 0, tickCount: 50n, pot: 620_000n }));
+    const result = verifyRound(mockRound(cleanFighters, { winner: 1, tickCount: 50n, pot: 620_000n }));
 
     expect(result.potRecordedOnChain).toBe(620_000n);
     expect(result.potOnChain).toBe(620_000n);
@@ -311,7 +314,7 @@ describe("verifyRound — the recorded pot against the stakes it is the sum of",
   // disagreeing with an independent replay above a table in which every row agrees. The flag is
   // reported instead, and VerifyPanel.tsx shows it on every round, so nothing is hidden.
   test("an exact replay stays 'verified' when only the recorded pot is wrong, and still reports it", () => {
-    const result = verifyRound(mockRound(cleanFighters, { winner: 0, tickCount: 50n, pot: 620_001n }));
+    const result = verifyRound(mockRound(cleanFighters, { winner: 1, tickCount: 50n, pot: 620_001n }));
 
     expect(result.potMatchesStakesOnChain).toBe(false);
     expect(result.potRecordedOnChain).toBe(620_001n);

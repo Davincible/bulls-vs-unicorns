@@ -24,12 +24,23 @@ const FIXTURE_ENTRIES: HitEventEntry[] = [
 const FIXTURE_STEPS = 50;
 
 // From gen-parity-fixture.mjs / parity_tests::run_fight_matches_the_typescript_mirror_exactly.
-const EXPECTED_WINNER = 0;
+//
+// REGENERATED WITH THE DIE, not adjusted to fit. The roll became `1..22, or 90 one time in 32`
+// (`roll_of` in lib.rs, and `rollOf` in erSim.ts) to answer the complaint that the aggregate score
+// was too stable, so every number below moved. They are copied from the same generator run that
+// produced the Rust fixture, which is the point of the arrangement: three implementations, one set
+// of numbers, and no hand-derived expectation anywhere in the chain.
+//
+// The fixture also stopped being the quiet one. Under the flat 4..27 die these 50 steps killed
+// nobody and the lowest ring reached was 20,702; under the new die they contain two crits, a
+// dust-finish and a death, and the badge flips from side 0 to side 1. That is not a worse fixture —
+// it exercises strictly more of the loop than it used to.
+const EXPECTED_WINNER = 1;
 const EXPECTED_FIGHTERS: Array<{ hp: bigint; banked: bigint; dead: 0 | 1 }> = [
-  { hp: 20_787n, banked: 93_784n, dead: 0 },   // w1
-  { hp: 220_501n, banked: 103_285n, dead: 0 }, // w2
-  { hp: 52_229n, banked: 59_189n, dead: 0 },   // w3
-  { hp: 20_702n, banked: 49_523n, dead: 0 },   // w4
+  { hp: 0n, banked: 25_466n, dead: 1 },        // w1 — wiped out; the die's first visible consequence
+  { hp: 182_118n, banked: 99_705n, dead: 0 },  // w2
+  { hp: 100_685n, banked: 132_157n, dead: 0 }, // w3
+  { hp: 44_144n, banked: 35_725n, dead: 0 },   // w4
 ];
 const EXPECTED_TOTAL = 620_000n;
 

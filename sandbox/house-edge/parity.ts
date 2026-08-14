@@ -12,7 +12,7 @@
 
 import { newRound, enter, tick, settle, DUST } from "../../engine/src/er-sim.ts";
 import type { ERFighter } from "../../engine/src/er-sim.ts";
-import { BASELINE, DEPLOYED_V5, runFight, stepBudget, winnerSide, makeFighter, DUST_ABSOLUTE, isqrt, pow34, FEE_BPS } from "./fight-variant.ts";
+import { BASELINE, DEPLOYED_V5, DEPLOYED_V6, runFight, stepBudget, winnerSide, makeFighter, DUST_ABSOLUTE, isqrt, pow34, FEE_BPS } from "./fight-variant.ts";
 import type { Fighter } from "./fight-variant.ts";
 import { createHash } from "node:crypto";
 import { mulberry32 } from "./rng.ts";
@@ -95,6 +95,34 @@ const check = (ok: boolean, what: string) => {
   const got = fs.map(g => `${g.hp}/${g.banked}/${g.dead}`).join(" ");
   const want = "15158/84062/0 201600/116021/0 26975/48467/0 42942/84775/0";
   check(got === want, `DEPLOYED_V5 reproduces the pre-fix on-chain fixture${got === want ? "" : `\n        got  ${got}\n        want ${want}`}`);
+}
+
+// --- DEPLOYED_V6 still reproduces the rule the LATER studies measured --------------------------
+{
+  // Same argument as the block above, one deploy later, and it is worth restating rather than
+  // cross-referencing because the two are now the only record of two different games.
+  //
+  // v6 is the seat-law fix with the ORIGINAL flat 4..27 die — the rule every "before" column in
+  // HOUSE-EDGE-STUDY.md, HOUSE-STRATEGY.md, HOUSE-LIFETIME.md and HOUSE-SMALL-STAKE.md was measured
+  // against. The die changed to answer "the score is boring" (see BASELINE, and `roll_of` in
+  // lib.rs), so BASELINE is no longer v6 and every one of those studies would silently re-run
+  // against a different game if this config did not exist.
+  //
+  // The golden vector is the same fixture, taken from `run_fight_matches_the_typescript_mirror_
+  // exactly` in lib.rs as it stood immediately BEFORE the die changed — a number the chain itself
+  // asserted, not one this sandbox invented about itself. That Rust fixture has since been
+  // regenerated for the new die, so THIS is now its only home.
+  const seed = Buffer.from(Array.from({ length: 32 }, (_, i) => i));
+  const fs: Fighter[] = [
+    { wallet: "w1", side: 0, dead: 0, stake: 100_000n, hp: 100_000n, banked: 0n },
+    { wallet: "w2", side: 0, dead: 0, stake: 250_000n, hp: 250_000n, banked: 0n },
+    { wallet: "w3", side: 1, dead: 0, stake: 180_000n, hp: 180_000n, banked: 0n },
+    { wallet: "w4", side: 1, dead: 0, stake:  90_000n, hp:  90_000n, banked: 0n },
+  ];
+  runFight(fs, seed, 50, DEPLOYED_V6);
+  const got = fs.map(g => `${g.hp}/${g.banked}/${g.dead}`).join(" ");
+  const want = "20787/93784/0 220501/103285/0 52229/59189/0 20702/49523/0";
+  check(got === want, `DEPLOYED_V6 reproduces the pre-die-change on-chain fixture${got === want ? "" : `\n        got  ${got}\n        want ${want}`}`);
 }
 
 // --- proportional dust below one unit collapses onto absolute ---------------------------------

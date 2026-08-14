@@ -331,6 +331,20 @@ REGENERATED_FNS = {
     # on with the only tool that can fix it locked behind the failure. That is the trap this set
     # exists to document, and these two are its third instance.
     "resolve", "extract",
+    # AND ITS FOURTH, which arrived exactly as the paragraph above predicts one would. The commit
+    # that added `refund_abandoned_entry` rewrote `abandon_round`'s doc block — the paragraph that
+    # used to read "NOTHING IS REFUNDED, BECAUSE NOTHING WAS TAKEN" now says the entry fee is given
+    # back — and did not regenerate the IDL. From that commit on, `verify` held the OLD prose in the
+    # committed IDL against the NEW prose in lib.rs and failed, which took
+    # `the_idl_generator_still_reproduces_the_committed_idl` red on every `cargo test` AND locked
+    # the regenerate path behind the same failure, since `regenerate()` runs `verify` before it
+    # writes anything. Found while working on the fight's roll, not by anyone looking for it.
+    #
+    # WORTH SAYING PLAINLY BECAUSE THE SET IS NOW FOUR INSTANCES DEEP: this is a footgun with a
+    # documented workaround rather than a solved problem. Every future edit to an instruction doc
+    # block that is NOT in this set fails the same way, and the failure names a doc diff rather than
+    # naming the fix. The set is not the fix; it is the record of who has stepped in the hole.
+    "abandon_round",
 }
 REGENERATED_EVENTS = {"RoundOpened", "RoundAbandoned", "Entered", "HouseSwept", "FeeBpsChanged",
                       "RoundAccountClosed"}
@@ -498,14 +512,31 @@ def patch(idl):
         args.append({"name": "lobby_seconds", "type": "u32"})
 
     # 3. abandon_round — same accounts as close_round (both are Context<Resolve>)
+    #
+    # DOCS REFRESHED ON EVERY RUN, NOT ONLY ON THE RUN THAT INSERTS, and this block is the reason the
+    # warning three paragraphs up in `REGENERATED_FNS` is written as a warning. It used to set `docs`
+    # only inside the `if not in ix` guard, which meant `abandon_round`'s prose was written into the
+    # IDL exactly once, on the run that added the instruction, and never looked at again. Editing that
+    # doc block in lib.rs then produced the worst of both worlds: `verify` failed (the committed IDL
+    # no longer matched the source) and `patch` could not fix it (the instruction was already present,
+    # so the only line that would have refreshed it was skipped), and `regenerate()` runs `verify`
+    # before it writes — so the tool locked itself out of the one repair it existed to make. That is
+    # exactly what the `refund_abandoned_entry` commit did, and it took
+    # `the_idl_generator_still_reproduces_the_committed_idl` red on every `cargo test` until now.
+    #
+    # Adding the name to `REGENERATED_FNS` alone is only HALF the fix and is worth spelling out,
+    # because the half looks like the whole: it stops `verify` complaining, but with the refresh still
+    # inside the guard the IDL keeps the stale prose forever and nothing ever says so again. Both
+    # halves are needed. Sections 1 and 8 have always had this shape; this one was the outlier.
     if "abandon_round" not in ix:
         idl["instructions"].append({
             "name": "abandon_round",
-            "docs": fn_docs("abandon_round"),
             "discriminator": disc("global", "abandon_round"),
             "accounts": json.loads(json.dumps(ix["close_round"]["accounts"])),
             "args": [],
         })
+        ix["abandon_round"] = idl["instructions"][-1]
+    ix["abandon_round"]["docs"] = fn_docs("abandon_round")
 
     # 4. Round grows two timestamps, in front of fight_started_at
     fields = types["Round"]["type"]["fields"]

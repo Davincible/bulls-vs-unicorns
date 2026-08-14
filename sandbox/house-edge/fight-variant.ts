@@ -469,9 +469,41 @@ export interface FightConfig {
   comebackBps?: bigint;
 }
 
-/** THE SHIPPED RULE, as of the seat-law fix. `parity.ts` asserts this is byte-identical to
- *  `engine/src/er-sim.ts`, which is itself asserted byte-identical to the Rust. */
+/** THE SHIPPED RULE, as of the variance change. `parity.ts` asserts this is byte-identical to
+ *  `engine/src/er-sim.ts`, which is itself asserted byte-identical to the Rust.
+ *
+ *  WHAT MOVED: the die. It was a flat 4..27 out of one byte (`h[8] % 24 + 4`); it is now a body of
+ *  1..22 out of `h[20..24]` plus a spike of 90 one time in 32 out of `h[24..28]`. The reason is the
+ *  operator's — "the total sum of who is winning is relatively very stable and that's a bit boring"
+ *  — and the measurement is `check-variance-bell.ts`: at 48 seats over 400 seeds the standard
+ *  deviation of the FINAL side-vs-side split goes from 4.19 to 5.64 points of the pot (1.34x) while
+ *  the share of fights concluding before the bell goes UP, 76.3% to 77.8%.
+ *
+ *  The spike is 90 and not 100, and that is the whole reason this die shipped where the study's own
+ *  recommendation did not: at exactly 100 `dmg = min(ring_a, ring_d)` is the defender's whole ring,
+ *  i.e. a guaranteed kill, and a lineup of `n` then dies in ~`n` crits however large `n` is — while
+ *  `PENALTY_HORIZON_STEPS` grows as `n^1.5`. Measured at the worst (lineup, stake) cell, median fight
+ *  over horizon: shipped 1.22x, this die 1.13x, a mean-matched 1-in-16 crit of 100 **0.23x**. See
+ *  `roll_of` in lib.rs for the full derivation. */
 export const BASELINE: FightConfig = {
+  attacker: W_UNIFORM, defender: W_UNIFORM,
+  dust: { kind: "absolute", units: DUST_ABSOLUTE }, layout: "legacy",
+  damage: "min", defenderDraw: "shift",
+  roll: { kind: "spike", pDen: 32, spike: 90, lo: 1, hi: 22 },
+};
+
+/** THE RULE AS DEPLOYED IN v6 — everything the seat-law fix shipped, with the ORIGINAL flat 4..27
+ *  die. Kept for exactly the reason `DEPLOYED_V5` is kept one paragraph down: every "before" column
+ *  in HOUSE-EDGE-STUDY.md, HOUSE-STRATEGY.md, HOUSE-LIFETIME.md and HOUSE-SMALL-STAKE.md was measured
+ *  against this rule, and a study whose baseline is a QUOTATION rather than a runnable configuration
+ *  cannot be re-checked. `parity.ts` pins it against the golden vector that was the committed
+ *  on-chain parity fixture immediately before the die changed, so it cannot rot in silence.
+ *
+ *  Note which knob is absent rather than which is present: `roll` is undefined, and `rollOf` reads
+ *  `cfg.roll ?? "legacy"` — so this config gets `h[8] % 24 + 4`, modulo bias and all. That bias is
+ *  part of what it is reproducing: the deployed die's true mean was 15.25, not the 15.5 a genuinely
+ *  uniform 4..27 would give, because 256 is not a multiple of 24 (`check-dice.ts` §3). */
+export const DEPLOYED_V6: FightConfig = {
   attacker: W_UNIFORM, defender: W_UNIFORM,
   dust: { kind: "absolute", units: DUST_ABSOLUTE }, layout: "legacy",
   damage: "min", defenderDraw: "shift",

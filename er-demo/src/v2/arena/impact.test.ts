@@ -12,9 +12,18 @@
 import { describe, expect, it } from "vitest";
 import { hitForce, hitToll } from "./impact.ts";
 
-/** `advance_fight`: `let roll = (h[8] as u64) % 24 + 4;` — the program's inclusive roll range. */
-const ROLL_MIN = 4n;
-const ROLL_MAX = 27n;
+/** `advance_fight`'s `roll_of` — the program's inclusive roll range. It was a flat `h[8] % 24 + 4`
+ *  (4..27); it is now a body of `ROLL_BODY_LO..22` out of `h[20..24]` plus a spike of `CRIT_ROLL`
+ *  one time in `CRIT_ONE_IN` out of `h[24..28]`. See `roll_of` in lib.rs for why.
+ *
+ *  The endpoints are what this file pins, because they are what `hitForce` normalises against and
+ *  getting them wrong is invisible in review — the whole canvas simply loses its dynamic range. The
+ *  SHAPE between them is pinned too, one describe() down: the mapping is piecewise now, and a
+ *  regression to a straight line would put 31 blows in 32 at the bottom of the scale. */
+const ROLL_MIN = 1n;
+const ROLL_BODY_MAX = 22n;
+const CRIT_ROLL = 90n;
+const ROLL_MAX = CRIT_ROLL;
 
 /** The chain's own line, so a test vector is produced the way the program produces it rather than by
  *  a second reading of the same sentence. */
@@ -41,6 +50,32 @@ describe("hitForce", () => {
       previous = force;
     }
     expect(previous).toBeCloseTo(1, 2);
+  });
+
+  it("keeps the whole body of the die apart from the crit, and the crit alone at the top", () => {
+    // THE REGRESSION THIS GUARDS IS A ONE-LINE REVERT. `hitForce` used to be a straight line, which
+    // was right for a flat 4..27 die and is wrong for a die of 1..22-plus-90: linearly, EVERY
+    // ordinary blow lands under force 0.24 and only the crit is visible, so the canvas draws 31 hits
+    // in 32 at the bottom of every curve — the "every hit reads the same size" failure this module
+    // was written to fix, reached from the other end. The mapping is piecewise for that reason and
+    // this pins the three properties that make it worth the extra constant.
+    const a = 8_000_000n;
+    const d = 3_000_000n;
+    const force = (roll: bigint) => hitForce(damage(a, d, roll), a, d);
+
+    // 1. The body spans a real range rather than a sliver — the bottom of the die and the top of its
+    //    body must be far apart, or nothing an ordinary exchange does is legible.
+    expect(force(ROLL_BODY_MAX) - force(ROLL_MIN)).toBeGreaterThan(0.5);
+
+    // 2. The crit is strictly above everything the body can reach, with a visible gap. The die has no
+    //    mass between them, so this discontinuity is honest rather than an artefact.
+    expect(force(CRIT_ROLL)).toBeGreaterThan(force(ROLL_BODY_MAX) + 0.3);
+
+    // 3. URGENT_FORCE = 0.8 is the throttle bypass, and the rule it now encodes is "only a crit may
+    //    barge the queue". A body roll that could reach it would let a merely-heavy ordinary blow
+    //    skip the cap, which is what the cap exists to prevent.
+    expect(force(ROLL_BODY_MAX)).toBeLessThan(0.8);
+    expect(force(CRIT_ROLL)).toBeGreaterThanOrEqual(0.8);
   });
 
   it("reads the SMALLER ring as the basis, which is what the program does", () => {

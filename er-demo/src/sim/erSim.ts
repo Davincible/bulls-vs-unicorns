@@ -100,6 +100,35 @@ export const MAX_FIGHTERS = 48;
  *  in one blow and they die. Value is still conserved — the remainder MOVES, it is not deleted. */
 export const DUST = 1_000n;
 
+/** One blow in this many is a crit. A power of two: 32 divides 2^32, so `u32 % 32` is exactly
+ *  uniform and the advertised rate is the true rate. */
+export const CRIT_ONE_IN = 32;
+/** What a crit takes, as a percentage of the smaller ring. Must stay UNDER 100 — at exactly 100 it
+ *  is a guaranteed kill rather than a big hit, and fight length stops scaling with the lineup. */
+export const CRIT_ROLL = 90n;
+/** The body, `ROLL_BODY_LO ..= ROLL_BODY_LO + ROLL_BODY_SPAN - 1` = 1..22. It starts at 1, not 0,
+ *  because a roll of 0 makes `dmg === 0` and the exchange is skipped — and a skipped exchange is one
+ *  the canvas never draws. */
+export const ROLL_BODY_LO = 1n;
+export const ROLL_BODY_SPAN = 22;
+
+/** Mirrors `roll_of`. The damage roll, as a percentage of the smaller ring.
+ *
+ *  It replaced a flat `h[8] % 24 + 4` because the aggregate score was too stable to be interesting.
+ *  Measured at 48 seats over 400 seeds (`sandbox/house-edge/check-variance-bell.ts`), the standard
+ *  deviation of the final side-vs-side split went from 4.19 to 5.64 points of the pot while the
+ *  share of fights concluding before the bell went UP, 76.3% to 77.8%.
+ *
+ *  FOR THE CANVAS, the shape of this die matters more than its mean: `impact.ts` normalises hit force
+ *  against `[ROLL_MIN, ROLL_MAX]`, and those two numbers have to move with this one or every hit
+ *  reads as maximum force. A crit is now four times the heaviest ordinary blow, which is the whole
+ *  point — the scoreboard swings because a few exchanges dominate, and those are the ones worth
+ *  drawing loudly. */
+export function rollOf(h: Buffer): bigint {
+  if (h.readUInt32LE(24) % CRIT_ONE_IN === 0) return CRIT_ROLL;
+  return ROLL_BODY_LO + BigInt(h.readUInt32LE(20) % ROLL_BODY_SPAN);
+}
+
 /** What extracting costs at the opening bell, in basis points — 20%, decaying linearly to nothing
  *  over `PENALTY_HORIZON_STEPS`.
  *
@@ -241,7 +270,7 @@ export function tick(round: ERRound, steps: number, onHit?: (event: HitEvent) =>
     if (A.wallet === D.wallet) continue;    // never yourself, even across sides
     if (A.dead === 1 || D.dead === 1) continue;
 
-    const roll = BigInt(h[8] % 24) + 4n;    // 4..27 percent of the SMALLER of the two rings
+    const roll = rollOf(h);                 // 1..22, or 90 one time in 32, of the SMALLER ring
     // You cannot take more than you brought. Reading the defender alone made an attacker's take
     // independent of their own stake — deposits bought nothing and seats bought everything, which
     // an $80 budget split across eight wallets farmed for ~$152/round. See the Rust for the full

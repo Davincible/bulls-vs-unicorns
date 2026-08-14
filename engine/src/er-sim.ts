@@ -190,6 +190,37 @@ export function drawPair(h: Buffer, n: number): [number, number] {
   return [a, d];
 }
 
+/** One blow in this many is a crit. A power of two: 32 divides 2^32, so `u32 % 32` is exactly
+ *  uniform and the advertised rate is the true rate. */
+export const CRIT_ONE_IN = 32;
+/** What a crit takes, as a percentage of the smaller ring. Must stay UNDER 100: at exactly 100 the
+ *  blow is a guaranteed kill and fight length stops scaling with the lineup, which takes the penalty
+ *  horizon out from under the small lineups; above 100 it wakes the asymmetric `dmg > D.hp` clamp.
+ *  See the Rust `roll_of` for the measurements behind both. */
+export const CRIT_ROLL = 90n;
+/** The body, `ROLL_BODY_LO ..= ROLL_BODY_LO + ROLL_BODY_SPAN - 1` = 1..22. It starts at 1, not 0,
+ *  because a roll of 0 makes `dmg === 0` and the exchange is skipped — a body starting at zero would
+ *  delete `1/span` of the visible action for no gain in spread. */
+export const ROLL_BODY_LO = 1n;
+export const ROLL_BODY_SPAN = 22;
+
+/** Mirrors `roll_of`. The damage roll, as a percentage of the smaller ring.
+ *
+ *  It replaced a flat `h[8] % 24 + 4` because the aggregate score was too stable to be interesting —
+ *  the operator's complaint, measured and answered in `HOUSE-SMALL-STAKE.md` §5 and
+ *  `sandbox/house-edge/check-variance-bell.ts`. Measured at 48 seats over 400 seeds, the standard
+ *  deviation of the final side-vs-side split went from 4.19 to 5.64 points of the pot (1.34x) while
+ *  the share of fights concluding before the bell went UP, 76.3% to 77.8%.
+ *
+ *  The bytes are `h[20..24]` for the magnitude and `h[24..28]` for the spike selector. `drawPair`
+ *  takes `h[0..8]`; `h[8]`, which used to carry the whole roll, is now unread. See the Rust for the
+ *  full derivation, the rejected alternatives, and why the arithmetic mean is deliberately NOT held
+ *  at the deployed 15.25. */
+export function rollOf(h: Buffer): bigint {
+  if (h.readUInt32LE(24) % CRIT_ONE_IN === 0) return CRIT_ROLL;
+  return ROLL_BODY_LO + BigInt(h.readUInt32LE(20) % ROLL_BODY_SPAN);
+}
+
 /** Mirrors `tick`. Deterministic from (seed, tickCount) alone — no clock, no slot, no ordering. */
 export function tick(round: ERRound, steps: number): void {
   for (let s = 0; s < steps; s++) {
@@ -206,7 +237,7 @@ export function tick(round: ERRound, steps: number): void {
     if (A.wallet === D.wallet) continue;    // never yourself, even across sides
     if (A.dead === 1 || D.dead === 1) continue;
 
-    const roll = BigInt(h[8] % 24) + 4n;    // 4..27 percent of the SMALLER of the two rings
+    const roll = rollOf(h);                 // 1..22, or 90 one time in 32, of the SMALLER ring
     // You cannot take more than you brought. Reading the defender alone made an attacker's take
     // independent of their own stake, which is the seat law in HOUSE-EDGE-STUDY.md §0 — deposits
     // bought nothing, seats bought everything, and a split budget farmed it. See the Rust.

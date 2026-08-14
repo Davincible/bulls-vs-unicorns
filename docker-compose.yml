@@ -9,8 +9,9 @@
 
 services:
   # ----------------------------------------------------------------------------------------------
-  # The Solana program. See docker/program-build.Dockerfile for why the toolchain is pinned and why
-  # this cannot be run from the repo root.
+  # The Solana program. See docker/program-build.Dockerfile for why the toolchain is pinned, and
+  # docker/program-build.sh for why the build runs from the WORKSPACE ROOT — an earlier version of
+  # this file said the opposite, which was true only while the root Anchor.toml was broken.
   program-build:
     build:
       context: .
@@ -24,6 +25,9 @@ services:
       # four paths; it gets four paths.
       - ./programs:/build/programs
       - ./Cargo.toml:/build/Cargo.toml:ro
+      # The workspace-root Anchor.toml, now that the build runs from the root. Without it anchor
+      # walks up, finds nothing, and there is no workspace at all.
+      - ./Anchor.toml:/build/Anchor.toml:ro
       - ./Cargo.lock:/build/Cargo.lock:ro
       # Where the artifact lands, and the only writable host path.
       - ./target/docker:/build/target/docker
@@ -33,7 +37,7 @@ services:
       # a different toolchain — which is the exact confusion this whole image exists to end.
       - cargo-registry:/root/.cargo/registry
       - cargo-git:/root/.cargo/git
-      - sbf-target:/build/programs/bulls-arena/target
+      - sbf-target:/build/target
     # No network needed for a build once the registry is warm; `verify` overrides this by needing
     # devnet, so it is left at the default rather than set to `none`. Recorded so nobody adds
     # `network_mode: none` and then wonders why verify hangs.

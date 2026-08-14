@@ -78,3 +78,28 @@ solana-keypair = "3"
 solana-message = "3"
 solana-signer = "3"
 solana-transaction = "3"
+
+# CARGO IGNORES THIS BLOCK, AND ANCHOR REQUIRES IT. Both halves are true and that is the point.
+#
+# `[profile.*]` is only honoured in a workspace ROOT manifest, so cargo emits "profiles for the non
+# root package will be ignored" and builds using the root Cargo.toml's profile — which is where the
+# real setting lives, alongside lto/codegen-units/opt-level, and where it must stay.
+#
+# But `anchor build` (1.0.2, the otter-sec fork that `avm install 1.0.2` resolves to) refuses to
+# build without seeing it HERE, and its error names the wrong file:
+#
+#     Error: `overflow-checks` is not enabled. To enable, add:
+#     [profile.release]
+#     overflow-checks = true
+#     in workspace root Cargo.toml
+#
+# The root Cargo.toml had it on line 30 the entire time. Proven by elimination inside the pinned
+# container: `cargo metadata` reported workspace_root as the repo root, that root manifest had the
+# setting as the first entry under [profile.release], and anchor still refused — until this block was
+# added here, at which point it built. The host's anchor 1.0.2 does not enforce it, which is why this
+# only ever appeared in Docker.
+#
+# So: duplicated deliberately, not by accident. If it is ever removed as redundant, `docker compose
+# run --rm program-build` starts failing with an error that points at a file which is already correct.
+[profile.release]
+overflow-checks = true

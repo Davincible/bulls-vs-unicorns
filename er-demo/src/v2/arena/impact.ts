@@ -114,9 +114,23 @@
 // …AND THE THROTTLE YIELDS TO A BIG HIT. A cap that drops marks in arrival order will eventually
 // drop the one blow of the round that mattered because two nothing-hits happened to land in front of
 // it, which is the throttle destroying exactly the signal it was added to protect. Anything past
-// `URGENT_FORCE` (or, for the figures, `URGENT_TOLL`) is admitted regardless. That cannot flood:
-// `roll` is uniform on [4, 27], so URGENT_FORCE = 0.8 is the top fifth of blows, i.e. ~3/s at the
-// program's cap of sixteen fighters.
+// `URGENT_FORCE` (or, for the figures, `URGENT_TOLL`) is admitted regardless. That cannot flood, and
+// the headroom is now far larger than it was.
+//
+// THIS PARAGRAPH USED TO READ "`roll` is uniform on [4, 27], so URGENT_FORCE = 0.8 is the top fifth
+// of blows, i.e. ~3/s at the program's cap of sixteen fighters." All three of those clauses are now
+// false: the die is not uniform, 0.8 is not the top fifth, and the cap is 48 rather than 16. Redone
+// against the die the program actually rolls (`roll_of`: 1..22, or 90 one time in 32):
+//   * force is linear on [1, 90], so `force >= 0.8` means `roll >= 1 + 0.8*89 = 72.2`;
+//   * nothing in the body can reach that — the body stops at 22 — so the urgent class is EXACTLY the
+//     crits, one exchange in thirty-two rather than one in five;
+//   * at 48 fighters that is ~48 hits/s * (1/32) = ~1.5/s, half the ~3/s this paragraph used to
+//     promise at a third of the seat count.
+// So the bypass got RARER and more meaningful at the same time, which is the right direction for a
+// rule whose job is to never drop the blow that mattered. It also means `URGENT_FORCE` has quietly
+// become a crit detector rather than a magnitude threshold; that is a better fit for its purpose than
+// the reading it was tuned under, and it is left at 0.8 deliberately — any value in (0.25, 1.0]
+// selects exactly the crits now, so moving it would change nothing except the honesty of this note.
 //
 // Dropping a mark affects NOTHING but the flourish: replay.ts advances fight state for every event
 // independently of this module. Hp, deaths and the settled outcome are untouched.
@@ -127,12 +141,49 @@ import { monoFont, monoWidth, type ArenaPalette } from "./palette.ts";
 
 const TAU = Math.PI * 2;
 
-/** `advance_fight`'s `let roll = (h[8] as u64) % 24 + 4;` — the inclusive range of the damage roll,
- *  restated here because it is what `hitForce` normalises against. If the program's roll range ever
- *  moves, this is the one number on the canvas that has to move with it, and the failure mode is
- *  silent: every hit would simply read as maximum force. */
-const ROLL_MIN = 4;
-const ROLL_MAX = 27;
+/** `advance_fight`'s `roll_of` — the inclusive range of the damage roll, restated here because it is
+ *  what `hitForce` normalises against.
+ *
+ *  THE WARNING THIS COMMENT USED TO CARRY CAME TRUE, so it is worth keeping the record rather than
+ *  just the new numbers. It read: "If the program's roll range ever moves, this is the one number on
+ *  the canvas that has to move with it, and the failure mode is silent: every hit would simply read
+ *  as maximum force." The range did move — from a flat 4..27 out of one hash byte to a body of 1..22
+ *  plus a spike of 90 one time in 32 — and these two constants moved with it. `impact.test.ts` pins
+ *  them against the program's own constants at both ends, which is what makes the silent failure
+ *  loud.
+ *
+ *  THE DISTRIBUTION BETWEEN THESE TWO ENDS IS NO LONGER FLAT, and that matters more to this file
+ *  than the endpoints do — enough that `hitForce` stopped being a straight line because of it. See
+ *  `BODY_FORCE_TOP`. */
+const ROLL_MIN = 1;
+const ROLL_MAX = 90;
+/** The top of the die's BODY. Everything from here to `ROLL_MAX` is empty: the die rolls 1..22, or
+ *  90, and nothing between. */
+const ROLL_BODY_MAX = 22;
+/** Where an ordinary blow's force tops out, leaving the band above it to the crit alone.
+ *
+ *  WHY THIS FILE NEEDED A SECOND CONSTANT WHERE ONE USED TO DO. Force was `(roll - MIN) / (MAX - MIN)`
+ *  — a straight line — and that was right while the die was a flat 4..27, where every roll was
+ *  equally likely and the line spent its whole range on blows that actually happen. Against a die of
+ *  1..22-plus-90 the same line puts THIRTY-ONE BLOWS IN THIRTY-TWO below force 0.24 and one at 1.0,
+ *  with nothing anywhere in between. Every ordinary exchange would then draw at the bottom of every
+ *  curve in this file — shortest ring, thinnest stroke, no fan — which is "every hit reads the same
+ *  size" again, the exact failure the header of this file was written against, arrived at from the
+ *  other end of the scale.
+ *
+ *  So the mapping is piecewise: the body spends the range [0, BODY_FORCE_TOP] and the crit pins 1.0.
+ *  The gap is deliberate rather than an artefact — the die has NO mass there, so a crit is visually
+ *  discontinuous from any ordinary blow, which is the honest reading of a roll four times heavier
+ *  than the heaviest thing that is not one.
+ *
+ *  0.62 is chosen so that the three force thresholds below keep three DIFFERENT meanings, which a
+ *  linear map would have collapsed into one (all three would have selected exactly the crits):
+ *    * `FAN_FORCE`    0.42 -> body rolls 16..22, ~32% of ordinary blows, plus every crit;
+ *    * `ECHO_FORCE`   0.55 -> body rolls 20..22, ~14% of ordinary blows, plus every crit;
+ *    * `URGENT_FORCE` 0.80 -> crits only, since the body cannot reach past 0.62 by construction.
+ *  That last one is the throttle bypass, and "only a crit may barge the queue" is a sharper rule than
+ *  the "top fifth of blows" it replaced. */
+const BODY_FORCE_TOP = 0.62;
 
 /** What share of a defender's WORTH a hit has to take to count as a full-toll blow.
  *
@@ -702,12 +753,24 @@ function figureShelf(top: number): number {
  *    - INTEGER TRUNCATION. The chain divides by 100 in `u64`, so a recovered roll sits a hair under
  *      the real one; at the smallest rings it can land below ROLL_MIN. Floored at zero.
  *
+ *  PIECEWISE, NOT LINEAR, and `BODY_FORCE_TOP` carries the whole argument for why. In one sentence:
+ *  the die is 1..22 or 90, so a straight line would spend 76% of the scale on rolls that never
+ *  happen and leave every ordinary blow drawing at the bottom of every curve in this file.
+ *
  *  Pure and exported so `impact.test.ts` can pin both ends against the constants in lib.rs. */
 export function hitForce(amount: bigint, attackerHp: bigint, defenderHp: bigint): number {
   const basis = attackerHp < defenderHp ? attackerHp : defenderHp;
   if (basis <= 0n) return 1;
   const roll = (Number(amount) * 100) / Number(basis);
-  return clamp((roll - ROLL_MIN) / (ROLL_MAX - ROLL_MIN), 0, 1);
+  if (roll <= ROLL_BODY_MAX) {
+    return clamp((roll - ROLL_MIN) / (ROLL_BODY_MAX - ROLL_MIN), 0, 1) * BODY_FORCE_TOP;
+  }
+  // Above the body there is only the crit and the dust finish (an implied roll of 100, clamped).
+  // Both are a fighter being taken apart, and both read at or near full force.
+  return clamp(
+    BODY_FORCE_TOP + (1 - BODY_FORCE_TOP) * (roll - ROLL_BODY_MAX) / (ROLL_MAX - ROLL_BODY_MAX),
+    0, 1,
+  );
 }
 
 /** WHAT THE BLOW COST, as a share of what the defender was worth before it — the quantity the disc's
