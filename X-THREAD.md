@@ -1,140 +1,166 @@
-# X copy — Bulls vs Unicorns
+# X copy - Bulls vs Unicorns
 
-**VERIFY BEFORE POSTING: handles — @MagicBlock, @ColosseumOrg (user wrote '@colleseum')**
+## The one thing to get right before posting
 
-Both handles are best guesses and neither has been checked against X. `@MagicBlock` is the
-commonly-used handle for MagicBlock; `@ColosseumOrg` is the commonly-used handle for Colosseum, the
-Solana hackathon org. Confirm both before anything goes out — a wrong @ in tweet 1 of a thread is the
-one mistake you cannot edit away.
+**Everything is on devnet right now, including bullsvsunicorns.fun.** The mainnet figures in this
+file ($30,000 in 6 hours, 26 users, 500 matches, the $15,000 Unicorn test) are **historical** — a
+real earlier run, not what is live today.
 
-Everything else in this file is drawn from `COST-MODEL.md`, `programs/bulls-arena/src/lib.rs` and
-`er-demo/src/v2/SOCIAL.md`. No number here was invented.
+So: past tense about mainnet, always. "We ran it on mainnet" — never "we're live on mainnet." And
+never let a mainnet number sit beside a present-tense claim about the product. The thread below is
+built so the history is proof and the present is an invitation, and those two jobs stay separate.
 
-Character counts are the literal length of the tweet body including newlines. Limit is 280.
+## Verify before posting - handles
+
+- **@MagicBlock** - unverified guess. Commonly used handle for MagicBlock, not checked against X.
+- **@ColosseumOrg** - unverified guess. The user wrote "@colleseum"; this is the commonly used handle
+  for the Solana hackathon org. Check it.
+- **Ansem** - his handle is *not* verified and is deliberately not @-ed anywhere in this file. Keep it
+  that way unless someone confirms it. Referring to "Ansem's community" in plain text is the safe form.
+
+Character counts below are the literal length of the tweet body including newlines. Limit is 280.
+Every figure comes from `pitch/index.html` or `PITCH.md`. Nothing was invented.
 
 ---
 
-## Deliverable 1 — The explainer thread
+## Deliverable 1 - the product thread
 
 **1/**
-A fight with 44 fighters costs the same 5 base-layer transactions as a fight with 2.
+Your memecoin sits in your wallet doing nothing.
 
-Not "roughly the same". The same five.
+You can buy it. You can sell it. That is the entire game.
 
-That's Bulls vs Unicorns — a last-one-standing arena running on @MagicBlock Ephemeral Rollups.
+We built the third option: deploy your bag into an arena, fight the rival community, and take their tokens.
 
-Live on devnet: bullsvsunicorns.fun
-`[257]`
+Bulls vs Unicorns.
+`[236]`
 
 **2/**
-The game: pick a side, enter a round with a stake, and up to 48 fighters brawl on screen in real time. Last ones standing take the pot.
+Memecoin communities only have one scoreboard: price.
 
-Or extract mid-fight and bank what you're holding — 20% penalty at the bell, decaying to zero.
+You can't out-play a rival community. You can only out-chart them. And when the chart does nothing, there's nothing left to do but hold.
 
-Devnet: the stakes are paper.
-`[262]`
+A lot of capital, sat dead, with nothing to point it at.
+`[249]`
 
 **3/**
-The whole round lives on a @MagicBlock Ephemeral Rollup. Every entry, every combat tick, the resolve — all of it executes inside the rollup and never touches the base layer.
+So point it at them.
 
-What the base layer sees: the round opening, delegating, undelegating, settling. Five transactions.
-`[274]`
+Pick a side. Deploy tokens into a round. Your fighter goes in and takes value off the other side's fighters, and theirs come for yours.
+
+What moves isn't points. It's real tokens, moving between two communities.
+`[233]`
 
 **4/**
-So participants are free.
+How a round feels:
 
-A 44-fighter round and a 2-fighter round cost the same five transactions and ~0.00007 SOL in fees. Measured on a real devnet round, not projected.
+The lobby opens. Both sides deploy. Entries close, and the fight runs live on screen for 30-60 seconds.
 
-This game is only economically possible because of the ER. That's the whole story.
-`[257]`
+Once you've deployed, you're in. No refund, no cancelling. The round resolves whether you're watching or not.
+`[234]`
 
 **5/**
-Session keys: you sign once, then fight with no wallet popups.
+Then the decision.
 
-That matters most at extract — a decision made mid-fight, under time pressure, racing whoever settles the round. A wallet modal there would undercut the entire "real-time because of the rollup" claim.
-`[264]`
+Mid-fight you can hit EXTRACT: bank what your fighter has raided so far and stop being a target for the rest of the round. Your banked value still counts for your side.
+
+Leave early with a sure thing, or stay in and keep raiding.
+
+You have seconds.
+`[268]`
 
 **6/**
-Randomness is a VRF with commit-reveal.
+And it stops being your bag vs a chart. It's your community vs theirs.
 
-A commitment is published on-chain before anyone can enter, and the seed itself comes from MagicBlock's VRF oracle after the lobby closes.
+Ansem's community, around $160M. Unicorn, around $26M, 19,000 holders, 3 years old, works closely with Pump.fun.
 
-Nobody can grind seeds against a lobby they can already see. Outcomes aren't ours to pick.
-`[271]`
+Two of the largest communities on Solana by liquidity, with somewhere to settle it.
+`[269]`
 
 **7/**
-The chain enforces a conservation identity:
+Nobody can rig the outcome, us included.
 
-sum(hp + banked) + penalties == pot
+The seed for the fight is drawn the moment entries close, so the result is locked before anyone can see it. You can re-verify a finished round yourself from that seed.
 
-Checkable from the round account alone, at any moment of the fight. Every lamport in the pot is accounted for, and you don't have to take our word for any of it.
-`[243]`
+We take our fee on the way in, never out of the fight itself.
+`[272]`
 
 **8/**
-Why the cap is 48 and not 64 — measured, 400 seeds per lineup:
+This isn't theory. We ran it on mainnet.
 
-n=48 → 124s median fight, concludes before the bell 76.2% of the time
-n=64 → 62.5%
+First 6 hours: $30,000 traded hands. 26 users. 500 matches + transactions.
 
-48 is the biggest board that still clears the bar the 16-fighter version already met.
-`[233]`
+Before that, 3 days of testing with the Unicorn community: $15,000 volume, 1,000+ transactions, 32 wallets.
+
+Small numbers. Real ones.
+`[252]`
 
 **9/**
-A real round on devnet: 44 fighters, settled in 85 seconds.
+What's next:
 
-Every hit, every extract, every death in that round executed on chain. Not a replay of an off-chain simulation — the simulation *is* the chain.
-`[204]`
+- Distributions back to the communities. First to Unicorn, second to Ansem.
+- More game modes. The arena picker is already built for them.
+- Exploring a battle simulator, where agents build a strategy and fight other agents.
+`[238]`
 
 **10/**
-Where it's going: X identity on the board. Your handle and picture become your fighter's face, so you can follow one specific person's disc through a fight and watch the exact moment they extract or die.
+We've rebuilt the whole thing since, and it's running on devnet right now.
 
-Devnet. No token, no real money.
+Pick a side, deploy, and decide when to lock it in.
 
-bullsvsunicorns.fun
-`[258]`
+Come break it: bullsvsunicorns.fun
+`[163]`
 
 ---
 
-## Deliverable 2 — The ship log
+## Deliverable 2 - the product update
 
 **1/**
-ship log:
+Product update: we spent the @ColosseumOrg hackathon blitz moving a whole round onto @MagicBlock Ephemeral Rollups.
 
-— round state moved on-chain, onto @MagicBlock Ephemeral Rollups
-— 48 fighters/round; a real one with 44 settled in 85s
-— 5 base-layer txs whether 2 fight or 44
-— VRF seeds, session keys, no popups
-— live on devnet
+Why a player cares: EXTRACT stops feeling like a request and becomes a button you press. ~10ms, not ~400ms.
 
-@ColosseumOrg hackathon blitz
-bullsvsunicorns.fun
-`[276]`
+Running on devnet now: bullsvsunicorns.fun
+`[268]`
 
 ---
 
-## Alternative hooks for the explainer thread
+## Alternative hooks for the thread
 
 **Alt hook A**
-Every combat tick of a 48-fighter brawl executes on-chain, in real time.
+Your memecoin has exactly two uses: buy and sell.
 
-The base layer sees five transactions for the entire round.
+We added a third. Deploy it into an arena, fight the rival community, take their tokens.
 
-Bulls vs Unicorns, live on devnet — and it only exists because of @MagicBlock Ephemeral Rollups.
-`[231]`
+Bulls vs Unicorns.
+`[159]`
 
 **Alt hook B**
-We built a last-one-standing arena on Solana where adding 42 more fighters to a fight costs nothing.
+Communities compete on price because price is the only scoreboard anyone gave them.
 
-Not "nothing much". The same five base-layer transactions as a 1v1.
+So we built a second one, where you can actually take something off the other side.
 
-Here's how, and why it couldn't have been built any other way.
-`[233]`
+Bulls vs Unicorns.
+`[188]`
+
+**Alt hook C**
+30 seconds into the fight, your fighter is up. You can bank it right now and stop being a target, or stay in and keep raiding.
+
+That decision is the entire product.
+
+Bulls vs Unicorns.
+`[184]`
 
 ---
 
 ## Notes for whoever posts this
 
-- Tweet 4 is the load-bearing one. If the thread gets cut for length, cut 8 before 4.
-- Every figure: 5 txs / 0.00007 SOL / 44 fighters in 85s / 76.2% / 124s / 62.5% / 20% penalty / 48 cap
-  comes from `COST-MODEL.md` §1 or the `median fight` table in `programs/bulls-arena/src/lib.rs`.
-- Do not add a mainnet or token line. Every draft of this deliberately says devnet out loud.
+- **Tweet 5 is the load-bearing one.** It is the only tweet that describes the thing the product
+  actually sells: a live, irreversible, under-pressure choice. Everything before it is setup and
+  everything after it is proof. If the thread has to be cut, cut 9, then 4 - never 5.
+- Tweet 1 and tweet 5 should carry the two best pieces of media. Tweet 5 wants a clip of a real
+  EXTRACT landing mid-fight.
+- **Tweet 8 is the only place mainnet appears, and it is past tense on purpose.** Tweet 10 is the only
+  place devnet appears, and it is the present. That ordering is deliberate — history as proof,
+  today as the invitation. Don't swap their tenses and don't merge them into one tweet.
+- No roadmap dates, no return or price claims anywhere in this file. Keep it that way in the replies.
