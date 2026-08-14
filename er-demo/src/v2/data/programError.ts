@@ -25,6 +25,24 @@
 // router's JSON-RPC error carries no `data.logs` at all, so web3.js's `SendTransactionError`
 // constructor never receives an array to hold. A matcher that reads `e.logs` finds nothing to read.
 //
+// ONE LOOSE END IN THAT TRANSCRIPTION, LEFT AS IT WAS FOUND RATHER THAN TIDIED. The rollup line
+// records `0x1775`, which is 6005 — `BadSide`, not the `NotInLobby` (6002 = `0x1772`) the paragraph
+// around it is about; commit b38553d, which added both, quotes both numbers. Most likely the probe
+// that produced the rollup capture sent a deliberately invalid `side` while the base-layer one sent a
+// late deposit, i.e. two different doomed transactions illustrating one shape. Nothing in the repo
+// settles it, and NOTHING IN THIS MODULE DEPENDS ON IT: what is reused is the SHAPE — the wrapper
+// text, the absent logs, the `custom program error: 0x…` form — and every consumer supplies its own
+// number. It is written down because a reader who spots it should find it already noticed rather than
+// conclude the capture was invented.
+//
+// A SECOND, INDEPENDENT RUN CORROBORATES THE SHAPE, which matters more than the loose end above.
+// `scripts/verify-house-take.ts`'s non-authority negative control ran green on the ER (commit
+// 6831d11: "a non-authority attempt against that same still-open lobby was refused with
+// NotTheAuthority") — and that script's `anchorErrorCode` tries `AnchorError`, then
+// `Error Code: (\w+)\.`, and only then `custom program error: 0x([0-9a-fA-F]+)` against the IDL's
+// error table. The first two find nothing on the rollup, so that assertion could only have passed
+// through the hex path. A green test proves the shape here, not just a comment.
+//
 // THE ER IS NOT A TEST ENVIRONMENT — IT IS THE ONLY ENVIRONMENT. `chain/sendTx.ts` sends every
 // browser transaction through `ConnectionMagicRouter` with `skipPreflight: false` and never names an
 // endpoint, so the shape above is what `useActions.ts` catches on the real page. A classifier keyed
@@ -40,9 +58,16 @@
 // grows one — the objection `useActions.ts` recorded, correctly, when it refused to match numbers at
 // all. The answer is not to keep matching names the rollup will never send. It is to stop WRITING
 // the number down: `errorCodeOf` reads name → code out of the IDL FETCHED AT RUNTIME
-// (`chain/idl.ts`'s `loadIdl`), which is a contract with the DEPLOYED program rather than a memory of
-// it. A variant inserted above `FightBehind` moves the number in lib.rs, in the IDL and here
-// together, with nothing for anybody to remember.
+// (`chain/idl.ts`'s `loadIdl`), so a variant inserted above `FightBehind` moves the number in lib.rs,
+// in the IDL and here together.
+//
+// AND THERE IS EXACTLY ONE THING LEFT TO REMEMBER, which an earlier draft of this paragraph claimed
+// there was not. `loadIdl()` fetches `public/idl/bulls_arena.json` — a CHECKED-IN file, not the
+// on-chain IDL account. `scripts/idlgen.py` writes it and the Rust from one body and its `--verify`
+// pass checks that every error code matches its declaration position, so the two normally cannot
+// drift; but its refuse-to-write guard covers the `Round` LAYOUT, and `--deployed-check` compares
+// account sizes. An in-place upgrade that renumbered errors and was not followed by a republish would
+// desync silently. So the honest claim is "one step, in `idlgen.py --deploying`", not "none".
 //
 // PURE AND REACT-FREE, like `walletFault.ts`, `entryWindow.ts` and `autoSession.ts`, for the reason
 // this project keeps repeating: there is no browser test harness here, so a decision that matters is
@@ -89,13 +114,32 @@ export function errorText(e: unknown): string {
  * lamport figure, a slot, or half a signature. `\b` on the name so a future `NotInLobbyYet` is not
  * read as this one.
  *
+ * A NAME, WHERE THERE IS ONE, IS THE LAST WORD — and this is not the obvious reading of "three forms,
+ * any of which will do". The three do not arrive one at a time: on the base layer ALL THREE are in
+ * the same text, because Anchor's log line carries the name and the number together and the RPC's
+ * sentence carries the hex. So an unconditional OR lets the NUMBER speak for an error the NAME has
+ * already identified as something else — and the numbers collide across crates. `SessionError::
+ * InvalidToken` and `ArenaError::RoundOutOfOrder` are both 6001 and both `0x1771`, so
+ * `failedWith(text, "InvalidToken", 6001)` over a base-layer `RoundOutOfOrder` log would match on its
+ * `Error Number: 6001.` half while the same line says `Error Code: RoundOutOfOrder.` two words
+ * earlier. That would throw away the exact disambiguation `verify-session-base.mjs` calls "the whole
+ * point of the helper", on the one layer where it exists.
+ *
+ * So: if the text names an error at all, the answer is whether it names THIS one. The number is
+ * consulted only where there is no name to consult — which is the rollup, and is why the number is
+ * here at all.
+ *
  * `code === undefined` MEANS THE IDL COULD NOT BE READ, and the honest response is to fall back to
  * the name alone rather than to guess a number. That is exactly the pre-rollup behaviour: it refuses
  * nothing that used to work on the base layer, and it gives up on the rollup shape out loud instead
  * of matching whatever happens to be at that index today.
  */
 export function failedWith(text: string, errorName: string, code: number | undefined): boolean {
-  if (new RegExp(`Error Code: ${errorName}\\b`).test(text)) return true;
+  // `\w+` rather than the name interpolated, precisely so the name that IS there can DISAGREE. A
+  // `RegExp(\`Error Code: ${errorName}\`)` can only ever say "yes" or "no idea", and "no idea" then
+  // falls through to the number — which is the hole above.
+  const named = /Error Code: (\w+)/.exec(text);
+  if (named !== null) return named[1] === errorName;
   if (code === undefined) return false;
   if (new RegExp(`Error Number: ${code}\\b`).test(text)) return true;
   return new RegExp(`custom program error: 0x${code.toString(16)}\\b`, "i").test(text);

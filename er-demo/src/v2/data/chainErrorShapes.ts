@@ -29,9 +29,11 @@
  * single most load-bearing fact in `programError.ts`, and the reason a matcher reading `e.logs`
  * finds nothing on the only path players use.
  *
- * `name` and `signature` are set because the real object carries them and classifiers read `name`:
- * `walletFault.ts`'s `readThrown` puts it into the matched text, and an empty `signature` is what
- * tells `entryWindow.ts` the transaction never reached the cluster.
+ * `name` is set because a classifier reads it — `walletFault.ts`'s `readThrown` puts it into the
+ * matched text. `signature` is set only because the real object carries it, and NO CODE READS IT:
+ * `entryWindow.ts` reasons in prose about the empty signature meaning nothing reached the cluster,
+ * but it implements nothing on it. Kept so the fixture stays a transcription rather than a subset,
+ * and said out loud so nobody builds a classifier on a field that is here by accident of fidelity.
  */
 export function routerError(hex: string): Error & {
   transactionMessage?: string;
@@ -72,6 +74,10 @@ export function baseLayerError(
   msg: string,
   causedByAccount?: string,
 ): Error & { transactionMessage?: string; transactionLogs?: string[] } {
+  // `lib.rs:1557` IS THE LINE THE CAPTURE CARRIED, not a line anybody should look up: `enter`'s
+  // `NotInLobby` has since moved (1660 at the time of writing) and `1557` is now inside `open_round`.
+  // Left as captured — a transcription that gets "corrected" to today's line number stops being a
+  // transcription — and nothing matches on it.
   const thrownIn = causedByAccount === undefined
     ? "Program log: AnchorError thrown in programs/bulls-arena/src/lib.rs:1557."
     : `Program log: AnchorError caused by account: ${causedByAccount}.`;

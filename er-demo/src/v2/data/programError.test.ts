@@ -89,7 +89,42 @@ describe("failedWith — the part every consumer depends on and none of them can
     expect(failedWith("Error Code: FightBehind.", "FightBehind", 6022)).toBe(true);
   });
 
+  it("lets a name that IS there OVERRULE a colliding number, which is the base layer's whole value", () => {
+    // THE HOLE AN UNCONDITIONAL OR WOULD LEAVE, and the reason this function is not three `test`s
+    // joined by `||`. On the base layer all three forms are in ONE text: Anchor's log line carries
+    // the name AND the number, and the RPC's sentence carries the hex. The numbers collide across
+    // crates — `SessionError::InvalidToken` and `ArenaError::RoundOutOfOrder` are BOTH 6001 and both
+    // `0x1771` — so a number-first reading would call a `RoundOutOfOrder` refusal a lapsed session
+    // while the very same line says otherwise two words earlier. `verify-session-base.mjs` calls the
+    // name "the only unambiguous evidence of which one fired"; this is that, enforced.
+    const roundOutOfOrder =
+      "Program log: AnchorError thrown in lib.rs:1558. Error Code: RoundOutOfOrder. " +
+      "Error Number: 6001. Error Message: rounds must open in sequence.\n" +
+      "Program ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe failed: custom program error: 0x1771";
+    expect(failedWith(roundOutOfOrder, "InvalidToken", 6001)).toBe(false);
+    // And the same text still answers YES to the error it actually names.
+    expect(failedWith(roundOutOfOrder, "RoundOutOfOrder", 6001)).toBe(true);
+  });
+
+  it("consults the number only where there is NO name, which is the rollup and nowhere else", () => {
+    // The `Error Number:` branch, isolated. Every other test in this repo that reaches it also
+    // carries the name or the hex, so this is the one place it is exercised on its own — and it is
+    // the branch the collision above lives in.
+    expect(failedWith("Error Number: 6022.", "FightBehind", 6022)).toBe(true);
+    expect(failedWith("Error Number: 6013.", "FightBehind", 6022)).toBe(false);
+  });
+
   it("reads the hex case-insensitively, because nothing guarantees which case an RPC uses", () => {
     expect(failedWith("custom program error: 0X1786", "FightBehind", 6022)).toBe(true);
+  });
+
+  it("does not read one hex code as a prefix of a longer one", () => {
+    // THE SINGLE PROPERTY THE WHOLE HEX MATCH HANGS ON, and it was untested. `\b` sits between a word
+    // character and a non-word one, and every hex digit is a word character — so `0x1786` cannot
+    // match inside `0x17860` or `0x1786a`. If that ever stopped being true, `FightBehind` would start
+    // claiming errors numbered sixteen times higher and the page would grind fights it should not.
+    expect(failedWith("custom program error: 0x17860", "FightBehind", 6022)).toBe(false);
+    expect(failedWith("custom program error: 0x1786a", "FightBehind", 6022)).toBe(false);
+    expect(failedWith("custom program error: 0x1786", "FightBehind", 6022)).toBe(true);
   });
 });

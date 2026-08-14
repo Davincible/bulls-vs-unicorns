@@ -1,0 +1,62 @@
+# BUILD CONTEXT FOR docker/program-build.Dockerfile — an ALLOWLIST, not an exclusion list.
+#
+# BuildKit looks for `<dockerfile>.dockerignore` before falling back to the repo-root `.dockerignore`,
+# so this file completely replaces that one FOR THIS IMAGE ONLY. That indirection is the point, and
+# it exists for two independent reasons — either alone would justify the file.
+#
+# 1. THE ROOT .dockerignore EXCLUDES `programs/` AND `target/`. Correct for the images it was written
+#    for (er-demo's keeper, engine's server — neither compiles Rust), and fatal here: the build died
+#    with `"/programs/bulls-arena/Cargo.toml": not found`, which reads like a missing file rather
+#    than an ignored one. Loosening the root file to fix this image would widen the context of every
+#    other image in the repo, which is the wrong direction for the reason below.
+#
+# 2. `.devnet/` IS NOT EXCLUDED BY THE ROOT FILE, AND THIS IS THE FIRST IMAGE WHOSE CONTEXT IS THE
+#    REPO ROOT. That directory holds `fork-payer.json` — the arena authority, the key that can
+#    `set_fee_bps` and upgrade the program — and `keeper-house-wallets.json`, the secret keys of all
+#    forty-eight house wallets whose anonymity `statusFile.ts`'s header is built around. The existing
+#    images are safe by accident of geography: er-demo/Dockerfile builds from `er-demo/`, so `.devnet/`
+#    at the repo root is simply outside its context, and that Dockerfile's own comment names three
+#    independent reasons a key cannot reach a layer — one of which is "outside this build context".
+#    THAT REASON DOES NOT HOLD HERE. This image's context is `.`, so the protection has to be
+#    written down rather than inherited.
+#
+# Hence an allowlist. `*` ignores everything, and each `!` line re-admits exactly one thing the SBF
+# build reads. A file nobody thought about is excluded by default instead of included by default,
+# which is the only safe direction when the context contains signing keys. A denylist would have to
+# be right about every future file added to this repo; this has to be right about four.
+
+# Ignore everything.
+*
+
+# The program sources and the workspace manifests. `anchor build` needs the whole workspace because
+# Cargo.toml's [workspace] members list resolves relative to the root.
+!programs/
+!Cargo.toml
+!Cargo.lock
+
+# The entrypoint script the Dockerfile installs.
+!docker/program-build.sh
+
+# ---------------------------------------------------------------------------------------------
+# Re-excluded from inside the allowlist above. `!programs/` re-admits that subtree wholesale, so
+# anything unwanted underneath it has to be taken back out here.
+
+# Host build output. Copying it in would seed the container with objects compiled by the host
+# toolchain — precisely the contamination this image exists to prevent, and it would do it silently
+# because Cargo would treat them as a warm cache rather than rejecting them.
+programs/**/target/
+target/
+
+# Anchor's local state, including any program keypair it has generated. `anchor build` writes
+# `target/deploy/<name>-keypair.json`, and while that is under `target/` above, `.anchor/` can hold
+# a test-validator ledger and its own keys.
+**/.anchor/
+**/test-ledger/
+
+# Belt and braces. `*` already excludes all three, and they are named anyway so that a future edit
+# adding `!.` or broadening the allowlist cannot quietly admit them. The cost of these three lines
+# is nothing; the cost of being wrong about them is the arena authority in a Docker layer.
+.devnet/
+**/*keypair*.json
+.env
+.env.*

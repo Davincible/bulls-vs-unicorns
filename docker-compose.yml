@@ -1,0 +1,92 @@
+# Bulls vs Unicorns — containerised builds and a local keeper.
+#
+#   docker compose run --rm program-build           build the Solana program reproducibly
+#   docker compose run --rm program-build verify     ...and diff it against deployed bytecode
+#   docker compose run --rm web-build                build the browser bundle the way Vercel does
+#
+# There is deliberately NO `docker compose up` that runs everything. Two of these services are
+# one-shot builds, and the third is a keeper that MUST NOT be started casually — see its own block.
+
+services:
+  # ----------------------------------------------------------------------------------------------
+  # The Solana program. See docker/program-build.Dockerfile for why the toolchain is pinned and why
+  # this cannot be run from the repo root.
+  program-build:
+    build:
+      context: .
+      dockerfile: docker/program-build.Dockerfile
+    volumes:
+      # NAMED PATHS, NOT `.:/build`, AND THE REASON IS THE SAME ONE THE DOCKERIGNORE GIVES.
+      # `docker/program-build.Dockerfile.dockerignore` is an allowlist that keeps `.devnet/` — the
+      # arena authority and all forty-eight house wallet secret keys — out of the image layers. A
+      # bind mount of `.` would hand the running container the very directory that file exists to
+      # withhold, and the protection would read as complete while being half of one. The build needs
+      # four paths; it gets four paths.
+      - ./programs:/build/programs
+      - ./Cargo.toml:/build/Cargo.toml:ro
+      - ./Cargo.lock:/build/Cargo.lock:ro
+      # Where the artifact lands, and the only writable host path.
+      - ./target/docker:/build/target/docker
+      # Named volumes over the two directories that are pure cache. Without these every run
+      # re-downloads the registry and recompiles the dependency graph, which is the slow half.
+      # They are named rather than bind-mounted so they cannot collide with a host target/ built by
+      # a different toolchain — which is the exact confusion this whole image exists to end.
+      - cargo-registry:/root/.cargo/registry
+      - cargo-git:/root/.cargo/git
+      - sbf-target:/build/programs/bulls-arena/target
+    # No network needed for a build once the registry is warm; `verify` overrides this by needing
+    # devnet, so it is left at the default rather than set to `none`. Recorded so nobody adds
+    # `network_mode: none` and then wonders why verify hangs.
+
+  # ----------------------------------------------------------------------------------------------
+  # The browser bundle, built the way the deploy platform builds it. Useful for reproducing a Vercel
+  # build failure without pushing a commit — which is how four consecutive failed deploys were
+  # diagnosed the slow way.
+  web-build:
+    image: oven/bun:1.3.13-slim
+    working_dir: /app/er-demo
+    volumes:
+      - .:/app
+      - bun-cache:/root/.bun/install/cache
+    # `tsc -b && vite build` is er-demo's own `build` script; running it through bun here rather
+    # than naming the two commands keeps this from drifting from package.json.
+    command: sh -c "bun install --frozen-lockfile && bun run build"
+
+  # ----------------------------------------------------------------------------------------------
+  # THE KEEPER. Present so the image is buildable and testable locally, and DELIBERATELY NOT wired
+  # to start with the rest.
+  #
+  # READ THIS BEFORE RUNNING IT. The Fly keeper is live. A second keeper is the single worst failure
+  # this system has: both read `arena.round_counter`, both try to open `counter + 1`, and the loser's
+  # round is left BEHIND the counter — delegated, past its deadline, holding ~0.0235 SOL of rent that
+  # no instruction reclaims. `er-demo/fly.toml` opens with this as rule 1 and says there is no
+  # configuration in which a second machine is an improvement; a second CONTAINER is the same thing
+  # wearing different clothes.
+  #
+  # `profiles` is what enforces that: this service does not start under a bare `docker compose up`
+  # or `run`. It requires naming the profile explicitly, which is a sentence long enough to think in:
+  #
+  #   docker compose --profile danger run --rm keeper --dry-run
+  #
+  # --dry-run is the only mode that is safe beside the live keeper. To grow the house wallet pool
+  # without a second keeper, use er-demo/scripts/keeper/extendHouseBank.ts, which exists precisely
+  # because it cannot do anything except fund the bank.
+  keeper:
+    profiles: ["danger"]
+    build:
+      context: ./er-demo
+      dockerfile: Dockerfile
+    environment:
+      KEEPER_BASE_RPC: https://api.devnet.solana.com
+      KEEPER_ROUTER_URL: https://devnet-router.magicblock.app
+      KEEPER_HTTP_PORT: "8080"
+      # Secrets are NOT here and must not be. The image reads all three from the environment at
+      # boot; pass them with `--env-file` or `-e` at run time. er-demo/Dockerfile documents each.
+    ports:
+      - "8080:8080"
+
+volumes:
+  cargo-registry:
+  cargo-git:
+  sbf-target:
+  bun-cache:

@@ -14,6 +14,12 @@
 
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 
+// The one shared classifier, aliased because this module re-exports the same NAME at a different
+// arity — `failedWith(e, name, code)` here takes the thrown value, `failedWithText(text, name, code)`
+// takes text that something has already flattened. See `failedWith` below for why this directory
+// reaches into `src/v2/data/` for it instead of keeping a local copy.
+import { errorText, failedWith as failedWithText } from "../../src/v2/data/programError.ts";
+
 export const c = {
   r: "\x1b[31m", g: "\x1b[32m", y: "\x1b[33m", c: "\x1b[36m",
   d: "\x1b[2m", b: "\x1b[1m", x: "\x1b[0m",
@@ -90,30 +96,102 @@ export function fmtDuration(seconds: number | null): string {
   return seconds === null ? "unknown" : `${seconds.toFixed(1)}s`;
 }
 
-/** The program's own log lines from a failed transaction, as one string.
+/** True when a failed transaction was rejected by a SPECIFIC Anchor error — on EITHER layer.
  *
- *  EVERY error-identity check in this keeper goes through here rather than through
- *  `instanceof anchor.AnchorError`, and that is a correction that has already cost this repo a
- *  stranded round. `sendTx` sends via `Connection.sendRawTransaction`, so Anchor's `translateError` —
- *  which only runs inside `AnchorProvider`'s own send/simulate path — never sees the failure. The
- *  error is ALWAYS a `SendTransactionError`, so `e instanceof AnchorError` is always false, and a
- *  retry guarded by it silently becomes a single attempt. See `verify-session-real.mjs` step 12,
- *  where exactly that reduced a three-attempt `resolve` retry to one and stranded a delegated round
- *  in Fight phase. The `Error Code: <name>` line Anchor logs at the point of failure is the only
- *  place the error's NAME survives. */
-export function logsOf(e: unknown): string {
-  const withLogs = e as { logs?: unknown; transactionLogs?: unknown };
-  const logs = withLogs?.logs ?? withLogs?.transactionLogs ?? [];
-  return Array.isArray(logs) ? logs.join("\n") : String(logs);
-}
-
-/** True when a failed transaction was rejected by a SPECIFIC Anchor error, proven from the logs.
+ *  TWO OUTAGES ARE WRITTEN INTO THIS ONE FUNCTION. Both stranded a delegated round in `Fight`, both
+ *  did it by silently reducing the same three-attempt `resolve` retry to a single attempt, and the
+ *  second was introduced BY THE FIX FOR THE FIRST. That is why the argument below is this long: the
+ *  log-only form was a live production defect, not a stylistic preference, and the shape of the
+ *  mistake — "classify the failure by something only one of the two layers actually sends" — is one
+ *  this repo has now made twice.
  *
- *  Matched by NAME, never by number: `#[error_code]` numbers from 6000 with no cross-crate
- *  coordination, so session-keys' `SessionError::InvalidToken` and bulls-arena's own
- *  `ArenaError::RoundOutOfOrder` are both 6001 and both arrive on the wire as `0x1771`. */
-export function failedWith(e: unknown, errorCodeName: string): boolean {
-  return new RegExp(`Error Code: ${errorCodeName}\\b`).test(logsOf(e));
+ *  THE FIRST WAS `e instanceof anchor.AnchorError`. `sendTx` sends through
+ *  `Connection.sendRawTransaction`, so Anchor's `translateError` — which runs only inside
+ *  `AnchorProvider`'s own send/simulate path — never sees the failure, and the throw is ALWAYS a
+ *  `SendTransactionError`. The `instanceof` was therefore always false. See `verify-session-real.mjs`
+ *  step 12, where exactly that stranded a round.
+ *
+ *  THE SECOND WAS ITS REPLACEMENT: `new RegExp("Error Code: " + name).test(logsOf(e))`, matching the
+ *  `Error Code: <name>.` line Anchor writes at the point of failure. That line lives in PROGRAM LOGS,
+ *  and program logs exist only on the base layer. `resolveRound` — this predicate's one and only call
+ *  site — sends through the Magic Router against a round that is delegated by construction, i.e. into
+ *  the Ephemeral Rollup, and THE ROLLUP RETURNS NO LOGS. Captured verbatim on devnet (commit bb3ef3c;
+ *  the fixture is `routerError` in `src/v2/data/chainErrorShapes.ts`):
+ *
+ *      transactionMessage: "solana rpc request error: RPC response error -32003: transaction
+ *                           verification error: Error processing Instruction 0:
+ *                           custom program error: 0x1775; "
+ *      transactionLogs:    undefined
+ *
+ *  THE `0x1775` THERE IS NOT THIS ERROR — it is 6005, `BadSide`, from the doomed `enter` that produced
+ *  the capture; `FightNotOverYet` is 6013 and would arrive as `0x177d`. The capture is quoted for its
+ *  SHAPE, not its number, and is left exactly as it was found rather than edited to suit the paragraph
+ *  it illustrates — `chainErrorShapes.ts` takes the same position and `programError.ts`'s header
+ *  records the same loose end. What is reused is the wrapper text, the absent logs, and the
+ *  `custom program error: 0x…` form; every caller supplies its own number.
+ *
+ *  `undefined` and not `[]`, which is not pedantry: the router's JSON-RPC error carries no
+ *  `data.logs` at all, so web3.js's `SendTransactionError` constructor never receives an array to
+ *  hold. A matcher keyed on logs has nothing to read. So on the only path a live round takes, this
+ *  answered `false` for every genuine `FightNotOverYet`, `resolveRound`'s `throw e` fired on attempt
+ *  one, and `RESOLVE_RETRY_ATTEMPTS` was decorative. The cost is not abstract: a round that misses its
+ *  resolve window stays in `Fight`, and `close_round_account` can only reclaim a round's ~0.0235 SOL
+ *  of rent from a TERMINAL phase, so the rent is stranded with it.
+ *
+ *  HENCE THE THIRD PARAMETER, AND HENCE IT IS REQUIRED RATHER THAN OPTIONAL. On the rollup the hex
+ *  code is the only signal in the error, so a name-keyed predicate cannot work there and no amount of
+ *  regex care will change that. Making `code` optional would let some future call site omit it and
+ *  quietly inherit exactly the base-layer-only behaviour described above — for the third time. A
+ *  required parameter makes the question "what is this error's number on the deployed program?"
+ *  unavoidable at every call site.
+ *
+ *  THE NUMBER IS NOT WRITTEN DOWN, HERE OR ANYWHERE. `#[error_code]` numbers start at 6000 and shift
+ *  whenever a variant is inserted above, so a literal `6013` starts meaning a different error the next
+ *  time the Rust enum grows one — and it would do so silently, because the wrong number still matches
+ *  something. Callers resolve it with `errorCodeOf` against the IDL LOADED AT RUNTIME; see
+ *  `fightNotOverYetCode` in keeper.ts.
+ *
+ *  IT DELEGATES TO `src/v2/data/programError.ts` RATHER THAN REIMPLEMENTING THE RULES, and that is a
+ *  deliberate exception to this directory's habit of not reaching into `src/`. The usual objection —
+ *  the keeper must not acquire browser dependencies — does not apply: `programError.ts` imports
+ *  NOTHING, has no React in it and is pure by explicit design, for the same reason this keeper's
+ *  modules are (a decision that matters must be callable from a plain Node test). `statusFile.ts` and
+ *  `statusServer.ts` already share `src/v2/data/keeperStatus.ts` on exactly this basis. The
+ *  alternative — a keeper-local copy — would make this the THIRD transcription of the name-wins rule
+ *  and the fourth of the captured wire shapes, which is the drift `chainErrorShapes.ts`'s own header
+ *  argues against at length, and it would have to be re-fixed by hand every time the browser side
+ *  learns something new about how a layer words a refusal.
+ *
+ *  A NAME THAT IS PRESENT DECIDES — enforced inside `programError.ts`'s `failedWith`, and worth
+ *  knowing about from here because it is what keeps the number from doing harm. On the base layer the
+ *  name, the number and the hex all arrive in ONE text, so an unconditional "name OR number OR hex"
+ *  would let a colliding NUMBER speak for an error the NAME has already identified as something else.
+ *  If the text names an error at all, the answer is whether it names THIS one; the number is consulted
+ *  only where there is no name, which is the rollup.
+ *
+ *  THE 6001 COLLISION IS STILL REAL, AND THIS FUNCTION DOES NOT SOLVE IT. Error numbers are assigned
+ *  per-crate with no coordination, so session-keys' `SessionError::InvalidToken` and bulls-arena's
+ *  `ArenaError::RoundOutOfOrder` are both 6001 and both arrive as `0x1771`. On the base layer the
+ *  name-wins rule separates them. ON THE ROLLUP NOTHING CAN: the wire carries one hex code and no
+ *  other information, so `failedWith(e, "RoundOutOfOrder", 6001)` would match a `SessionError` there
+ *  and no implementation reading that error can do better.
+ *
+ *  WHAT STOPS THAT BEING A PROBLEM IN THIS PROCESS IS STRUCTURAL, NOT TEXTUAL, and it is checkable
+ *  rather than hoped for. Every transaction the keeper sends is signed by a RAW `Keypair` and never by
+ *  a session wallet — `ctx.operator` for the arena and round instructions, and a house wallet's own
+ *  keypair for the house entries (`houseBank.ts`, `client.send(builder, entry.wallet.keypair, …)`).
+ *  `enter` is the only instruction that accepts a session token at all, and `houseBank.ts` passes it
+ *  `sessionToken: null` explicitly, calling a session key there "pure ceremony". A `SessionError`
+ *  cannot be raised by a transaction that carries no session token, so 6001 is unambiguous HERE even
+ *  on the rollup.
+ *
+ *  THAT ARGUMENT IS ABOUT THE KEEPER'S TRANSACTIONS, NOT ABOUT THIS FUNCTION, which is why it is
+ *  written here rather than enforced in code — nothing in a text matcher can check who signed. So
+ *  anyone adding a call site for a colliding code must re-establish it rather than inherit it, and
+ *  anyone handing the keeper a session wallet invalidates it outright. `FightNotOverYet` (6013) is
+ *  unique across both crates and depends on none of this. */
+export function failedWith(e: unknown, errorCodeName: string, code: number | undefined): boolean {
+  return failedWithText(errorText(e), errorCodeName, code);
 }
 
 /** One line describing a failure, with the tail of the program logs when there are any. The logs are

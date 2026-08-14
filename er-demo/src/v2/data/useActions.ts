@@ -161,9 +161,10 @@ export const CATCH_UP_CALLS = Math.ceil(finalCursor(MAX_FIGHTERS) / MAX_STEPS_PE
  * went on passing. That is the defect, and the tests were half of it.
  *
  * THE FIX IS NOT TO MATCH THE NUMBER; IT IS TO STOP WRITING THE NUMBER DOWN. `code` comes from
- * `fightBehindCode()` below, which reads it out of the IDL FETCHED AT RUNTIME — a contract with the
- * deployed program rather than a memory of one. A variant inserted above `FightBehind` moves the
- * number in lib.rs, in the IDL and here together. `undefined` (no IDL, no `errors` array) degrades to
+ * `fightBehindCode()` below, which reads it out of the IDL FETCHED AT RUNTIME. A variant inserted
+ * above `FightBehind` moves the number in lib.rs, in the IDL and here together — see
+ * `programError.ts`'s header for the one republish step that is still a human's to remember, and for
+ * why it is one rather than none. `undefined` (no IDL, no `errors` array) degrades to
  * the name alone, which is exactly the behaviour this function used to have and refuses nothing that
  * used to work.
  *
@@ -645,7 +646,17 @@ export function useActions(params: ActionsParams): WriteActions {
             // shown the IDL fetch instead of the chain's refusal. `fightBehindCode()` ends in
             // `.catch(() => undefined)`, so it has no rejected state to hand back. That `.catch` is
             // load-bearing for this line, not just for the degradation it documents.
-            if (caught >= CATCH_UP_CALLS || !isFightBehind(e, await fightBehindCode())) throw e;
+            const behind = isFightBehind(e, await fightBehindCode());
+            if (caught >= CATCH_UP_CALLS || !behind) {
+              // THE ONE OUTCOME THAT LEAVES NO TRACE, and it is the expensive one. Exhausting the
+              // bound means this press just paid for six ticks and still could not reach the present
+              // — so something other than a backlog is wrong — and the player is about to be handed
+              // the chain's raw refusal with nothing anywhere saying what preceded it. `sendEnter`
+              // sets the precedent for saying so on its own fail-open path. Deliberately NOT a toast:
+              // the thrown error is already becoming one, and two would be noise.
+              if (behind) console.warn(`[extract] gave up after ${caught} catch-up ticks — still behind`);
+              throw e;
+            }
             // Its own `sendTx`, i.e. its own transaction — see the note above before merging these.
             const tick = buildTick(p, { round: roundPda, steps: MAX_STEPS_PER_CALL });
             await sendTx(router, tick, signer, "tick (catching the fight up for extract)");

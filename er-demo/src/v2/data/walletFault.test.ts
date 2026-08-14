@@ -377,23 +377,46 @@ describe("connectFailedFault", () => {
 // ---------------------------------------------------------------------------------------------
 
 describe("the assumption that lets this module read 0x1771 as a session", () => {
-  /** Every named import this bundle takes from `chain/round.ts`, with aliases resolved back to the
-   *  exported name. Source-level rather than runtime because the question is what the BUNDLE can
-   *  send, and a module that is imported but never called is still a module somebody will call. */
-  function instructionsTheBrowserImports(): Set<string> {
+  /**
+   * Every instruction this bundle can name, by BOTH routes — and the second route is the one an
+   * earlier version of this test missed, which is worth recording because the miss was the whole
+   * point of the test.
+   *
+   *   1. named imports from `chain/round.ts`, aliases resolved back to the exported name.
+   *   2. `program.methods.<name>(` directly. `chain/program.ts` types EVERY instruction on the
+   *      `MethodsBuilder`, so any module holding a `BullsArenaProgram` can build an authority
+   *      transaction without importing a builder at all. Scanning only route 1 would have gone green
+   *      for the most likely way an admin panel actually lands.
+   *
+   * Source-level rather than runtime because the question is what the BUNDLE CAN SEND, and a module
+   * that is imported but not yet called is still a module somebody will call.
+   *
+   * THREE FILES ARE EXCLUDED AND EACH FOR A DIFFERENT REASON. `chain/round.ts` is where the builders
+   * are DEFINED, so it names all of them by construction. `chain/program.ts` is where they are
+   * DECLARED as types, and its doc comments quote `program.methods.sweepHouseTake` and
+   * `program.methods.closeRoundAccount` while calling neither. And `*.test.ts` is not in the bundle
+   * at all — a test that reached for `openRound` would red this for a reason that is not the risk.
+   */
+  function instructionsTheBrowserCanName(): Set<string> {
     const src = join(import.meta.dirname, "..", "..");
-    const imported = new Set<string>();
+    const excluded = [join("chain", "round.ts"), join("chain", "program.ts")];
+    const named = new Set<string>();
     for (const rel of readdirSync(src, { recursive: true, encoding: "utf8" })) {
-      if (!/\.tsx?$/.test(rel) || rel.endsWith(join("chain", "round.ts"))) continue;
+      if (!/\.tsx?$/.test(rel) || /\.test\.tsx?$/.test(rel)) continue;
+      if (excluded.some((tail) => rel.endsWith(tail))) continue;
       const text = readFileSync(join(src, rel), "utf8");
       for (const m of text.matchAll(/import\s*\{([^}]*)\}\s*from\s*"[^"]*(?:\.\/|\/)round\.ts"/g)) {
         for (const clause of m[1].split(",")) {
           const name = clause.trim().split(/\s+as\s+/)[0].trim();
-          if (name !== "" && name !== "type") imported.add(name);
+          if (name !== "" && name !== "type") named.add(name);
         }
       }
+      for (const m of text.matchAll(/\.methods\.(\w+)\s*\(/g)) named.add(m[1]);
+      // A namespace import hands over every builder at once and would defeat both scans above, so it
+      // is refused outright rather than parsed — nothing in this app needs one.
+      expect(/import\s+\*\s+as\s+\w+\s+from\s*"[^"]*(?:\.\/|\/)round\.ts"/.test(text), rel).toBe(false);
     }
-    return imported;
+    return named;
   }
 
   it("never builds an authority instruction, which is what makes 6001 unambiguous here", () => {
@@ -413,15 +436,33 @@ describe("the assumption that lets this module read 0x1771 as a session", () => 
     //
     // FAILS LOUDLY AND POINTS AT THE RIGHT PLACE. If this goes red, the fix is not to widen the list:
     // it is to give `classifyWalletError` a way to tell the two apart, or to stop reading the number.
+    //
+    // `openRound` IS THE ONE THAT MATTERS and the rest are here because a bundle that gained any of
+    // them is a bundle that has stopped being only a player's page — which is the premise, not the
+    // instruction. `resolve` is on the list despite being permissionless for the same reason.
     const authorityOnly = [
       "initArena", "openRound", "delegateRound", "closeLobbyAndDraw", "resolve",
       "abandonRound", "closeRound", "setFeeBps", "initTreasury", "sweepHouseTake", "closeRoundAccount",
     ];
-    const imported = instructionsTheBrowserImports();
+    const named = instructionsTheBrowserCanName();
     // Real first: a scan that matched nothing would satisfy every absence below while proving nothing.
-    expect(imported).toContain("enter");
-    expect(imported).toContain("extract");
-    expect(imported).toContain("tick");
-    for (const name of authorityOnly) expect([...imported], name).not.toContain(name);
+    expect(named).toContain("enter");
+    expect(named).toContain("extract");
+    expect(named).toContain("tick");
+    for (const name of authorityOnly) expect([...named], name).not.toContain(name);
+  });
+
+  it("keeps the captured error shapes out of the shipped bundle", () => {
+    // `chainErrorShapes.ts` lives in `src/v2/data/` so the tests that need it can import it by
+    // relative path, and its header says nothing in the app should. THAT SENTENCE IS NOT A MECHANISM.
+    // It is a fixture module: an app module importing it would ship transcribed devnet errors to
+    // players and, worse, would make the fixtures answerable to production instead of to the capture.
+    const src = join(import.meta.dirname, "..", "..");
+    for (const rel of readdirSync(src, { recursive: true, encoding: "utf8" })) {
+      if (!/\.tsx?$/.test(rel) || /\.test\.tsx?$/.test(rel)) continue;
+      if (rel.endsWith("chainErrorShapes.ts")) continue;
+      const text = readFileSync(join(src, rel), "utf8");
+      expect(/from\s*"[^"]*chainErrorShapes\.ts"/.test(text), rel).toBe(false);
+    }
   });
 });

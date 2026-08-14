@@ -130,6 +130,8 @@ import {
   canonicalCursor, lobbyIsDead,
 } from "../../src/chain/constants.ts";
 import { bnOr0, type RawRoundAccount } from "../../src/chain/program.ts";
+import { loadIdl } from "../../src/chain/idl.ts";
+import { errorCodeOf } from "../../src/v2/data/programError.ts";
 import * as roundIx from "../../src/chain/round.ts";
 // Whole dollars, because `houseStake` only ever produces whole dollars — the log line reads as a
 // roster of stakes a person might have chosen, which is the point of the band it draws from.
@@ -1076,6 +1078,45 @@ function fightIsOver(round: RawRoundAccount): boolean {
   return side0 === 0 || side1 === 0;
 }
 
+/** `FightNotOverYet`'s number as the DEPLOYED program defines it, or `undefined` when the IDL cannot
+ *  answer — the second half of the fix documented on `failedWith` in log.ts.
+ *
+ *  READ, NEVER WRITTEN DOWN. It is 6013 (`0x177d`) today, and a literal `6013` here would go stale the
+ *  moment a variant is inserted above it in `ArenaError` — silently, because the stale number still
+ *  matches SOMETHING. `loadIdl()` reads `public/idl/bulls_arena.json`, which `scripts/idlgen.py`
+ *  derives from lib.rs's `#[error_code]` enum in DECLARATION ORDER — "which IS their code", as its
+ *  own `error_names()` puts it — so the enum and this lookup are generated from one source.
+ *
+ *  THAT IS BETTER THAN A LITERAL, NOT A GUARANTEE, and the difference is worth stating because it is
+ *  easy to read the paragraph above as one. `idlgen.py`'s patch step APPENDS only names the IDL does
+ *  not already carry ("appended so no existing code moves"), and its `--verify` pass checks
+ *  discriminators and doc comments — NOT error codes. So a variant inserted mid-enum shifts the Rust
+ *  numbering while the existing IDL entries stay where they were, and nothing in the toolchain
+ *  objects. `src/v2/data/programError.ts`'s header records the same gap from the browser's side and
+ *  names the step that closes it (`idlgen.py --deploying`, a human's to remember). What this function
+ *  buys is that the number is sourced from the artefact the keeper actually loads rather than from a
+ *  reader's memory of lib.rs — which is the failure mode a literal guarantees and this one merely
+ *  permits.
+ *
+ *  NOT CACHED HERE, DELIBERATELY. `loadIdl()` holds its own module-level cache and `createChainClient`
+ *  has already populated it via `createProgram` before any round is driven, so this is a read of a
+ *  resolved value and costs a microtask. A cache in this directory would also be a second piece of
+ *  mutable module state in `scripts/keeper/`, and log.ts's header makes a specific claim that there is
+ *  exactly one (its cosmetic round tag). Borrowing a cache that already exists keeps that claim true.
+ *
+ *  IT CANNOT THROW, and that matters more than it looks: this is called from inside a `catch`, and an
+ *  IDL read that rejected there would replace the chain's refusal with a filesystem error — the
+ *  original failure lost, and a misleading one propagated into the main loop's error handler. On
+ *  `undefined`, `failedWith` degrades to matching the NAME alone, which is precisely the behaviour the
+ *  keeper had before this fix: correct on the base layer, blind on the rollup, and never wrong. */
+async function fightNotOverYetCode(): Promise<number | undefined> {
+  try {
+    return errorCodeOf((await loadIdl()).errors, "FightNotOverYet");
+  } catch {
+    return undefined;
+  }
+}
+
 async function resolveRound(
   ctx: KeeperContext,
   round: RawRoundAccount,
@@ -1112,11 +1153,18 @@ async function resolveRound(
       }
       return;
     } catch (e) {
-      // Matched from the LOGS, never via `instanceof anchor.AnchorError` — `sendTx` sends raw, so
-      // Anchor's `translateError` never runs and this is always a `SendTransactionError`. See
-      // `logsOf` in log.ts, and verify-session-real.mjs step 12 where the `instanceof` form silently
-      // reduced this same retry to a single attempt.
-      if (!failedWith(e, "FightNotOverYet")) throw e;
+      // BY NAME **OR** BY NUMBER, and the number is not optional here. This send goes through the
+      // Magic Router against a round that is delegated by construction, so the refusal comes back
+      // from the Ephemeral Rollup — which returns NO LOGS, and therefore no `Error Code:` line and no
+      // error name anywhere in the throw. The hex code is the only signal there is. Two previous
+      // forms of this guard were blind to it and both reduced this three-attempt retry to one:
+      // `instanceof anchor.AnchorError` (verify-session-real.mjs step 12) and the log-only regex that
+      // replaced it. The full account, with the captured wire shape, is on `failedWith` in log.ts;
+      // `fightNotOverYetCode` above is why the 6013 is read off the IDL instead of written here.
+      //
+      // The `await` is on the FAILURE path only — nothing resolves an error number until something
+      // has already failed — and `fightNotOverYetCode` cannot throw, so it cannot displace `e`.
+      if (!failedWith(e, "FightNotOverYet", await fightNotOverYetCode())) throw e;
       if (attempt < RESOLVE_RETRY_ATTEMPTS) {
         warn(`resolve refused as too early (attempt ${attempt}/${RESOLVE_RETRY_ATTEMPTS}) — waiting ${RESOLVE_RETRY_WAIT_SECONDS}s`);
         await sleep(RESOLVE_RETRY_WAIT_SECONDS * 1_000);
