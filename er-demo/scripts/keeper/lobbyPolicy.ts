@@ -9,14 +9,24 @@
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 //
 // The keeper used to open a lobby, wait out its deadline, fight whoever was in it, and open another —
-// forever, at nobody. That costs 0.00981 SOL of permanently-locked rent per cycle (see
-// `HOLD_OPEN_LOBBY_SECONDS`), which is ~0.32 SOL/hour to run an arena with no players in it, and
-// every one of those fights was the house against itself.
+// forever, at nobody. When this file was written that cost 0.00981 SOL of permanently-locked rent per
+// cycle (see `HOLD_OPEN_LOBBY_SECONDS`), which was ~0.32 SOL/hour to run an arena with no players in
+// it, and every one of those fights was the house against itself.
+//
+// ONE HALF OF THAT ARGUMENT HAS SINCE GONE AWAY. `close_round_account` shipped in v7, so a round's
+// deposit is FLOAT — parked for `ROUND_RETENTION` rounds and handed back — and at `MAX_FIGHTERS = 48`
+// it is 0.023497 SOL parked against ~0.00007 SOL actually spent. Fixed cadence idles at ~0.0012
+// SOL/hour of real spend, not ~0.32 SOL/hour of loss (COST-MODEL §0, §1). What did NOT go away is the
+// other half — every one of those fights is still the house against itself — and what replaced the
+// money argument is exposure: each round opened is another deposit riding on a close landing, and
+// COST-MODEL §4 is about nothing but the ways that close fails. This policy is now defended on the
+// room and on the risk, and the arithmetic below is unchanged by any of it.
 //
 // Now:
 //
 //     open ONE round, with a long backstop deadline
-//     ONE house fighter goes in, so the room is not empty (see `HOLD_OPEN_HOUSE_FIGHTERS`)
+//     ONE house fighter goes in, so the room is not empty (see `HOUSE_MAX_WITHOUT_REAL_PLAYER`, which
+//         is what that rule is called now that it governs every empty room rather than a held-open one)
 //     hold ───────────────────────────────  at ZERO marginal cost; nothing is spent while holding
 //     first REAL player enters  ->  house fills in around them  ->  grace  ->  early close  ->  fight
 //
@@ -62,6 +72,48 @@
 // house wallets on the Arena account, that is a product change to raise with them first, not a
 // refactor. (`keeperStatus.ts`'s `isHouseWallet` publishes the LIST, which is a different and much
 // weaker claim; see its doc comment.)
+//
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// HOUSE-ONLY ROUNDS DO NOT DISABLE HOLD-OPEN. THEY COLLAPSE THE BACKSTOP INTO A SCHEDULE.
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+//
+// `KEEPER_HOUSE_ONLY_ROUNDS` (config.ts) asks for an arena that keeps running with nobody real in it.
+// The obvious reading is that it makes hold-open meaningless and the two should be mutually exclusive.
+// That reading is wrong, and getting it right is the difference between a page that draws an honest
+// countdown and one that says `waiting-for-players` in front of a lobby that is going to fight in
+// forty seconds.
+//
+// HOLD-OPEN IS TWO HALVES, AND THEY HAVE DIFFERENT FATES HERE.
+//
+//   HALF ONE — "an empty lobby waits indefinitely for a person." This is the half that goes. It was
+//   bought at a specific price and the price has changed: holding was free while CYCLING permanently
+//   locked ~0.0098 SOL of rent per round, which is the arithmetic in `HOLD_OPEN_LOBBY_SECONDS`.
+//   `close_round_account` has since converted that rent from a cost into FLOAT — COST-MODEL §5 puts
+//   the present figure at 250x cheaper than the fixed cadence it replaced — so the justification for
+//   the indefinite half is largely spent even before this mode. And in this mode there is nothing left
+//   of it at all: an empty lobby is not waiting for anybody, it is going to be drawn at its deadline
+//   like every other lobby. `lobbyIsHeldOpen` is therefore FALSE, which is what turns the deadline back
+//   into a countdown a page can draw.
+//
+//   HALF TWO — the authority-signed early close. A real player arrives, the grace window runs, the
+//   keeper starts their fight. This half is FULLY RETAINED, and the mechanism is worth naming because
+//   it is not obvious from the code: `entriesCloseAt` is gated on `view.holdOpen` and the first real
+//   entry, NOT on `heldOpen`. So making `heldOpen` false costs a real arrival nothing — they still get
+//   an early close, still after the same grace, still ahead of the deadline.
+//
+// WHAT AN OPERATOR ACTUALLY GETS FROM `--hold-open --house-only-rounds` TOGETHER, which is worth
+// stating plainly because it is the DEPLOYED configuration and not a corner (`fly.toml` sets
+// `KEEPER_HOLD_OPEN=1`): continuous rounds, each drawn on its own deadline at the ordinary lobby
+// length, and a real arrival still getting an early close after the same grace. Half one gone, half
+// two intact — the two flags compose, and nothing here has to refuse anything.
+//
+// THE PIECE THAT MAKES THAT TRUE IS NOT IN THIS FILE, and it is the direct consequence of half one
+// going. Once nothing is being held for anybody, the deadline stops being a backstop and becomes the
+// SCHEDULE — and a backstop is sized to be unreachable, which is the opposite of what a schedule
+// needs. So the length has to come down with it, and `keeper.ts`'s `openNextRound` is where it does:
+// house-only stamps `DEFAULT_LOBBY_SECONDS` rather than `HOLD_OPEN_LOBBY_SECONDS`. What that line is
+// worth is a number, so it lives beside the constants — see `HOUSE_ONLY_ROUNDS_ENABLED` in config.ts
+// for what the deployed backstop would have turned this mode into without it.
 //
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 // THE ONE THING THIS FUNCTION IS TOLD RATHER THAN SHOWN
@@ -122,6 +174,16 @@ export interface LobbyView {
    *  this is false every branch below collapses to exactly the behaviour that shipped before any of
    *  this existed, and the keeper opens `DEFAULT_LOBBY_SECONDS` lobbies to match. */
   holdOpen: boolean;
+  /** Is the keeper running rounds with nobody real in them? `--house-only-rounds` /
+   *  `KEEPER_HOUSE_ONLY_ROUNDS`, default OFF — see `HOUSE_ONLY_ROUNDS_ENABLED`.
+   *
+   *  IT IS HERE ONLY TO ANSWER `heldOpen`, and that is the whole of its effect on this file. It does
+   *  not appear in `entriesCloseAt`, in `drawAt`, or in any step branch: an empty house-only lobby runs
+   *  to its deadline and is closed by the same permissionless branch that has always closed a lobby at
+   *  its deadline, and a real player who arrives into one gets the identical early close. See this
+   *  file's header for why "hold-open collapses into a schedule" is the accurate description and
+   *  "house-only turns hold-open off" is not. */
+  houseOnly: boolean;
 }
 
 export interface LobbyPlan {
@@ -153,15 +215,23 @@ export interface LobbyPlan {
  *  direction (a 30-minute round read by a keeper configured for an hour would be treated as an
  *  ordinary lobby and waited out in full). What actually decides whether a deadline is a backstop is
  *  whether this keeper is going to close the lobby before reaching it, which is the policy switch and
- *  the absence of anybody real to close it for. */
+ *  the absence of anybody real to close it for.
+ *
+ *  `houseOnly` IS THE THIRD THING THAT DECIDES IT, and it reads as the negation it is: under that mode
+ *  the keeper IS going to close this lobby at its deadline, so the deadline is a schedule and not a
+ *  backstop, and there is nobody it is being held for. Reporting `heldOpen` there would put
+ *  `waiting-for-players` on a page in front of a lobby that fights in forty seconds — a confidently
+ *  drawn wrong answer, which is the class of bug this predicate was extracted to prevent. */
 export function lobbyIsHeldOpen(view: {
   phaseCode: number;
   lobbyClosesAt: number;
   nowSec: number;
   realFighterCount: number;
   holdOpen: boolean;
+  houseOnly: boolean;
 }): boolean {
   return view.holdOpen
+    && !view.houseOnly
     && view.phaseCode === Phase.Lobby
     && view.realFighterCount === 0
     && lobbyIsOpen(view.lobbyClosesAt, view.nowSec);
@@ -179,7 +249,9 @@ export function lobbyIsHeldOpen(view: {
  *
  *   STILL OPEN, NOBODY REAL IN IT — hold. This is the cheap steady state and it can last the whole
  *   backstop. Nothing is sent and nothing is spent; one house fighter sits in the room so it is not
- *   an empty page, and the chain itself refuses to draw a one-fighter round.
+ *   an empty page, and the chain itself refuses to draw a one-fighter round. Under `houseOnly` this
+ *   row still says "wait" — but it is the ordinary wait of a lobby counting down to its deadline
+ *   rather than an indefinite hold, and `heldOpen` says so.
  *
  *   STILL OPEN, A REAL PLAYER IS IN — the fight is now on a schedule the keeper owns:
  *   `firstRealEntryObservedAt + REAL_PLAYER_GRACE_SECONDS`, capped at the chain's deadline because

@@ -80,14 +80,27 @@
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 //
 // FIXED CADENCE (the default): a fresh `DEFAULT_LOBBY_SECONDS` lobby every round, ended by its own
-// deadline. Every round permanently locks ~0.0085 SOL of rent that nothing reclaims, whether or not
-// anybody played — ~0.32 SOL/hour to cycle an arena with nobody in it, and every one of those fights
+// deadline. Every round FLOATS ~0.0235 SOL of rent whether or not anybody played and gets it back
+// once `ROUND_RETENTION` newer rounds exist — so what the cadence actually SPENDS is the ~0.00007 SOL
+// of fees a round signs, ~0.030 SOL/day at 424 rounds/day, against a standing float of
+// `ROUND_RETENTION` rounds' rent, ~0.470 SOL (COST-MODEL §0, §2, §3). And every one of those fights
 // is the house against itself.
 //
 // HOLD OPEN (`--hold-open`): ONE lobby with a long backstop, one house fighter in it so the room is
 // not empty, held at zero marginal cost until a real player arrives — then a short grace window and
 // an authority-signed early close, so the fight starts because a person showed up. One rent payment
 // instead of one per cycle.
+//
+// THE MONEY ARGUMENT FOR HOLD-OPEN WEAKENED WHEN `close_round_account` SHIPPED, and saying so is more
+// useful than restating a number. This header used to price fixed cadence at ~0.32 SOL/hour of rent
+// that nothing reclaimed, and against that, holding one lobby instead of cycling was a ~33x cut in
+// idle burn all by itself. It is not any more: rent is float, the cadence's real spend is fees, and
+// the gap between the two policies is three hundred times smaller than the line that used to be here.
+// WHAT HOLD-OPEN STILL BUYS IS EXPOSURE AND THE ROOM, NOT SOL/HOUR — every round opened is one more
+// round whose deposit depends on a close landing, and COST-MODEL §4 is about nothing but the ways
+// that close fails (a skipped round, a round wedged before a terminal phase, a round left delegated).
+// On the failure path fixed cadence is ~9.96 SOL/day and hold-open is one round's rent. That is the
+// honest form of the argument, and it is the one to reason with.
 //
 // The switch is the operator's (`config.ts`'s `HOLD_OPEN_ENABLED_DEFAULT` says why it is not
 // auto-detected) and it is OFF until the early close is deployed. What it does NOT do is add a mode
@@ -114,19 +127,27 @@ import {
   DELEGATION_WAIT_SECONDS, DRAW_TIMEOUT_SECONDS, ERROR_BACKOFF_BASE_SECONDS, ERROR_BACKOFF_MAX_SECONDS,
   HEARTBEAT_INTERVAL_SECONDS, HOLD_OPEN_LOBBY_SECONDS, HOUSE_BOARD_TARGET, HOUSE_DISPLACEMENT,
   HOUSE_ENTRY_RETRY_SECONDS, HOUSE_STAKE_MAX_USD, HOUSE_STAKE_MIN_USD, HOUSE_WALLET_COUNT,
-  LOOP_INTERVAL_SECONDS, REAL_PLAYER_GRACE_SECONDS, RESOLVE_RETRY_ATTEMPTS,
+  LOOP_INTERVAL_SECONDS, REAL_PLAYER_GRACE_SECONDS, REAL_SEATS_RESERVED, RESOLVE_RETRY_ATTEMPTS,
   RESOLVE_RETRY_WAIT_SECONDS, RESULT_HOLD_SECONDS, STALE_AFTER_SECONDS,
   STALL_AFTER_CONSECUTIVE_FAILURES, SWEEP_RETRY_SECONDS, UNDELEGATE_WAIT_SECONDS,
+  BURN_ARM_AFTER_ROUNDS, BURN_SAMPLE_ROUNDS, MAX_BURN_LAMPORTS_PER_ROUND, TREASURY_POLL_SECONDS,
   CLOSE_ATTEMPTS_PER_ROUND, CLOSE_RETRY_SECONDS, HTTP_PORT, LOW_BALANCE_RECHECK_SECONDS,
   MIN_BALANCE_LAMPORTS, ROUND_RETENTION, parseCliOptions, type KeeperCliOptions,
 } from "./config.ts";
-import { describeEndpoints } from "./endpoints.ts";
+import { BASE_RPC_ENDPOINT, ROUTER_ENDPOINT, describeEndpoints } from "./endpoints.ts";
+import { assertDevnetUrl } from "../../src/devnet-guard.ts";
 import { asSecretKeyBytes, parseSecretJson, readSecretText } from "./secrets.ts";
 import {
-  BIND_HOSTNAME, HEALTH_PATH, HOUSE_PATH, HOUSE_TOKEN_ENV, STATUS_PATH, originPolicyWarnings,
-  resolveAllowedOrigins, resolveHouseTokenPolicy, startStatusServer,
+  BIND_HOSTNAME, HEALTH_PATH, HOUSE_PATH, HOUSE_TOKEN_ENV, RECLAMATION_PATH, STATUS_PATH,
+  originPolicyWarnings, resolveAllowedOrigins, resolveHouseTokenPolicy, startStatusServer,
 } from "./statusServer.ts";
-import { HOUSE_MAX_WITHOUT_REAL_PLAYER } from "./houseSizing.ts";
+import {
+  HOUSE_MAX_WITHOUT_REAL_PLAYER, houseFighterCount, type EmptyRoomPolicy,
+} from "./houseSizing.ts";
+import {
+  ROUND_RENT_LAMPORTS, burnBrake, serializeReclamationReport, summariseReclamation,
+  type ReclamationState,
+} from "./reclamation.ts";
 import { lobbyIsHeldOpen, planLobby, type LobbyPlan } from "./lobbyPolicy.ts";
 import { decideClose, housekeepingIsWelcome, isPastRetention } from "./roundCloser.ts";
 import { readProgramFeatures, type ProgramFeatures } from "./programFeatures.ts";
@@ -251,6 +272,16 @@ interface KeeperContext {
   operator: Keypair;
   validator: ErValidator;
   options: KeeperCliOptions;
+  /** WHAT A ROOM WITH NOBODY REAL IN IT IS ALLOWED TO HOLD — `"unfightable"` (the treasury rule) or
+   *  `"house-only"`. Derived ONCE, at construction, from `options.houseOnlyRounds`.
+   *
+   *  CARRIED RATHER THAN RE-DERIVED AT EACH CALL SITE, and the reason is not that a ternary is long.
+   *  The policy NAME is what makes `plannedHouseEntries(…, { emptyRoom: ctx.emptyRoom })` readable:
+   *  `"house-only"` says which guarantee is in force, where a boolean would say only which flag
+   *  somebody set and leave the reader to remember what it implies. And one derivation is one place
+   *  the flag and the policy can disagree — none — where a ternary repeated at every call site is
+   *  exactly the shape that drifts the day a third policy or a second flag arrives. */
+  emptyRoom: EmptyRoomPolicy;
   /** What the IDL this process builds from can encode. Read once at boot — see `programFeatures.ts`
    *  for why a `true` here is not evidence of a deploy and a `false` is evidence of the opposite. */
   features: ProgramFeatures;
@@ -287,6 +318,17 @@ interface KeeperContext {
   /** How many accounts this run has closed — for the shutdown summary, so the saving is a number the
    *  operator sees rather than one they have to trust. */
   rentReclaimed: number;
+  /** THE ROUNDS THE RENT IS NOT COMING BACK FROM, one ledger per kind of loss.
+   *
+   *  `closeSkipped` is rounds the cursor gave up on after `CLOSE_ATTEMPTS_PER_ROUND` failures —
+   *  0.023497 SOL each, gone permanently, because nothing revisits them and that is deliberate. The
+   *  two `stranded` ledgers are rounds no instruction could ever have closed: one never reached a
+   *  terminal phase, one was still owned by the Delegation Program. They are kept apart rather than
+   *  summed for the reason `ReclamationReport` gives — a skipped round was closeable and was given up
+   *  on; a still-delegated one might yet come back if forced undelegation is ever deployed. */
+  closeSkipped: CloseLossLedger;
+  closeStrandedNeverTerminal: CloseLossLedger;
+  closeStrandedStillDelegated: CloseLossLedger;
 
   // ---- running out of money ----------------------------------------------------------------------
 
@@ -296,6 +338,94 @@ interface KeeperContext {
   /** When the balance was last actually read for the funding guard, so a blocked keeper re-checks on
    *  an interval rather than once a second. */
   lowBalanceCheckedAtSec: number;
+
+  // ---- is the rent coming back? see `reclamation.ts` for what each of these is evidence of --------
+
+  /** `Arena.round_counter` and `Treasury.rounds_swept` as of the last treasury poll, or null before
+   *  the first one. `roundsSwept` is null in turn for a program with no treasury account, which is a
+   *  different fact from a gap of zero and is reported as one. */
+  treasury: { roundCounter: number; roundsSwept: number | null; polledAtSec: number } | null;
+  /** Chain second the poll above last ran, so it runs on `TREASURY_POLL_SECONDS` rather than at 1 Hz
+   *  against a quantity that moves at most once a round. */
+  treasuryPolledAtSec: number;
+  /** Operator lamports at each open_round this run, newest last.
+   *
+   *  RETAINED AT `BURN_ARM_AFTER_ROUNDS` (45), NOT AT `BURN_SAMPLE_ROUNDS` (20), AND THE TWO MUST NOT
+   *  BE TIDIED INTO ONE NUMBER. `burnBrake` arms on `samples.length >= armAfter` and then takes its
+   *  mean over the last `windowSamples`. A ring capped at the WINDOW can never reach the ARMING
+   *  threshold, so the brake would never arm — and nothing would say so, because the report would show
+   *  `armed: false` beside a sample count that had silently stopped growing at twenty. That is the one
+   *  failure in this mechanism invisible from its own telemetry, so the cap is the larger of the two
+   *  constants on purpose. `config.ts` explains why they are different; this is what depends on it. */
+  burnSamplesLamports: number[];
+  /** The operator balance read at the last `open_round` that actually LANDED, or null before the
+   *  first. The difference between two of these is one burn sample.
+   *
+   *  A DEDICATED FIELD RATHER THAN `timeline.operatorLamportsAtOpen`, which happens to hold the same
+   *  number today. The timeline is replaced wholesale by the main loop on any round-number change, so
+   *  a sampler reading it would depend on a reset it does not own: the day somebody changes when the
+   *  timeline is refreshed, the samples would go wrong silently and the brake would be averaging
+   *  something other than round-to-round net. This is written in one place and read in one place. */
+  lastOpenLamports: number | null;
+  /** Chain second at which the burn brake FIRST tripped in this process, or null while it has not.
+   *  Drives the log-once-per-stretch behaviour exactly as `lowBalanceSince` does. */
+  burnStopSince: number | null;
+  /** The most recent operator balance ANY part of this process has read. The reclamation report is
+   *  rendered once per pass and must not add a chain call to do it, so it reads this rather than the
+   *  wallet — written wherever a balance is already being fetched for a decision. */
+  operatorLamportsObserved: number | null;
+  /** Chain second of the first `open_round` this run, and how many have landed since — the two terms
+   *  of the MEASURED rounds/day the report is computed against. See `measuredRoundsPerDay`. */
+  firstOpenAtSec: number | null;
+  opensObserved: number;
+}
+
+/** HOW MANY LOST-ROUND NUMBERS ARE KEPT PER CATEGORY, oldest out of the front.
+ *
+ *  A BOUND IS NOT OPTIONAL HERE. This process is meant to run for weeks, the close cursor walks every
+ *  round the arena has ever opened at ~424 rounds/day, and a run against an arena whose reclamation
+ *  has genuinely failed would append one entry per round forever — an unbounded array inside a payload
+ *  that is re-rendered every pass and served to anybody who asks for it. Fifty is enough to see the
+ *  shape of the loss (which rounds, how close together, recent or historic) and small enough that the
+ *  report stays something a person can read in a terminal.
+ *
+ *  WHAT THE BOUND COSTS, SAID PLAINLY BECAUSE IT ONCE COST MORE THAN THIS. It costs round NUMBERS and
+ *  nothing else. Each `CloseLossLedger.total` counts every loss whether or not the sample kept the
+ *  entry, `reclamationStateOf` hands those totals over beside the lists, and `summariseReclamation`
+ *  prices `count`, `lamports` and `sol` off them — so a run that skipped two hundred rounds publishes
+ *  two hundred and the SOL for two hundred, above the fifty most recent numbers, with `listed` saying
+ *  which of the two the array is. The count must never be the sample's: this endpoint answers "how
+ *  much have I permanently lost", and a bounded answer to that would understate the loss exactly when
+ *  it was largest, silently, with every published number still agreeing with every other.
+ *
+ *  So the fifty are for GOING AND LOOKING, and nothing is accounted on them. Every individual loss is
+ *  logged uncapped at the instant it happens, and this file's shutdown banner prints the same totals
+ *  the report does. */
+const CLOSE_LOSS_SAMPLE = 50;
+
+/** ONE KIND OF PERMANENT LOSS: the bounded sample of round numbers, and the total the sample stops
+ *  being once it fills.
+ *
+ *  THEY ARE ONE FIELD BECAUSE THEY WERE TWO, ALONG THE SEAM THAT ALREADY FAILED ONCE. The totals used
+ *  to live in a separate record keyed by category, incremented at each call site beside the push. That
+ *  was correct, and it was correct by discipline: a category could be sampled and not counted, and the
+ *  published loss would have understated itself with nothing failing anywhere. The bug this file did
+ *  ship was one step further along the same seam — the report priced the loss off the LIST — so the
+ *  seam is worth closing rather than documenting again. Bundled, there is no call site that can do
+ *  half the job: `recordCloseLoss` takes the pair or it takes nothing, and a fourth kind of loss added
+ *  later cannot be added wrongly. */
+interface CloseLossLedger {
+  /** Round numbers, newest last, at most `CLOSE_LOSS_SAMPLE`. */
+  sample: number[];
+  /** Rounds recorded this run, including the ones the sample has since dropped. */
+  total: number;
+}
+
+/** Record one round whose rent is not coming back. */
+function recordCloseLoss(ledger: CloseLossLedger, roundNo: bigint): void {
+  ledger.sample.push(Number(roundNo));
+  if (ledger.sample.length > CLOSE_LOSS_SAMPLE) ledger.sample.shift();
+  ledger.total += 1;
 }
 
 /** How often a held-open lobby says so in the log. A minute — often enough that the process is
@@ -413,6 +543,7 @@ async function driveLobby(
     realFighterCount: split.realCount,
     firstRealEntryObservedAtSec: ctx.timeline.firstRealEntryObservedAtSec,
     holdOpen: ctx.options.holdOpen,
+    houseOnly: ctx.options.houseOnlyRounds,
   });
   ctx.publisher.setEntriesCloseAt(plan.entriesCloseAt);
 
@@ -488,26 +619,43 @@ async function fieldHouseFighters(
   if (state.nowSec < ctx.timeline.houseRetryAfterSec) return;
 
   const { entries, split, houseTarget } = plannedHouseEntries(
-    ctx.bank, round, state.roundCounter, state.nowSec, { drawAt: plan.drawAt },
+    ctx.bank, round, state.roundCounter, state.nowSec,
+    { drawAt: plan.drawAt, emptyRoom: ctx.emptyRoom },
   );
   if (entries.length === 0) return;
 
   // ONE LINE PER PASS, AND THERE ARE NOW MANY PASSES. The house arrives on a schedule spread across
   // the whole entry window, so this fires up to forty times in a round that fights instead of once or
-  // twice. It is not silenced for that: a round that actually fights is rare, and the trickle — who
-  // went in, on which side, at what stake, how long before the bell — is exactly the forensics wanted
-  // when a board turns out to have drawn short or lopsided. What it is is SHORT, because forty long
-  // lines is a log nobody reads and forty short ones is a picture of the room filling up.
-  const bell = plan.drawAt - state.nowSec;
-  const first = split.houseCount + 1;
-  const last = split.houseCount + entries.length;
-  // The `cover` fighter outranks the target — a one-sided lobby gets a bot on the empty side even when
-  // the board policy wants no house fighters at all — so the denominator is whichever is larger, or
-  // that entirely correct plan would log itself as "house fighter 1/0".
-  const board = Math.max(houseTarget, last);
-  info(entries.length === 1
-    ? `house fighter ${first}/${board} going in ${c.d}(side ${entries[0]!.side}, $${unitsToUsd(entries[0]!.stake)}) — ${bell}s to the bell${c.x}`
-    : `house fighters ${first}-${last}/${board} going in ${c.d}(${entries.length} at once, ${split.realCount} real in the room) — ${bell}s to the bell${c.x}`);
+  // twice. It is SHORT for that reason, because forty long lines is a log nobody reads and forty short
+  // ones is a picture of the room filling up.
+  //
+  // AND IT IS NOW GATED ON A REAL PLAYER BEING IN THE ROOM, which is the sentence directly above it
+  // ceasing to be true. This line used to defend forty repetitions on the grounds that a round which
+  // actually fights is rare. Under house-only EVERY round fights: at thirty-nine arrivals across ~430
+  // rounds a day that is roughly seventeen thousand lines a day, burying the reclamation signal this
+  // mode exists to read under the noise of the mode itself.
+  //
+  // NOTHING IS LOST THAT WAS NOT ALREADY RECOVERABLE. The forensics this line provides — who went in,
+  // on which side, at what stake, how long before the bell — are about a round somebody PLAYED, which
+  // is exactly the population `realCount > 0` selects. A house-only round's fill is fully determined
+  // by `roundNo` through `mix`, so it is re-derivable from the round number alone months later with no
+  // log at all; that is the property `houseStake` and `arrivalsDueBy` were made deterministic for, and
+  // this is the first thing to actually spend it.
+  //
+  // THE SHORT-BOARD WARN BELOW IS NOT GATED. That one is a fault rather than a narration, and a
+  // house-only round can come up short exactly as any other can.
+  if (split.realCount > 0) {
+    const bell = plan.drawAt - state.nowSec;
+    const first = split.houseCount + 1;
+    const last = split.houseCount + entries.length;
+    // The `cover` fighter outranks the target — a one-sided lobby gets a bot on the empty side even
+    // when the board policy wants no house fighters at all — so the denominator is whichever is
+    // larger, or that entirely correct plan would log itself as "house fighter 1/0".
+    const board = Math.max(houseTarget, last);
+    info(entries.length === 1
+      ? `house fighter ${first}/${board} going in ${c.d}(side ${entries[0]!.side}, $${unitsToUsd(entries[0]!.stake)}) — ${bell}s to the bell${c.x}`
+      : `house fighters ${first}-${last}/${board} going in ${c.d}(${entries.length} at once, ${split.realCount} real in the room) — ${bell}s to the bell${c.x}`);
+  }
   // SPREAD ACROSS PASSES, DELIBERATELY, WHICH IS THE OPPOSITE OF WHAT THIS USED TO SAY. Bringing the
   // house up to its board was one logical action stepped in at a fixed lead; it is now an arrival
   // schedule, and each pass sends only what has just come due. What has NOT changed is that whatever
@@ -701,9 +849,12 @@ function driveDrawing(
  *
  *  WHAT IS LEFT BEHIND, said plainly rather than left to be discovered: the round account stays
  *  DELEGATED to its ER validator forever, because the only instructions that undelegate it
- *  (`close_round`, `abandon_round`) are unreachable from `Drawing`. Its rent — ~0.0085 SOL, the
- *  dominant per-round cost — is never reclaimed, exactly as for every other round, but this one also
- *  never comes home. And if the callback arrives LATE it will move this round to `Fight`, where
+ *  (`close_round`, `abandon_round`) are unreachable from `Drawing`. Its rent — ~0.0235 SOL — is
+ *  PERMANENTLY LOST, and that is now the part that makes this round special rather than ordinary. On
+ *  every other round the rent is float: `close_round_account` hands it back once `ROUND_RETENTION`
+ *  newer rounds exist. This one can never reach a terminal phase, so it can never be swept, so it can
+ *  never be closed (COST-MODEL §4.2) — the deposit is gone and the account never comes home. And if
+ *  the callback arrives LATE it will move this round to `Fight`, where
  *  nobody is watching: no keeper is following it any more, so nothing will tick it and nothing will
  *  resolve it, and it will sit there past the bell indefinitely. `resolve` is permissionless, so a
  *  human can settle such a round by hand afterwards; the keeper does not, because chasing rounds it
@@ -1076,9 +1227,13 @@ async function driveAbandoned(
 /**
  * CLOSE ONE FINISHED ROUND ACCOUNT PER PASS, OLDEST FIRST, AND HAND ITS RENT BACK.
  *
- * A `Round` is 1,102 bytes holding 0.008561 SOL of rent-exempt deposit — 95.4% of the 0.008971 a
- * whole round costs — and before v7 nothing ever reclaimed a lamport of it. This is the instruction
- * that does, and running it takes the marginal cost of a round to ~0.00041.
+ * A `Round` is 3,248 bytes holding 0.023497 SOL of rent-exempt deposit, measured against v8 at
+ * `MAX_FIGHTERS = 48` (COST-MODEL §1; `Round::SIZE` in lib.rs carries the byte arithmetic, and the
+ * same figure was 0.008561 at sixteen fighters). Beside the ~0.00007 SOL of fees a round actually
+ * spends, that deposit is very nearly the whole of what an unreclaimed round costs, and before v7
+ * nothing ever reclaimed a lamport of it. This is the instruction that does — the difference between
+ * ~0.030 SOL/day and ~9.96 SOL/day at 424 rounds/day, a factor of 330, which is why the burn brake
+ * and `/reclamation.json` exist at all (COST-MODEL §0, §4).
  *
  * EVERY CONDITION IS ENFORCED ON CHAIN, by `check_close_permitted`: terminal phase, `house_swept`,
  * `round_no + MIN_RETAINED_ROUNDS <= round_counter`, and `has_one = authority`. The checks below are
@@ -1153,10 +1308,20 @@ async function closeOneFinishedRound(ctx: KeeperContext, state: KeeperChainState
   });
 
   if (decision.kind === "advance") {
+    // COUNTED, NOT ONLY LOGGED, and the two `advance` reasons are counted SEPARATELY from each other
+    // and from the give-up path below. Each is a different kind of loss and `/reclamation.json`
+    // reports them apart for the reason `ReclamationReport` argues. `"already-closed"` records
+    // nothing, because nothing was lost: that is the common case of a drained backlog.
     if (decision.because === "never-terminal") {
-      warn(`round #${roundNo} is ${PHASE_NAME[round!.phase]} and past the retention window — it can never be closed, so its ~0.0086 SOL of rent is unrecoverable. Skipping it.`);
+      // PRICED THROUGH `ROUND_RENT_LAMPORTS`, not the 0.0086 this line used to carry: that figure was
+      // measured at sixteen fighters and rent moves with the seat cap. This round is now also counted
+      // into `/reclamation.json`, which prices it at 0.023497 — two numbers for one loss is how a
+      // reader ends up believing the smaller one.
+      warn(`round #${roundNo} is ${PHASE_NAME[round!.phase]} and past the retention window — it can never be closed, so its ~${fmtSol(ROUND_RENT_LAMPORTS)} of rent is unrecoverable. Skipping it.`);
+      recordCloseLoss(ctx.closeStrandedNeverTerminal, roundNo);
     } else if (decision.because === "still-delegated") {
       warn(`round #${roundNo} is terminal but still DELEGATED past the retention window — close_round_account cannot run while the Delegation Program owns it. Skipping it; its rent stays stranded.`);
+      recordCloseLoss(ctx.closeStrandedStillDelegated, roundNo);
     }
     ctx.closeCursor += 1n;
     ctx.closeAttempts = 0;
@@ -1197,10 +1362,90 @@ async function closeOneFinishedRound(ctx: KeeperContext, state: KeeperChainState
     error(`close_round_account #${roundNo} failed (attempt ${ctx.closeAttempts}/${CLOSE_ATTEMPTS_PER_ROUND}, the rent stays put and the round stays closeable): ${describeError(e)}`);
     if (ctx.closeAttempts >= CLOSE_ATTEMPTS_PER_ROUND) {
       warn(`giving up on round #${roundNo} for this run and moving to the next — one round the keeper cannot close must not hold the rest of the backlog hostage. Close it by hand if its rent matters.`);
+      // The most expensive of the three, and the only one that was AVOIDABLE: this round was
+      // closeable and the keeper stopped trying. Recorded so the report can put a SOL figure on the
+      // deliberate part of the loss.
+      recordCloseLoss(ctx.closeSkipped, roundNo);
       ctx.closeCursor += 1n;
       ctx.closeAttempts = 0;
     }
   }
+}
+
+/** THE OTHER WITNESS — `Treasury.rounds_swept` against `Arena.round_counter`, which COST-MODEL §4
+ *  names in as many words as the thing to watch for the first day of continuous running.
+ *
+ *  IT IS NOT THE SAME QUESTION THE BRAKE ASKS, which is why both exist. A sweep is a PRECONDITION of a
+ *  close, not a close: a keeper that sweeps perfectly and then fails every `close_round_account` has a
+ *  sweep gap of zero and is burning 9.96 SOL/day. This one is a direct observation of the chain's own
+ *  bookkeeping and is right immediately; the brake is a lagging measurement that cannot say anything
+ *  at all for its first forty-five rounds. `reclamation.ts`'s header argues the pairing.
+ *
+ *  ON ITS OWN INTERVAL, NOT ON THE LOOP'S. The quantity moves at most once per round, so polling it
+ *  every pass would be ~200 reads to observe one event, on the endpoint whose rate limit already
+ *  shapes this process — see `TREASURY_POLL_SECONDS`. The throttle is stamped BEFORE the read, so a
+ *  failing poll backs off with everything else rather than retrying at 1 Hz.
+ *
+ *  AND IT CAN NEVER TAKE THE KEEPER DOWN. The failure is swallowed and warned: this is telemetry, and
+ *  a keeper that stopped running rounds because a report could not be refreshed would be trading the
+ *  product for its own instrumentation — the same judgement `sweepHouseTake` and
+ *  `closeOneFinishedRound` make either side of it. */
+async function pollTreasury(ctx: KeeperContext, state: KeeperChainState): Promise<void> {
+  // The CAPABILITY, not the account. An IDL with no `sweep_house_take` has no treasury to read and
+  // nothing that would ever write one, so this is a question that cannot have an answer there.
+  if (!ctx.features.houseTakeSweep) return;
+  if (state.nowSec < ctx.treasuryPolledAtSec + TREASURY_POLL_SECONDS) return;
+  ctx.treasuryPolledAtSec = state.nowSec;
+  try {
+    const treasury = await ctx.client.fetchTreasury();
+    ctx.treasury = {
+      roundCounter: Number(state.roundCounter),
+      // Null rather than 0 for a treasury that does not exist yet — `init_treasury` runs on the first
+      // sweep, so an arena can legitimately be several rounds old before there is anything to read,
+      // and a zero here would publish a sweep gap equal to the whole of its history.
+      roundsSwept: treasury === null ? null : Number(treasury.roundsSwept.toString()),
+      polledAtSec: state.nowSec,
+    };
+  } catch (e) {
+    // Throttled by the poll interval itself rather than by a second timer: the line can only be
+    // reached once every `TREASURY_POLL_SECONDS`. The last reading stands, and `pollAgeSec` in the
+    // report is what tells a reader it has stopped being refreshed.
+    warn(`the treasury poll failed — ${RECLAMATION_PATH} keeps its last reading and its pollAge says how old it is: ${describeError(e)}`);
+  }
+}
+
+/** Everything `reclamation.ts` is allowed to know, gathered from where the keeper already holds it.
+ *  Nothing is computed here and nothing is read from the chain: every field is an observation some
+ *  other part of this process already made. */
+function reclamationStateOf(ctx: KeeperContext, observedAtSec: number): ReclamationState {
+  return {
+    observedAtSec,
+    arena: ctx.treasury,
+    closer: {
+      cursor: Number(ctx.closeCursor),
+      reclaimed: ctx.rentReclaimed,
+      skipped: ctx.closeSkipped.sample,
+      strandedNeverTerminal: ctx.closeStrandedNeverTerminal.sample,
+      strandedStillDelegated: ctx.closeStrandedStillDelegated.sample,
+      // THE COUNTS THE REPORT IS PRICED OFF, handed over beside the samples they are the totals of.
+      // The samples are capped at `CLOSE_LOSS_SAMPLE` and these are not, which is the whole reason
+      // `summariseReclamation` reads these and not the lengths.
+      skippedTotal: ctx.closeSkipped.total,
+      strandedNeverTerminalTotal: ctx.closeStrandedNeverTerminal.total,
+      strandedStillDelegatedTotal: ctx.closeStrandedStillDelegated.total,
+    },
+    burnSamplesLamports: ctx.burnSamplesLamports,
+    operatorLamports: ctx.operatorLamportsObserved,
+  };
+}
+
+/** The report as the bytes `GET /reclamation.json` serves. One place builds it, so the boot seed and
+ *  every later render are the same code — see `StatusServerDeps.reclamation` for why the handler is
+ *  handed a string rather than allowed to build one. */
+function renderReclamation(state: ReclamationState, roundsPerDay: number): string {
+  return serializeReclamationReport(summariseReclamation(
+    state, MAX_BURN_LAMPORTS_PER_ROUND, BURN_ARM_AFTER_ROUNDS, BURN_SAMPLE_ROUNDS, roundsPerDay,
+  ));
 }
 
 /** THE FUNDING FLOOR, CHECKED AT THE ONE POINT WHERE REFUSING IS FREE.
@@ -1208,9 +1453,11 @@ async function closeOneFinishedRound(ctx: KeeperContext, state: KeeperChainState
  *  Returns true when the keeper may open a round. Publishes the condition either way.
  *
  *  WHY ONLY HERE, AND NOWHERE ELSE IN THE PHASE MACHINE. Every other point in a round is PAST the
- *  expensive commitment: `open_round` has already paid ~0.0086 SOL of rent and `delegate_round` has
+ *  expensive commitment: `open_round` has already paid ~0.0235 SOL of rent and `delegate_round` has
  *  handed the account to the ER. A keeper that downed tools mid-round on a low balance would strand
- *  that deposit for nothing and leave a real player's fight unfinished — it would convert a funding
+ *  that deposit for nothing and leave a real player's fight unfinished — and stranded is the operative
+ *  word: rent on a round that REACHES a terminal phase is float, but a round abandoned mid-flight
+ *  reaches none, so it can never be swept and can never be closed. It would convert a funding
  *  problem into a permanent loss and a broken promise, which is strictly worse than spending the last
  *  of the money on finishing what was started. So an in-flight round is always driven to a terminal
  *  state. What the keeper refuses is to START work it may not be able to finish.
@@ -1236,12 +1483,22 @@ async function affordsAnotherRound(ctx: KeeperContext, roundNo: bigint): Promise
   // include anything that moved in between.
   const lamports = await ctx.client.balance(ctx.operator.publicKey);
   ctx.lowBalanceCheckedAtSec = nowSec;
+  // THE RECLAMATION REPORT'S BALANCE, TAKEN FROM A READ SOMEBODY ELSE WAS ALREADY PAYING FOR. That
+  // report renders once per pass, and a `getBalance` per second on the endpoint whose rate limit
+  // already shapes this process would be an RPC bought purely to print a number.
+  ctx.operatorLamportsObserved = lamports;
 
   if (lamports >= MIN_BALANCE_LAMPORTS) {
     if (ctx.lowBalanceSince !== null) {
       ok(`payer is funded again — ${fmtSol(lamports)} is back above the ${fmtSol(MIN_BALANCE_LAMPORTS)} floor; opening rounds again`);
       ctx.lowBalanceSince = null;
       ctx.publisher.setLowBalance(null);
+      // STATED HERE RATHER THAN INFERRED FROM `setLowBalance(null)`, and the two calls stay separate on
+      // purpose — see `setNotOpeningRounds`. There are two causes now, this call site is the one that
+      // knows which of them applies, and a setter that derived one from the other would make
+      // `"low-balance"` the published reason for a keeper stopped by the burn brake with a perfectly
+      // healthy balance.
+      ctx.publisher.setNotOpeningRounds(null);
     }
     return lamports;
   }
@@ -1256,6 +1513,8 @@ async function affordsAnotherRound(ctx: KeeperContext, roundNo: bigint): Promise
     floorLamports: BigInt(MIN_BALANCE_LAMPORTS),
     nowSec,
   });
+  // The AMOUNTS above, and what they MEAN here. Both, from the one call site that knows the cause.
+  ctx.publisher.setNotOpeningRounds("low-balance");
 
   if (ctx.lowBalanceSince === null) {
     ctx.lowBalanceSince = nowSec;
@@ -1268,24 +1527,164 @@ async function affordsAnotherRound(ctx: KeeperContext, roundNo: bigint): Promise
   return null;
 }
 
+/** THE RENT BRAKE, CHECKED AT THE SAME POINT AND FOR THE SAME REASON AS THE FUNDING FLOOR ABOVE.
+ *
+ *  Returns true when the keeper may open a round. Publishes the condition either way.
+ *
+ *  WHAT IT MEASURES lives in `reclamation.ts` and is not re-argued here: `burnBrake` owns why
+ *  consecutive open-to-open balance samples are the one measurement that cannot be fooled by a failure
+ *  nobody predicted, why the brake must not arm before `BURN_ARM_AFTER_ROUNDS` samples exist, and why
+ *  a top-up can only ever fool it into staying OPEN. This function is the wiring: it asks, it
+ *  publishes, and it says the one thing out loud that an operator has to act on.
+ *
+ *  ────────────────────────────────────────────────────────────────────────────────────────────────
+ *  THE STOP IS A LATCH WITHIN A PROCESS, AND THAT IS THE DESIGN RATHER THAN A LIMITATION
+ *  ────────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ *  A sample is taken at `open_round` and nowhere else. So once this stops opening rounds, no further
+ *  sample can arrive, the mean is frozen at the value that tripped it, and it stays stopped for the
+ *  life of the process. That is not an oversight to be fixed with a decay or a retry timer: the ONLY
+ *  way to gather evidence that the burn has improved is to resume opening rounds at the rate that was
+ *  emptying the wallet, which is precisely the thing the brake exists to stop. A brake that reopened
+ *  on its own would be a brake that spends 9.96 SOL/day proving to itself that it should not have.
+ *
+ *  So the way to clear it is a person: read `GET /reclamation.json`, which carries the sweep gap on
+ *  one side and the rounds the closer skipped and found stranded on the other, work out which of them
+ *  is the cause, fix it, and restart the keeper. Restarting is not a workaround here — it is the
+ *  assertion that somebody looked.
+ *
+ *  LOGGED ONCE PER STRETCH, exactly as the funding floor is, and for its reason: the condition lasts,
+ *  and a six-line alarm once a second is how an operator learns to scroll past the loudest line in the
+ *  log. */
+function rentIsComingBack(ctx: KeeperContext, roundNo: bigint): boolean {
+  const verdict = burnBrake(
+    ctx.burnSamplesLamports,
+    MAX_BURN_LAMPORTS_PER_ROUND,
+    BURN_ARM_AFTER_ROUNDS,
+    BURN_SAMPLE_ROUNDS,
+  );
+
+  if (!verdict.tripped) {
+    // GUARDED ON THIS FUNCTION'S OWN LATCH so it can never clear a reason another cause set — the
+    // funding floor owns `"low-balance"` and clears it itself. It is unreachable while the stop holds,
+    // because a stopped keeper takes no further samples and the mean cannot move; it is written anyway
+    // because "the published reason is cleared by whatever set it" has to hold for both causes or it
+    // is a rule with an exception that the third cause will be written against.
+    if (ctx.burnStopSince !== null) {
+      ctx.burnStopSince = null;
+      ctx.publisher.setNotOpeningRounds(null);
+      ok(`measured burn is back under ${fmtSol(MAX_BURN_LAMPORTS_PER_ROUND)}/round — opening rounds again`);
+    }
+    return true;
+  }
+
+  // The countdown goes with it, for the reason the funding floor gives: a settled round's hold has
+  // already proposed "next lobby in 0:08", and leaving that standing beside a keeper that will not
+  // open one is the confidently-wrong number the whole status contract exists to delete.
+  ctx.publisher.setNextLobbyOpensAt(null);
+  ctx.publisher.setNotOpeningRounds("rent-not-reclaimed");
+
+  if (ctx.burnStopSince === null) {
+    ctx.burnStopSince = ctx.client.nowSec();
+    const mean = verdict.meanLamportsPerRound ?? 0;
+    const perDay = measuredRoundsPerDay(ctx, ctx.client.nowSec());
+    error(`RENT IS NOT COMING BACK — the keeper has STOPPED opening rounds.`);
+    error(`  Measured ${fmtSol(mean)} per round over the last ${verdict.samples} of ${ctx.burnSamplesLamports.length} samples,`);
+    error(`  against a ceiling of ${fmtSol(MAX_BURN_LAMPORTS_PER_ROUND)} (KEEPER_MAX_BURN_SOL_PER_ROUND). At the`);
+    error(`  ${perDay === null ? "cadence this run has not measured yet that is" : `${perDay.toFixed(0)} rounds/day this run has measured that is`}`);
+    error(`  ${perDay === null ? "an unknown daily figure" : `~${(mean * perDay / 1e9).toFixed(2)} SOL/day`} — COST-MODEL §4's failure mode, arriving.`);
+    error(`  Round #${roundNo} was NOT opened. Any round already running is still being driven to a`);
+    error(`  terminal state, and the status file now says no next lobby is coming.`);
+    error(`  THIS STOP DOES NOT CLEAR ITSELF, and that is deliberate: samples are taken at open_round, so`);
+    error(`  a stopped keeper gathers no new evidence and the only way to gather some is to resume`);
+    error(`  spending at the rate that tripped it. Read ${RECLAMATION_PATH} — it carries the sweep gap,`);
+    error(`  the rounds the closer skipped and the ones it found stranded — fix the cause, then restart`);
+    error(`  the keeper. To run knowingly at this burn instead, raise KEEPER_MAX_BURN_SOL_PER_ROUND.`);
+  }
+  return false;
+}
+
+/** THE MEASURED ROUNDS PER DAY, or null while nothing honest can be said about it.
+ *
+ *  MEASURED, NEVER MODELLED, AND THAT IS THE WHOLE REASON IT IS A FUNCTION RATHER THAN A CONSTANT.
+ *  COST-MODEL §2 derives 424 rounds/day from the configured cadence and the program's own fight-length
+ *  table — a projection, and a good one, but the fight length moves with the seat cap and the draw and
+ *  the hold are wall-clock. §7 of that same document records what happens when a defensible-looking
+ *  proxy is measured instead of the thing itself. A modelled rate multiplied by a measured burn is a
+ *  number that is half evidence and reads as whole, sitting one field along from the measurement this
+ *  entire report exists to make.
+ *
+ *  NULL UNTIL TWO OPENS AT LEAST `MIN_RATE_WINDOW_SECONDS` APART. One open gives no interval at all,
+ *  and an interval of a few seconds extrapolates to thousands of rounds a day — a confidently wrong
+ *  number in the first minute of every run, which is exactly the minute somebody is watching.
+ *
+ *  ITS BIAS IS KNOWN, SMALL, AND DECIDES NOTHING. `n` opens span `n - 1` intervals, so counting `n`
+ *  against the elapsed time reads a few percent high; measuring the elapsed time to NOW rather than to
+ *  the last open reads a few percent low; at the sample counts this runs at they largely cancel. It
+ *  matters because nothing branches on this — the brake compares LAMPORTS PER ROUND, which needs no
+ *  rate — so this number's only job is to turn a per-round figure into the per-day one the owner
+ *  actually asked about. */
+function measuredRoundsPerDay(ctx: KeeperContext, nowSec: number): number | null {
+  if (ctx.firstOpenAtSec === null || ctx.opensObserved < 2) return null;
+  const elapsed = nowSec - ctx.firstOpenAtSec;
+  if (elapsed < MIN_RATE_WINDOW_SECONDS) return null;
+  return ctx.opensObserved * 86_400 / elapsed;
+}
+
+/** The shortest span the rounds/day rate may be extrapolated from. A minute — long enough that the
+ *  first two opens of a run cannot produce a four-figure rate, short enough that the report has a real
+ *  number in it within the first couple of rounds. */
+const MIN_RATE_WINDOW_SECONDS = 60;
+
 async function openNextRound(ctx: KeeperContext, roundNo: bigint): Promise<void> {
   // Sampled BEFORE anything is spent, so the per-round cost reported at settlement is measured rather
   // than estimated. It includes the round PDA's rent, which is the dominant term. It is the same read
   // the funding guard just did — see `affordsAnotherRound`.
   const lamportsBefore = await affordsAnotherRound(ctx, roundNo);
   if (lamportsBefore === null) return;
+
+  // ONE BURN SAMPLE PER ROUND, TAKEN FROM THE READ THE FUNDING GUARD JUST MADE AND BEFORE ANYTHING IS
+  // SPENT. The sample is the NET lamports the PREVIOUS round cost: everything that left the wallet and
+  // everything that came back into it between two consecutive opens, `close_round_account` refunds
+  // included. See `burnBrake` for why a balance difference subsumes failure modes a counter of known
+  // failures cannot.
+  if (ctx.lastOpenLamports !== null) {
+    ctx.burnSamplesLamports.push(ctx.lastOpenLamports - lamportsBefore);
+    if (ctx.burnSamplesLamports.length > BURN_ARM_AFTER_ROUNDS) ctx.burnSamplesLamports.shift();
+  }
+  // ASKED WITH THE NEWEST SAMPLE ALREADY IN HAND, which is the whole point of the ordering: the round
+  // this decides about is the very next one, and evaluating the brake before pushing would always pay
+  // for one more round than it had to.
+  if (!rentIsComingBack(ctx, roundNo)) return;
+
   const roundPda = roundIx.roundPdaForRoundNo(roundNo, ctx.client.arenaPda);
-  info(`opening round #${roundNo}  pda ${roundPda.toBase58()}`);
+  // THE MODE IS ON THIS LINE SO THERE IS ONE LINE PER ROUND SAYING SO, for as long as it is on. A
+  // boot banner scrolls; a keeper that has been running house-only rounds for three days must not
+  // require somebody to find its first hundred lines to discover that.
+  info(`opening round #${roundNo}${ctx.options.houseOnlyRounds ? ` ${c.y}(house-only)${c.x}` : ""}  pda ${roundPda.toBase58()}`);
 
   // Vestigial since the seed moved to the VRF oracle — any 32 bytes satisfy the on-chain format, and
   // the operator no longer chooses the seed at all. Kept because `open_round` still takes it.
   const seedCommit = crypto.getRandomValues(new Uint8Array(32));
-  // THE LOBBY LENGTH MEANS TWO DIFFERENT THINGS UNDER THE TWO POLICIES, which is why it is chosen
-  // here rather than fixed. Under the hold-open policy the deadline is a BACKSTOP — the keeper closes
-  // the lobby itself when a player arrives, so this is only "how long before I give up on this round
-  // and pay for another one". Without it the deadline is the SCHEDULE and the keeper has to open a
-  // lobby of exactly the length it intends to wait, because nothing else can end one.
-  const lobbySeconds = ctx.options.holdOpen ? HOLD_OPEN_LOBBY_SECONDS : DEFAULT_LOBBY_SECONDS;
+  // THE LOBBY LENGTH MEANS THREE DIFFERENT THINGS NOW, which is why it is chosen here rather than
+  // fixed. Under the hold-open policy the deadline is a BACKSTOP — the keeper closes the lobby itself
+  // when a player arrives, so this is only "how long before I give up on this round and pay for
+  // another one". Without it the deadline is the SCHEDULE and the keeper has to open a lobby of
+  // exactly the length it intends to wait, because nothing else can end one.
+  //
+  // THE THIRD IS THE TWO POLICIES MEETING, and it is why the second clause is here. Under house-only
+  // the backstop BECOMES the schedule: an empty lobby is not being held for anybody, it is going to be
+  // drawn at its deadline like every other lobby, so the deadline is the one thing deciding how often
+  // a round happens. Production sets `KEEPER_HOLD_OPEN_LOBBY_SECONDS=604800` — seven days, and a
+  // perfectly sound number for a backstop nobody expects to reach — which as a schedule is one round
+  // per week. `DEFAULT_LOBBY_SECONDS` is the honest length for a lobby that will be drawn on its own
+  // merits.
+  //
+  // THE EARLY-CLOSE HALF OF HOLD-OPEN IS UNTOUCHED and still fires for a real arrival, on the same
+  // grace, ahead of the same deadline. `lobbyPolicy.ts`'s header owns that argument and it is not
+  // restated here.
+  const lobbySeconds = ctx.options.holdOpen && !ctx.options.houseOnlyRounds
+    ? HOLD_OPEN_LOBBY_SECONDS : DEFAULT_LOBBY_SECONDS;
   const outcome = await ctx.client.send(
     roundIx.openRound(ctx.client.program, {
       arena: ctx.client.arenaPda,
@@ -1299,6 +1698,14 @@ async function openNextRound(ctx: KeeperContext, roundNo: bigint): Promise<void>
     `open_round #${roundNo}`,
   );
   if (!outcome.sent) return;
+
+  // STAMPED ONLY ON AN OPEN THAT LANDED, which is the difference between a sample and a fiction. A
+  // failed open spends nothing and moves no round, so treating it as the start of a round would put a
+  // phantom entry in the ring — the net change of a wallet across an interval in which nothing was
+  // opened — and the brake averages exactly what it is given.
+  ctx.lastOpenLamports = lamportsBefore;
+  if (ctx.firstOpenAtSec === null) ctx.firstOpenAtSec = ctx.client.nowSec();
+  ctx.opensObserved += 1;
 
   // STAMPED IMMEDIATELY, before anything that can fail. Everything below is best-effort, and the
   // pre-open balance is the one thing here that cannot be recovered later — losing it makes the
@@ -1348,6 +1755,10 @@ async function summariseRound(ctx: KeeperContext, round: RawRoundAccount, roundP
     : null;
 
   const lamportsAfter = await ctx.client.balance(ctx.operator.publicKey);
+  // The second of the two places a balance is already read for a decision — see
+  // `operatorLamportsObserved`. Between them the reclamation report's balance is at worst one round
+  // old, for no RPC of its own.
+  ctx.operatorLamportsObserved = lamportsAfter;
   const spent = timeline.operatorLamportsAtOpen !== null
     ? timeline.operatorLamportsAtOpen - lamportsAfter
     : null;
@@ -1365,7 +1776,11 @@ async function summariseRound(ctx: KeeperContext, round: RawRoundAccount, roundP
   // `driveSettled` on the first pass that reads the phase as `Settled`, which is the honest instant.
   plain(`  fight          ${fmtDuration(fightSeconds)} ${c.d}(fight_started_at -> round observed Settled)${c.x}`);
   plain(`  result hold    ${RESULT_HOLD_SECONDS}s ${c.d}(configured; close_round runs inside it)${c.x}`);
-  plain(`  operator spent ${spent === null ? "unknown (this keeper did not open this round)" : `${fmtSol(spent)} ${c.d}(measured balance delta; includes the round PDA's rent, which nothing reclaims)${c.x}`}`);
+  // "FLOATS", NOT "SPENDS": the delta includes the round PDA's rent, and `close_round_account` hands
+  // that back once `ROUND_RETENTION` newer rounds exist. This line used to say "which nothing
+  // reclaims" — true before v7, and now the difference between a round that cost ~0.0235 SOL and one
+  // that cost ~0.00007 with the rest on loan.
+  plain(`  operator spent ${spent === null ? "unknown (this keeper did not open this round)" : `${fmtSol(spent)} ${c.d}(measured balance delta; most of it is the round PDA's rent, returned once ${ROUND_RETENTION} newer rounds exist)${c.x}`}`);
 }
 
 // ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1394,6 +1809,7 @@ function publishRoundSnapshot(ctx: KeeperContext, state: KeeperChainState): void
     nowSec: state.nowSec,
     realFighterCount: split.realCount,
     holdOpen: ctx.options.holdOpen,
+    houseOnly: ctx.options.houseOnlyRounds,
   });
   ctx.publisher.setRound(roundStatusFrom(state.round, state.roundPda, heldOpen));
 }
@@ -1518,6 +1934,7 @@ async function main(): Promise<void> {
     programId: PROGRAM_ID.toBase58(),
     arenaPda: client.arenaPda.toBase58(),
     nowSec: client.nowSec,
+    houseOnlyRounds: options.houseOnlyRounds,
   });
 
   // THE SECOND CHANNEL, and in production the only one that reaches a browser — see
@@ -1536,11 +1953,31 @@ async function main(): Promise<void> {
   // functions of values, so they can be tested under vitest, which has no `Bun` global at all.
   const houseTokenPolicy = resolveHouseTokenPolicy(process.env[HOUSE_TOKEN_ENV]);
   for (const line of houseTokenPolicy.warnings) warn(line);
+  // SEEDED FROM A ZERO STATE BEFORE THE SERVER EXISTS, on `statusFile.ts`'s argument for rendering its
+  // own payload at construction: a request arriving during the slow half of boot gets a well-formed
+  // body describing exactly what is true — nothing polled, no samples, no losses, and (via a rate of
+  // zero) no daily figure claimed — rather than an empty one a reader would need a special case for.
+  //
+  // It is re-rendered ONCE PER PASS beside `publisher.publish()`, never from a request handler. That
+  // is `StatusServerDeps.reclamation`'s rule, not a convention: a route that computes is a route that
+  // can throw, can be slow, and can be made to run by anybody on the internet.
+  let reclamationBody = renderReclamation({
+    observedAtSec: client.nowSec(),
+    arena: null,
+    closer: {
+      cursor: 1, reclaimed: 0,
+      skipped: [], strandedNeverTerminal: [], strandedStillDelegated: [],
+      skippedTotal: 0, strandedNeverTerminalTotal: 0, strandedStillDelegatedTotal: 0,
+    },
+    burnSamplesLamports: [],
+    operatorLamports: null,
+  }, 0);
   const statusServer = startStatusServer({
     port: HTTP_PORT,
     policy: originPolicy,
     body: publisher.body,
     heartbeatAgeSeconds: publisher.heartbeatAgeSeconds,
+    reclamation: () => reclamationBody,
     houseToken: houseTokenPolicy.token,
     // Read through a closure rather than passed as an array, so the endpoint always answers from the
     // bank this process actually holds. It cannot change today — the bank is loaded once at boot —
@@ -1560,6 +1997,28 @@ async function main(): Promise<void> {
   // Filled in after the fact rather than passed at construction, which is the whole reason
   // `setErValidator` is a setter: the status has to exist before the thing it describes is known.
   publisher.setErValidator({ identity: validator.identity.toBase58(), fqdn: validator.fqdn });
+
+  // THE MODE'S OWN REFUSAL, HERE BECAUSE HERE IS WHERE THE THIRD URL FINALLY EXISTS.
+  //
+  // Two of these three are DEFENCE IN DEPTH and that is deliberate rather than redundant.
+  // `endpoints.ts` already runs `assertDevnetUrl` over both RPCs at module load, and `chainClient.ts`
+  // repeats it for its own contract's sake — but a mode that retires an on-chain guarantee must not
+  // have its refusal depend on another module's import-time side effect continuing to exist, and when
+  // it refuses it must name the FEATURE. "base devnet RPC points at MAINNET" tells an operator which
+  // URL; "house-only rounds: base RPC" tells them which thing to turn off, which is the sentence they
+  // can act on.
+  //
+  // THE VALIDATOR IS THE ONE THAT IS GENUINELY NEW HERE. It is chosen from the router at runtime and
+  // never passes through `endpoints.ts`'s `resolve` at all, so the only assertion it has today lives
+  // inside the SELECTION routine that produced it (`pickValidator`, and `acceptsWrites` for a
+  // fallback candidate) — a place whose job is choosing a validator rather than guarding a cluster,
+  // and which a rewrite of the selection logic could legitimately drop. Asserted on the string
+  // `delegate_round` will actually be sent to, not on a reconstruction of it.
+  if (options.houseOnlyRounds) {
+    assertDevnetUrl(BASE_RPC_ENDPOINT.url, "house-only rounds (KEEPER_HOUSE_ONLY_ROUNDS): base RPC");
+    assertDevnetUrl(ROUTER_ENDPOINT.url, "house-only rounds (KEEPER_HOUSE_ONLY_ROUNDS): Magic Router");
+    assertDevnetUrl(validator.fqdn, "house-only rounds (KEEPER_HOUSE_ONLY_ROUNDS): ER validator");
+  }
 
   await fundHouseBank(client, operator, bank, options.dryRun);
 
@@ -1607,9 +2066,15 @@ async function main(): Promise<void> {
   // BOTH CHANNELS, named, because "the status is published" is not a fact an operator can act on and
   // "it is at this URL, or it is not being served at all" is. A null server is a bind failure that has
   // already been logged as an error; repeating it here is what stops it scrolling past unread.
+  //
+  // `RECLAMATION_PATH` JOINS IT FOR THAT SAME ARGUMENT. `startStatusServer` names all three in its own
+  // ok() line, and that line is exactly the one that does not print on the boot where the port could
+  // not be bound — which is the boot on which an operator most needs to know that the endpoint they
+  // were told to watch is not there. This is also the only place the reclamation route is advertised
+  // to somebody who reads the banner and nothing else.
   plain(`  status http    ${statusServer === null
-    ? `${c.r}NOT SERVING — the port could not be bound (see the error above). A deployed page will read this keeper as down.${c.x}`
-    : `http://${BIND_HOSTNAME}:${statusServer.port}${STATUS_PATH}  ${c.d}(health: ${HEALTH_PATH})${c.x}`}`);
+    ? `${c.r}NOT SERVING — the port could not be bound (see the error above). A deployed page will read this keeper as down, and ${RECLAMATION_PATH} is not answering either.${c.x}`
+    : `http://${BIND_HOSTNAME}:${statusServer.port}${STATUS_PATH}  ${c.d}(health: ${HEALTH_PATH}, reclamation: ${RECLAMATION_PATH})${c.x}`}`);
   // THE ROSTER ENDPOINT, IN THE BANNER AND NOT ONLY IN `startStatusServer`'s OWN LOG LINE. The two
   // are not redundant: a bind failure returns null from that function before it logs anything, so on
   // the one boot where the operator most needs to know the state of every endpoint, its line is the
@@ -1627,20 +2092,47 @@ async function main(): Promise<void> {
     : `${c.y}local development only (${originPolicy.origins.join(", ")}) — set KEEPER_CORS_ORIGIN for a deployment${c.x}`}`);
   // WHICH POLICY IS RUNNING, in the operator's own words, because the two behave so differently that
   // reading the log without knowing which one is in force is guesswork. The hold-open line states the
-  // three numbers that decide everything about it; the other states the one that always did.
-  plain(options.holdOpen
-    ? `  lobby policy   ${c.g}HOLD OPEN${c.x} — one lobby, held for players; ${HOLD_OPEN_LOBBY_SECONDS}s backstop · ${REAL_PLAYER_GRACE_SECONDS}s grace after the first real entry`
-    : `  lobby policy   fixed cadence — a fresh ${DEFAULT_LOBBY_SECONDS}s lobby every round ${c.d}(--hold-open is off; each round permanently locks ~0.0085 SOL of rent whether or not anyone plays)${c.x}`);
+  // three numbers that decide everything about it; the other states the one that decides its cost.
+  //
+  // THE FIXED-CADENCE LINE NO LONGER CLAIMS A PERMANENT LOSS, and the change is the point rather than
+  // a wording preference. It said each round "permanently locks ~0.0085 SOL" — a figure measured at
+  // sixteen fighters, and a claim that stopped being true when `close_round_account` shipped. Rent is
+  // FLOAT now: the arena carries `ROUND_RETENTION` rounds' worth and gets each one back. What the
+  // cadence actually costs is that float and the risk on it, which is a smaller number honestly
+  // stated — and stating the old one would have argued for hold-open on a saving that no longer
+  // exists, in front of an operator deciding whether to turn it on.
+  //
+  // HOUSE-ONLY GETS THE FIRST BRANCH BECAUSE IT OVERRIDES THE OTHER TWO. With both flags set the
+  // hold-open line would be wrong twice — the lobby is `DEFAULT_LOBBY_SECONDS` rather than the
+  // backstop, and nothing is being held for anybody — and a banner line that is wrong under a
+  // combination nobody refuses is worse than no line at all.
+  plain(options.houseOnlyRounds
+    ? `  lobby policy   ${c.y}HOUSE-ONLY${c.x} — a fresh ${DEFAULT_LOBBY_SECONDS}s lobby every round, drawn at its own deadline with nobody real in it` +
+      `${options.holdOpen ? ` ${c.d}(--hold-open is also set: its backstop collapses into this schedule, and its ${REAL_PLAYER_GRACE_SECONDS}s early close still fires for a real arrival)${c.x}` : ""}`
+    : options.holdOpen
+      ? `  lobby policy   ${c.g}HOLD OPEN${c.x} — one lobby, held for players; ${HOLD_OPEN_LOBBY_SECONDS}s backstop · ${REAL_PLAYER_GRACE_SECONDS}s grace after the first real entry`
+      : `  lobby policy   fixed cadence — a fresh ${DEFAULT_LOBBY_SECONDS}s lobby every round ${c.d}(--hold-open is off; each round floats ~${fmtSol(ROUND_RENT_LAMPORTS)} of rent whether or not anyone plays, back after ${ROUND_RETENTION} newer rounds — and gone for good on any round that cannot be closed)${c.x}`);
   // THE HOUSE'S SHAPE AND WHAT IT PUTS AT RISK, on its own line and printed under BOTH policies —
   // because the treasury rule no longer depends on which one is running, and because these five
   // numbers are the ones an operator retunes. Mean stake is the midpoint of the band, so the exposure
   // figure is the honest expected total rather than a worst case: it is what the house has on the
   // board in a round with one real player in it, which is the shape almost every live round has had.
+  //
+  // AND THE TAIL OF IT IS NOW CONDITIONAL, because "N fighter and no fight when nobody is" is exactly
+  // the sentence house-only makes false. What the mode fields instead is NOT the board target: the
+  // board is what `houseFighterCount` asks for, and `plannedHouseEntries` then holds `REAL_SEATS_RESERVED`
+  // seats back out of the round's own seat count — at the production 48-seat round that reservation is
+  // the term that binds, and the arithmetic is `houseBank.ts`'s, beside `houseCeiling`. The seat count
+  // is the chain's number and this banner has no round to read it off, so the line states the
+  // subtraction rather than a total it would be guessing at.
+  const houseOnlyWanted = houseFighterCount({ side0: 0, side1: 0 }, "house-only");
   plain(
     `  house          board of ${HOUSE_BOARD_TARGET} · ${HOUSE_WALLET_COUNT} wallets · ${HOUSE_DISPLACEMENT} seat(s) yielded per real entrant · ` +
     `$${HOUSE_STAKE_MIN_USD}-$${HOUSE_STAKE_MAX_USD} stakes ` +
     `${c.d}(~$${((HOUSE_BOARD_TARGET - 1) * (HOUSE_STAKE_MIN_USD + HOUSE_STAKE_MAX_USD) / 2).toFixed(0)} of house stake on the board against a lone real player; ` +
-    `${HOUSE_MAX_WITHOUT_REAL_PLAYER} fighter and no fight when nobody is)${c.x}`,
+    `${options.houseOnlyRounds
+      ? `min(${houseOnlyWanted}, seats − ${REAL_SEATS_RESERVED}) fighters AND A FIGHT when nobody is`
+      : `${HOUSE_MAX_WITHOUT_REAL_PLAYER} fighter and no fight when nobody is`})${c.x}`,
   );
   plain(`  cadence        result hold ${RESULT_HOLD_SECONDS}s · draw timeout ${DRAW_TIMEOUT_SECONDS}s · heartbeat ${HEARTBEAT_INTERVAL_SECONDS}s/stale ${STALE_AFTER_SECONDS}s`);
   plain(`  house sweep    ${features.houseTakeSweep
@@ -1650,16 +2142,74 @@ async function main(): Promise<void> {
   // that used to be unrecoverable, so which of these two states the keeper booted in is the
   // difference between ~740 more rounds on the current payer and ~16,200.
   plain(`  rent           ${!options.closeRounds
-    ? `${c.y}NOT reclaimed — --no-close-rounds/KEEPER_CLOSE_ROUNDS=0 is set; every round keeps its ~0.0086 SOL deposit forever${c.x}`
+    ? `${c.y}NOT reclaimed — --no-close-rounds/KEEPER_CLOSE_ROUNDS=0 is set; every round keeps its ~${fmtSol(ROUND_RENT_LAMPORTS)} deposit forever${c.x}`
     : features.roundAccountClose
-      ? `${c.g}reclaimed${c.x} — finished rounds are closed once ${ROUND_RETENTION} newer ones exist, returning ~0.0086 SOL each`
-      : `${c.y}unavailable — this IDL has no close_round_account (or no sweep to precede it); each round keeps its ~0.0086 SOL deposit forever${c.x}`}`);
+      ? `${c.g}reclaimed${c.x} — finished rounds are closed once ${ROUND_RETENTION} newer ones exist, returning ~${fmtSol(ROUND_RENT_LAMPORTS)} each`
+      : `${c.y}unavailable — this IDL has no close_round_account (or no sweep to precede it); each round keeps its ~${fmtSol(ROUND_RENT_LAMPORTS)} deposit forever${c.x}`}`);
   plain(`  funding floor  ${fmtSol(MIN_BALANCE_LAMPORTS)} — below this the keeper finishes the round in flight and opens no more`);
   plain(`  stop after     ${options.rounds === null ? "never — runs until stopped" : `${options.rounds} completed round(s)`}`);
   plain("");
 
+  // LAST, SO IT CANNOT SCROLL PAST. Everything above is a table an operator skims; this is the block
+  // that says a guarantee has been given up, and it is printed immediately before the loop starts so
+  // it is the final thing on screen when the rounds begin. It prints ONLY when the mode is on, which
+  // is what stops it becoming a banner people learn to skip on every ordinary boot. `warn` rather
+  // than `plain` because these lines are coloured and this one has to be the loudest thing here.
+  if (options.houseOnlyRounds) {
+    heading("HOUSE-ONLY ROUNDS ARE ON");
+    warn(`  Turned on by KEEPER_HOUSE_ONLY_ROUNDS=1 (or --house-only-rounds). UNSETTING IT RESTORES`);
+    warn(`  TODAY'S BEHAVIOUR EXACTLY — there is no migration, no state to unwind, and no round already`);
+    warn(`  opened that behaves differently afterwards. The next boot is simply the old keeper.`);
+    warn(``);
+    warn(`  WHAT IT RETIRES. A room with nobody real in it normally holds ONE house fighter, which is`);
+    warn(`  below the program's enough_to_fight — so no house-versus-house round can be drawn by this`);
+    warn(`  keeper OR by a permissionless caller racing it at the deadline, and abandon_round stays`);
+    warn(`  legal so the round always reaches a terminal state. BOTH OF THOSE STOP BEING TRUE while`);
+    warn(`  this is on. "The house never fights itself" was a property the CHAIN enforced; for as long`);
+    warn(`  as this runs it is not enforced by anything.`);
+    warn(``);
+    warn(`  THE NEW EXPOSURE, WHICH IS THE PART NOBODY GUESSES. A house-only lobby is past`);
+    warn(`  enough_to_fight, so abandon_round is refused on it — the only instruction that can end it`);
+    warn(`  is close_lobby_and_draw. If that cannot land (a dead ER validator, a VRF queue that`);
+    warn(`  refuses, a delegation lost) the round sits in Lobby with nothing left that will succeed on`);
+    warn(`  it, and its ~0.0235 SOL is stranded PERMANENTLY: close_round_account needs house_swept and`);
+    warn(`  sweeping needs a terminal phase. COST-MODEL §4.2 records 19 rounds already in that state,`);
+    warn(`  holding ~0.16 SOL that no instruction will ever return. The keeper retries the draw`);
+    warn(`  forever, so this is not a new code path — it is the same path, walked by every round`);
+    warn(`  instead of only by the rare one somebody played.`);
+    warn(``);
+    warn(`  WHAT IT COSTS. ~0.031 SOL/day while close_round_account keeps reclaiming rent, and`);
+    warn(`  ~9.96 SOL/day the moment it silently stops — 330x, with no exception, no failed`);
+    warn(`  transaction and a keeper that looks perfectly healthy throughout. That mechanism has NEVER`);
+    warn(`  RUN at MAX_FIGHTERS = 48, where rent is 2.7x what it was the last time it was observed`);
+    warn(`  working. This mode is what makes that gap something the arena runs into rather than`);
+    warn(`  something it can reason about.`);
+    warn(``);
+    warn(`  THE BOARD IT FIELDS IS min(${houseOnlyWanted}, seats − ${REAL_SEATS_RESERVED}) — the seat reservation is not yielded to`);
+    warn(`  this mode. At the production 48-seat round that reservation is the term that binds, so a`);
+    warn(`  house-only round fields 39 fighters and not 48, and nine seats stand empty for the whole`);
+    warn(`  lobby, held for a visitor who is MORE likely to arrive into one of these rounds than into`);
+    warn(`  any other — these are the rounds that run all day.`);
+    warn(``);
+    warn(`  WHERE TO WATCH IT: GET ${RECLAMATION_PATH}. It carries the sweep gap`);
+    warn(`  (Arena.round_counter minus Treasury.rounds_swept, polled every ${TREASURY_POLL_SECONDS}s), the rounds the`);
+    warn(`  closer skipped and the ones it found stranded, and the measured burn per round.`);
+    warn(`  THE BRAKE: the keeper stops opening rounds if the mean net cost of the last`);
+    warn(`  ${BURN_SAMPLE_ROUNDS} rounds exceeds ${fmtSol(MAX_BURN_LAMPORTS_PER_ROUND)}/round, and it will not form an opinion`);
+    warn(`  before ${BURN_ARM_AFTER_ROUNDS} rounds have been sampled (a young arena legitimately pays full rent for its`);
+    warn(`  first ${ROUND_RETENTION}). That stop DOES NOT CLEAR ITSELF — fix the cause and restart the keeper.`);
+    warn(``);
+    warn(`  DEVNET ONLY. Every endpoint this mode will touch — base RPC, Magic Router and the ER`);
+    warn(`  validator's own fqdn — was re-asserted against the devnet allowlist above, naming this`);
+    warn(`  feature, and the process refuses to start anywhere else.`);
+    plain("");
+  }
+
   const ctx: KeeperContext = {
     client, publisher, bank, operator, validator, options, features,
+    // ONE DERIVATION OF THE POLICY, HERE, at the boundary where the operator's flag becomes the
+    // keeper's vocabulary — see `KeeperContext.emptyRoom`.
+    emptyRoom: options.houseOnlyRounds ? "house-only" : "unfightable",
     timeline: freshTimeline(null, null),
     roundsCompleted: 0,
     roundsAbandoned: 0,
@@ -1673,8 +2223,19 @@ async function main(): Promise<void> {
     closeAttempts: 0,
     closeRetryAfterSec: 0,
     rentReclaimed: 0,
+    closeSkipped: { sample: [], total: 0 },
+    closeStrandedNeverTerminal: { sample: [], total: 0 },
+    closeStrandedStillDelegated: { sample: [], total: 0 },
     lowBalanceSince: null,
     lowBalanceCheckedAtSec: 0,
+    treasury: null,
+    treasuryPolledAtSec: 0,
+    burnSamplesLamports: [],
+    lastOpenLamports: null,
+    burnStopSince: null,
+    operatorLamportsObserved: operatorBalance,
+    firstOpenAtSec: null,
+    opensObserved: 0,
   };
 
   // INSTALLED AFTER BOOT, ON PURPOSE. A failure during boot — an unreadable keypair, an arena whose
@@ -1742,7 +2303,20 @@ async function main(): Promise<void> {
         // closing an ancient round is not a phase of the current one. Putting it there would have
         // meant a branch in every case, or a case that is not a phase.
         await closeOneFinishedRound(ctx, state);
+        // The second witness, on the same idle passes and for the same reason: it is one account read
+        // on its own slow interval, and it must never be what makes a fight tick late. See
+        // `pollTreasury`.
+        await pollTreasury(ctx, state);
       }
+      // ONE RENDER PER PASS, BESIDE THE PUBLISH IT MIRRORS. Both channels are refreshed at the one
+      // point in the loop where the pass's work is finished and its observations are complete, so a
+      // reader of either one is reading the same instant. The rate is passed as the MEASURED
+      // rounds/day, or 0 to say it has not been measured — which `summariseReclamation` renders as
+      // null rather than as a daily burn of zero.
+      reclamationBody = renderReclamation(
+        reclamationStateOf(ctx, state.nowSec),
+        measuredRoundsPerDay(ctx, state.nowSec) ?? 0,
+      );
       publisher.publish();
 
       consecutiveErrors = 0;
@@ -1812,7 +2386,36 @@ async function main(): Promise<void> {
   plain(`  rounds abandoned  ${ctx.roundsAbandoned}`);
   // Stated as a measured total rather than left to be inferred from the balance, because the balance
   // moved for several reasons during the run and this is the only one that moved it UP.
-  plain(`  rent reclaimed    ${ctx.rentReclaimed} round account(s)${ctx.rentReclaimed > 0 ? `  ~${(ctx.rentReclaimed * 0.008561).toFixed(4)} SOL returned` : ""}`);
+  //
+  // PRICED THROUGH `ROUND_RENT_LAMPORTS` RATHER THAN THE 0.008561 THIS LINE USED TO CARRY. That figure
+  // was measured at sixteen fighters; rent moves with the seat cap and is 0.023497 at forty-eight
+  // (COST-MODEL §1). Leaving it would have put a stale price on the rent that came BACK directly above
+  // a current price on the rent that did not, in the same block, differing by 2.7x.
+  plain(`  rent reclaimed    ${ctx.rentReclaimed} round account(s)${ctx.rentReclaimed > 0 ? `  ~${fmtSol(ctx.rentReclaimed * ROUND_RENT_LAMPORTS)} returned` : ""}`);
+  // WHAT DID NOT COME BACK, IN THE UNIT THAT MAKES IT ACTIONABLE. "2 rounds skipped" and "0.047 SOL
+  // you are never getting back" are the same fact and only one of them makes anybody do something.
+  // These are the TOTALS, not the bounded samples that go with them — see `CLOSE_LOSS_SAMPLE`.
+  const skipped = ctx.closeSkipped.total;
+  const neverTerminal = ctx.closeStrandedNeverTerminal.total;
+  const stillDelegated = ctx.closeStrandedStillDelegated.total;
+  const stranded = neverTerminal + stillDelegated;
+  plain(`  rounds skipped    ${skipped}${skipped > 0 ? `  ~${fmtSol(skipped * ROUND_RENT_LAMPORTS)} given up on after ${CLOSE_ATTEMPTS_PER_ROUND} failed closes each` : ""}`);
+  plain(`  rounds stranded   ${stranded}${stranded > 0 ? `  ~${fmtSol(stranded * ROUND_RENT_LAMPORTS)} ${c.d}(${neverTerminal} never terminal / ${stillDelegated} still delegated — no instruction can close either)${c.x}` : ""}`);
+  // MEASURED OR "UNKNOWN", NEVER A PLAUSIBLE ZERO — this block's standing rule, and these two are
+  // exactly the fields it was written for. A sweep gap of 0 from a treasury nobody read and a burn of
+  // 0.000000 SOL from a run with one sample are both numbers that would be believed.
+  const treasury = ctx.treasury;
+  plain(`  sweep gap         ${treasury === null
+    ? "unknown — the treasury was never polled"
+    : treasury.roundsSwept === null
+      ? "unknown — this program has no Treasury account"
+      : `${treasury.roundCounter - treasury.roundsSwept} round(s) ${c.d}(round_counter minus rounds_swept, as of ${ctx.client.nowSec() - treasury.polledAtSec}s ago)${c.x}`}`);
+  const finalBurn = burnBrake(
+    ctx.burnSamplesLamports, MAX_BURN_LAMPORTS_PER_ROUND, BURN_ARM_AFTER_ROUNDS, BURN_SAMPLE_ROUNDS,
+  );
+  plain(`  burn per round    ${finalBurn.meanLamportsPerRound === null
+    ? "unknown — no round was opened twice, so nothing was sampled"
+    : `${fmtSol(finalBurn.meanLamportsPerRound)} ${c.d}(mean of ${finalBurn.samples} sample(s) of ${ctx.burnSamplesLamports.length}; the brake ${finalBurn.armed ? (finalBurn.tripped ? "TRIPPED" : "was armed and did not trip") : `needs ${BURN_ARM_AFTER_ROUNDS} to have an opinion`})${c.x}`}`);
   // CAUGHT, because this is the last line of a SUCCESSFUL run. `balance` goes through `withReadRetry`
   // and throws after four attempts, and a rejection here escapes into `main().catch()` — which prints
   // `KEEPER FAILED TO START` and exits 1, for a keeper that ran for six hours and stopped exactly as

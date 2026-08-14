@@ -10,7 +10,9 @@
 //
 //   The Fly keeper is running. A local keeper is a SECOND KEEPER. Both read `arena.round_counter`,
 //   both try to open `counter + 1`, and the loser's round is left BEHIND the counter — delegated,
-//   past its deadline, holding ~0.0085 SOL of rent that no instruction reclaims. `fly.toml` opens
+//   past its deadline, holding ~0.0235 SOL of rent that no instruction reclaims. That is a PERMANENT
+//   loss even now that `close_round_account` exists: the round never reaches a terminal phase, so it
+//   can never be swept, so it can never be closed (COST-MODEL §4.2). `fly.toml` opens
 //   with this as rule 1 and says "there is no configuration of this app in which a second machine is
 //   an improvement". A second PROCESS is the same thing wearing different clothes.
 //

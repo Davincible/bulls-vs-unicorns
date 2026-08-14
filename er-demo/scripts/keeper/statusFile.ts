@@ -68,6 +68,24 @@
 // FIGHTER COUNT MAY EVER ENTER THIS PAYLOAD. `statusFile.test.ts` asserts it over the SERIALIZED
 // BYTES rather than field by field, because the bytes are the only thing that can catch a leak
 // arriving through a field nobody thought to check.
+//
+// SCHEMA 6 ADDED TWO FIELDS AND BOTH SATISFY THAT RULE, recorded here so the next reader does not
+// have to re-derive whether it was broken — one of them has the word "house" in its name, which is
+// exactly the shape of thing that gets re-litigated at the wrong moment.
+//
+//   * `keeper.houseOnlyRounds` is a BOOLEAN COPIED FROM A BOOT FLAG. No exception, no account, no
+//     count, no input of any kind: it is the same literal for the whole life of the process, it names
+//     nobody, and it says nothing whatsoever about any particular round — the round where forty-eight
+//     house wallets are fighting and the round a real player just won publish the identical byte. It
+//     is a disclosure ABOUT THE OPERATING MODE, which is the arena describing its own behaviour, the
+//     argument `round.heldOpen` already survives on. Told MORE, not identified.
+//   * `keeper.notOpeningRounds` is a CLOSED VOCABULARY — two strings written in
+//     `src/v2/data/keeperStatus.ts`, chosen at the call site, never assembled from anything observed.
+//     Same construction as `lastError.context`, and the same property does the work: a field with no
+//     inputs cannot be got wrong.
+//
+// The byte-level sweep in `statusFile.test.ts` runs with the mode ON and a reason set, which is what
+// keeps that argument honest rather than merely stated.
 
 import { readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -81,6 +99,7 @@ import {
   type KeeperError,
   type KeeperRoundStatus,
   type KeeperStatus,
+  type NotOpeningReason,
 } from "../../src/v2/data/keeperStatus.ts";
 import { HEARTBEAT_INTERVAL_SECONDS, STALE_AFTER_SECONDS } from "./config.ts";
 import { error as logError, warn } from "./log.ts";
@@ -246,6 +265,18 @@ export interface StatusPublisherOptions {
    *  own fields are chain-stamped, and a heartbeat on a different clock would make "how stale is
    *  this" and "how long until the lobby closes" answerable only in different units. */
   nowSec: () => number;
+  /** Is this keeper running rounds with nothing but its own wallets in them — see
+   *  `KeeperStatus.keeper.houseOnlyRounds` for what the field means and why publishing it is a
+   *  disclosure rather than a leak.
+   *
+   *  A CONSTRUCTOR OPTION AND DELIBERATELY NOT A SETTER. The mode is read from a boot flag and cannot
+   *  change while the process runs: there is no pass, no branch and no chain read that could move it,
+   *  so a setter would exist for no caller that legitimately needs one. What it WOULD be is a way to
+   *  publish a mode the keeper is not in — one line, in the wrong place, and the page starts telling
+   *  visitors the arena is playing itself when it is not, or (far worse, and the direction that
+   *  matters) stops telling them when it is. Making it structurally impossible to disagree with the
+   *  flag costs nothing here: it is required, so a keeper that forgets to pass it does not compile. */
+  houseOnlyRounds: boolean;
   /** Where to write the file. Defaults to `STATUS_FILE_PATH`, which is what the keeper uses.
    *
    *  It exists so a test can publish somewhere harmless. The status file is a SINGLE-WRITER resource
@@ -286,6 +317,18 @@ export interface StatusPublisher {
    *  the one that stretch keeps, and passing null clears it. The AMOUNTS still update on every call,
    *  because those are observations rather than promises. */
   setLowBalance(low: { lamports: bigint; floorLamports: bigint; nowSec: number } | null): void;
+  /** Say why no further round is coming, or clear it with null. This is the field
+   *  `keeperCountdown` reads — see `KeeperStatus.keeper.notOpeningRounds` for why the countdown rule
+   *  reads one derived reason rather than each cause's detail block.
+   *
+   *  `setLowBalance` DOES NOT SET IT, and that separation is the point rather than an oversight. The
+   *  keeper calls both — `setLowBalance` for the amounts an operator needs, this for what they mean —
+   *  because the call site is the only place that knows which reason applies, and a setter that
+   *  inferred one from the other would quietly make `"low-balance"` the answer for a keeper stopped by
+   *  the burn brake with a perfectly healthy balance. Two calls, one pass, each saying the thing it
+   *  actually knows. `statusFile.test.ts` pins the consistency, so a pass that sets a floor report and
+   *  forgets the reason (or the reverse) fails there rather than on a page that keeps counting down. */
+  setNotOpeningRounds(reason: NotOpeningReason | null): void;
   /** True when this round number had not been recorded before — so the caller can raise the alarm
    *  once rather than on every pass. */
   addWedgedRound(roundNo: number): boolean;
@@ -313,6 +356,11 @@ export function createStatusPublisher(options: StatusPublisherOptions): StatusPu
       stalledSince: null,
       wedgedRounds: [],
       lowBalance: null,
+      notOpeningRounds: null,
+      // Straight from the option, once, at construction — see `StatusPublisherOptions`. There is no
+      // other assignment to this field anywhere in the module, which is what makes "the file cannot
+      // disagree with the flag" a property of the code rather than a habit.
+      houseOnlyRounds: options.houseOnlyRounds,
     },
     chain: {
       // ER-000: this fork is structurally prevented from reaching mainnet, and the status file says so
@@ -415,6 +463,7 @@ export function createStatusPublisher(options: StatusPublisherOptions): StatusPu
         floorLamports: low.floorLamports.toString(),
       };
     },
+    setNotOpeningRounds(reason) { status.keeper.notOpeningRounds = reason; },
     addWedgedRound(roundNo) {
       if (status.keeper.wedgedRounds.includes(roundNo)) return false;
       status.keeper.wedgedRounds.push(roundNo);

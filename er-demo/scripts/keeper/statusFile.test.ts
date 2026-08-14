@@ -39,6 +39,25 @@ import { RESULT_HOLD_SECONDS } from "./config.ts";
 
 const NOW = 1_800_000_000;
 
+/** A publisher writing somewhere harmless. ALWAYS A TEMP DIRECTORY, never `public/`: the status file
+ *  is a single-writer resource and there is usually a real keeper running against that path, so a test
+ *  taking the default would overwrite a live keeper's status with a fixture and a page watching at
+ *  that moment would read a different process's numbers.
+ *
+ *  `houseOnlyRounds` is a constructor option and cannot be set afterwards — see
+ *  `StatusPublisherOptions` — so a test that wants the mode on has to ask for it here, which is the
+ *  same shape the keeper's own boot has. */
+function publisherInTempDir(houseOnlyRounds = false) {
+  const dir = mkdtempSync(join(tmpdir(), "keeper-status-"));
+  return createStatusPublisher({
+    programId: "Pr0gram11111111111111111111111111111111111",
+    arenaPda: "Aren4Pda1111111111111111111111111111111111",
+    nowSec: () => NOW,
+    houseOnlyRounds,
+    filePath: join(dir, "keeper-status.json"),
+  });
+}
+
 function roundIn(phase: number, no = 7): KeeperRoundStatus {
   return {
     no,
@@ -109,7 +128,7 @@ describe("what the keeper writes is what the browser can read", () => {
       keeper: {
         startedAt: NOW - 60, heartbeatAt: NOW, heartbeatIntervalSeconds: 2, staleAfterSeconds: 15,
         stalledSince: null, roundsCompleted: 0, lastError: null, wedgedRounds: [],
-        lowBalance: null,
+        lowBalance: null, notOpeningRounds: null, houseOnlyRounds: false,
       },
       chain: { cluster: "devnet", programId: "P", arenaPda: "A", erValidator: null },
       round: written,
@@ -240,17 +259,11 @@ describe("one serializer, two channels", () => {
   // different process's numbers.
 
   function publishToTempDir(): { body: string; onDisk: string; path: string } {
-    const dir = mkdtempSync(join(tmpdir(), "keeper-status-"));
-    const path = join(dir, "keeper-status.json");
-    const publisher = createStatusPublisher({
-      programId: "Pr0gram11111111111111111111111111111111111",
-      arenaPda: "Aren4Pda1111111111111111111111111111111111",
-      nowSec: () => NOW,
-      filePath: path,
-    });
+    const publisher = publisherInTempDir();
     publisher.setRound(roundIn(Phase.Settled));
     publisher.setNextLobbyOpensAt(NOW + RESULT_HOLD_SECONDS);
     publisher.publish();
+    const { path } = publisher;
     return { body: publisher.body(), onDisk: readFileSync(path, "utf8"), path };
   }
 
@@ -283,6 +296,7 @@ describe("one serializer, two channels", () => {
       programId: "Pr0gram11111111111111111111111111111111111",
       arenaPda: "Aren4Pda1111111111111111111111111111111111",
       nowSec: () => NOW,
+      houseOnlyRounds: false,
       filePath: join(notADirectory, "keeper-status.json"),
     });
 
@@ -300,13 +314,7 @@ describe("one serializer, two channels", () => {
     // The HTTP server starts before the first loop pass, so a request — a platform health check, most
     // likely — can arrive while the keeper is still choosing a validator. It must get a real status
     // with an honest boot-instant heartbeat, not an empty body some reader has to have a case for.
-    const dir = mkdtempSync(join(tmpdir(), "keeper-status-"));
-    const publisher = createStatusPublisher({
-      programId: "Pr0gram11111111111111111111111111111111111",
-      arenaPda: "Aren4Pda1111111111111111111111111111111111",
-      nowSec: () => NOW,
-      filePath: join(dir, "keeper-status.json"),
-    });
+    const publisher = publisherInTempDir();
     const parsed = parseKeeperStatus(JSON.parse(publisher.body()));
     expect(parsed).not.toBeNull();
     expect(parsed!.keeper.heartbeatAt).toBe(NOW);
@@ -348,20 +356,20 @@ describe("the published status identifies none of the arena's own wallets", () =
     "H0use33333333333333333333333333333333333333",
   ];
 
-  function publisherInTempDir() {
-    const dir = mkdtempSync(join(tmpdir(), "keeper-status-"));
-    return createStatusPublisher({
-      programId: "Pr0gram11111111111111111111111111111111111",
-      arenaPda: "Aren4Pda1111111111111111111111111111111111",
-      nowSec: () => NOW,
-      filePath: join(dir, "keeper-status.json"),
-    });
-  }
-
   /** Every absence, in one place, so a new case cannot check three of the four by accident. */
   function expectNothingIdentifying(body: string): void {
-    // The WORDS, case-insensitively — they would appear in any field name, any prose, any error text.
-    expect(body).not.toMatch(/house/i);
+    // THE WORD, WITH ONE DECLARED EXCEPTION — and the exception is why this is no longer a flat
+    // `not.toMatch(/house/i)`. Schema 6 publishes `keeper.houseOnlyRounds`, a boolean copied from a
+    // boot flag: no wallet, no count, no input of any kind, and the identical byte on the round that
+    // is all house and the round a real player just won. The blanket check would fail on the field
+    // name alone, and both of the easy ways out are worse than this one. Deleting the check gives up
+    // the vocabulary net that catches a leak arriving under a name nobody thought of. Stripping the
+    // field out of the body before matching hides anything a future leak happens to sit beside. So
+    // every occurrence of the word is ENUMERATED and each one has to be the field that was argued for
+    // by name — a second `house*` key in this payload fails here, which is the review the next
+    // disclosure should have to pass rather than a check somebody quietly relaxes again.
+    const houseWords = body.match(/[A-Za-z]*house[A-Za-z]*/gi) ?? [];
+    expect([...new Set(houseWords)].filter((w) => w !== "houseOnlyRounds")).toEqual([]);
     expect(body).not.toMatch(/disclos/i);
     // The removed field names specifically, because a writer re-adding one under the old spelling is
     // the most likely single regression and it should fail with an obvious message.
@@ -438,5 +446,112 @@ describe("the published status identifies none of the arena's own wallets", () =
     expect(parsed!.keeper.lowBalance).not.toBeNull();
     expect(parsed!.keeper.wedgedRounds).toEqual([4]);
     expectNothingIdentifying(body);
+  });
+
+  it("publishes nothing identifying with the house-only mode ON and the keeper stopped", () => {
+    // THE CASE THAT PROVES THE DISCLOSURE DID NOT SMUGGLE ANYTHING IN BEHIND IT. Schema 6 puts a field
+    // with "house" in its name into a payload that was emptied of the house on purpose, and the
+    // argument for it is that the field is a literal from a boot flag with no inputs. An argument is
+    // not a guarantee; this is where it gets checked against the bytes.
+    //
+    // Everything that could plausibly travel WITH the mode is turned on at once — the flag, a stopped
+    // keeper, its funding detail, a lobby the arena is standing in by itself — because the leak this
+    // whole block exists for is the one that arrives through a field nobody thought of, and these are
+    // the newest fields in the file.
+    const publisher = publisherInTempDir(true);
+    publisher.setRound(roundIn(Phase.Lobby));
+    publisher.setNotOpeningRounds("rent-not-reclaimed");
+    publisher.setLowBalance({ lamports: 1n, floorLamports: 2n, nowSec: NOW });
+    publisher.publish();
+
+    const body = publisher.body();
+    const parsed = parseKeeperStatus(JSON.parse(body));
+    expect(parsed).not.toBeNull();
+    // Real first, and here that means the disclosure genuinely reached the payload: a publisher that
+    // silently dropped the flag would satisfy every absence below while publishing nothing at all.
+    expect(parsed!.keeper.houseOnlyRounds).toBe(true);
+    expect(parsed!.keeper.notOpeningRounds).toBe("rent-not-reclaimed");
+    expectNothingIdentifying(body);
+  });
+
+  it("publishes the same mode byte whoever is standing in the round", () => {
+    // THE PROPERTY THE FIELD IS DEFENDED ON, over the bytes rather than over the parsed object: it
+    // carries no information about any particular round. The house-only keeper mid-fill and the same
+    // keeper with a real player in the lobby publish payloads that differ ONLY where the chain's own
+    // `fighterCount` differs — so no reader can work backwards from the flag to who is in the room.
+    function bodyWith(fighterCount: number): string {
+      const publisher = publisherInTempDir(true);
+      publisher.setRound({ ...roundIn(Phase.Lobby), fighterCount });
+      publisher.publish();
+      return publisher.body();
+    }
+    const houseOnly = bodyWith(48);
+    const withPlayer = bodyWith(49);
+    expect(houseOnly.replace('"fighterCount": 48', '"fighterCount": 49')).toBe(withPlayer);
+    // Not vacuous: the two really were different bodies before that one substitution.
+    expect(houseOnly).not.toBe(withPlayer);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+describe("the mode and the reason, as the writer publishes them", () => {
+  function parsedBodyOf(publisher: ReturnType<typeof publisherInTempDir>) {
+    publisher.publish();
+    const parsed = parseKeeperStatus(JSON.parse(publisher.body()));
+    expect(parsed).not.toBeNull();
+    return parsed!;
+  }
+
+  it("carries the mode through JSON and the reader's own parser, in both values", () => {
+    // ONE MODULE, BOTH ENDS. A boolean the writer emits and the reader drops is a page that says
+    // nothing while the keeper plays itself in public — and it fails silently in exactly that
+    // direction, because `false` and "field missing" render identically once the parser has defaulted
+    // one to the other. (It does not: the parser rejects the file. This is what proves the writer
+    // gives it something to accept.)
+    expect(parsedBodyOf(publisherInTempDir(true)).keeper.houseOnlyRounds).toBe(true);
+    expect(parsedBodyOf(publisherInTempDir(false)).keeper.houseOnlyRounds).toBe(false);
+  });
+
+  it("carries each reason through, and back to null when the keeper starts opening again", () => {
+    const publisher = publisherInTempDir();
+    expect(parsedBodyOf(publisher).keeper.notOpeningRounds).toBeNull();
+    for (const reason of ["low-balance", "rent-not-reclaimed"] as const) {
+      publisher.setNotOpeningRounds(reason);
+      expect(parsedBodyOf(publisher).keeper.notOpeningRounds, reason).toBe(reason);
+    }
+    // The clear is half the field: a brake that trips and never releases would leave the page saying
+    // no round is coming for the rest of the process's life.
+    publisher.setNotOpeningRounds(null);
+    expect(parsedBodyOf(publisher).keeper.notOpeningRounds).toBeNull();
+  });
+
+  it("keeps the funding report and the reason independent, so the call site decides which is which", () => {
+    // THE CONSISTENCY THIS FILE IS ASKED TO PIN, and it is pinned as an INDEPENDENCE rather than as an
+    // implication, because the implication is the thing that must not be built. `setLowBalance` does
+    // not set the reason: if it did, `"low-balance"` would become the published explanation for a
+    // keeper stopped by the burn brake with a perfectly healthy payer — a wrong incident report,
+    // arriving by inference, at the one moment somebody is reading the file to find out what broke.
+    const publisher = publisherInTempDir();
+    publisher.setLowBalance({ lamports: 1n, floorLamports: 2n, nowSec: NOW });
+    const detailOnly = parsedBodyOf(publisher);
+    expect(detailOnly.keeper.lowBalance).not.toBeNull();
+    expect(detailOnly.keeper.notOpeningRounds).toBeNull();
+
+    // And the reverse: the burn brake trips with the payer well above its floor, which is precisely
+    // the state schema 4 could not express and the reason the field was hoisted out of the detail
+    // block.
+    const braked = publisherInTempDir();
+    braked.setNotOpeningRounds("rent-not-reclaimed");
+    const reasonOnly = parsedBodyOf(braked);
+    expect(reasonOnly.keeper.lowBalance).toBeNull();
+    expect(reasonOnly.keeper.notOpeningRounds).toBe("rent-not-reclaimed");
+
+    // What the KEEPER does — both, in the pass that knows both — is the pairing the page reads: one
+    // field that stops the countdown, one that says how much to send.
+    publisher.setNotOpeningRounds("low-balance");
+    const paired = parsedBodyOf(publisher);
+    expect(paired.keeper.notOpeningRounds).toBe("low-balance");
+    expect(paired.keeper.lowBalance?.floorLamports).toBe("2");
   });
 });

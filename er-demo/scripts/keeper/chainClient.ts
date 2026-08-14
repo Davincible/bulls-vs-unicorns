@@ -36,10 +36,11 @@ import {
   type BullsArenaProgram,
   type RawArenaAccount,
   type RawRoundAccount,
+  type RawTreasuryAccount,
 } from "../../src/chain/program.ts";
 import { createBurnerWallet } from "../../src/chain/useSigner.ts";
 import { sendTx, type SendRouting, type TransactionBuilder, type TxSigner } from "../../src/chain/sendTx.ts";
-import { arenaPda as deriveArenaPda, roundPdaForRoundNo } from "../../src/chain/round.ts";
+import { arenaPda as deriveArenaPda, roundPdaForRoundNo, treasuryPda } from "../../src/chain/round.ts";
 import { NO_FRESH_VALIDATOR, pickValidator, routerValidators, type ErValidator } from "../erValidator.ts";
 
 import {
@@ -110,6 +111,18 @@ export interface ChainClient {
    *  the runtime IDL carrying a `Treasury` type — so against an IDL that predates the treasury this
    *  would throw where it should simply answer "no". */
   accountExists(pubkey: PublicKey): Promise<boolean>;
+  /** The arena's `Treasury`, decoded, or null when there is not one to read. `rounds_swept` held
+   *  against `Arena.round_counter` is the gap COST-MODEL §4 names as the thing to watch for the first
+   *  day of continuous running.
+   *
+   *  IT CANNOT REUSE `accountExists` DIRECTLY ABOVE, and the difference is the whole reason both
+   *  exist. That one asks EXISTENCE, and answers it with a raw `getAccountInfo` precisely so an IDL
+   *  that predates the treasury cannot make it throw. This one needs the CONTENTS, so it has to go
+   *  through Anchor's decoder — and therefore has to survive the same case on its own. It answers null
+   *  there rather than throwing: a program whose IDL has never heard of a treasury has no
+   *  `rounds_swept` to report, and `reclamation.ts` already distinguishes "not read" from "caught up",
+   *  so null is a state its report can say out loud. */
+  fetchTreasury(): Promise<RawTreasuryAccount | null>;
   isDelegated(roundPda: PublicKey): Promise<boolean>;
   /** The fqdn of the ER validator THIS round is delegated to — required by `close_lobby_and_draw`. */
   roundValidatorFqdn(roundPda: PublicKey): Promise<string>;
@@ -426,6 +439,21 @@ export async function createChainClient({ operator, dryRun, stopSignal }: ChainC
     balance: (pubkey: PublicKey) => withReadRetry("balance", () => base.getBalance(pubkey)),
     accountExists: async (pubkey: PublicKey) =>
       (await withReadRetry("account exists", () => base.getAccountInfo(pubkey))) !== null,
+    // Through `withReadRetry` like every other read here, and from the BASE layer: the treasury is
+    // never delegated, so the router would be a hop that decides nothing.
+    fetchTreasury: () => withReadRetry("treasury", () => {
+      // `BullsArenaProgram` is HAND-WRITTEN against lib.rs; Anchor builds `account` from the IDL
+      // FETCHED AT RUNTIME. That is the same skew `program.ts` documents for `methods`, arriving on
+      // the account namespace instead: against an IDL with no `Treasury` type there is no decoder at
+      // all, and `fetchNullable` on `undefined` throws a `TypeError` that says nothing about
+      // treasuries. The type says it is always there; the runtime does not, and here the runtime is
+      // the one to believe. Asked as a question rather than caught as an exception, because a `catch`
+      // around the fetch would also swallow the RPC failures the retry exists to survive.
+      const treasury = programBase.account.treasury as
+        BullsArenaProgram["account"]["treasury"] | undefined;
+      if (!treasury) return Promise.resolve(null);
+      return treasury.fetchNullable(treasuryPda(arenaPda));
+    }),
     isDelegated,
     roundValidatorFqdn,
     routerSaysDelegated: async (roundPda) => (await delegationStatus(roundPda))?.isDelegated === true,

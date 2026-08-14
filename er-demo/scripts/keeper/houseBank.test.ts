@@ -6,9 +6,11 @@
 // already in" into the exact list of `enter` calls to send.
 //
 // It earns its place on failure cost rather than on coverage. Get it wrong high and the lobby is
-// asked for a seventeenth seat and every entry fails with `RoundFull`; get it wrong low and the
-// round reaches its deadline under-subscribed, gets abandoned, and burns the ~0.0085 SOL of round
-// rent that nothing reclaims — once per round, silently, forever. Neither shows up as an exception.
+// asked for a forty-ninth seat and every entry fails with `RoundFull`; get it wrong low and the round
+// reaches its deadline under-subscribed, gets abandoned, and ties up ~0.0235 SOL of round rent across
+// a cycle that fought nobody — once per round, silently, forever. `Abandoned` is a terminal phase, so
+// `close_round_account` does hand that deposit back; what does not come back is the fees and the
+// round. Neither failure shows up as an exception.
 //
 // The classifier is exercised for real (through `houseBankFrom`, with real keypairs) rather than
 // stubbed, because "which fighters are ours" is the input everything else here is a function of, and
@@ -24,7 +26,7 @@ import {
   MIN_FIGHTERS_TO_FIGHT, REAL_PLAYER_GRACE_SECONDS, REAL_SEATS_RESERVED,
 } from "./config.ts";
 import { HOUSE_FLOOR, HOUSE_MAX_WITHOUT_REAL_PLAYER } from "./houseSizing.ts";
-import { houseBankFrom, plannedHouseEntries } from "./houseBank.ts";
+import { houseBankFrom, plannedHouseEntries, type HouseLobbyView } from "./houseBank.ts";
 import { planLobby } from "./lobbyPolicy.ts";
 
 const bank = houseBankFrom(Array.from({ length: HOUSE_WALLET_COUNT }, () => Keypair.generate()));
@@ -66,8 +68,14 @@ function roundWith(fighters: RawFighter[]): RawRoundAccount {
 
 /** The lobby view for a round running to its deadline. `drawAt` is the deadline because that is when
  *  such a lobby genuinely gets drawn; a keeper that has committed to an earlier close passes that
- *  instead, which several tests below do explicitly. */
-const runningToDeadline = { drawAt: LOBBY_CLOSES_AT };
+ *  instead, which several tests below do explicitly.
+ *
+ *  `emptyRoom` IS SPELLED OUT IN EVERY FIXTURE IN THIS FILE, and the field is required rather than
+ *  defaulted for exactly that reason: every number asserted below is a number under the treasury rule,
+ *  and a fixture that inherited a policy would be a fixture that silently started asserting a different
+ *  arena's numbers the day the default moved. `houseInvariants.test.ts` is where the other policy is
+ *  swept. */
+const runningToDeadline: HouseLobbyView = { drawAt: LOBBY_CLOSES_AT, emptyRoom: "unfightable" };
 
 const entriesOf = (round: RawRoundAccount, now: number, lobby = runningToDeadline) =>
   plannedHouseEntries(bank, round, 7n, now, lobby).entries;
@@ -184,6 +192,7 @@ describe("a lobby with nobody real in it", () => {
       realFighterCount: 0,
       firstRealEntryObservedAtSec: null,
       holdOpen: true,
+      houseOnly: false,
     });
     expect(plan.step).toEqual({ kind: "abandon" });
 
@@ -196,6 +205,7 @@ describe("a lobby with nobody real in it", () => {
       realFighterCount: 0,
       firstRealEntryObservedAtSec: null,
       holdOpen: false,
+      houseOnly: false,
     }).step).toEqual({ kind: "abandon" });
   });
 
@@ -214,7 +224,7 @@ describe("a lobby with nobody real in it", () => {
     // after the fight had already been fought, and the house would never throttle against real
     // arrivals at all.
     const withPlayer = roundWith([fighter(houseKey(0), 0), fighter(Keypair.generate().publicKey, 1)]);
-    const closingSoon = { drawAt: LOBBY_CLOSES_AT - 3_580 };
+    const closingSoon: HouseLobbyView = { drawAt: LOBBY_CLOSES_AT - 3_580, emptyRoom: "unfightable" };
     const windowEnd = closingSoon.drawAt - HOUSE_ARRIVAL_TAIL_SECONDS;
     expect(entriesOf(withPlayer, windowEnd, closingSoon).length).toBeGreaterThan(0);
   });
@@ -222,7 +232,7 @@ describe("a lobby with nobody real in it", () => {
   it("plans nothing into the last moments before the keeper's own close", () => {
     // `enter` is refused at or past the instant the lobby is drawn, so an entry planned inside the
     // skew margin of the KEEPER's close is as wasted as one planned inside the chain deadline's.
-    const closingSoon = { drawAt: LOBBY_CLOSES_AT - 3_580 };
+    const closingSoon: HouseLobbyView = { drawAt: LOBBY_CLOSES_AT - 3_580, emptyRoom: "unfightable" };
     expect(entriesOf(roundWith([]), closingSoon.drawAt - CLOCK_SKEW_MARGIN_SECONDS, closingSoon)).toHaveLength(0);
   });
 });
@@ -350,8 +360,8 @@ describe("the end of the arrival window", () => {
     //
     // `allocateHouseSides` always joins the smaller side, so this keeper does not arrange itself this
     // way; the fixture is built by hand. It is here because the cost of meeting it once (a round's
-    // ~0.0085 SOL of rent, and players who turned up and got no fight) is far above the cost of
-    // surviving it always.
+    // ~0.0235 SOL of rent parked for the retention window, and players who turned up and got no
+    // fight — only the first of which comes back) is far above the cost of surviving it always.
     const stacked = roundWith([
       ...players(5, 1),
       ...bank.active.slice(0, 5).map((w) => fighter(w.keypair.publicKey, 1)),

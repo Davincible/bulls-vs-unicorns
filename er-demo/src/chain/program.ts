@@ -35,6 +35,16 @@ export interface MethodsBuilder {
    *  code, and the only way to land a round on a validator with a current clone is to name it. */
   remainingAccounts(accounts: { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[]): MethodsBuilder;
   transaction(): Promise<Transaction>;
+  /** The bare instruction, for a caller assembling a transaction of its own rather than sending the
+   *  one Anchor would build. `scripts/reclaim-status.ts` is the only one: it puts a
+   *  `close_round_account` into a `Transaction` it never signs, to SIMULATE each stranded round and
+   *  report why the chain would refuse it.
+   *
+   *  This interface declares only the members this repo actually calls — see the file header — so an
+   *  absent one means nobody has needed it yet, never that Anchor lacks it. `MethodsBuilder` really
+   *  does have `instruction(): Promise<TransactionInstruction>`; it was missing here because until
+   *  that script there was no caller. */
+  instruction(): Promise<TransactionInstruction>;
 }
 
 /** A `BN` off a decoded account THAT MAY NOT BE THERE AT ALL, as a `bigint`.

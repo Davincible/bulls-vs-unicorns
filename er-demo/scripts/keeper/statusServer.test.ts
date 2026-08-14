@@ -11,19 +11,27 @@
 //     some cache lives, which is the exact failure the whole status contract exists to prevent;
 //   * `/health` reading the status body — invisible until the day the body getter is the thing that
 //     is broken, at which point the liveness probe fails and the platform restarts a keeper for the
-//     one reason a restart cannot fix.
+//     one reason a restart cannot fix;
+//   * `/reclamation.json` "tidied" into the roster's shape — a token, or a missing CORS header —
+//     which locks the operator out of the report that says whether the arena is burning 9.96 SOL/day,
+//     on the one day they need it and with nothing anywhere saying why.
 //
 // `Bun.serve` is deliberately not exercised: vitest runs on Node, there is no `Bun` global, and the
 // transport is four lines wrapping a pure function. What is worth testing is the function.
 
 import { describe, expect, it, vi } from "vitest";
 import {
-  HEALTH_PATH, HOUSE_PATH, HOUSE_TOKEN_MIN_LENGTH, LOCAL_DEV_ORIGINS, STATUS_PATH, bearerMatches,
-  corsHeaders, handleKeeperRequest, originPolicyWarnings, resolveAllowedOrigins,
+  HEALTH_PATH, HOUSE_PATH, HOUSE_TOKEN_MIN_LENGTH, LOCAL_DEV_ORIGINS, RECLAMATION_PATH, STATUS_PATH,
+  bearerMatches, corsHeaders, handleKeeperRequest, originPolicyWarnings, resolveAllowedOrigins,
   resolveHouseTokenPolicy,
 } from "./statusServer.ts";
 
 const BODY = '{"schema":3}\n';
+
+/** Stands in for the rendered reclamation report. Shaped like one — `reclamation.test.ts` owns what
+ *  is IN it — because everything this file asserts is about the transport carrying bytes it was
+ *  handed, verbatim. */
+const RECLAMATION_BODY = '{"sweepGap":3,"runwayDays":501.2}\n';
 
 /** Long enough to pass `HOUSE_TOKEN_MIN_LENGTH`, and DERIVED from that constant rather than a literal
  *  of the right length — a hand-counted fixture is one edit away from silently testing the refusal
@@ -45,6 +53,7 @@ function deps(overrides: Partial<Parameters<typeof handleKeeperRequest>[1]> = {}
   return {
     body: () => BODY,
     heartbeatAgeSeconds: () => 1,
+    reclamation: () => RECLAMATION_BODY,
     policy: resolveAllowedOrigins("https://arena.example"),
     houseToken: null as string | null,
     houseWallets: () => HOUSE_WALLETS as readonly string[],
@@ -187,6 +196,85 @@ describe("the health endpoint", () => {
   });
 });
 
+describe("the reclamation endpoint", () => {
+  it("serves the rendered report verbatim as JSON, and no-store", () => {
+    // Verbatim: the handler is handed a string and returns it. Building the report here would put a
+    // computation on a route anybody on the internet can make the keeper run — and `no-store` for the
+    // same reason the status has it, since a cached burn rate is a lie about the present in exactly
+    // the way a cached heartbeat is.
+    const res = handleKeeperRequest(get(RECLAMATION_PATH), deps());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/json");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    return expect(res.text()).resolves.toBe(RECLAMATION_BODY);
+  });
+
+  it("does not render the report for a request that did not ask for it", () => {
+    // The mirror of the `/health` test above. The report getter is cheap today; a route that calls it
+    // anyway is a route that starts paying for it the day it stops being cheap.
+    const reclamation = vi.fn(() => RECLAMATION_BODY);
+    for (const path of [STATUS_PATH, HEALTH_PATH, "/"]) {
+      handleKeeperRequest(get(path), deps({ reclamation }));
+    }
+    expect(reclamation).not.toHaveBeenCalled();
+  });
+
+  it("NEEDS NO TOKEN — a request with no Authorization gets 200", async () => {
+    // ASSERTED SO THAT NOBODY LATER "HARDENS" THIS INTO THE ROSTER'S SHAPE WITHOUT ARGUING FOR IT.
+    // Every number in this body is derived from accounts anybody can already read: `round_counter`
+    // and `rounds_swept` are on a public devnet ledger, and the operator's balance is one
+    // `getBalance` against a pubkey that signs every transaction this arena has ever sent. A token
+    // here would protect nothing and would cost the one thing the route is for — a human with `curl`
+    // and no shell access to the Fly machine, at the moment they most need it.
+    const res = handleKeeperRequest(get(RECLAMATION_PATH), deps({ houseToken: TOKEN }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("www-authenticate")).toBeNull();
+    expect(await res.text()).toBe(RECLAMATION_BODY);
+  });
+
+  it("DOES carry the allow header for an allowed origin — the opposite of the roster, deliberately", () => {
+    // THE ASSERTION THAT STOPS SOMEBODY TIDYING THE TWO ROUTES TO MATCH. `HOUSE_PATH` must never
+    // carry `Access-Control-Allow-Origin`, and the test above says so in as many words; this one must,
+    // because it is public telemetry and the allowlist is what decides which PAGES may read public
+    // telemetry. The two rules look inconsistent side by side and are not: one route is protected by
+    // a token from services, the other is not protected at all because there is nothing to protect.
+    const res = handleKeeperRequest(get(RECLAMATION_PATH, { origin: "https://arena.example" }), deps());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBe("https://arena.example");
+    expect(res.headers.get("vary")).toBe("Origin");
+  });
+
+  it("sends no allow header to an unknown origin, and still serves the body", () => {
+    // CORS is a browser mechanism and the allowlist is about browsers. A `curl` or a server-to-server
+    // fetch sends no `Origin` at all and gets the body regardless — which is why the missing header
+    // here is not a refusal, and why the roster needs a token rather than an allowlist.
+    const res = handleKeeperRequest(get(RECLAMATION_PATH, { origin: "https://evil.example" }), deps());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
+    expect(res.headers.get("vary")).toBe("Origin");
+  });
+
+  it("treats HEAD as GET and refuses a POST with 405", () => {
+    expect(handleKeeperRequest(
+      new Request(`http://keeper.internal${RECLAMATION_PATH}`, { method: "HEAD" }), deps(),
+    ).status).toBe(200);
+    const res = handleKeeperRequest(
+      new Request(`http://keeper.internal${RECLAMATION_PATH}`, { method: "POST" }), deps(),
+    );
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("GET, HEAD, OPTIONS");
+  });
+
+  it("carries no schema field — see RECLAMATION_PATH for why a version here would be ceremony", () => {
+    // The transport's half of that rule: it must not add one either. `keeper-status.json` is
+    // versioned because a browser DRAWS from it; this body has one human with `curl` and no
+    // programmatic consumer, and pinning a version would mean a keeper deploy silently breaking a
+    // report nobody was parsing.
+    return expect(handleKeeperRequest(get(RECLAMATION_PATH), deps()).json())
+      .resolves.not.toHaveProperty("schema");
+  });
+});
+
 describe("everything else", () => {
   it("answers the preflight with 204 and the methods it actually supports", () => {
     const req = new Request(`http://keeper.internal${STATUS_PATH}`, {
@@ -223,15 +311,16 @@ describe("everything else", () => {
     expect(res.headers.get("allow")).toBe("GET, HEAD, OPTIONS");
   });
 
-  it("404s an unknown path while naming both PUBLIC ones", async () => {
+  it("404s an unknown path while naming every PUBLIC one", async () => {
     // This is what somebody gets when they curl the bare hostname to check a deploy worked, and a
-    // bare "404" at that moment is a dead end. It names the two public routes and deliberately not
+    // bare "404" at that moment is a dead end. It names the three public routes and deliberately not
     // the roster — see the roster describe block below.
     const res = handleKeeperRequest(get("/"), deps());
     expect(res.status).toBe(404);
     const text = await res.text();
     expect(text).toContain(STATUS_PATH);
     expect(text).toContain(HEALTH_PATH);
+    expect(text).toContain(RECLAMATION_PATH);
   });
 });
 
@@ -401,7 +490,7 @@ describe("the roster endpoint", () => {
     // same assertion over the bytes the publisher renders; this one covers the case where a future
     // edit to THIS file starts merging something into a public response.
     const d = deps({ houseToken: TOKEN });
-    for (const path of [STATUS_PATH, HEALTH_PATH]) {
+    for (const path of [STATUS_PATH, HEALTH_PATH, RECLAMATION_PATH]) {
       const text = await handleKeeperRequest(get(path), d).text();
       for (const wallet of HOUSE_WALLETS) expect(text).not.toContain(wallet);
     }

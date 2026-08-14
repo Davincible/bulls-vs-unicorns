@@ -15,9 +15,11 @@
 // makes it safe for the close policy to default ON, and the reason these checks are allowed to be
 // approximate where the chain's are not.
 //
-// THE EXPENSIVE MISTAKE IS STOPPING, NOT SKIPPING. A round the keeper cannot close is worth ~0.0086
-// SOL. A round the keeper WAITS on forever is worth that much multiplied by every older round behind
-// it in the scan, because the cursor never gets past it — and it is silent, because nothing fails.
+// THE EXPENSIVE MISTAKE IS STOPPING, NOT SKIPPING. A round the keeper cannot close is worth ~0.0235
+// SOL (COST-MODEL §1). A round the keeper WAITS on forever is worth that much multiplied by every
+// older round behind it in the scan, because the cursor never gets past it — and it is silent,
+// because nothing fails. The multiplier is what makes this the load-bearing choice: at 424 rounds/day
+// a scan that stops is ~9.96 SOL/day, against one round's deposit for a scan that steps past.
 // So every terminal state of a candidate advances the cursor, and the only case that holds it is one
 // the keeper can actually fix on the next pass.
 

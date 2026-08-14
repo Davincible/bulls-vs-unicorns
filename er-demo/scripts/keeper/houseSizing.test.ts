@@ -27,6 +27,7 @@ import {
   REAL_PLAYER_GRACE_SECONDS,
 } from "./config.ts";
 import {
+  HOUSE_FLOOR,
   HOUSE_MAX_WITHOUT_REAL_PLAYER,
   allocateHouseSides,
   arrivalFraction,
@@ -49,14 +50,29 @@ function everyLobby(): SideCounts[] {
  *  policy is consulted and which therefore breaks properties that are true of every other shape. */
 const everyLobbyWithSomebodyIn = () => everyLobby().filter((r) => r.side0 + r.side1 > 0);
 
-describe("the treasury rule", () => {
+describe("the treasury rule, which is the `unfightable` policy", () => {
   // The operator's standing instruction, in the words they gave it: "we don't do runs on only house
   // players, to protect the treasury." Everything in this block is that sentence, checked. It is
   // first in the file because it OVERRIDES the board policy below rather than interacting with it.
+  //
+  // IT IS NOW ONE OF TWO NAMED POLICIES, so every assertion here says which one it is about. That is
+  // not ceremony: `KEEPER_HOUSE_ONLY_ROUNDS` exists to retire this rule, and a test that left the
+  // policy implicit would be a test that stopped meaning anything the day the default moved. Naming it
+  // in each call makes the claims survive a change of default rather than silently follow it.
 
   it("puts one house fighter into a room with nobody real in it, and never a second", () => {
-    expect(houseFighterCount({ side0: 0, side1: 0 })).toBe(1);
+    expect(houseFighterCount({ side0: 0, side1: 0 }, "unfightable")).toBe(1);
     expect(HOUSE_MAX_WITHOUT_REAL_PLAYER).toBe(1);
+  });
+
+  it("is what a caller gets for FORGETTING to say which policy it wants", () => {
+    // THE PROPERTY THAT MAKES THE DEFAULT ARGUMENT A SAFETY DEVICE RATHER THAN A CONVENIENCE. A new
+    // call site, a fixture, a refactor that drops an argument — every one of them lands on the safe
+    // policy, so the failure mode of forgetting is "too careful" and never "quietly retired the
+    // guarantee". Pinned rather than trusted, because a default argument is one character from being
+    // the other one.
+    expect(houseFighterCount({ side0: 0, side1: 0 })).toBe(houseFighterCount({ side0: 0, side1: 0 }, "unfightable"));
+    expect(houseFighterCount({ side0: 0, side1: 0 })).toBe(HOUSE_MAX_WITHOUT_REAL_PLAYER);
   });
 
   it("keeps that room BELOW the count the chain will draw a fight from", () => {
@@ -67,7 +83,7 @@ describe("the treasury rule", () => {
     // `enough_to_fight`" — is therefore TRUE, so `abandon_round` is the one instruction left that
     // succeeds. That is the pair of facts that made rounds #24, #25 and #26 abandon cleanly instead
     // of fighting themselves.
-    expect(houseFighterCount({ side0: 0, side1: 0 })).toBeLessThan(MIN_FIGHTERS_TO_FIGHT);
+    expect(houseFighterCount({ side0: 0, side1: 0 }, "unfightable")).toBeLessThan(MIN_FIGHTERS_TO_FIGHT);
   });
 
   it("holds at whatever board target this process was configured with", () => {
@@ -79,7 +95,87 @@ describe("the treasury rule", () => {
     // process. The trap it pins is therefore "somebody raised the target and the empty room grew with
     // it", checked against the target actually in force rather than against a hardcoded 10.
     expect(HOUSE_BOARD_TARGET).toBeGreaterThanOrEqual(MIN_FIGHTERS_TO_FIGHT);
-    expect(houseFighterCount({ side0: 0, side1: 0 })).toBe(HOUSE_MAX_WITHOUT_REAL_PLAYER);
+    expect(houseFighterCount({ side0: 0, side1: 0 }, "unfightable")).toBe(HOUSE_MAX_WITHOUT_REAL_PLAYER);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// THE TWO EMPTY-ROOM POLICIES, PROVEN AGAINST EACH OTHER
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+//
+// `KEEPER_HOUSE_ONLY_ROUNDS` selects between two whole policies rather than moving a number, and
+// because the selection is a PARAMETER rather than an env read, both of them are provable here — in
+// one run, in one process, with no `vi.stubEnv`, no module reset and no second CI job. That is the
+// entire reason `houseFighterCount` takes an argument instead of reading `config.ts`: a guarantee that
+// can only be checked in a process started the right way is a guarantee nobody checks.
+//
+// THE LEMMA BELOW IS ALSO LOAD-BEARING FOR A TEST IN ANOTHER FILE, which is why it is a sweep rather
+// than three examples. `houseInvariants.test.ts` runs its full 86,580-shape sweep under `"unfightable"`
+// and a much smaller one under `"house-only"`, and the smaller one is COMPLETE rather than a shortcut
+// precisely because of what is proven here: the two policies differ on exactly one input — the empty
+// room — and agree everywhere else. Weaken this and the reduced sweep over there stops covering
+// anything.
+
+describe("`unfightable` and `house-only` differ in exactly one place", () => {
+  /** The chain's seat count. Written out for the same reason `houseInvariants.test.ts` writes it out:
+   *  `MAX_FIGHTERS` is a program constant that `src/chain/constants.ts` does not export, and the sweep
+   *  is a claim about the room the program actually has rather than about a number this file chose. */
+  const SEATS = 48;
+
+  /** Every real-fighter arrangement a forty-eight-seat round can hold — 1,225 of them. Pure
+   *  arithmetic with no base58 and no keypairs in it, so the whole sweep is microseconds; the
+   *  expensive dimension lives in `houseInvariants.test.ts`, and this is the cheap lemma that lets it
+   *  stay small. */
+  function everyRealShape(): SideCounts[] {
+    const shapes: SideCounts[] = [];
+    for (let side0 = 0; side0 <= SEATS; side0++) {
+      for (let side1 = 0; side0 + side1 <= SEATS; side1++) shapes.push({ side0, side1 });
+    }
+    return shapes;
+  }
+
+  it("sweeps every lobby a round can hold, so the agreement below is about all of them", () => {
+    expect(everyRealShape()).toHaveLength(1_225);
+  });
+
+  it("agrees on EVERY shape with somebody real in it — the mode changes nothing about a real round", () => {
+    // THE CLAIM THE WHOLE DESIGN RESTS ON. `KEEPER_HOUSE_ONLY_ROUNDS` is meant to change what happens
+    // in an EMPTY room and nothing else; if it also nudged the board a real player walks into, it
+    // would be a second sizing policy to keep in step with the first, and the two would drift. It does
+    // not, and this is why: the flag only removes an early return that never fires when somebody real
+    // is in the room, so from the first real fighter onward the two policies are the same arithmetic.
+    const disagreements: string[] = [];
+    for (const real of everyRealShape()) {
+      if (real.side0 + real.side1 === 0) continue;
+      const safe = houseFighterCount(real, "unfightable");
+      const houseOnly = houseFighterCount(real, "house-only");
+      if (safe !== houseOnly) disagreements.push(`${real.side0}v${real.side1}: ${safe} vs ${houseOnly}`);
+    }
+    expect(disagreements).toEqual([]);
+  });
+
+  it("disagrees on the empty room, which is the ONE input the flag exists to change", () => {
+    // The other half of the lemma, and the half that stops it being vacuous: if the two policies
+    // agreed everywhere INCLUDING the empty room, the sweep above would pass while the flag did
+    // nothing at all. One is unfightable by construction; the other is a board.
+    const empty = { side0: 0, side1: 0 };
+    expect(houseFighterCount(empty, "unfightable")).toBe(HOUSE_MAX_WITHOUT_REAL_PLAYER);
+    expect(houseFighterCount(empty, "house-only")).toBeGreaterThanOrEqual(MIN_FIGHTERS_TO_FIGHT);
+    expect(houseFighterCount(empty, "house-only")).not.toBe(houseFighterCount(empty, "unfightable"));
+  });
+
+  it("fields exactly what the general arithmetic already produces, so the mode is not new policy", () => {
+    // `house-only` deletes the override and adds nothing. What an empty room then gets is the ladder's
+    // own first row computed the ordinary way — `throttled = max(HOUSE_FLOOR, HOUSE_BOARD_TARGET)`
+    // against zero real players, `cover = 2` because both sides are bare — which is the board target
+    // at any setting where the target is the larger of the two.
+    //
+    // Written as the formula rather than as `10` deliberately, and it is the one place in this file
+    // that recomputes rather than restating a literal: the claim being made is "this is the SAME
+    // arithmetic as every other row", and only the formula can say that. The ladder's literals two
+    // blocks down are what pin the numbers.
+    const expected = Math.min(HOUSE_WALLET_COUNT, Math.max(HOUSE_FLOOR, HOUSE_BOARD_TARGET));
+    expect(houseFighterCount({ side0: 0, side1: 0 }, "house-only")).toBe(expected);
   });
 });
 
@@ -179,7 +275,13 @@ describe("houseFighterCount", () => {
     // deleting the `HOUSE_WALLET_COUNT` clamp or rewriting the throttle would leave this green while
     // real exposure moved. It is also wrong at the edges — at target 1 it computes 0 where the policy
     // actually fields 1, because `HOUSE_FLOOR` carries that case.
-    const busiestHouseBoard = Math.max(...everyLobby().map(houseFighterCount));
+    // WRAPPED RATHER THAN PASSED BY REFERENCE, and it is not style. This was `.map(houseFighterCount)`,
+    // which hands the callback the INDEX as its second argument — harmless while the function took one
+    // parameter, and the moment `policy` was added it meant every lobby after the first was sized under
+    // the policy `1`, `2`, `3`… Not one of those is `"unfightable"`, so the empty room fell through to
+    // the board arithmetic and this assertion started reporting the wrong exposure. It failed loudly
+    // here on the first run, which is the only reason it is a footnote rather than a bug.
+    const busiestHouseBoard = Math.max(...everyLobby().map((real) => houseFighterCount(real, "unfightable")));
     expect(busiestHouseBoard).toBe(HOUSE_BOARD_TARGET - HOUSE_DISPLACEMENT);
     expect(busiestHouseBoard * HOUSE_STAKE_MAX_USD).toBeLessThanOrEqual(180);
   });

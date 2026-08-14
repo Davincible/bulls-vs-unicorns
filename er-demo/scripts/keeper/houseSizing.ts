@@ -114,8 +114,51 @@ export const HOUSE_FLOOR = 2;
  *
  *  Zero would satisfy the chain rules just as well and is rejected on the product: an empty room is
  *  the thing the house exists to prevent, and a visitor who arrives to nothing does not wait to find
- *  out that the arena is alive. */
+ *  out that the arena is alive.
+ *
+ *  ────────────────────────────────────────────────────────────────────────────────────────────────
+ *  AND IT IS STILL NOT A KNOB, NOW THAT THERE IS A MODE THAT DOES NOT WANT IT
+ *  ────────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ *  `KEEPER_HOUSE_ONLY_ROUNDS` asks for an arena that keeps running with nobody real in it, which is
+ *  precisely this rule being asked to stand aside. The obvious implementation is to make this number
+ *  configurable and set it to the board target. That is rejected, and the distinction is the whole
+ *  design rather than a stylistic preference:
+ *
+ *    * A CONFIGURABLE NUMBER means the guarantee has a dial on it. Every value between 2 and the board
+ *      is silently house-versus-house, so the safe setting becomes one point in a range an operator can
+ *      typo their way off, and every reader downstream has to look up what it is set to before they can
+ *      say what the arena does.
+ *    * A SECOND NAMED POLICY (`EmptyRoomPolicy`, below) means there is nothing to typo. There are two
+ *      whole policies, each named for the property it guarantees; the safe one is the default argument;
+ *      and an operator who wants the other has to ask for it by name, once, at the boundary. The number
+ *      here never moves, and "1" keeps meaning exactly what this comment says it means.
+ *
+ *  So this constant is unchanged, in force under `"unfightable"`, and simply not consulted under
+ *  `"house-only"` — which is a much easier thing to prove than a clamp that happens to be set to 1. */
 export const HOUSE_MAX_WITHOUT_REAL_PLAYER = 1;
+
+/** WHAT A ROOM WITH NOBODY REAL IN IT IS ALLOWED TO HOLD. Two whole policies, NAMED FOR THE PROPERTY
+ *  EACH ONE GUARANTEES rather than for the count each one produces — because the count is a
+ *  consequence and the property is the decision.
+ *
+ *    "unfightable"  the standing treasury rule. `HOUSE_MAX_WITHOUT_REAL_PLAYER` fighters, which is
+ *                   below `enough_to_fight`, so the CHAIN refuses to draw the round for anybody and
+ *                   `abandon_round` stays legal at the deadline. This is the default in every sense
+ *                   that matters: the default argument below, the default of the env flag, and the
+ *                   behaviour of every call site that has not heard of the other one.
+ *    "house-only"   the empty room is an ordinary room. It is filled, drawn, and fought by house
+ *                   wallets. `KEEPER_HOUSE_ONLY_ROUNDS` is the operator asking for this by name, and
+ *                   `HOUSE_ONLY_ROUNDS_ENABLED` in `config.ts` prices what it gives up — including the
+ *                   part nobody guesses, which is that an empty round can no longer be abandoned.
+ *
+ *  THE POLICY IS A PARAMETER, NOT AN ENV READ IN THIS FILE, and that is deliberate. Everything here is
+ *  pure — no chain, no clock, no `process.env` — which is what lets `houseInvariants.test.ts` sweep
+ *  86,580 lobby shapes and what lets BOTH policies be proven in one process, in one run, with no module
+ *  reset and no environment mutation. A module-level `if (HOUSE_ONLY_ROUNDS_ENABLED)` would make the
+ *  guarantee provable only in a process that had been started the right way, which is the same as not
+ *  provable. */
+export type EmptyRoomPolicy = "unfightable" | "house-only";
 
 /** THE SIZE THE HOUSE HOLDS THE BOARD AT, counting real players, and the ceiling on its own roster.
  *
@@ -131,7 +174,8 @@ export const HOUSE_MAX_WITHOUT_REAL_PLAYER = 1;
 /**
  * HOW MANY HOUSE FIGHTERS THIS LOBBY GETS.
  *
- *     nobody real in the room  ->  HOUSE_MAX_WITHOUT_REAL_PLAYER, and nothing below is consulted
+ *     nobody real, policy "unfightable"  ->  HOUSE_MAX_WITHOUT_REAL_PLAYER, and nothing below is
+ *                                            consulted
  *
  *     throttled = max(HOUSE_FLOOR - realTotal, HOUSE_BOARD_TARGET - HOUSE_DISPLACEMENT * realTotal)
  *     cover     = how many sides are currently empty (0, 1 or 2)
@@ -139,10 +183,12 @@ export const HOUSE_MAX_WITHOUT_REAL_PLAYER = 1;
  *
  * Read it as four promises, in order of how much they matter:
  *
- *   1. THE HOUSE NEVER FIGHTS ITSELF. The early return is the treasury rule, and it is first because
- *      it overrides every other consideration in this file including the ones about how the room
- *      looks. One fighter is below `enough_to_fight`, so the CHAIN refuses to draw the round — see
- *      `HOUSE_MAX_WITHOUT_REAL_PLAYER` for why that is worth more than a keeper that declines to.
+ *   1. THE HOUSE NEVER FIGHTS ITSELF, under the `"unfightable"` policy. The early return is the
+ *      treasury rule, and it is first because it overrides every other consideration in this file
+ *      including the ones about how the room looks. One fighter is below `enough_to_fight`, so the
+ *      CHAIN refuses to draw the round — see `HOUSE_MAX_WITHOUT_REAL_PLAYER` for why that is worth
+ *      more than a keeper that declines to. `"house-only"` is the operator asking for this promise to
+ *      be given up, by name; the block at the foot of this comment is what they get instead.
  *   2. a fight can happen — `HOUSE_FLOOR` never lets a lobby holding real players fall under
  *      `enough_to_fight`;
  *   3. the board stays the size it is meant to be — `HOUSE_BOARD_TARGET` less the crowd already in it;
@@ -168,14 +214,39 @@ export const HOUSE_MAX_WITHOUT_REAL_PLAYER = 1;
  * on side 0 still get one house fighter, and it stands on side 1. That is the one case where the
  * house adds a fighter to a room that does not need more fighters, and it is the case where the
  * alternative is a round that cannot be drawn.
+ *
+ * ────────────────────────────────────────────────────────────────────────────────────────────────
+ * WHAT `"house-only"` IS, AND WHY IT IS THE ABSENCE OF POLICY RATHER THAN A NEW ONE
+ * ────────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * It deletes the early return and nothing else. What the general arithmetic then produces for an empty
+ * room is not a special case that had to be designed — it is the ladder's own first row, computed the
+ * way every other row is:
+ *
+ *     throttled = max(HOUSE_FLOOR - 0, HOUSE_BOARD_TARGET - HOUSE_DISPLACEMENT * 0)
+ *               = max(HOUSE_FLOOR, HOUSE_BOARD_TARGET)  =  the board target, at any sane setting
+ *     cover     = 2, because both sides are empty and both need somebody on them
+ *     count     = max(throttled, cover)  =  the board
+ *
+ * So the mode is the ABSENCE of the override, not a second policy to keep in step with the first. That
+ * is worth more than the two lines it saves: the arrival ramp, the side allocation and the stake band
+ * all apply to a house-only round unchanged, because none of them ever knew about the override. A
+ * house-only lobby therefore fills the way a lobby with a person in it fills — one fighter at a time,
+ * across the window, onto alternating sides, at stakes drawn from the same band — rather than reverting
+ * to the single burst that a separately-written empty-room path would have had to re-implement.
  */
-export function houseFighterCount(real: SideCounts): number {
+export function houseFighterCount(real: SideCounts, policy: EmptyRoomPolicy = "unfightable"): number {
   const realTotal = real.side0 + real.side1;
   // FIRST, AND ABOVE EVERYTHING ELSE HERE. A room with nobody real in it is a room that must not be
   // able to hold a fight, whatever the board policy would otherwise like. Returning early rather than
   // folding this into the `min` below is deliberate: a clamp can be widened by editing a constant, an
   // early return has to be deleted on purpose.
-  if (realTotal === 0) return HOUSE_MAX_WITHOUT_REAL_PLAYER;
+  //
+  // THE DEFAULT ARGUMENT IS THE SAFE POLICY, which is the one property of this signature worth
+  // defending. A caller that forgets the parameter — a new call site, a test fixture, a refactor that
+  // drops an argument — gets today's guarantee rather than a house-versus-house round, so the failure
+  // mode of forgetting is "too careful" instead of "silently retired the treasury rule".
+  if (realTotal === 0 && policy === "unfightable") return HOUSE_MAX_WITHOUT_REAL_PLAYER;
 
   const throttled = Math.max(
     HOUSE_FLOOR - realTotal,

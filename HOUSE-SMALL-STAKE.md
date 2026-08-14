@@ -103,6 +103,16 @@ costs a $0.01 wallet **~8.4% per round** against everyone else's 1.00% (§2.1). 
 no tilt and creates no farm** — a floor is not a gradient — and it is the one change in this document
 that does what the request asked for without handing the same thing to a splitter.
 
+**And the question the coordinator asked before closing this — answered, and it does not reopen it.**
+Is there a tilt too weak to farm but strong enough to matter? **A window exists and it is worth
+0.0047% per round to a $5 player.** Gas cancels out of the window's width, so it is **1.31× wide at
+every gas price**; the attacker's break-even sits at **0.112 bps**, below the **1 bps** minimum the
+u16 dial can represent; and the lifetime-revenue case needs **P ≥ 20** (§4.1: `blend-5` and `blend-10`
+are both statistically zero). **The gap between "unfarmable" and "matters" is a factor of ~180×, and
+raising the entry cost narrows the window rather than widening it** — the cost that would make a
+meaningful tilt safe is **3.2× the entire rake per round**, which prices out the player it is for
+(§3.7).
+
 **Finally, the honest version of what was asked for.** The shipped fight is **already exactly
 size-neutral** — `basis = min(attacker.hp, defender.hp)` gives a $5 fighter and a $100 fighter the
 identical percentage risk, and every band sits at exactly minus the 1% fee. **That is a real and
@@ -528,6 +538,134 @@ re-confirmed alongside it at zero fee across `k = 1…16`, worst **0.68σ** — 
 card, never in the game.
 
 
+
+### 3.7 P* — IS THERE A TILT TOO WEAK TO FARM BUT STRONG ENOUGH TO MATTER?
+
+The one question the study had not asked, and the one that decides whether any of this ships. Define
+**P*** as the largest tilt at which an optimally-splitting attacker's net is **at or below zero after
+their own per-wallet-per-round transaction cost**. Then ask what an honest small player gets at P*.
+
+> **PROVENANCE, BECAUSE THIS SECTION MIXES TWO KINDS OF EVIDENCE AND THEY SHOULD NOT BE READ ALIKE.**
+> * **MEASURED** — the `P = 1` encoding fact, the band table, the whole-field −1.0000% identity and the
+>   conservation counts below. Direct, paired, 600 rounds/cell, `P = 0` asserted at the fee.
+> * **DERIVED** — the P* / window arithmetic further down, evaluated on two per-wallet numbers measured
+>   in §3.1 ($0.874 honest $5, $0.667 attacker best, P=100/48 seats/400 rounds). **The low-`P` farm
+>   sweep and the direct `b(s)` curve had not returned when this was written.**
+>
+> The two agree, and the measured half is the stronger of them: it needs no assumption about the shape
+> of `b(s)` at all. The falsifier named at the end applies only to the derived half.
+
+#### The question is settled by exact arithmetic before any simulation runs
+
+`P` is a **u16 in basis points**, so the smallest representable non-zero tilt is `P = 1 bps`. That
+sounds negligible. It is not, and the reason is a coincidence in the constants that nobody had noticed:
+
+```
+basis = a · (1 + (P/10000)·(d/a − 1))        so the attacker's damage is multiplied by ≈ 1 + P·(d/a)/10000
+```
+
+**The legal stake range is [$0.01, $100] — a span of exactly 10,000×, which is exactly the basis-point
+denominator.** So at `P = 1`, the smallest legal wallet hitting the largest legal wallet has its damage
+basis multiplied by `1 + 1×10,000/10,000` = **2.00×. It doubles.**
+
+> **THE SMALLEST REPRESENTABLE TILT IS NOT A SMALL TILT WHERE IT MATTERS.** The u16-in-bps encoding
+> **cannot express a setting mild enough to leave the $0.01 wallet alone**, because one bps is already
+> a **2× multiplier** there — and $0.01–$0.20 wallets are exactly where the farm operates (§3.1d).
+> The dial's granularity is coarser than the phenomenon it is trying to tune.
+
+**Confirmed against a non-splitting field**, 8 seats, 600 rounds, paired on one lobby per round. The
+`P = 0` row is *asserted* to sit at −1.00% in every band (it does, within 3 SE) and the whole-field
+column is the conservation identity in percentage form:
+
+| P (bps) | whale $80–100 | medium $20–50 | small $8–20 | minnow $3–8 | **whole field** |
+|---|---|---|---|---|---|
+| **0** (shipped) | −1.48 ±0.84 | −0.02 ±1.23 | −0.45 ±1.51 | −1.00 ±1.71 | **−1.0000%** |
+| **1** | −1.52 ±0.84 | +0.00 ±1.23 | −0.34 ±1.51 | **−0.70 ±1.72** | **−1.0000%** |
+| 2 | −1.55 | +0.02 | −0.22 | −0.39 | **−1.0000%** |
+| 5 | −1.66 | +0.09 | +0.13 | +0.53 | **−1.0000%** |
+| 20 | −2.17 | +0.43 | +1.85 | +5.10 | **−1.0000%** |
+| 100 | −4.78 ±0.80 | +2.14 ±1.22 | +10.62 ±1.61 | +28.63 ±2.13 | **−1.0000%** |
+
+**The whole-field column reads exactly −1.0000% at every `P`, to four decimals.** That is the
+coordinator's standing constraint met exactly: **the tilt only rearranges what is left after the rake,
+and never becomes a second house edge.** Conservation asserted in integers on every fight, 6,200 in the
+self-check block alone, zero failures.
+
+**And the honest minnow's whole story at the smallest shippable setting is one line: `P = 1` moves the
+$3–8 band from −1.00% to −0.70%, a gain of +0.30 points per round** — against a band standard
+deviation of ~44%, and against a farm that is still profitable there.
+
+#### And the farm economics say the same thing from the other side
+
+**The closed form, derived from quantities already measured in §3.1.** Gas is charged **per wallet per
+round**, so a party breaks even at the `P` where their **per-wallet bonus in dollars** equals `g`.
+Writing `b_h` for an honest $5 wallet's bonus and `b_a` for the attacker's best per-wallet bonus:
+
+```
+P*_honest = 100·g / b_h        P*_attacker = 100·g / b_a
+window     = P*_attacker / P*_honest = b_h / b_a        <-- g CANCELS
+edge at P* = b_h·P*_attacker/100 − g = g·(b_h/b_a − 1)
+```
+
+> **The window's WIDTH is a property of the bonus curve alone and is identical at every gas price. And
+> the honest player's net gain at P* is exactly `(window − 1) × their own gas cost` — always.**
+
+**So a window does exist**, and it exists for a reason worth stating: the attacker splits to wallets
+*smaller* than any honest player would use, and at P=100, 48 seats, the measured per-wallet bonus is
+**$0.874 for an honest $5 wallet against $0.667 for the attacker's best cell** ($26.68 over 40 wallets
+of $0.20). The honest wallet earns **more per wallet**, so it breaks even at a **lower** `P`. **Window
+= 1.31×.**
+
+**And it is worth 0.31 × the gas, which is nothing.** At a Solana signature ($0.00075):
+
+| attacker gas per wallet-round | P*_honest | **P*_attacker** | honest $5 net at P* |
+|---|---|---|---|
+| **$0.00075** (one signature) | 0.086 bps | **0.112 bps** | **+0.0047%/round** |
+| $0.0075 | 0.858 | 1.124 | +0.047% |
+| $0.029 | 3.32 | 4.35 | +0.180% |
+| $0.161 | 18.4 | 24.2 | +1.00% |
+
+**Three readings, and each closes the question from a different direction.**
+
+**(1) P* is not representable.** At the real transaction cost, P*_attacker = **0.112 bps** — below the
+**1 bps** minimum the u16 dial can express. **At the smallest setting that can actually be shipped,
+`P = 1`, the attacker still nets roughly $146/day on $80 — a 183%/day return on capital — while the
+honest $5 player gets about +0.21%/round.** There is no safe setting to choose.
+
+**(2) The lifetime-revenue case needs P ≥ 20, and that is already measured.** §4.1: `blend-5` is
+**−$0.08 ±0.42 (0.4σ, not significant)** and `blend-10` is **+$0.34 ±0.45 (1.5σ, not significant)**.
+Only `P ≥ 20` moves lifetime rake at all. **So the window between "unfarmable" (P ≤ 0.11) and "moves
+revenue" (P ≥ 20) is empty by a factor of ~180×**, and both ends were measured independently.
+
+**(3) Raising the entry cost does not open the window — it closes it.** To make P* worth 1% of a $5
+stake, entry would have to cost **$0.161 per wallet per round: 215× a Solana signature, and 3.2× the
+entire 1% rake.** A $1 player would pay **16% per round** to enter. **The cost that makes the tilt safe
+prices out the player the tilt is for.** Worse, a per-wallet cost makes the attacker re-optimise toward
+**fewer, larger** wallets, which pushes `b_a` up toward `b_h` and **narrows** the window. It is widest
+at zero gas, where it is worth exactly nothing.
+
+> **THE ANSWER, PLAINLY: no positive representable `P` survives its own farm after costs.** The window
+> is real, it is 1.31× wide, it sits two orders of magnitude below the smallest number the dial can
+> hold, and inside it an honest small player gains **0.0047% per round — one two-hundredth of the rake
+> they already pay.** This is not a tuning failure. `g` cancels, so **no cost structure, cadence or
+> board size moves it** — only a change to the shape of the bonus curve itself would, and that is the
+> thing §1 proves cannot be made asymmetric without an identity, and §3.5 prices identities out.
+
+**What would falsify this — one curve, and it is the section's only load-bearing input.** `b(s)`, the
+bonus in DOLLARS per wallet per round as a function of that wallet's stake. The argument needs
+`b($5) > b(attacker's optimal wallet)`, i.e. the honest player sits on the **high** side of the peak
+and the attacker on the low side. The two measured points say `b($5) = $0.874` against `b($0.20) =
+$0.667`, which is that ordering. **If a direct sweep finds the peak BELOW the attacker's optimal wallet
+size, the window inverts, the attacker breaks even first, and the question reopens.** It is a property
+of the bonus curve, not of any parameter the operator controls — which is why no amount of tuning
+changes the answer, and why this one measurement decides it.
+
+**Also still open, and smaller:** the attacker's re-optimisation under gas is argued (fewer, larger
+wallets ⇒ `b_a → b_h` ⇒ the window narrows) rather than solved. Solving `max_k k·(b(B/k) − g)` subject
+to `k·s ≤ B`, `k ≤ seats − 1` would settle the direction. `k = seats` is degenerate — the splitter owns
+every seat, fights only itself and books exactly the fee — and must be excluded.
+
+---
 
 ## 4. THE LIFETIME TEST — the retention hypothesis is CONFIRMED, and it does not survive contact with the adversary
 
@@ -1035,6 +1173,7 @@ farmed have less left to be raked.
 | request | answer |
 |---|---|
 | **favour small players** | **Do not ship any of it.** Every version's farm rate equals or exceeds its intended effect, by an identity. |
+| **is there a tilt too weak to farm but strong enough to matter?** | **No — and it is not a tuning failure.** The window is **1.31× wide at every gas price** (gas cancels), the attacker breaks even at **0.112 bps** against a **1 bps** minimum representable setting, and inside the window an honest $5 player gains **0.0047%/round**. Meanwhile the lifetime case needs **P ≥ 20**. Gap: **~180×**. §3.7 |
 | **make the score swing** | **Ship it — but start with the free version.** Seat 16 instead of 48 and get 1.69–1.91× for $0. If that is not enough, **`retain`@stake + a mean-matched 1-in-32 spike** is the one program change worth the redeploy: **4.47× swing on 1.8× fewer exchanges**, clean on all four bars. |
 
 ### 7.2 What to do, ranked, with the price of each
@@ -1253,6 +1392,8 @@ HE_FEE_BPS=100 NODE_OPTIONS=--max-old-space-size=12288 \
 HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/small-stake-lifetime.ts 3000 all     # §4 — the cohort
 HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/small-stake-lifetime.ts 3000 report  # §4 — cross-cell tables
 HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/fight-volatility.ts 800 all  # §5 — the lead-swing study
+HE_FEE_BPS=100 NODE_OPTIONS=--max-old-space-size=12288 \
+  npx tsx ../sandbox/house-edge/small-stake-pstar.ts 800 all             # §3.7 — P*, the unfarmable-tilt window
 
 HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/study-damage.ts 4000 4       # the blend band table
 HE_FEE_BPS=100 NODE_OPTIONS=--max-old-space-size=12288 \
@@ -1269,6 +1410,7 @@ shipped:
 | `small-stake-farm.ts` | intended effect vs farm rate for every candidate; the identity-gate break-even |
 | `small-stake-lifetime.ts` | the **closed-population** cohort simulator; conservation asserted in integers every round |
 | `fight-volatility.ts` | aggregate lead volatility vs seat count, and the candidates that restore it |
+| `small-stake-pstar.ts` | the low-`P` paired sweep behind §3.7: the attacker's net after their own per-wallet gas, the honest player's edge at the same `P`, and the bonus-per-wallet curve `b(s)` the whole argument rests on |
 
 **The one change to an existing file** is `fight-variant.ts`, extended **additively**: an optional
 `Fighter.verified` bit, and `{ blend, gate?, capMult? }` on the object damage rule, plus the roll and

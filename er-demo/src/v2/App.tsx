@@ -18,6 +18,7 @@ import { SideRail } from "./ui/SideRail.tsx";
 import { StakeDock } from "./ui/StakeDock.tsx";
 import { StickyStatus } from "./ui/StickyStatus.tsx";
 import { ToastRail } from "./ui/ToastRail.tsx";
+import { useSharedKeeperStatus } from "./ui/keeperCadence.ts";
 import { ShellContext, type Rail, type ShellApi } from "./ui/shell.ts";
 import { useKeyboardNav } from "./ui/useKeyboardNav.ts";
 import { REDUCED_MOTION, useMediaQuery } from "./ui/useMediaQuery.ts";
@@ -30,6 +31,59 @@ import { LeaderboardView } from "./views/LeaderboardView.tsx";
 import { ReferralsView } from "./views/ReferralsView.tsx";
 
 const INTRO_KEY = "v2_intro_seen";
+
+/**
+ * THE OPERATOR IS PLAYING ITSELF, AND THE PAGE SAYS SO.
+ *
+ * The keeper has an opt-in mode in which it runs rounds continuously with nothing but its own wallets
+ * in them (`KeeperStatus.keeper.houseOnlyRounds`). This page is public and reachable, so an arena that
+ * is busy every minute of the day is a claim being made to whoever opens it — and without this line
+ * the claim would be one nobody ever decided to make. It is the same failure the keeper status file
+ * exists for, one layer out: not a wrong number, a wrong impression, drawn confidently.
+ *
+ * THE COPY IS MODE-SHAPED AND NEVER ROUND-SHAPED, which is the whole difficulty of this notice. A real
+ * player can enter in this mode at any moment, and from that instant the round on screen holds a real
+ * fighter and a real pot. "The fighters below are bots" would therefore be false on exactly the rounds
+ * that matter most, and false in the direction that tells a player their own entry did not count. So
+ * what is stated is what the OPERATOR is doing and what a visitor may not infer from a full lobby —
+ * both of which are true whoever is standing in it. See `houseOnlyRounds`, where the same rule is
+ * written down on the field itself.
+ *
+ * IT IS SILENT WHEN THE KEEPER IS DOWN OR ABSENT, and that is not the usual "no data, no banner"
+ * reflex. A stale file is a claim about a process that has since stopped saying anything: nothing is
+ * running rounds at all in that state, house or otherwise, so the sentence has no subject. Silence is
+ * the direction this whole mechanism chooses whenever it cannot back what it would say.
+ *
+ * ITS OWN COMPONENT, NOT FOUR LINES INSIDE `Notices`, for the reason `KeeperStatusProvider.tsx` was
+ * split out: a component that reads this context re-renders on every poll, twice a second, forever.
+ * `Notices` is inside the provider's subtree — it renders under `<Shell />`, which is the provider's
+ * child — so the alternative was never a second subscriber to the feed, it was waking the fixture line
+ * and both error banners on a heartbeat that says nothing about any of them. This way the subscription
+ * is scoped to the one element whose visibility actually depends on it.
+ */
+function HouseRoundsNotice() {
+  const { status, stale } = useSharedKeeperStatus();
+  if (status === null || stale || !status.keeper.houseOnlyRounds) return null;
+
+  return (
+    // `data-testid` for the same reason `RoundClockSlot` carries one: there is no structural selector
+    // that finds this banner and nothing else — it is one of four `.banner--quiet` blocks this
+    // component can render, distinguished from the other three only by the words in it. Selecting on
+    // those words
+    // would make an e2e test about WHETHER THE DISCLOSURE APPEARS fail the moment somebody improves
+    // the sentence, which teaches the next person that the test is noise. The handle is stable; the
+    // copy is free to move.
+    <div className="banner banner--quiet" role="status" data-testid="house-rounds-notice">
+      <span className="u nowrap">House rounds</span>
+      <span className="banner-t">
+        The operator is filling rounds with its own wallets so the arena keeps running between real
+        players. A busy lobby here is not a crowd. It is not a claim about any particular round
+        either — a real player can enter at any moment, and nothing in this notice says whether one
+        has.
+      </span>
+    </div>
+  );
+}
 
 /** Persistent notices. The program error is fatal — with no program there is no round, no deploy
  *  and no extract, so it stays on screen rather than passing through as a toast. */
@@ -60,6 +114,11 @@ function Notices() {
           </span>
         </div>
       ) : null}
+
+      {/* Beside the fixture line rather than after the two error banners: both are DISCLOSURES about
+          what the page is showing and where it came from, and they belong together and above the
+          transient reports of something having gone wrong. */}
+      <HouseRoundsNotice />
 
       {status.roundError ? (
         <div className="banner banner--quiet" role="status">

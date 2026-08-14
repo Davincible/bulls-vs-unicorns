@@ -91,8 +91,33 @@ import { PHASE_NAME } from "../../chain/constants.ts";
  *  The cost is this module's standing one: writer and reader ship together, so there is one deploy's
  *  stretch in which the page says "keeper is down". That is silence, which is the failure direction
  *  this file always chooses, and it is the right price for not serving a file that still says the
- *  thing we stopped saying. */
-export const KEEPER_STATUS_SCHEMA = 5;
+ *  thing we stopped saying.
+ *
+ *  6 — ADDED `keeper.houseOnlyRounds` and `keeper.notOpeningRounds`. One is a disclosure and one is a
+ *  countdown rule; they arrive in the same bump because the same deploy turns both on.
+ *
+ *  THE FIRST IS THE OPT-IN MODE in which the keeper stops waiting for a person and runs rounds
+ *  continuously with nothing but its own wallets in them. The page is public and reachable, so an
+ *  arena that is busy every minute of the day is a claim being made to whoever opens it, and the page
+ *  has to say what is behind that. A v5 file cannot answer the question — it does not answer "no", it
+ *  has no way to answer at all — so defaulting the absent field to `false` would be the reader
+ *  asserting "there are people in these rounds" on behalf of a keeper that never said so. That is
+ *  this module's own failure mode with a different subject: a confidently-drawn wrong CLAIM in place
+ *  of a confidently-drawn wrong number.
+ *
+ *  THE SECOND IS A SECOND CAUSE OF "NO FURTHER ROUND IS COMING". Alongside the funding floor of
+ *  schema 4, the keeper now also refuses to open when its measured net cost per round says rent is
+ *  not being reclaimed — ~9.96 SOL/day against ~0.030 while `close_round_account` works (COST-MODEL
+ *  §4), which is a full payer emptied in about thirty-six hours. Both causes are one sentence to a
+ *  reader, so the reason is derived once by the writer and read once by `keeperCountdown`. A v5 file
+ *  has the same hole here as a v3 file had for `lowBalance`, one cause along: fresh heartbeat,
+ *  settled round, a `nextLobbyOpensAt` latched before the brake tripped, and a page counting down to
+ *  a lobby nothing is going to open. Defaulting the absent field to `null` would be the reader
+ *  inventing "rounds are coming", which is the promise this file exists to withhold.
+ *
+ *  Rejected outright, for the reason every bump above rejects: writer and reader ship together, the
+ *  stretch where that costs anything is one deploy long, and what it costs is silence. */
+export const KEEPER_STATUS_SCHEMA = 6;
 
 /** WHERE THE BROWSER FETCHES THE STATUS FROM. Relative by default; absolute in production.
  *
@@ -244,6 +269,30 @@ export interface KeeperLowBalance {
   floorLamports: string;
 }
 
+/**
+ * WHY THE KEEPER HAS STOPPED OPENING ROUNDS — a CLOSED VOCABULARY, written here, in this repository,
+ * by us, with no inputs.
+ *
+ * Same construction as `KeeperError.context` and for the same reason, which is worth restating rather
+ * than cross-referencing: a string that was never interpolated from an exception, an account or a
+ * count cannot carry one into the payload, so it is publishable by construction instead of by an
+ * audit somebody has to repeat every time a library rewords a message. A union rather than a
+ * `string` is what makes that property visible to the compiler at the writer's end and checkable at
+ * the reader's — see `parseKeeperStatus`, which validates against this list rather than against
+ * `isString`.
+ *
+ *   `"low-balance"`        the payer is below the keeper's configured floor. `keeper.lowBalance`
+ *                          carries the amounts; this says what they mean for the next round.
+ *   `"rent-not-reclaimed"` the burn brake. Measured net cost per round says `close_round_account` is
+ *                          not returning the ~0.0235 SOL it holds per round, and at the cadence the
+ *                          keeper runs that is ~9.96 SOL/day against the ~0.030 it budgets for
+ *                          (COST-MODEL §4) — roughly thirty-six hours from a full payer to an empty
+ *                          one. The keeper stops opening at the point it can MEASURE the leak rather
+ *                          than spending its way down to the floor and reporting `"low-balance"` a
+ *                          day later, which is the same outage discovered too late to act on.
+ */
+export type NotOpeningReason = "low-balance" | "rent-not-reclaimed";
+
 export interface KeeperStatus {
   schema: number;
   keeper: {
@@ -286,9 +335,77 @@ export interface KeeperStatus {
      *  left to send. Published rather than logged so the count is visible without shell access. */
     wedgedRounds: number[];
     /** Non-null while the payer is below the keeper's floor and no new round will be opened. See
-     *  `KeeperLowBalance` — it is a fourth state, not a detail, and `keeperCountdown` refuses to
-     *  promise a next lobby while it is set. */
+     *  `KeeperLowBalance` — it is a fourth state, not a detail.
+     *
+     *  IT IS NO LONGER WHAT THE COUNTDOWN READS. `keeperCountdown` asks `notOpeningRounds`, which the
+     *  keeper sets alongside this in the same pass; what lives here is the amount and the floor, which
+     *  is what an operator needs in order to act. See `notOpeningRounds` for why the two were split. */
     lowBalance: KeeperLowBalance | null;
+    /** WHY NO FURTHER ROUND IS COMING, or null while the keeper is opening rounds normally. The one
+     *  field `keeperCountdown` asks — see `NotOpeningReason` for the vocabulary and for what each
+     *  reason means.
+     *
+     *  WHY THIS EXISTS RATHER THAN THE COUNTDOWN GOING ON READING `lowBalance`. There are two causes
+     *  now. A keeper below its funding floor refuses to open; so does a keeper whose burn brake has
+     *  tripped, because measured cost per round says the rent is not coming back and the arena is
+     *  burning 330× what it budgeted (COST-MODEL §4). To a reader those are one sentence — no further
+     *  round is coming — and the page has exactly one decision to make about them.
+     *
+     *  THE COUNTDOWN RULE CANNOT BE LEFT READING A DETAIL BLOCK, and the reason is the latch.
+     *  `honestNextLobbyOpensAt` fixes a next-lobby time per round, so the writer clearing its own
+     *  proposal does not clear a promise that has already been latched — which is precisely why
+     *  `keeperCountdown` needed a reader-side check for `lowBalance` in the first place. A second
+     *  cause needs the same protection, and giving it a second detail block for the reader to check
+     *  would work exactly once: the third cause arrives, a caller checks two of the three, and the
+     *  page counts down to a round nothing will open. One derived field with a closed vocabulary, read
+     *  by the countdown, with the detail blocks staying detail, is the shape that does not accumulate.
+     *
+     *  `lowBalance` KEEPS EVERYTHING ELSE — its field, `isKeeperOutOfFunds`, and its place as the only
+     *  thing in the file that says what the floor is and how far under it the payer sits, which is the
+     *  "send SOL until it is above this" detail. What changed is its rank: it is now the DETAIL FOR
+     *  ONE OF THE REASONS rather than the reason itself. The keeper sets both, deliberately, at the
+     *  call site that knows which reason applies — see `setNotOpeningRounds` in
+     *  `scripts/keeper/statusFile.ts`, where the two are kept separate so neither is inferred from the
+     *  other.
+     *
+     *  NO PREDICATE ACCOMPANIES IT, which is a decision rather than an omission. `isKeeperOutOfFunds`
+     *  exists so a view can say "the arena is out of money", and no view yet does — nothing outside
+     *  this module and its tests calls it. Everything the page actually needs from this field is the
+     *  countdown suppression below, which `keeperCountdown` already performs on behalf of every
+     *  caller. A fifth exported predicate with no reader would be a precedence rule nobody exercises,
+     *  free to drift out of step with the four that are. */
+    notOpeningRounds: NotOpeningReason | null;
+    /** IS THE KEEPER RUNNING ROUNDS WITH NOTHING BUT ITS OWN WALLETS IN THEM — the operator's chosen
+     *  mode, published because the page is public and a visitor is owed the sentence.
+     *
+     *  WHAT IT IS. An opt-in devnet mode in which the keeper stops holding one lobby open for a person
+     *  and instead runs rounds on a cadence, fielding the house into them so the arena keeps moving.
+     *  It is read from a boot flag and is FIXED FOR THE LIFE OF THE PROCESS: `true` is a fact about
+     *  how this keeper was STARTED, not about anything it has observed since.
+     *
+     *  WHAT IT IS NOT, AND THIS IS THE LOAD-BEARING HALF: it is never a claim about the round on
+     *  screen. A real player can arrive in this mode and does — the arena is reachable, the entry
+     *  instruction is the same one it always was — and from that instant the round holds real fighters
+     *  and a real pot. A view that rendered "these fighters are bots" off this flag would therefore be
+     *  lying on exactly the rounds that matter most, and lying in the direction that tells a player
+     *  their own entry did not count. The page's sentence has to be MODE-SHAPED — the operator runs
+     *  rounds against its own wallets, so a busy lobby here is not evidence of a crowd — and never
+     *  ROUND-SHAPED. Nothing in this file says who is in the current round; see schema 5.
+     *
+     *  THE ANONYMITY OBJECTION, ANSWERED HERE BECAUSE SOMEBODY WILL RAISE IT. Schema 5 deleted the
+     *  house disclosure and left a standing rule behind it: nothing interpolated from an exception, an
+     *  account or a fighter count may enter this payload. This field is none of the three. It is a
+     *  literal copied from a boot flag, with no inputs at all — exactly the property that makes
+     *  `KeeperError.context` safe to publish, and the reason a closed vocabulary beat a sanitiser
+     *  there. It names no wallet, counts no fighter, and carries zero information about any particular
+     *  round: it reads identically on the round that is forty-eight house wallets and on the round a
+     *  real player just won.
+     *
+     *  It also stands on the argument `round.heldOpen` stood on — a fact about the ARENA'S OWN
+     *  BEHAVIOUR, published because the page would otherwise say something untrue. Disclosure is the
+     *  opposite of leakage, and the direction of this one is that a visitor is told MORE about how the
+     *  arena is run, not that a wallet is identified to anybody. */
+    houseOnlyRounds: boolean;
   };
   chain: {
     cluster: "devnet";
@@ -359,6 +476,21 @@ function isU64String(v: unknown): v is string {
 
 function isNumberArray(v: unknown): v is number[] {
   return Array.isArray(v) && v.every(isNumber);
+}
+
+/** THE VOCABULARY ITSELF, so the guard below checks against the union rather than against `string`.
+ *  Declared as a `readonly NotOpeningReason[]` so adding a member to the type without adding it here
+ *  fails to compile: a reason the writer can emit and the reader silently refuses would take the
+ *  whole file to `null`, and "keeper down" is a poor way to learn that two lists drifted apart. */
+const NOT_OPENING_REASONS: readonly NotOpeningReason[] = ["low-balance", "rent-not-reclaimed"];
+
+/** Checked against the closed vocabulary rather than merely `isString`, and the difference decides
+ *  what the page says. An unrecognised reason is a writer this reader does not understand — a newer
+ *  keeper, or a hand-edited file — and the only two things a reader can do with it are refuse the file
+ *  or treat it as `null`. `null` here means "rounds are coming", which is the one answer that is
+ *  certainly wrong: the writer went to the trouble of naming a reason it is NOT opening them. */
+function isNotOpeningReason(v: unknown): v is NotOpeningReason {
+  return typeof v === "string" && (NOT_OPENING_REASONS as readonly string[]).includes(v);
 }
 
 function parseError(raw: unknown): KeeperError | null {
@@ -472,6 +604,23 @@ export function parseKeeperStatus(raw: unknown): KeeperStatus | null {
   const lowBalance = k.lowBalance === null ? null : parseLowBalance(k.lowBalance);
   if (lowBalance === null && k.lowBalance !== null) return null;
 
+  // PRESENT OR MALFORMED, the same rule as `stalledSince` and `lowBalance` above, and here the
+  // "malformed" half does more work than in either of them: the value is narrowed through the
+  // VOCABULARY guard, so a reason outside the union is turned away exactly like an absent key rather
+  // than collapsing to `null`. `null` is the keeper saying "rounds are coming"; a word this reader
+  // cannot read is not that claim, and defaulting to it would put a countdown on screen underneath a
+  // keeper that has explicitly stopped.
+  const rawNotOpening = k.notOpeningRounds;
+  const notOpeningRounds = isNotOpeningReason(rawNotOpening) ? rawNotOpening : null;
+  if (notOpeningRounds === null && rawNotOpening !== null) return null;
+
+  // REQUIRED, and `false` is not a safe default for an absent key — the same argument `round.heldOpen`
+  // is rejected on. A writer that has never heard of the question is not a writer answering "no", and
+  // reading its silence as "there are people in these rounds" would be the page making the arena's
+  // disclosure for it, in the direction that discloses nothing.
+  const { houseOnlyRounds } = k;
+  if (!isBoolean(houseOnlyRounds)) return null;
+
   const c = raw.chain;
   if (!isRecord(c)) return null;
   // ER-000: this fork is structurally prevented from reaching mainnet, and the status file says so
@@ -515,6 +664,8 @@ export function parseKeeperStatus(raw: unknown): KeeperStatus | null {
       roundsCompleted,
       lastError,
       lowBalance,
+      notOpeningRounds,
+      houseOnlyRounds,
       // Copied, not aliased: the arrays in the returned value must not be views onto the object the
       // caller parsed, or a caller who mutates one is editing something another holds.
       wedgedRounds: [...wedgedRounds],
@@ -692,20 +843,31 @@ export function keeperCountdown(status: KeeperStatus | null, nowSec: number): Ke
   }
 
   if (round.phase === "Settled" || round.phase === "Abandoned") {
-    // OUT OF FUNDS KILLS THE NEXT-LOBBY COUNTDOWN AND NOTHING ELSE, which is why this is here rather
+    // NOT OPENING KILLS THE NEXT-LOBBY COUNTDOWN AND NOTHING ELSE, which is why this is here rather
     // than beside the stale and stalled checks at the top. The keeper still drives an in-flight round
-    // all the way to a terminal state when it is below its floor — it refuses to START work it cannot
-    // finish, not to finish work already started — so a Lobby's `entriesCloseAt` and the chain's own
-    // deadline remain promises it is about to keep, and blanking them would be its own kind of lie.
-    // What is genuinely not coming is the NEXT round.
+    // all the way to a terminal state while it is refusing to open — it declines to START work it
+    // cannot finish, not to finish work already started — so a Lobby's `entriesCloseAt` and the
+    // chain's own deadline remain promises it is about to keep, and blanking them would be its own
+    // kind of lie. What is genuinely not coming is the NEXT round.
     //
-    // THE KEEPER ALSO DECLINES TO PUBLISH `nextLobbyOpensAt` in this state, so this check is the
-    // second of two. That is deliberate rather than duplicated machinery, and the two guard different
-    // things: the writer's job is that the FILE never asserts a next lobby beside a keeper that will
-    // not open one (property ONE of `honestNextLobbyOpensAt`), and the reader's job is that a
-    // countdown already latched before the balance fell cannot keep counting down afterwards. One
-    // layer cannot do both, because they are separated by up to a publish interval.
-    if (status.keeper.lowBalance !== null) return none;
+    // IT ASKS `notOpeningRounds` AND NO LONGER `lowBalance`, and that is the only thing about this
+    // branch schema 6 changed. There are two causes now — the funding floor, and the burn brake that
+    // trips when measured cost per round says rent is not being reclaimed — and they are one sentence
+    // to a reader. So the reason is decided once by the writer, in the pass that knows which of them
+    // applies, and read once here. Checking a second detail block instead would be a precedence every
+    // future caller had to remember, and it is the third cause that would catch somebody out. See
+    // `KeeperStatus.keeper.notOpeningRounds`; `lowBalance` is still the DETAIL for one of the reasons
+    // and is still what an operator reads to know how much to send.
+    //
+    // THE TWO-LAYER ARGUMENT IS UNAFFECTED BY THAT SUBSTITUTION. The keeper also declines to PUBLISH
+    // `nextLobbyOpensAt` in this state, so this check is the second of two — deliberate rather than
+    // duplicated machinery, because the two guard different things: the writer's job is that the FILE
+    // never asserts a next lobby beside a keeper that will not open one (property ONE of
+    // `honestNextLobbyOpensAt`), and the reader's job is that a countdown already latched before the
+    // keeper stopped cannot go on counting down afterwards. One layer cannot do both, because they are
+    // separated by up to a publish interval — which is a fact about the latch and the publish cadence,
+    // and has nothing to do with WHICH cause stopped the keeper.
+    if (status.keeper.notOpeningRounds !== null) return none;
     const opensAt = status.nextLobbyOpensAt;
     if (opensAt === null || opensAt <= nowSec) return none;
     return { kind: "next-lobby", seconds: secondsUntil(opensAt, nowSec) };

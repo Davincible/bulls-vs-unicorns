@@ -146,7 +146,11 @@ const base = (over: Partial<Cell> & Pick<Cell, "name" | "group">): Cell => ({
   model: BASE_PLAYER, adversaries: 0, matchmaking: "random", harvestR: false, ...over,
 });
 
-const P_GRID = [5, 10, 20, 40, 100];
+// P = 1 and P = 2 added by small-stake-pstar.ts's study: the P* question turns entirely on the two
+// smallest REPRESENTABLE settings (P is a u16 in bps, so 1 is the floor), and the lifetime column of
+// that study's squeeze table was otherwise blank in exactly the rows that decide it. Purely additive:
+// cell seeds and cached results are keyed by cell NAME (line 372, 545), so no existing cell moves.
+const P_GRID = [1, 2, 5, 10, 20, 40, 100];
 const blendOf = (P: number): DamageRule => (P === 0 ? "min" : { blend: BigInt(P) });
 
 function buildCells(): Cell[] {

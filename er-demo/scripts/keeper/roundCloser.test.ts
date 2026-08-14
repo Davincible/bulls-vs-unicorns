@@ -1,13 +1,15 @@
 // RECLAIMING RENT — the cases where the answer is "do not close this one", which is most of them.
 //
-// This rule guards the largest single cost in running the arena: 95.4% of a round's 0.008971 SOL is
-// the Round PDA's rent deposit, and until v7 nothing ever reclaimed it. Every test here is a case
-// where getting it wrong is SILENT — no exception, no failed transaction, just money that quietly
-// stops coming back, or a scan that quietly stops scanning.
+// This rule guards the largest single quantity in running the arena: a round's PDA holds 0.023497 SOL
+// of rent deposit against the ~0.00007 SOL of fees a round actually spends, and until v7 nothing ever
+// reclaimed it (COST-MODEL §1). Every test here is a case where getting it wrong is SILENT — no
+// exception, no failed transaction, just money that quietly stops coming back, or a scan that quietly
+// stops scanning.
 //
 // The two failures are not the same size, which is why the branch order in `decideClose` matters:
-// skipping a round costs that round's ~0.0086 SOL, while WAITING on a round costs that much times
-// every older round stuck behind the cursor, forever, with nothing in the log to say so.
+// skipping a round costs that round's ~0.0235 SOL, while WAITING on a round costs that much times
+// every older round stuck behind the cursor, forever, with nothing in the log to say so — ~9.96
+// SOL/day at 424 rounds/day, which is COST-MODEL §4's whole subject.
 
 import { describe, expect, it } from "vitest";
 import { Phase } from "../../src/chain/constants.ts";

@@ -22,6 +22,11 @@ import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import {
   DEFAULT_LOBBY_SECONDS, MAX_LOBBY_SECONDS, MIN_LOBBY_SECONDS, MIN_RETAINED_ROUNDS,
 } from "../../src/chain/constants.ts";
+import { fmtSol } from "./log.ts";
+// The rent measurement, imported rather than restated, so the one figure this file PRINTS agrees with
+// the one `/reclamation.json` publishes. `reclamation.ts` imports nothing at all, so this cannot
+// close a cycle — see its header on why it has no dependencies.
+import { ROUND_RENT_LAMPORTS } from "./reclamation.ts";
 import { DEFAULT_HTTP_PORT } from "./statusServer.ts";
 
 export { DEFAULT_LOBBY_SECONDS };
@@ -104,23 +109,43 @@ export const HOLD_OPEN_ENABLED_DEFAULT = envFlag("KEEPER_HOLD_OPEN", false);
 
 /** HOW LONG A HELD-OPEN LOBBY'S BACKSTOP RUNS BEFORE THE KEEPER GIVES UP AND OPENS ANOTHER.
  *
- * THE PROBLEM THIS NUMBER IS THE ANSWER TO, MEASURED RATHER THAN ASSERTED. No instruction closes a
- * `Round` account — `close_round` commits and undelegates, it never reclaims — so every round ever
- * opened permanently locks its rent-exempt deposit. Measured on devnet, per round: `open_round` costs
+ * THE PROBLEM THIS NUMBER IS THE ANSWER TO, MEASURED RATHER THAN ASSERTED. `close_round` commits and
+ * undelegates, it never reclaims — the two instructions have names close enough to mislead — but since
+ * v7 `close_round_account` DOES reclaim, on any round that is terminal, swept and past
+ * `ROUND_RETENTION`. So a round's deposit is FLOAT rather than a loss, and cycling rounds at nobody
+ * parks that deposit over and over instead of burning it.
+ *
+ * THE MEASUREMENT BELOW PREDATES THAT INSTRUCTION AND WAS TAKEN AT `MAX_FIGHTERS = 16`. It is left
+ * exactly as it was recorded, because it is the arithmetic that chose this constant; read it as the
+ * standing float of a round of that era, and see the correction under the ladder for what the same
+ * quantities are now. Measured on devnet, per round: `open_round` costs
  * the payer 0.008503160 SOL of round-PDA rent that is never coming back (verified rather than
  * inferred: every round PDA from #4 to #18 still holds exactly 0.008498 SOL), and `delegate_round`
  * costs a further 0.003220520 SOL of delegation buffer/record/metadata rent, which IS refunded when
  * undelegation closes those accounts. Reconciled across 28 real rounds, net of a one-time 0.06 SOL
  * house-wallet funding, the all-in figure is **0.00981 SOL per round**.
  *
- * At the old ~1m50s cadence that is **~0.32 SOL/hour to cycle an arena nobody is playing in**,
- * permanently locked. That is the entire justification for holding a lobby open, and the ladder that
- * decides this constant is:
+ * At the old ~1m50s cadence that was **~0.32 SOL/hour to cycle an arena nobody is playing in**,
+ * permanently locked, and it was the entire justification for holding a lobby open. The ladder that
+ * chose this constant is:
  *
  *     cycling every ~110s     ~0.32     SOL/hour idle
  *     1-hour holds            ~0.0098   SOL/hour idle     — 97% of the saving, and this is the value
  *     1-day holds             ~0.0004   SOL/hour idle
  *     7-day holds             ~0.00006  SOL/hour idle
+ *
+ * THAT JUSTIFICATION NO LONGER STANDS AND THE LADDER'S ANSWER DOES, which is worth separating. At
+ * `MAX_FIGHTERS = 48` a round parks 0.023497 SOL and SPENDS ~0.00007 of it, and the cycle is ~204s
+ * rather than ~110s (COST-MODEL §1, §2) — so fixed cadence idles at ~0.0012 SOL/hour of real spend
+ * against ~0.470 SOL of standing float, not ~0.32 SOL/hour of loss. Holding a lobby open is no longer
+ * a 33x cut in idle burn; what it still cuts is the float and the number of rounds whose deposit
+ * depends on a close landing (COST-MODEL §4).
+ *
+ * The ladder survives the change untouched because every rung is rounds-per-hour times ONE per-round
+ * quantity: scaling that quantity scales all four rungs together, and a 1-hour hold is one round per
+ * hour against thirty-odd whatever the quantity is. 97% of the saving is a ratio, and the ratio is
+ * what picked 3,600. Only the denomination changed — float and reclamation risk, where it used to be
+ * burn.
  *
  * WHY NOT `MAX_LOBBY_SECONDS`, WHICH IS NOW A WEEK. Because the last 3% is not worth what it is
  * bought with. `MAX_LOBBY_SECONDS`'s own doc comment in lib.rs says plainly that nothing has ever
@@ -129,8 +154,10 @@ export const HOLD_OPEN_ENABLED_DEFAULT = envFlag("KEEPER_HOLD_OPEN", false);
  * project has already been bitten by. The ceiling permits a week; it is not evidence that a week
  * works, and it says so.
  *
- * THE TWO FAILURES ARE NOT THE SAME SIZE, which is what settles it. A hold that is too SHORT fails as
- * one 0.0098 SOL rent payment, once an hour, visible in the log. A hold that is too LONG fails as a
+ * THE TWO FAILURES ARE NOT THE SAME SIZE, which is what settles it — and reclamation widened the gap
+ * rather than narrowing it. A hold that is too SHORT fails as one extra round an hour: ~0.00007 SOL
+ * spent and ~0.0235 SOL parked until the retention window turns over, visible in the log. A hold that
+ * is too LONG fails as a
  * silently dead arena: the delegation is lost, no round is playable, nothing errors, and nobody finds
  * out until somebody tries to play. Take the cheap failure.
  *
@@ -276,10 +303,13 @@ export const STALE_AFTER_SECONDS = envNumber("KEEPER_STALE_AFTER_SECONDS", 15);
  *  the opposite of `KEEPER_HOLD_OPEN`, for a reason worth stating rather than leaving as an
  *  inconsistency.
  *
- *  A `Round` is 1,102 bytes and its rent-exempt deposit is 0.008561 SOL — 95.4% of the 0.008971 a
- *  whole round costs to run, measured on v6 rounds #3 and #4 — and until v7 nothing ever reclaimed a
- *  lamport of it. Reclaiming it takes the marginal cost of a round to ~0.00041, about 22x. On the
- *  current payer that is the difference between roughly 740 rounds and 16,200. Leaving money on the
+ *  A `Round` is 3,248 bytes and its rent-exempt deposit is 0.023497 SOL, measured against v8 at
+ *  `MAX_FIGHTERS = 48` (COST-MODEL §1; the same figures were 1,102 bytes and 0.008561 SOL at sixteen
+ *  fighters, measured on v6 rounds #3 and #4). Beside the ~0.00007 SOL of fees a round actually
+ *  spends, that deposit is very nearly the whole cost of a round nobody reclaims — and until v7 nobody
+ *  could. Reclaiming it is the difference between ~0.030 SOL/day and ~9.96 SOL/day at 424 rounds/day:
+ *  a factor of 330, and on a 14.95 SOL balance the difference between about sixteen months and about
+ *  thirty-six hours (COST-MODEL §0). Leaving money on the
  *  floor is not a safe default; it is the expensive one, and it is the one nobody notices because
  *  nothing fails.
  *
@@ -292,7 +322,11 @@ export const STALE_AFTER_SECONDS = envNumber("KEEPER_STALE_AFTER_SECONDS", 15);
  *  the direction that is worth something — and its `false` vetoes this outright.
  *
  *  `KEEPER_CLOSE_ROUNDS=0` is the escape hatch, for an operator who wants the round log to outlive
- *  the retention window for a demo or an audit. It costs 0.0086 SOL per round to exercise it. */
+ *  the retention window for a demo or an audit. It parks 0.023497 SOL per round for as long as it is
+ *  off — ~9.96 SOL/day at 424 rounds/day, which is the whole of COST-MODEL §0's failure figure chosen
+ *  on purpose instead of arrived at by accident. Parked, not lost: a finished round stays closeable
+ *  indefinitely and the close cursor starts at #1 on every boot, so the backlog is still reclaimable
+ *  whenever this is turned back on. */
 export const CLOSE_ROUNDS_ENABLED = envFlag("KEEPER_CLOSE_ROUNDS", true);
 
 /** HOW MANY OF THE NEWEST ROUNDS THE KEEPER LEAVES ALONE.
@@ -306,9 +340,12 @@ export const CLOSE_ROUNDS_ENABLED = envFlag("KEEPER_CLOSE_ROUNDS", true);
  *  CONFIGURABLE UPWARD ONLY, AND REFUSED BELOW THE FLOOR RATHER THAN CLAMPED. Asking for less than
  *  the chain permits is not a preference the keeper can honour — every attempt would come back
  *  `RoundTooRecent` — so a keeper that silently clamped would be running a retention window its
- *  operator did not choose and would never be told about. Asking for MORE is meaningful and cheap:
- *  it keeps history fetchable for longer, at 0.0086 SOL of standing float per extra round. Same
- *  shape and same argument as `HOLD_OPEN_LOBBY_SECONDS`' range check. */
+ *  operator did not choose and would never be told about. Asking for MORE is meaningful, and cheap per
+ *  round without being negligible in bulk: it keeps history fetchable for longer, at 0.023497 SOL of
+ *  standing float per extra round. The chain's floor of twenty already stands at 0.470 SOL
+ *  (COST-MODEL §3), so each extra round adds another 5% to that — and it is float the operator has to
+ *  be FUNDED for even though none of it is spent. Same shape and same argument as
+ *  `HOLD_OPEN_LOBBY_SECONDS`' range check. */
 export const ROUND_RETENTION = envNumber("KEEPER_ROUND_RETENTION", MIN_RETAINED_ROUNDS);
 
 if (!Number.isInteger(ROUND_RETENTION) || ROUND_RETENTION < MIN_RETAINED_ROUNDS) {
@@ -338,6 +375,161 @@ export const CLOSE_RETRY_SECONDS = envNumber("KEEPER_CLOSE_RETRY_SECONDS", 30);
  *  hand, whereas a wedged cursor reclaims nothing at all. */
 export const CLOSE_ATTEMPTS_PER_ROUND = 3;
 
+// ---- running rounds at nobody, on purpose ---------------------------------------------------------
+
+/** MAY THE KEEPER RUN ROUNDS WITH NOBODY REAL IN THEM? DEFAULT OFF, AND THE DEFAULT IS THE WHOLE
+ *  SAFETY ARGUMENT.
+ *
+ *  WHAT IT RETIRES, STATED FIRST BECAUSE IT IS A GUARANTEE AND NOT A PREFERENCE. Today a lobby holding
+ *  no real player gets exactly ONE house fighter (`HOUSE_MAX_WITHOUT_REAL_PLAYER`), which is below the
+ *  program's `enough_to_fight`, so `close_lobby_and_draw` is refused BY THE CHAIN — not declined by a
+ *  keeper that could have called it, but rejected for every signer including a permissionless caller
+ *  racing the deadline. "The house never fights itself" is therefore an on-chain property today. This
+ *  flag ends that. With it on, an empty room is filled to the board target like any other, the round is
+ *  drawn, and the house fights the house. The operator is asking for that knowingly; there is no
+ *  version of this mode that keeps the guarantee, which is why it is a flag and not a tuning.
+ *
+ *  OFF BY DEFAULT MEANS A DEPLOY THAT DOES NOT SET IT BEHAVES EXACTLY AS TODAY — not approximately, and
+ *  not "as long as nothing else changed". The mode is threaded through the sizing policy as a NAMED
+ *  POLICY (`EmptyRoomPolicy` in `houseSizing.ts`) whose default argument is the safe one, so a call site
+ *  that never heard of this flag gets the guarantee, and `houseInvariants.test.ts` still sweeps all
+ *  86,580 lobby shapes under it. The flag selects between two whole policies; it does not move a number
+ *  inside one.
+ *
+ *  DEVNET ONLY, AND THAT IS ALREADY ENFORCED RATHER THAN PROMISED HERE. `endpoints.ts` runs
+ *  `assertDevnetUrl` over both endpoints at module load, before any `Connection` exists, and fails
+ *  closed on anything that does not positively identify itself as devnet. So a keeper that could reach
+ *  mainnet does not boot at all, with or without this flag, and there is no second check for this flag
+ *  to add. What would be genuinely dangerous — a mode that mints house-versus-house rounds pointed at
+ *  real money — is blocked one layer down and by construction.
+ *
+ *  ────────────────────────────────────────────────────────────────────────────────────────────────
+ *  THE CONSEQUENCE NOBODY GUESSES, AND IT IS THE PRICE OF THE MODE
+ *  ────────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ *  `abandon_round` STOPS BEING AVAILABLE FOR AN EMPTY ROUND. `lobby_is_dead` is exactly "past the
+ *  deadline and NOT `enough_to_fight`", so it is true today precisely because the empty room holds one
+ *  fighter. Fill that room to ten and the round is past `enough_to_fight`, so the only instruction that
+ *  ends it is `close_lobby_and_draw` — and if that cannot land (a dead ER validator, a VRF queue that
+ *  refuses, a delegation lost) the round sits in `Lobby` with nothing left that will succeed on it. Its
+ *  ~0.0235 SOL of rent is stranded FOREVER: `close_round_account` requires `house_swept`, and sweeping
+ *  requires a terminal phase. COST-MODEL §4 records 19 rounds already in exactly that state, holding
+ *  ~0.16 SOL that no instruction will ever return.
+ *
+ *  THE KEEPER'S ANSWER IS TO RETRY `close_lobby_and_draw` FOREVER, which is the same treatment a lobby
+ *  with real players in it already gets — the state machine re-derives from the chain every pass and
+ *  keeps trying until it lands. So this is not a NEW failure mode and there is no new code path to be
+ *  wrong. It IS a new exposure: today the population of rounds that can reach that state is "rounds a
+ *  real player entered", which is rare, and this mode makes it "every round", at 424 rounds/day. That
+ *  is the trade, stated in the unit it is paid in, and it is the reason the burn brake below exists.
+ *
+ *  IT DOES NOT DISABLE `--hold-open`, IT COLLAPSES IT INTO A SCHEDULE — see `lobbyPolicy.ts`'s header
+ *  for the full argument. One consequence belongs here rather than there, because it is about a number
+ *  in this file: with both set, `openNextRound` stamps `DEFAULT_LOBBY_SECONDS` and NOT
+ *  `HOLD_OPEN_LOBBY_SECONDS`. An empty lobby in this mode is not being held for anybody — it is going
+ *  to be drawn at its deadline like every other one — so the backstop has become the SCHEDULE, and a
+ *  backstop is sized to be unreachable.
+ *
+ *  HOW UNREACHABLE IS THE WHOLE REASON THAT LINE EXISTS, AND IT IS WORTH STATING IN THE UNIT IT WOULD
+ *  HAVE BEEN PAID IN. `fly.toml` sets `KEEPER_HOLD_OPEN=1` and `KEEPER_HOLD_OPEN_LOBBY_SECONDS=604800`.
+ *  Without the collapse, turning this mode on in the deployment it was BUILT FOR would have produced
+ *  ONE ROUND EVERY SEVEN DAYS: no error, no refusal, nothing in the log — a keeper sitting on an empty
+ *  lobby until the following week, which is a total and silent failure of the feature. With it, the
+ *  two flags compose into what the combination reads like it means, and `--hold-open
+ *  --house-only-rounds` is the intended production configuration rather than a corner: continuous
+ *  rounds at the ordinary lobby length, each drawn on its own deadline, with the authority early close
+ *  still firing for a real arrival. */
+export const HOUSE_ONLY_ROUNDS_ENABLED = envFlag("KEEPER_HOUSE_ONLY_ROUNDS", false);
+
+// ---- the brake that watches what a continuously-running arena burns ---------------------------------
+//
+// WHY THIS EXISTS AT ALL, IN ONE SENTENCE FROM THE MEASUREMENT: the arena costs ~0.030 SOL/day while
+// rent reclamation works and ~9.96 SOL/day the moment it stops, which at a 14.95 SOL balance is about
+// thirty-six hours from healthy to empty (COST-MODEL §0 and §4). Those two numbers are 330x apart, so
+// the difference is not something an operator has to be clever to spot — but it is something they have
+// to be AWAKE to spot, and the failure is silent: no exception, no failed transaction, a perfectly
+// healthy-looking keeper opening rounds at its usual cadence.
+
+/** THE PER-ROUND BURN AT WHICH THE KEEPER STOPS OPENING NEW ROUNDS, IN LAMPORTS.
+ *
+ *  THE THRESHOLD IS EASY BECAUSE THE TWO STATES ARE THREE ORDERS OF MAGNITUDE APART, and that is the
+ *  entire reason a single number can do this job. From COST-MODEL §1:
+ *
+ *      a round whose rent comes back     ~0.00007 SOL/round  =     ~70,000 lamports   (fees only)
+ *      a round whose rent does NOT       ~0.0235  SOL/round  = ~23,497,000 lamports   (fees + rent)
+ *
+ *  Any threshold strictly between those two separates them, so the choice is which side to leave room
+ *  on rather than a fine judgement about a boundary. 0.005 SOL = 5,000,000 lamports is ~70x the healthy
+ *  figure — so ordinary variance, a retried signature, a chunked house top-up landing in the same round,
+ *  none of them come close to it — and ~4.7x BELOW the broken one, so a genuine reclamation outage
+ *  clears it on the first steady-state sample rather than on an unlucky one.
+ *
+ *  MEASURED AS NET LAMPORTS PER ROUND, WHICH IS WHY GROSS FLOW DOES NOT ENTER INTO IT. `OpenRound` and
+ *  `DelegateRound` move ~0.0268 SOL out of the operator every single round, healthy or not — that is
+ *  ~11.4 SOL/day of gross flow that nets to ~0.030. A brake that watched money LEAVING would fire
+ *  instantly and permanently on a perfectly healthy arena. It watches the balance's net change, which
+ *  is the only quantity that distinguishes float from spend.
+ *
+ *  IT CANNOT BE SET TO ZERO: `envNumber` refuses a non-positive value, and zero would mean "trip on the
+ *  first sample", which is a keeper that never runs rather than a keeper with no brake. To genuinely
+ *  run without one, set it high — the honest way to say "I accept the burn" is a number the log prints
+ *  at boot, not a disabled mechanism nobody can see the state of. */
+export const MAX_BURN_LAMPORTS_PER_ROUND =
+  Math.round(envNumber("KEEPER_MAX_BURN_SOL_PER_ROUND", 0.005) * LAMPORTS_PER_SOL);
+
+/** HOW MANY ROUNDS THE BURN IS AVERAGED OVER before it is compared against the threshold.
+ *
+ *  A single round's net is noisy for reasons that have nothing to do with reclamation — a house wallet
+ *  top-up, a retried signature, a close that landed for two rounds in one pass — so the brake reads a
+ *  mean rather than a sample. `ROUND_RETENTION` is the natural window and not merely a convenient one:
+ *  it is the exact period over which the rent cycle repeats, so a window of that length holds one whole
+ *  turn of the mechanism being watched and cannot be aliased by where in the cycle it was taken. */
+export const BURN_SAMPLE_ROUNDS = ROUND_RETENTION;
+
+/** HOW MANY SAMPLES MUST EXIST BEFORE THE BRAKE MAY TRIP AT ALL, and this is the non-obvious constant
+ *  in the mechanism — the one that decides whether the brake is a safety device or a way to stop a
+ *  healthy arena an hour and a half after it starts.
+ *
+ *  A SAMPLE IS THE NET LAMPORTS BETWEEN TWO CONSECUTIVE `open_round` READINGS. Round k pays out
+ *  ~0.0235 SOL of rent and gets it back at round k + `ROUND_RETENTION`, when `close_round_account`
+ *  first becomes legal for it. So a sample only sits at its steady-state value — fees alone, ~0.00007
+ *  SOL — once its round number is past the turnover. A YOUNG ARENA LEGITIMATELY BURNS THE FULL
+ *  ~0.0268 SOL/ROUND FOR ITS FIRST TWENTY ROUNDS, and that is the mechanism working, not failing.
+ *
+ *  THE ARITHMETIC, BECAUSE THE OBVIOUS VALUE IS WRONG AND WRONG IN THE EXPENSIVE DIRECTION. The mean
+ *  covers the last `BURN_SAMPLE_ROUNDS` of `N` samples, so its OLDEST member is sample
+ *  `N - BURN_SAMPLE_ROUNDS + 1`. Every member must be past the turnover, which needs
+ *  `N - BURN_SAMPLE_ROUNDS + 1 > ROUND_RETENTION`, i.e. `N >= 2 * ROUND_RETENTION`. Plus a small margin
+ *  so the boundary is not the trigger.
+ *
+ *  THE REJECTED VALUE, WRITTEN OUT SO NOBODY RE-DERIVES IT. `ROUND_RETENTION + 5` = 25 samples reads a
+ *  window covering rounds 6-25, of which only the last five have had a close land against them:
+ *
+ *      (15 x 0.0268 + 5 x 0.0033) / 20  =  0.0209 SOL/round  —  four times the 0.005 threshold
+ *
+ *  A completely healthy keeper would have stopped itself about ninety minutes in, and the operator
+ *  would have concluded reclamation was broken at the exact moment it was working as designed. The
+ *  brake's whole value is that its alarm means something.
+ *
+ *  WHAT 45 COSTS IF THE OUTAGE IS REAL: detection takes ~45 rounds, about two and a half hours at this
+ *  mode's cycle, ~1.06 SOL. Against thirty-six hours and the entire 14.95 SOL balance with no brake at
+ *  all. That is the price of an alarm that is never wrong about a young arena. */
+export const BURN_ARM_AFTER_ROUNDS = 2 * ROUND_RETENTION + 5;
+
+/** HOW OFTEN THE OPERATOR BALANCE AND `Treasury.rounds_swept` ARE RE-READ.
+ *
+ *  COST-MODEL §4 names the one thing to watch for the first day of continuous running — the gap between
+ *  `Treasury.rounds_swept` and `Arena.round_counter` — and this is how often it is asked. Thirty
+ *  seconds against a ~204-second round cycle is roughly seven readings per round: fast enough that a
+ *  reclamation stall is visible inside the round it starts in, and slow enough to be invisible beside
+ *  the two reads a second the main loop already makes.
+ *
+ *  NOT ON THE 1 Hz LOOP, and the reason is arithmetic rather than politeness. The quantity changes at
+ *  most once per round, so polling it every pass would be ~200 reads to observe one event, on the same
+ *  public endpoint whose rate limit already dictates `LOOP_INTERVAL_SECONDS`' cost note. A read that
+ *  cannot tell you anything new is not caution, it is a 429 waiting to happen. */
+export const TREASURY_POLL_SECONDS = envNumber("KEEPER_TREASURY_POLL_SECONDS", 30);
+
 // ---- running out of money -------------------------------------------------------------------------
 
 /** THE BALANCE BELOW WHICH THE KEEPER STOPS OPENING NEW ROUNDS.
@@ -349,12 +541,23 @@ export const CLOSE_ATTEMPTS_PER_ROUND = 3;
  *  the balance says — the guard refuses to START work it cannot finish, which is the only point where
  *  refusing costs nothing.
  *
- *  0.05 SOL, chosen against the measured cost rather than picked for roundness. A round costs
- *  0.008971 all-in, of which 0.008561 is rent that now comes back once the round passes the retention
- *  window — so the floor has to cover the rent of every round still inside that window, plus the
- *  signatures. It is deliberately several rounds' worth: a floor of exactly one round's cost would
+ *  0.05 SOL, chosen against the measured cost rather than picked for roundness — AND THE MEASUREMENT
+ *  IT WAS CHOSEN AGAINST HAS MOVED UNDER IT. This is flagged rather than fixed: the number is an
+ *  operator's decision and `KEEPER_MIN_BALANCE_SOL` is where they make it, so the honest thing a
+ *  comment can do is stop describing a margin that is no longer there.
+ *
+ *  WHAT IT WAS. A round cost 0.008971 all-in at `MAX_FIGHTERS = 16`, of which 0.008561 was rent, so
+ *  0.05 stood at ~5.6 rounds' outflow — a little under a third of the twenty-round retention window's
+ *  0.171 SOL of float. Several rounds' worth, deliberately: a floor of exactly one round's cost would
  *  stop the keeper at the moment it could no longer act, with nothing left to pay for the closes that
  *  would recover the rent it is sitting on.
+ *
+ *  WHAT IT IS NOW. Opening a round moves ~0.0268 SOL out of the wallet at forty-eight fighters
+ *  (0.023497 rent + 0.003221 delegation escrow + fees, COST-MODEL §1), and the retention window stands
+ *  at 0.470 SOL (§3). So the floor is **under two rounds' outflow and about a tenth of the window** —
+ *  the "several rounds' worth" margin the paragraph above bought is spent, and with it the reserve
+ *  that was meant to fund the closes. Raising it is a one-line env change and wants an owner's
+ *  decision, not a silent edit here.
  *
  *  It is a FLOOR, not a reserve: the keeper does not refuse to spend below it, it refuses to open. */
 export const MIN_BALANCE_SOL = envNumber("KEEPER_MIN_BALANCE_SOL", 0.05);
@@ -449,7 +652,9 @@ export const READ_RETRY_DELAYS_MS = [500, 1_000, 2_000];
  *  deadline, so by the time it succeeds the keeper's own clock reads `lobby_closes_at + 95`. The very
  *  next pass computes `drawingFor = 95`, exceeds `DRAW_TIMEOUT_SECONDS`, and declares a perfectly
  *  healthy VRF request wedged — one second after making it. It then opens the next round and does it
- *  again. Zero rounds ever complete, every one of them strands its ~0.0085 SOL of rent, and the log
+ *  again. Zero rounds ever complete, every one of them strands its ~0.0235 SOL of rent PERMANENTLY —
+ *  a round that never reaches a terminal phase can never be swept, and so can never be closed, which
+ *  is the one shape of loss `close_round_account` cannot undo (COST-MODEL §4.2) — and the log
  *  says "no VRF callback after 95s", which is a lie the operator cannot disprove from the keeper's
  *  own output. A laptop resumed from sleep or a container with no NTP is well inside that trigger.
  *
@@ -822,9 +1027,10 @@ if (PEAK_HOUSE_FIGHTERS > HOUSE_WALLET_COUNT) {
  *  is exactly "how many real players may still arrive after that moment" — and that moment is roughly
  *  the start of the window, whatever the arrival ramp is doing inside it.
  *
- *  WHAT IT COSTS at the production board of 48 seats: the house holds at most 38 of them rather than
- *  43. Five bots out of a board of forty-eight is invisible on screen, and it buys back the promise
- *  the reservation exists for — that a person who clicks Enter finds a seat.
+ *  WHAT IT COSTS at the production board of 48 seats: `houseCeiling` is `48 - 9 = 39`, so the house
+ *  holds at most 39 of them rather than the 44 the floor of 4 would have left. Five bots out of a
+ *  board of forty-eight is invisible on screen, and it buys back the promise the reservation exists
+ *  for — that a person who clicks Enter finds a seat.
  *
  *  NOT env-configurable even so, and that is the difference between a preference and an invariant. It
  *  is a backstop against a misconfigured target rather than part of the normal arithmetic — which is
@@ -964,6 +1170,10 @@ export interface KeeperCliOptions {
   /** Reclaim finished rounds' rent by closing their accounts. ON by default — see
    *  `CLOSE_ROUNDS_ENABLED` for why this default runs the other way from `holdOpen`'s. */
   closeRounds: boolean;
+  /** Run rounds with nobody real in them, retiring the chain-enforced "the house never fights itself"
+   *  guarantee. OFF by default; devnet only — see `HOUSE_ONLY_ROUNDS_ENABLED`, where the guarantee it
+   *  gives up and the rent it puts at risk are both priced. */
+  houseOnlyRounds: boolean;
 }
 
 export const CLI_USAGE =
@@ -972,8 +1182,18 @@ export const CLI_USAGE =
   "  --dry-run    boot, read the chain, decide the next action and write the status file — send nothing\n" +
   "  --hold-open  hold ONE lobby open until a real player joins, then start the fight (needs the\n" +
   "               authority early close DEPLOYED; also settable with KEEPER_HOLD_OPEN=1)\n" +
-  "  --no-close-rounds  stop reclaiming finished rounds' rent (~0.0086 SOL each, 95% of a round's\n" +
-  "               cost). On by default; also settable with KEEPER_CLOSE_ROUNDS=0";
+  // PRICED THROUGH `ROUND_RENT_LAMPORTS` BECAUSE THIS STRING IS OUTPUT, not documentation. It reaches
+  // the operator through the two `throw`s below, and it carried 0.0086 SOL and "95% of a round's
+  // cost" — both measured at sixteen fighters, and both now wrong by 2.7x and by the fees no longer
+  // being a twentieth of anything. The fee figure beside it is the one this file's burn threshold is
+  // set against, so the two lines cannot drift apart without one of them being visibly absurd.
+  `  --no-close-rounds  stop reclaiming finished rounds' rent (~${fmtSol(ROUND_RENT_LAMPORTS)} each — all but\n` +
+  "               the ~0.00007 SOL of fees a round costs). On by default; also settable with\n" +
+  "               KEEPER_CLOSE_ROUNDS=0\n" +
+  "  --house-only-rounds  keep running rounds when only house wallets are present. DEVNET ONLY, and\n" +
+  "               it gives up the chain-enforced no-house-versus-house guarantee: an empty round can\n" +
+  "               no longer be abandoned, so one that fails to draw strands ~0.0235 SOL of rent\n" +
+  "               permanently. Off by default; also settable with KEEPER_HOUSE_ONLY_ROUNDS=1";
 
 /** Parses argv, refusing anything it does not recognise.
  *
@@ -985,6 +1205,7 @@ export function parseCliOptions(argv: string[]): KeeperCliOptions {
     dryRun: false,
     holdOpen: HOLD_OPEN_ENABLED_DEFAULT,
     closeRounds: CLOSE_ROUNDS_ENABLED,
+    houseOnlyRounds: HOUSE_ONLY_ROUNDS_ENABLED,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -998,6 +1219,12 @@ export function parseCliOptions(argv: string[]): KeeperCliOptions {
     // on for a long-running deployment. There is deliberately no `--no-hold-open`, because off is the
     // default and the way to get it is to not ask for it.
     if (arg === "--hold-open") { options.holdOpen = true; continue; }
+    // ONE-WAY ON, exactly `--hold-open`'s shape and for exactly its reason: off is the default, the
+    // way to get the default is to not ask for it, and there is deliberately no `--no-house-only-rounds`
+    // to be typed in the belief that it undoes an env var. It matters more here than it does there —
+    // the thing being asked for is the retirement of an on-chain guarantee, and a flag that can be
+    // spelled two ways is a guarantee that can be lost by autocomplete.
+    if (arg === "--house-only-rounds") { options.houseOnlyRounds = true; continue; }
     if (arg === "--rounds" || arg.startsWith("--rounds=")) {
       const raw = arg.startsWith("--rounds=") ? arg.slice("--rounds=".length) : argv[++i];
       const parsed = Number(raw);

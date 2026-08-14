@@ -68,7 +68,7 @@ export const FIGHT_ENDS_SEC = 104;
 // The keeper's status file
 // ---------------------------------------------------------------------------------------------
 
-/** A schema-5 status file (`data/keeperStatus.ts`), built at `T0` so the heartbeat is fresh.
+/** A schema-6 status file (`data/keeperStatus.ts`), built at `T0` so the heartbeat is fresh.
  *
  *  `staleAfterSeconds` is deliberately enormous. A test that fast-forwards two minutes of page time
  *  would otherwise age the heartbeat past a realistic 15s threshold mid-test and flip the cadence
@@ -76,7 +76,7 @@ export const FIGHT_ENDS_SEC = 104;
  *  by publishing an old heartbeat, never one it drifts into halfway through an assertion. */
 function baseStatus() {
   return {
-    schema: 5,
+    schema: 6,
     keeper: {
       startedAt: T0_SEC - 600,
       heartbeatAt: T0_SEC,
@@ -86,6 +86,11 @@ function baseStatus() {
       roundsCompleted: 16,
       lastError: null,
       lowBalance: null,
+      // Both schema-6 fields at their OFF values, so the base keeper is one that is opening rounds and
+      // is not playing itself — every test that draws a countdown or asserts an absent banner rests on
+      // that, and the state that changes either is asked for by name in `keeperStates` below.
+      notOpeningRounds: null as string | null,
+      houseOnlyRounds: false,
       wedgedRounds: [] as number[],
     },
     chain: {
@@ -112,11 +117,14 @@ function baseStatus() {
   };
 }
 
-/** THE THREE KEEPER STATES THE PAGE'S CLOCK RULES BRANCH ON — named, so a test says which one it is
- *  testing instead of hand-assembling JSON.
+/** THE KEEPER STATES THE PAGE BRANCHES ON — named, so a test says which one it is testing instead of
+ *  hand-assembling JSON.
  *
- *  `roundCadence`/`keeperCountdown` turn each of these into a different `Cadence`, and each `Cadence`
- *  puts something different in a clock slot. They are the input side of defect #1. */
+ *  The first three are the CLOCK rules: `roundCadence`/`keeperCountdown` turn each into a different
+ *  `Cadence`, and each `Cadence` puts something different in a clock slot. They are the input side of
+ *  defect #1. The fourth is not about the clock at all — it is the operating mode the page has to
+ *  disclose, and it is here because it is the same file, fetched by the same route, and a state a test
+ *  should be able to ask for by name rather than by patching a boolean into a fixture. */
 export const keeperStates = {
   /** The lobby the keeper is holding open at no cost until somebody arrives. `heldOpen` ⇒
    *  `waiting-for-players` ⇒ the slot must say OPEN and must NOT count. */
@@ -139,6 +147,19 @@ export const keeperStates = {
   silent() {
     const s = baseStatus();
     s.round.heldOpen = false;
+    return s;
+  },
+  /** THE OPERATOR IS PLAYING ITSELF, and the page owes a visitor the sentence — see
+   *  `KeeperStatus.keeper.houseOnlyRounds`.
+   *
+   *  A LOBBY THAT IS NOT HELD OPEN, deliberately, because that is what the mode actually looks like:
+   *  the keeper stops waiting for a person and runs rounds on a cadence with its own wallets in them.
+   *  Building it on `heldOpenLobby()` would have made every assertion about the banner true of a state
+   *  the mode never produces. */
+  houseOnlyRounds() {
+    const s = baseStatus();
+    s.round.heldOpen = false;
+    s.keeper.houseOnlyRounds = true;
     return s;
   },
 } as const;

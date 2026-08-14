@@ -73,8 +73,13 @@ env-overridable (`KEEPER_RESULT_HOLD_SECONDS`, `KEEPER_DRAW_TIMEOUT_SECONDS`,
 ## Two lobby policies
 
 **Fixed cadence (the default).** A fresh `DEFAULT_LOBBY_SECONDS` lobby every round, ended by its own
-deadline. Every round permanently locks the round PDA's rent whether or not anybody played, and every
-one of those fights is the house against itself.
+deadline. Every round *floats* the round PDA's rent — 0.023497 SOL, parked whether or not anybody
+played and handed back once `KEEPER_ROUND_RETENTION` newer rounds exist — so what the cadence spends
+is the ~0.00007 SOL of fees a round signs, and every one of those fights is the house against itself.
+
+The money argument against this policy is much weaker than it was before `close_round_account`
+shipped: see "Reclaiming the rent" for the current figures, and read the case for `--hold-open` as
+being about the room and about how many deposits are riding on a close landing, not about SOL/hour.
 
 **Hold open (`--hold-open`, or `KEEPER_HOLD_OPEN=1`).** One lobby, opened with a long *backstop*
 deadline and held until a real player arrives:
@@ -307,20 +312,109 @@ the default grace of 45 seconds. The estimate behind it has always been an *arri
 may turn up inside one grace window — so lengthening the grace without scaling it would have quietly
 weakened a documented promise by exactly the factor the window grew by, with nothing failing to say so.
 The floor of 4 keeps the old value as a minimum. At the production board of 48 seats the cost is that
-the house holds at most 38 of them rather than 43: invisible on screen, and it buys back the promise
+the house holds at most 39 of them rather than 44: invisible on screen, and it buys back the promise
 that a person who clicks Enter finds a seat.
+
+## House-only rounds
+
+**`--house-only-rounds`, or `KEEPER_HOUSE_ONLY_ROUNDS=1`. Off by default, devnet only, and it retires
+the one guarantee this document has so far described as unconditional.** Unsetting it restores today's
+behaviour exactly — there is no migration, no state to unwind, and no round already opened that
+behaves differently afterwards.
+
+It asks for an arena that keeps running with nobody real in it: an empty room is filled, drawn and
+fought by house wallets, all day.
+
+**What it retires, precisely.** Everything under "Exactly one house fighter while nobody real is in
+the room" above. That one fighter is below `enough_to_fight`, so the round cannot be drawn *by anyone*
+— not by the keeper, not by a permissionless caller racing it at the deadline — and `lobby_is_dead`
+stays true so `abandon_round` can always end it. **Both stop being true while this is on.** "The house
+never fights itself" was a property the chain enforced; for as long as this runs, nothing enforces it.
+
+**The exposure nobody guesses, and it is the price of the mode.** A house-only lobby is past
+`enough_to_fight`, so `abandon_round` is refused on it and the only instruction that can end it is
+`close_lobby_and_draw`. If that cannot land — a dead ER validator, a VRF queue that refuses, a
+delegation lost — the round sits in `Lobby` with nothing left that will succeed on it, and its
+**~0.0235 SOL is stranded permanently**: `close_round_account` requires `house_swept`, and sweeping
+requires a terminal phase. COST-MODEL §4.2 records **19 rounds already in that state**, holding
+~0.16 SOL that no instruction will ever return. The keeper retries the draw forever, exactly as it
+does for a lobby with people in it, so this is not a new code path — it is the same path, walked by
+*every* round instead of by the rare one somebody played.
+
+**What it fields is not the board target.** `REAL_SEATS_RESERVED` is not yielded to this mode, so a
+house-only round holds `min(board, seats − 9)` fighters. At the production 48-seat round that is
+**39, not 48**, and nine seats stand empty for the whole lobby — held for a visitor who is *more*
+likely to arrive into one of these rounds than into any other, since these are the rounds that run all
+day. What is genuinely lost is the displacement story: the house is already seated when somebody
+arrives, so their arrival displaces nobody. "The house yields a seat to you" degrades to "the house
+had already left nine free".
+
+**The hold-open interaction, because it is not the obvious one.** House-only does not turn `--hold-open`
+off; it **collapses the backstop into a schedule**. `lobbyIsHeldOpen` returns false (an empty lobby is
+not waiting for anybody — it is counting down to a draw), so the page draws an honest countdown instead
+of `waiting-for-players`. The *early close* half is fully retained: a real arrival still gets the
+authority-signed close after the same grace, ahead of the deadline.
+
+One consequence is in the keeper rather than in the policy. Production sets
+`KEEPER_HOLD_OPEN_LOBBY_SECONDS=604800` — seven days, a sound number for a backstop nobody expects to
+reach, and one round *per week* as a schedule. So `openNextRound` opens `DEFAULT_LOBBY_SECONDS` lobbies
+whenever this mode is on, whatever `--hold-open` says.
+
+### Watching what it costs
+
+```bash
+curl -s https://bulls-arena-keeper-devnet.fly.dev/reclamation.json | jq
+```
+
+Public, unauthenticated, `no-store`, and rendered once per keeper pass rather than per request. It
+carries **two independent witnesses**, because neither subsumes the other:
+
+| | |
+|---|---|
+| `sweepGap` | `Arena.round_counter` minus `Treasury.rounds_swept`, polled every `KEEPER_TREASURY_POLL_SECONDS` (30). A direct observation of the chain's own bookkeeping, right immediately. `pollAgeSec` beside it says how fresh. |
+| `burn` | the mean net lamports per round, measured from the operator balance at consecutive `open_round`s. Lagging, and it cannot say anything for its first 45 rounds — but a keeper that sweeps perfectly and then fails every `close_round_account` has a sweep gap of **zero** and is burning 9.96 SOL/day. The balance cannot be fooled that way. |
+
+Also `closer.skipped` and `closer.stranded`, each with the round numbers and the SOL they represent.
+Those lists are capped at the newest **50** per category; the counts in the shutdown banner are the
+authoritative totals, and every individual loss is logged uncapped when it happens.
+
+### The brake, and how to clear it
+
+The keeper **stops opening rounds** when the mean net cost of the last `BURN_SAMPLE_ROUNDS` (20) rounds
+exceeds `KEEPER_MAX_BURN_SOL_PER_ROUND` (0.005). It will not form an opinion before
+`BURN_ARM_AFTER_ROUNDS` (45) samples exist — a young arena legitimately pays full rent for its first 20
+rounds, because that is when `close_round_account` first becomes legal for them, and a brake that armed
+at 25 would stop a *healthy* keeper about ninety minutes in. Rounds already in flight are always driven
+to a terminal state; it refuses only to start new work. `keeper.notOpeningRounds` becomes
+`"rent-not-reclaimed"` in the status file, so the page stops counting down to a round nothing will open.
+
+**The stop does not clear itself, and that is deliberate.** Samples are taken at `open_round` and
+nowhere else, so a stopped keeper gathers no new evidence — the mean is frozen at the value that
+tripped it. The only way to gather fresh evidence would be to resume opening rounds at the rate that
+was emptying the wallet, which is exactly what the brake exists to stop.
+
+To clear it: read `/reclamation.json`, decide which witness is complaining, fix that, **restart the
+keeper**. The restart is not a workaround; it is the assertion that somebody looked. To run knowingly
+at a higher burn, raise `KEEPER_MAX_BURN_SOL_PER_ROUND` — the honest way to say "I accept this" is a
+number the boot banner prints, not a disabled mechanism nobody can see the state of.
 
 ## What it costs
 
-**Rent dominates.** Measured on devnet, a round PDA is 1,093 bytes and holds **8,498,160 lamports
-(0.0084982 SOL)** of rent exemption, paid by the operator at `open_round`. Note that `close_round`
+**Rent dominates.** Measured on devnet at `MAX_FIGHTERS = 16`, a round PDA was 1,093 bytes and held
+**8,498,160 lamports (0.0084982 SOL)** of rent exemption, paid by the operator at `open_round`. Note
+that `close_round`
 *undelegates* an account, it does not reclaim one — the two are different instructions and the names
 are close enough to mislead.
 
 **It used to stay there forever. From v7 it does not:** `close_round_account` hands the deposit back,
-and the keeper calls it automatically. Everything in this section is the cost *before* that — read it
-as the standing cost of a round that is still inside the retention window, then read "Reclaiming the
-rent" below for what a round costs once it leaves.
+and the keeper calls it automatically. **And the deposit has since tripled:** every measurement in
+this section was taken at `MAX_FIGHTERS = 16`, and at forty-eight a round PDA is 3,248 bytes holding
+**0.023497 SOL** — 2.7x, measured against v8 in `COST-MODEL.md` §1.
+
+The figures below are left exactly as they were recorded, because they are the arithmetic that chose
+the constants. Read them as *the standing float of a 16-fighter round*, not as today's cost, and read
+"Reclaiming the rent" below for what a round actually costs at the current cap once it leaves the
+retention window.
 
 Everything else is signatures at 5,000 lamports each. Per round the operator signs `open_round`,
 `delegate_round`, `close_lobby_and_draw`, `resolve`, `close_round` — five — plus one `tick` per second
@@ -355,7 +449,8 @@ floor after ~1,600 rounds. None of this is the cost worth watching; the exposure
 every round PDA keeps its deposit forever is verified rather than inferred: rounds #4 to #18 all still
 hold exactly 0.008498 SOL.
 
-**This is the entire argument for `--hold-open`**, and it is the reason the backstop is an hour:
+**That was the entire argument for `--hold-open`**, and it is the ladder that chose an hour for the
+backstop:
 
 | policy | idle cost |
 |---|---|
@@ -363,6 +458,13 @@ hold exactly 0.008498 SOL.
 | 1-hour holds | ~0.0098 SOL/hour — **97% of the saving** |
 | 1-day holds | ~0.0004 SOL/hour |
 | 7-day holds | ~0.00006 SOL/hour |
+
+**The argument no longer stands; the ladder's answer does.** Since v7 the rent is float, so fixed
+cadence idles at roughly **0.0012 SOL/hour of real spend** (~0.030 SOL/day at 424 rounds/day) against
+~0.470 SOL of standing float — not ~0.32 SOL/hour of loss. Every rung above is rounds-per-hour times
+one per-round quantity, so scaling that quantity scales all four together and leaves the *ratios* —
+which is what picked 3,600 seconds — untouched. What `--hold-open` still buys is the room and a
+smaller number of deposits riding on a close landing, which is what `COST-MODEL.md` §4 is about.
 
 `MAX_LOBBY_SECONDS` is a week, and the keeper deliberately does not take it. Its own doc comment in
 `lib.rs` says plainly that nothing has ever verified a round can *stay delegated* that long — the
@@ -376,19 +478,32 @@ House wallets are topped up from the operator to 0.01 SOL whenever they drop bel
 signature per round that is thousands of rounds per top-up; nothing else leaves them, because this
 program custodies no balances at all (`enter` *records* a stake, it does not move one).
 
-### Reclaiming the rent — the 22x
+### Reclaiming the rent — the 330x
 
 Everything above was written when nothing ever gave the rent back. **v7's `close_round_account`
-does**, and the keeper calls it automatically:
+does**, and the keeper calls it automatically. At `MAX_FIGHTERS = 48`, measured against v8
+(`COST-MODEL.md` §0, §1, §3):
 
 ```
-per round, all-in                  0.008971 SOL
-  of which Round-PDA rent          0.008561 SOL   95.4%, reclaimable from v7
-marginal cost once reclaimed      ~0.00041  SOL   ~22x cheaper
+per round, rent PARKED             0.023497 SOL   returned once 20 newer rounds exist
+per round, actually SPENT         ~0.00007  SOL   ~5 base-layer transactions of fees
+standing float, 20 rounds          0.470    SOL   working capital, not burn
+-----------------------------------------------------------------------------
+reclamation working               ~0.030    SOL/day   at 424 rounds/day
+reclamation STOPPED               ~9.96     SOL/day   — 330x
 ```
 
-On a payer holding ~6.6 SOL that is the difference between roughly **740 rounds and 16,200**. It is
-the single largest cost in running the arena, and it was invisible precisely because nothing failed.
+On a 14.95 SOL balance that is the difference between about **sixteen months and about thirty-six
+hours**. It is the largest single quantity in running the arena, and the failure is invisible
+precisely because nothing fails: no transaction errors, the keeper's own status stays green, and the
+balance drains at the rate rounds are opened. That is what `/reclamation.json` and the burn brake are
+for — see "Watching what it costs" and "The brake, and how to clear it" above.
+
+Two figures in the older section above this one are worth restating rather than scaling, because they
+changed in *kind*: the deposit is float now, not a permanent loss, and it comes back on any round that
+reaches a terminal phase, is swept, and is past the retention window. The rounds it never comes back
+on are the three in `COST-MODEL.md` §4 — skipped after `CLOSE_ATTEMPTS_PER_ROUND` failures, wedged
+before a terminal phase, or still owned by the Delegation Program.
 
 **On by default**, which is the opposite of `--hold-open` and worth saying why. Hold-open needed the
 operator's say-so because its precondition — a *deployed* early close — is not a question any local
@@ -399,7 +514,10 @@ rather than obeyed. The worst case is a wasted signature. Leaving money on the f
 default; it is the expensive one.
 
 Turn it off with `--no-close-rounds` or `KEEPER_CLOSE_ROUNDS=0` — for a demo or an audit that needs
-the round log to outlive the retention window. It costs 0.0086 SOL per round to do that.
+the round log to outlive the retention window. That parks 0.023497 SOL per round for as long as it is
+off, ~9.96 SOL/day at 424 rounds/day. *Parked, not lost:* a finished round stays closeable
+indefinitely and the close cursor restarts at round #1 on every boot, so the backlog drains once it is
+switched back on.
 
 **The retention window is what makes it safe for the UI.** `useHistory` fetches rounds by address
 with `fetchNullable` and its caller drops nulls, so a closed round leaves the log *silently* — no
@@ -726,7 +844,7 @@ Configuration — safe in `fly.toml`'s `[env]`, except where noted.
 | `KEEPER_HOUSE_DISPLACEMENT` | `1` | house seats given up per real entrant. `0` means the house never withdraws; `2` restores the old "leaves at two real players" policy |
 | `KEEPER_HOUSE_STAKE_MIN_USD` | `5` | floor of the band house stakes are drawn from. The smallest preset a real player is offered |
 | `KEEPER_HOUSE_STAKE_MAX_USD` | `20` | ceiling of that band, and **the single number that decides house exposure per round** — see "What it puts at risk". `50` restores the old band and roughly doubles it |
-| `KEEPER_CLOSE_ROUNDS` | `1` (**on**) | reclaim finished rounds' rent (~0.0086 SOL each, 95% of a round's cost). `0` or `--no-close-rounds` disables it — see "Reclaiming the rent" |
+| `KEEPER_CLOSE_ROUNDS` | `1` (**on**) | reclaim finished rounds' rent (0.023497 SOL each — all but the ~0.00007 SOL of fees a round spends). `0` or `--no-close-rounds` disables it — see "Reclaiming the rent" |
 | `KEEPER_ROUND_RETENTION` | `20` (the chain's `MIN_RETAINED_ROUNDS`) | how many newest rounds are never closed. Can be **raised**, never lowered — a lower value is refused at boot |
 | `KEEPER_MIN_BALANCE_SOL` | `0.05` | below this the keeper opens no new rounds, while finishing any round in flight — see "The funding floor" |
 | `VITE_KEEPER_STATUS_URL` | `/keeper-status.json` | **front end only**, set in Vercel, not here. The full absolute URL of the endpoint above |
@@ -838,8 +956,12 @@ Two keepers both read `arena.round_counter` and both reach for `counter + 1`. Th
 `RoundOutOfOrder` and backs off, which is loud and survivable on its own. What is not survivable is
 what it leaves: the round it was driving is now *behind* the counter, unreachable by a phase machine
 that correctly follows the chain rather than its own memory, sitting delegated past its deadline
-holding ~0.0085 SOL of rent that no instruction reclaims. This is written up under "Known holes" below
-because it has already happened.
+holding ~0.0235 SOL of rent that no instruction reclaims. **`close_round_account` does not rescue
+this one:** a round left in `Lobby` never reaches a terminal phase, so it can never be swept, so it
+can never be closed (`COST-MODEL.md` §4.2 counts nineteen such rounds from before hold-open landed).
+Everywhere else in this document the rent is float; here it is a permanent loss, and that is now the
+whole point of the paragraph. It is written up under "Known holes" below because it has already
+happened.
 
 **Brief overlap during a restart is mostly benign, and it is worth being precise about the "mostly".**
 Nothing here acts from memory: every pass re-derives from the chain, so a duplicate `close_round`,
@@ -867,25 +989,34 @@ secret. There is genuinely nothing to keep.
 
 ### The money, before you need it
 
-**How long until it dies.** The payer pays for everything; the house wallets only pay their own
-signatures. Measured, reconciled across 28 real rounds:
+**How long until it dies — and the answer moved by a factor of 330 when `close_round_account`
+shipped.** The payer pays for everything; the house wallets only pay their own signatures. Measured
+against v8 at `MAX_FIGHTERS = 48` (`COST-MODEL.md` §0–§4):
 
 ```
-per round, all-in                  0.00981 SOL
-  of which permanently locked      0.00850 SOL   round-PDA rent — no instruction reclaims it
+per round, PARKED                  0.023497 SOL   returned once 20 newer rounds exist
+per round, SPENT                  ~0.00007  SOL   ~5 base-layer transactions of fees
+standing working capital          ~0.95     SOL   0.470 rent float + 0.480 house wallets + escrow
 ```
 
-The cadence decides everything else:
+**Burn and float are different questions, and the table below answers the first.** At the
+204-second cycle a 48-fighter arena runs 424 rounds/day:
 
-| policy | rounds/hour idle | SOL/hour idle | 6.64 SOL lasts | 1.93 SOL lasts |
-|---|---|---|---|---|
-| fixed cadence (`KEEPER_HOLD_OPEN=0`) | ~33 (one per ~110s) | **~0.32** | ~21 hours | ~6 hours |
-| hold open (`KEEPER_HOLD_OPEN=1`) | 1 (one per backstop) | **~0.0098** | ~28 days | ~8 days |
+| condition | rounds/hour | SOL/hour spent | 14.95 SOL lasts |
+|---|---|---|---|
+| fixed cadence, reclamation working | ~17.7 (one per ~204s) | **~0.0012** | ~16 months |
+| hold open, reclamation working | 1 (one per backstop) | **~0.00007** | years |
+| **fixed cadence, reclamation STOPPED** | ~17.7 | **~0.415** | **~36 hours** |
 
-The arithmetic is one division — `hours = balance ÷ SOL-per-hour` — and the table is there so nobody
-has to be told which number to divide by. Hold-open's figure is a **floor**: every round a real player
-actually causes costs the same 0.00981, so a busy arena burns closer to the fixed-cadence rate. That is
-the correct way round — paying rent for rounds people played is the product working.
+The arithmetic is still one division — `hours = balance ÷ SOL-per-hour` — and the table is there so
+nobody has to be told which number to divide by. **The row that matters is the third.** The first two
+are a rounding error apart at this scale; the distance between either of them and the third is the
+whole of the risk in running this arena, and it is why `/reclamation.json`, the sweep gap and the burn
+brake exist. Watch `Treasury.rounds_swept` against `Arena.round_counter`.
+
+Hold-open's figure is still a **floor**: every round a real player actually causes parks and spends
+the same amounts, so a busy arena tracks the fixed-cadence rate. That is the correct way round —
+paying for rounds people played is the product working.
 
 **Check the balance** without a CLI, from anywhere:
 
@@ -935,7 +1066,9 @@ If a keeper looks wedged in some *other* way, check the balance before anything 
   hole and the shape of the eventual fix. The keeper will not wedge alongside it: after
   `DRAW_TIMEOUT_SECONDS` it logs loudly, records the round number in `keeper.wedgedRounds`, and opens
   the next round anyway (`open_round` only needs `round_counter + 1`, which has already moved past the
-  stuck round). The stuck round stays delegated and its rent is never reclaimed; a late callback would
+  stuck round). The stuck round stays delegated and its ~0.0235 SOL of rent is never reclaimed —
+  never terminal, so never sweepable, so `close_round_account` cannot reach it, which makes this one
+  of the three genuine permanent losses in `COST-MODEL.md` §4; a late callback would
   move it to `Fight` with nobody watching, where a human can settle it by hand because `resolve` is
   permissionless.
 - **`close_round` can be sent twice.** The undelegate commit reaches the base layer asynchronously, and
@@ -948,7 +1081,9 @@ If a keeper looks wedged in some *other* way, check the balance before anything 
   `open_round` (a verification script, a second operator), `arena.round_counter` moves past the round
   this keeper was running, and the keeper — correctly — follows the counter rather than its own memory.
   The round it was on is then unreachable by the phase machine, and sits delegated, past its deadline,
-  holding ~0.0085 SOL of rent forever. **Not yet handled.** The fix is a bounded sweeper: on idle
+  holding ~0.0235 SOL of rent forever — *forever* literally, because a round stuck in `Lobby` is never
+  terminal, never sweepable and therefore never closeable, so `close_round_account` cannot reach it
+  (`COST-MODEL.md` §4.2). **Not yet handled.** The fix is a bounded sweeper: on idle
   passes, look back a fixed number of rounds (say 20), and `abandon_round` any that is provably
   abandonable — phase `Lobby`, past its deadline with the skew margin, fewer than two fighters, and
   still owned by the Delegation Program, which is exactly `lobbyIsDead` plus the delegation

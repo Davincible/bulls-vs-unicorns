@@ -10,9 +10,17 @@
 // THE THREE THINGS THE PLANNER ANSWERS, IN THE ORDER THEY OUTRANK EACH OTHER:
 //
 //   THE TREASURY RULE FIRST. A lobby holding no real fighter gets exactly ONE house fighter, at every
-//   instant and under every configuration, because one is below `enough_to_fight` and a round the
-//   chain refuses to draw is a round that cannot become a house-versus-house fight. See
-//   `HOUSE_MAX_WITHOUT_REAL_PLAYER`. Everything below describes a room somebody real is standing in.
+//   instant, because one is below `enough_to_fight` and a round the chain refuses to draw is a round
+//   that cannot become a house-versus-house fight. See `HOUSE_MAX_WITHOUT_REAL_PLAYER`. Everything
+//   below describes a room somebody real is standing in.
+//
+//   THAT SENTENCE USED TO END "AND UNDER EVERY CONFIGURATION", AND IT NO LONGER CAN. `KEEPER_HOUSE_ONLY_ROUNDS`
+//   is an operator asking, by name, for the opposite policy: an empty room filled and fought like any
+//   other. It arrives here as `HouseLobbyView.emptyRoom`, per pass, and it is the ONLY configuration in
+//   which the paragraph above does not hold. The claim is weakened rather than deleted because the
+//   difference matters to whoever reads this next: the rule is still unconditional in every deployment
+//   that has not asked, the flag is off by default, and `houseInvariants.test.ts` still proves the rule
+//   across all 86,580 lobby shapes under `"unfightable"`. What is gone is the word "every".
 //
 //   FIGHTABILITY, from the first pass after a real player is seen. `MIN_FIGHTERS_TO_FIGHT` fighters,
 //   one per side, and never throttled by anything. Two is not a sizing preference — it is
@@ -63,7 +71,7 @@ import { c, describeError, info, ok, warn } from "./log.ts";
 import { asSecretKeyBytes, parseSecretJson, readSecretText, type SecretSource } from "./secrets.ts";
 import {
   allocateHouseSides, arrivalFraction, arrivalsDueBy, houseFighterCount, HOUSE_FLOOR,
-  HOUSE_MAX_WITHOUT_REAL_PLAYER, houseStake, type SideCounts,
+  HOUSE_MAX_WITHOUT_REAL_PLAYER, houseStake, type EmptyRoomPolicy, type SideCounts,
 } from "./houseSizing.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -161,6 +169,18 @@ export interface HouseLobbyView {
    *  one, otherwise the chain's deadline. The house's whole arrival window is measured backwards from
    *  this, so a compressed one compresses the arrivals with it. */
   drawAt: number;
+  /** WHAT A ROOM WITH NOBODY REAL IN IT IS ALLOWED TO HOLD — `"unfightable"` (the treasury rule, and
+   *  what every deployment runs today) or `"house-only"` (`KEEPER_HOUSE_ONLY_ROUNDS`). See
+   *  `EmptyRoomPolicy` for what each one guarantees and `HOUSE_ONLY_ROUNDS_ENABLED` for what the second
+   *  one costs.
+   *
+   *  REQUIRED, NOT OPTIONAL, and that is the one design decision in this field. A defaulted field is a
+   *  decision nobody makes: every call site would silently inherit whatever the last person thought was
+   *  reasonable, and the day a new one appeared it would inherit it too, without anybody reading this
+   *  comment. Requiring it costs four fixture updates in the test suite, once, and buys a compiler
+   *  error at every future call site that has not decided — which is exactly the population of call
+   *  sites that must not be allowed to guess about this. */
+  emptyRoom: EmptyRoomPolicy;
 }
 
 export interface HousePlan {
@@ -561,7 +581,7 @@ export function plannedHouseEntries(
   if (lobby.drawAt - nowSec <= CLOCK_SKEW_MARGIN_SECONDS) return { entries: [], split, houseTarget: 0 };
 
   let target: number;
-  if (split.realCount === 0) {
+  if (split.realCount === 0 && lobby.emptyRoom === "unfightable") {
     // NOBODY REAL IS HERE, AT ANY INSTANT IN THE WINDOW. One fighter — not a sizing preference, an
     // invariant: at one the chain refuses to draw the round at all, so no house-versus-house fight is
     // available to anyone, and `abandon_round` stays legal at the deadline so the round can still end.
@@ -575,13 +595,26 @@ export function plannedHouseEntries(
     // purpose. It also used to be gated on `lobby.heldOpen`, and with `KEEPER_HOLD_OPEN` off the seed
     // below put two fighters into an empty room and the round fought itself at its deadline. Asking
     // about the ROOM rather than about a mode is what made the guarantee hold in every configuration.
+    //
+    // IT NOW ASKS ABOUT THE ROOM *AND* THE POLICY, and that is not a retreat from the sentence above.
+    // The condition is still a fact about this lobby rather than a mode the keeper remembers being in:
+    // `lobby.emptyRoom` arrives on the view, per pass, from `planLobby`, so a keeper that booted into
+    // the middle of a house-only round and one that opened it make the same decision. What changed is
+    // that there are now two policies for an empty room and this branch is the one named for the
+    // guarantee it keeps — see `EmptyRoomPolicy`.
     target = HOUSE_MAX_WITHOUT_REAL_PLAYER;
   } else {
     // THE BOARD, THROTTLED BY THE CLOCK. `houseFighterCount` owns how many fighters this lobby should
     // end up holding; `arrivalsDueBy` owns how many of them have walked in by now. The schedule's own
     // guarantee is that at the end of the window everything is due, so this is the full board by the
     // time the lobby is drawn — see `arrivalsDueBy` for why that is structural rather than likely.
-    const board = houseFighterCount(split.real);
+    //
+    // AN EMPTY ROOM UNDER `"house-only"` ARRIVES HERE, and every line of this branch was written for a
+    // room with somebody in it. That is the point rather than an oversight: `fightability` below sees
+    // `realCount = 0 < MIN_FIGHTERS_TO_FIGHT` and floors the target at `HOUSE_FLOOR`, so a house-only
+    // lobby is DRAWABLE from the first pass and then fills on the ordinary ramp — the same two
+    // sentences that describe a lobby a person walked into. The mode adds no arithmetic of its own.
+    const board = houseFighterCount(split.real, lobby.emptyRoom);
     const due = arrivalsDueBy(Number(roundNo), board, arrivalFraction(nowSec, lobby.drawAt));
     // FIGHTABILITY IS NEVER RAMPED. `HOUSE_FLOOR` comes from the sizing policy, which owns how many
     // fighters the house fields; `MIN_FIGHTERS_TO_FIGHT` is the chain's `enough_to_fight`, which owns
@@ -634,6 +667,26 @@ export function plannedHouseEntries(
   // ONE CEILING, APPLIED TWICE. It bounds the target here, and it bounds the per-side top-up further
   // down — because that top-up is allowed to grow the house past its target and would otherwise be a
   // way around this line.
+  //
+  // ──────────────────────────────────────────────────────────────────────────────────────────────
+  // AND UNDER `"house-only"` IT IS THE LINE THAT ACTUALLY BINDS, WHICH IS THE HONEST ANSWER TO "DOES
+  // THIS MODE FILL THE ROOM"
+  // ──────────────────────────────────────────────────────────────────────────────────────────────
+  //
+  // It does not, and the arithmetic says so plainly. At the production board of 48 with nobody real in
+  // the room, `seatCeiling` is the full 48 and `houseCeiling = 48 - REAL_SEATS_RESERVED = 39`. So a
+  // house-only round fields THIRTY-NINE fighters, not forty-eight, and nine seats stand empty for the
+  // whole lobby. The reservation is not negotiable and does not yield to this mode: it exists so a
+  // visitor who clicks Enter finds a seat, and a visitor is exactly as likely to arrive into a
+  // house-only round as into any other — more so, since these are the rounds that run all day.
+  //
+  // WHAT THAT COSTS THE DISPLACEMENT STORY, SAID OUT LOUD BECAUSE IT IS A REAL LOSS. The whole point of
+  // ramping the house in late was that a real arrival DISPLACES a bot — the house yields a seat, the
+  // board holds its size, and the room turns human. Under house-only the house is already seated by the
+  // time anybody arrives, so their arrival displaces nobody: it fills one of the nine seats that were
+  // being held for them. The invariant survives (`REAL_SEATS_RESERVED` is untouched and is what makes
+  // those nine seats exist); the aesthetic does not. "The house yields a seat to you" degrades to "the
+  // house had already left nine free", which is a weaker thing to say and is the price of the mode.
   const houseCeiling = Math.max(0, seatCeiling - REAL_SEATS_RESERVED);
   target = Math.min(target, houseCeiling);
 
@@ -659,16 +712,44 @@ export function plannedHouseEntries(
   // to survive, expensive to meet, and the fix is strictly a no-op in every shape that was already
   // correct: with both deficits non-negative the two expressions are equal.
   //
-  // AND IT DOES NOT APPLY WHEN NOBODY REAL IS HERE, which is the treasury rule outranking drawability
-  // exactly as it does everywhere else in this function. A room with no real player in it is a room
-  // that MUST NOT be drawable, so an empty side is the desired state and `cover` has nothing to say
-  // about it. Without this branch the per-side rule would look at the lone house fighter, see a bare
-  // side, and post a second one — handing a permissionless caller the house-versus-house fight this
-  // whole policy exists to make impossible. It is the first thing the boundary sweep caught after the
-  // per-side change, and it is the reason that change is a branch rather than a one-line swap.
-  const grow = split.realCount === 0
-    ? target - split.houseCount
-    : Math.max(0, need0) + Math.max(0, need1);
+  // AND IT DOES NOT APPLY WHEN THIS ROOM IS MEANT TO BE UNDRAWABLE, which is the treasury rule
+  // outranking drawability exactly as it does everywhere else in this function. A room with no real
+  // player in it, under `"unfightable"`, is a room that MUST NOT be drawable, so an empty side is the
+  // desired state and `cover` has nothing to say about it. Without that exception the per-side rule
+  // would look at the lone house fighter, see a bare side, and post a second one — handing a
+  // permissionless caller the house-versus-house fight this whole policy exists to make impossible. It
+  // is the first thing the boundary sweep caught after the per-side change, and it is the reason that
+  // change is a branch rather than a one-line swap.
+  //
+  // ────────────────────────────────────────────────────────────────────────────────────────────────
+  // THE PREDICATE ASKS ABOUT DRAWABILITY, NOT ABOUT WHO IS IN THE ROOM, AND THAT DISTINCTION CLOSES A
+  // REAL HOLE
+  // ────────────────────────────────────────────────────────────────────────────────────────────────
+  //
+  // It used to be spelled `split.realCount === 0`, which was the same question while there was only one
+  // empty-room policy. Under `"house-only"` it stops being the same question, and keeping the old
+  // spelling would have left a lobby that cannot be drawn AND cannot be abandoned — the permanently
+  // stuck state this repo has already paid for nineteen times (COST-MODEL §4).
+  //
+  // The shape that reaches it: a house-only room, house already AT its target, every fighter on one
+  // side, and free wallets left in the bank. The total form computes `target - houseCount = 0`, the
+  // per-side deficits say one side is empty, and with the old predicate neither `grow` nor `coverFloor`
+  // is allowed to speak — so the planner returns nothing, the lobby reaches its deadline with a bare
+  // side, `close_lobby_and_draw` is refused for the empty side and `abandon_round` is refused because
+  // ten fighters is past `enough_to_fight`, and the round's ~0.0235 SOL sits in `Lobby` forever. It
+  // needs `HOUSE_WALLET_COUNT > target` to be reachable, which is not an exotic configuration — it is
+  // the RECOMMENDED one (`HOUSE_WALLET_COUNT`'s own comment: a pool larger than the board is what makes
+  // the cast turn over), and at the production board it is the default, since the seat reservation
+  // holds the target at 39 against a bank of 48.
+  //
+  // Asking "is this room meant to be drawable?" is the same question the treasury rule was always
+  // really answering, and it is a strict no-op under `"unfightable"`: there, `roomMustBeDrawable` is
+  // `realCount > 0` character for character, so all 86,580 swept shapes plan exactly what they planned
+  // before this parameter existed.
+  const roomMustBeDrawable = split.realCount > 0 || lobby.emptyRoom === "house-only";
+  const grow = roomMustBeDrawable
+    ? Math.max(0, need0) + Math.max(0, need1)
+    : target - split.houseCount;
 
   // THE THREE BOUNDS ON HOW MANY FIGHTERS TO ADD, and they are written as a floor and two ceilings
   // because that is the order they actually outrank each other in.
@@ -676,13 +757,15 @@ export function plannedHouseEntries(
   //   coverFloor   ONE fighter onto an empty side, and it outranks both ceilings below. A lobby with
   //                an empty side cannot be drawn AT ALL, so the choice there is not "a fuller board
   //                versus a leaner one", it is "a round versus a round that gets abandoned with its
-  //                rent gone and the people who turned up sent away". It is zero when nobody real is
-  //                here, which is the treasury rule again: that room is MEANT to be undrawable.
+  //                rent gone and the people who turned up sent away". It is zero for a room that is
+  //                MEANT to be undrawable — the treasury rule again, and the same `roomMustBeDrawable`
+  //                predicate `grow` is gated on, for the same reason and with the same no-op guarantee
+  //                under `"unfightable"`.
   //   ceilingRoom  the policy's target plus the seat reservation, i.e. the ordinary answer.
   //   freeSeats    the chain's own arithmetic. Nothing outranks this; `enter` answers `RoundFull`.
   const occupied0 = split.real.side0 + split.house.side0;
   const occupied1 = split.real.side1 + split.house.side1;
-  const coverFloor = split.realCount > 0 && (occupied0 === 0 || occupied1 === 0) ? 1 : 0;
+  const coverFloor = roomMustBeDrawable && (occupied0 === 0 || occupied1 === 0) ? 1 : 0;
   // THE FLOOR HAS TO NAME A SIDE, not just a count. Raising the shortfall alone was not enough and
   // failed in the one case it was written for: with fifteen real fighters stacked on side 0 the
   // reservation clamps `target` to zero, so `wanted` is empty, so BOTH deficits are zero — and the

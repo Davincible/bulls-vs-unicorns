@@ -52,6 +52,11 @@ const BASE: KeeperStatus = {
     lastError: null,
     wedgedRounds: [],
     lowBalance: null,
+    // Schema 6, both at their off values: this keeper is opening rounds and is not running them
+    // against its own wallets. Neither field is an input to `roundCadence` — the mode is not a fact
+    // about time at all, and the reason is read inside `keeperCountdown`, which owns it.
+    notOpeningRounds: null,
+    houseOnlyRounds: false,
   },
   chain: {
     cluster: "devnet",

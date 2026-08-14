@@ -11,7 +11,7 @@
 // So the keeper serves the same bytes itself. `statusFile.ts` renders them once per publish and both
 // channels emit that one payload; this file is a transport and holds no opinion about the content.
 //
-// THREE ENDPOINTS, AND THEY ANSWER DIFFERENT QUESTIONS.
+// FOUR ENDPOINTS, AND THEY ANSWER DIFFERENT QUESTIONS.
 //
 //   GET /keeper-status.json   the schema-3 payload, `Cache-Control: no-store`. A CACHED LIVENESS
 //                             REPORT IS A LIE ABOUT LIVENESS, and reporting liveness is the entire
@@ -29,6 +29,15 @@
 //                             the platform would KILL A PERFECTLY HEALTHY KEEPER, mid-round,
 //                             stranding a delegated round whose rent nothing reclaims. The blip is
 //                             transient and the restart is not. So it answers from memory only.
+//
+//   GET /reclamation.json     is rent still coming back? PUBLIC, unauthenticated, `no-store`, with
+//                             the ordinary CORS spread — the opposite of the roster below in every
+//                             one of those respects, and see `RECLAMATION_PATH` for why that is the
+//                             right call rather than an oversight. The short version: every number
+//                             in it is derived from accounts anybody can already read, it is kept
+//                             out of the status FILE by the payload rule rather than by
+//                             confidentiality, and it is kept off `/health` because `/health` has a
+//                             contract.
 //
 //   GET /house-wallets.json   the arena's OWN wallets, to a caller holding the bearer token and to
 //                             nobody else. See `HOUSE_PATH` for why this exists and why it is a live
@@ -79,6 +88,48 @@ export const BIND_HOSTNAME = "0.0.0.0";
  *  deployed keeper serving this endpoint, with only the origin changing. */
 export const STATUS_PATH = "/keeper-status.json";
 export const HEALTH_PATH = "/health";
+
+/** IS RENT STILL COMING BACK? — the economics report, to anybody who asks.
+ *
+ *  WHY IT EXISTS. COST-MODEL.md §4: the arena costs ~0.030 SOL/day while `close_round_account` keeps
+ *  reclaiming 0.023497 SOL per round, and ~9.96 SOL/day the moment it stops — 330x, arriving
+ *  silently, emptying a 14.95 SOL balance in about thirty-six hours. That mechanism has never run at
+ *  `MAX_FIGHTERS = 48`. This is the endpoint an operator watches for the first day of continuous
+ *  running, and `reclamation.ts` decides everything in it.
+ *
+ *  PUBLIC AND UNAUTHENTICATED, WHICH IS THE DECISION ON THIS ROUTE WORTH ARGUING. Every number in
+ *  this body is derived from accounts anybody can already read: `Arena.round_counter` and
+ *  `Treasury.rounds_swept` are on a public devnet ledger, the operator's balance is one
+ *  `getBalance` against a pubkey that signs every transaction this arena has ever sent, and the
+ *  arena PDA that anchors all of it is published in `keeper-status.json` to every visitor of the
+ *  site. There is nothing here a caller could not compute for themselves with an RPC endpoint and
+ *  ten minutes. Putting a token in front of it would protect a fact that is not secret, at the cost
+ *  of the thing this route is actually for — a human with `curl` and no shell access to the Fly
+ *  machine, at the moment they most need it.
+ *
+ *  SO WHY IS IT NOT IN THE STATUS FILE? The payload rule, not confidentiality. `statusFile.ts`'s
+ *  standing rule is that NOTHING interpolated from an exception, an account or a fighter count may
+ *  enter `keeper-status.json` — a rule that exists because that payload is DRAWN by a browser and a
+ *  half-understood field becomes a confidently-wrong number in front of a player. A stream of round
+ *  numbers, cursors and lamport totals is exactly the kind of operational detail that rule keeps
+ *  out, and no view would render a byte of it. This route is the channel that exists BECAUSE of that
+ *  rule: the same reasoning that says "not in the browser's payload" says nothing at all about "not
+ *  on the wire".
+ *
+ *  AND WHY NOT ON `/health`? Because `/health` has a contract and its whole value is that it means
+ *  one thing: always 200 while the process answers, no chain calls, a liveness probe that `fly.toml`
+ *  is pointed at. An economics report inside it would muddy a check whose entire purpose is to be
+ *  unambiguous — and the first person to reason "the burn looks wrong, so the health check should
+ *  fail" would have the platform restarting a healthy keeper mid-round over a condition a restart
+ *  cannot fix. Two endpoints, two questions.
+ *
+ *  IT CARRIES NO SCHEMA FIELD, for the same reason `HOUSE_PATH` carries none. `keeper-status.json`
+ *  is versioned because a browser DRAWS from it. This body has zero programmatic consumers and one
+ *  human with `curl`; a version here would be ceremony, and pinning one would mean a keeper deploy
+ *  silently breaking a report nobody was parsing. If that ever stops being true — if something
+ *  starts alerting on this — the version goes in on the day the first consumer appears, which is the
+ *  day anybody can say what it would mean. */
+export const RECLAMATION_PATH = "/reclamation.json";
 
 /** THE ARENA'S OWN WALLETS, TO AN AUTHENTICATED CALLER ONLY — the third route, and the only one on
  *  this server that answers a question the public one deliberately stopped answering.
@@ -361,6 +412,22 @@ export interface StatusServerDeps {
   /** Age of the published heartbeat in seconds, from memory. `statusFile.ts`'s
    *  `publisher.heartbeatAgeSeconds`. */
   heartbeatAgeSeconds: () => number;
+  /** The reclamation report, ALREADY RENDERED — `serializeReclamationReport(summariseReclamation(…))`,
+   *  built where the keeper already holds the state it summarises.
+   *
+   *  A FUNCTION RETURNING A STRING, MIRRORING `body` EXACTLY AND FOR THE SAME REASON. The handler
+   *  stays a pure function of values: no chain call on the request path, no serialisation on the
+   *  request path, and nothing for a poller to make the keeper do. `summariseReclamation` is cheap,
+   *  so the temptation to build the report here is real — and it is the same temptation `body`
+   *  refused, where rendering per request would have let an HTTP GET drive the publisher's own
+   *  latch. A route that computes is a route that can throw, can be slow, and can be made to run by
+   *  anybody on the internet; a route that returns a string it was handed cannot.
+   *
+   *  REQUIRED, NOT OPTIONAL. An optional dependency would let a keeper that forgot to wire it serve a
+   *  404 on the one endpoint the owner is watching to find out whether the arena is burning 9.96
+   *  SOL/day — which is precisely the silent failure this whole route exists to catch, arriving
+   *  through the door left open to make the type convenient. */
+  reclamation: () => string;
   policy: OriginPolicy;
   /** The roster token, ALREADY RESOLVED — `resolveHouseTokenPolicy(process.env.KEEPER_HOUSE_TOKEN)`,
    *  called once where the server is started. Null means the route does not exist on this keeper.
@@ -530,6 +597,18 @@ export function handleKeeperRequest(request: Request, deps: StatusServerDeps): R
     });
   }
 
+  if (path === RECLAMATION_PATH) {
+    // THE ORDINARY PUBLIC SHAPE — `cors` spread, `no-store`, no token — and every one of those is a
+    // decision rather than a copy of the line above it. See `RECLAMATION_PATH`: the body is derived
+    // from accounts anybody can already read, so there is nothing here for a credential to protect,
+    // and `no-store` because a cached burn rate is the same lie about the present that a cached
+    // heartbeat is.
+    return new Response(deps.reclamation(), {
+      status: 200,
+      headers: { ...cors, "Content-Type": "application/json", "Cache-Control": NO_STORE },
+    });
+  }
+
   // THE ROSTER, AND IT IS THE ODD ONE OUT ON PURPOSE — see `HOUSE_PATH` for why it exists.
   //
   // THE UNCONFIGURED CASE FALLS THROUGH TO THE 404 BELOW RATHER THAN ANSWERING 401, and the
@@ -590,11 +669,12 @@ export function handleKeeperRequest(request: Request, deps: StatusServerDeps): R
     });
   }
 
-  // Names both PUBLIC routes — see the roster branch above for why it is deliberately not listed here
-  // even on a keeper that serves it. This response is what somebody gets when they curl the bare
-  // hostname to check the deploy worked, and "404" alone at that moment is a dead end.
+  // Names every PUBLIC route — see the roster branch above for why that one is deliberately not
+  // listed here even on a keeper that serves it. This response is what somebody gets when they curl
+  // the bare hostname to check the deploy worked, and "404" alone at that moment is a dead end.
   return new Response(
-    `no such path: ${path}\nThis is the arena round keeper. It serves ${STATUS_PATH} and ${HEALTH_PATH}.\n`,
+    `no such path: ${path}\nThis is the arena round keeper. It serves ${STATUS_PATH}, ${HEALTH_PATH} ` +
+    `and ${RECLAMATION_PATH}.\n`,
     { status: 404, headers: { ...cors, "Content-Type": "text/plain", "Cache-Control": NO_STORE } },
   );
 }
@@ -668,7 +748,7 @@ export function startStatusServer(options: StatusServerOptions): StatusServer | 
         }
       },
     });
-    ok(`status server on http://${BIND_HOSTNAME}:${server.port}${STATUS_PATH}  ${c.d}(health: ${HEALTH_PATH})${c.x}`);
+    ok(`status server on http://${BIND_HOSTNAME}:${server.port}${STATUS_PATH}  ${c.d}(health: ${HEALTH_PATH}, reclamation: ${RECLAMATION_PATH})${c.x}`);
     // THE ROSTER ROUTE'S STATE, ON ITS OWN LINE AND ALWAYS — including, and especially, when it is
     // off. "Enabled" is the boring half; the off case is a silent, total feature outage at a
     // completely different host, and this is the only place either process says so out loud. The

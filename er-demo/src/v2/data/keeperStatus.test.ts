@@ -81,6 +81,11 @@ const BASE: KeeperStatus = {
     lastError: null,
     wedgedRounds: [],
     lowBalance: null,
+    // The keeper is opening rounds and is not playing itself. Both off values, so every test that
+    // draws a next-lobby countdown is visibly a test about a keeper that will open one, and every
+    // assertion about the disclosure has to turn it on for itself.
+    notOpeningRounds: null,
+    houseOnlyRounds: false,
   },
   chain: {
     cluster: "devnet",
@@ -648,22 +653,156 @@ describe("isKeeperOutOfFunds", () => {
   });
 });
 
-describe("keeperCountdown while the arena is out of funds", () => {
-  it("refuses to promise a next lobby", () => {
+describe("keeperCountdown while the keeper is not opening rounds", () => {
+  it("refuses to promise a next lobby, whichever reason stopped it", () => {
     // THE WHOLE POINT OF THE FIELD. Without it this is a settled round with a next-lobby time beside
     // a perfectly healthy-looking keeper, and the page counts down to a round nothing will open.
+    //
+    // BOTH REASONS, because they are what the field is for. A funding floor and a burn brake are
+    // different incidents with different fixes, and the page has exactly one decision to make about
+    // them; a branch that happened to work for one would be a branch that reads the vocabulary rather
+    // than the null-ness, which is the mistake the derived field exists to make unavailable.
     const settled = { ...BASE, round: round({ ...inPhase("Settled") }), nextLobbyOpensAt: NOW + 8 };
     expect(keeperCountdown(settled, NOW)).toEqual({ kind: "next-lobby", seconds: 8 });
-    expect(keeperCountdown({ ...settled, keeper: { ...settled.keeper, lowBalance: LOW } }, NOW))
-      .toEqual({ kind: "none" });
+    for (const reason of ["low-balance", "rent-not-reclaimed"] as const) {
+      const stopped = { ...settled, keeper: { ...settled.keeper, notOpeningRounds: reason } };
+      expect(keeperCountdown(stopped, NOW), reason).toEqual({ kind: "none" });
+    }
+  });
+
+  it("is not suppressed by a lowBalance block on its own, which is correct and not a regression", () => {
+    // A FILE THAT SAYS "BELOW THE FLOOR" AND "ROUNDS ARE COMING" IN THE SAME BREATH. The keeper never
+    // writes one — `setLowBalance` and `setNotOpeningRounds` are called together in the pass that
+    // knows the reason, and `statusFile.test.ts` pins that — so what this fixture actually represents
+    // is the hand-edited and the half-written file, which is the case every rule in the parser is
+    // written for.
+    //
+    // AND THE HONEST ANSWER FOR IT IS TO COUNT DOWN, which reads as a regression against schema 4 and
+    // is not one. The countdown's question is "is a further round coming", and since schema 6 there is
+    // one field that answers exactly that and a detail block that answers "how much is in the payer".
+    // This file says a round is coming. Believing the field that means what was asked, rather than
+    // re-deriving the answer from a symptom, is the entire reason the reason was hoisted out — and a
+    // reader that second-guessed it here would have to second-guess the burn brake's detail block too,
+    // then the third cause's, which is the accumulation `notOpeningRounds` was added to stop.
+    const settled = { ...BASE, round: round({ ...inPhase("Settled") }), nextLobbyOpensAt: NOW + 8 };
+    const inconsistent = {
+      ...settled,
+      keeper: { ...settled.keeper, lowBalance: LOW, notOpeningRounds: null },
+    };
+    expect(keeperCountdown(inconsistent, NOW)).toEqual({ kind: "next-lobby", seconds: 8 });
+    // The fourth state is still reported, because that predicate reads the detail block and always
+    // did: "out of funds" and "no round is coming" are now two answers to two questions.
+    expect(isKeeperOutOfFunds(inconsistent, NOW)).toBe(true);
   });
 
   it("still counts an in-flight lobby down, because that round IS being finished", () => {
-    // The keeper drives a round already in flight to a terminal state whatever the balance says — it
-    // refuses to START work it may not finish, not to finish work already started. Blanking this
-    // countdown would be its own kind of lie, about a fight that is genuinely about to happen.
-    const lobby = { ...BASE, keeper: { ...BASE.keeper, lowBalance: LOW }, entriesCloseAt: NOW + 12 };
+    // The keeper drives a round already in flight to a terminal state whatever has stopped it opening
+    // new ones — it refuses to START work it may not finish, not to finish work already started.
+    // Blanking this countdown would be its own kind of lie, about a fight that is genuinely about to
+    // happen.
+    const keeper = { ...BASE.keeper, lowBalance: LOW, notOpeningRounds: "low-balance" as const };
+    const lobby = { ...BASE, keeper, entriesCloseAt: NOW + 12 };
     expect(keeperCountdown(lobby, NOW)).toEqual({ kind: "entries-close", seconds: 12 });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Schema 6 — the disclosure, and the reason the countdown reads
+// ---------------------------------------------------------------------------------------------
+
+describe("parsing the schema-6 fields", () => {
+  it("carries the reason through as an explicit null and as each word of the vocabulary", () => {
+    expect(parseKeeperStatus(rawStatus())!.keeper.notOpeningRounds).toBeNull();
+    for (const reason of ["low-balance", "rent-not-reclaimed"] as const) {
+      const raw = rawStatus();
+      (raw.keeper as Record<string, unknown>).notOpeningRounds = reason;
+      expect(parseKeeperStatus(raw)!.keeper.notOpeningRounds, reason).toBe(reason);
+    }
+  });
+
+  it("carries the mode through in both directions, because a boolean that only survives one is a lie", () => {
+    // The off value is the one worth checking twice: `false` is what every honest keeper publishes,
+    // and a parser that dropped or defaulted it would look perfectly correct on the fixture above
+    // while making the disclosure unfalsifiable.
+    expect(parseKeeperStatus(rawStatus())!.keeper.houseOnlyRounds).toBe(false);
+    const raw = rawStatus();
+    (raw.keeper as Record<string, unknown>).houseOnlyRounds = true;
+    expect(parseKeeperStatus(raw)!.keeper.houseOnlyRounds).toBe(true);
+  });
+
+  it("rejects a file that omits either field entirely", () => {
+    // PRESENT OR MALFORMED, the rule `stalledSince` and `lowBalance` already follow. Reading an absent
+    // `notOpeningRounds` as null would invent "rounds are coming"; reading an absent `houseOnlyRounds`
+    // as false would have the page make the arena's disclosure for it, in the direction that discloses
+    // nothing. Neither silence is an answer.
+    for (const field of ["notOpeningRounds", "houseOnlyRounds"]) {
+      const raw = rawStatus();
+      delete (raw.keeper as Record<string, unknown>)[field];
+      expect(parseKeeperStatus(raw), field).toBeNull();
+    }
+  });
+
+  it("rejects a reason outside the vocabulary rather than defaulting it to null", () => {
+    // THE POINT OF CHECKING THE UNION INSTEAD OF `isString`. Each of these is a writer this reader
+    // does not understand — a newer keeper with a third cause, a typo, a hand-edit — and the only two
+    // things a reader can do with one is refuse the file or call it null. Null means "another round is
+    // coming", and it is certainly wrong: the writer went to the trouble of naming a reason it has
+    // stopped. Refusing the file says "keeper down", which is this module's standing failure direction.
+    for (const bad of ["rent-not-reclaimed ", "low_balance", "unknown", "", "true", 1, false, {}, []]) {
+      const raw = rawStatus();
+      (raw.keeper as Record<string, unknown>).notOpeningRounds = bad;
+      expect(parseKeeperStatus(raw), JSON.stringify(bad)).toBeNull();
+    }
+  });
+
+  it("rejects a mode flag that is not a boolean", () => {
+    // `"false"` and `0` are the interesting ones: both are the shape a hand-edited or JSON-round-
+    // tripped-through-a-form file takes, both are FALSY, and a parser that coerced instead of checking
+    // would read either as "not house-only" — the value that suppresses the disclosure.
+    for (const bad of ["true", "false", 0, 1, null, {}]) {
+      const raw = rawStatus();
+      (raw.keeper as Record<string, unknown>).houseOnlyRounds = bad;
+      expect(parseKeeperStatus(raw), JSON.stringify(bad)).toBeNull();
+    }
+  });
+
+  it("rejects the v5 file a not-yet-redeployed keeper is still writing", () => {
+    // The literal 5, for the reason the v4, v2 and v1 cases use theirs: v5 files exist — on disk in
+    // `public/`, in a browser cache, coming out of a keeper nobody has restarted — and they go on
+    // being v5 files forever, whereas `SCHEMA - 1` stops naming them the moment somebody bumps to 7.
+    //
+    // A v5 file is this one minus the two fields, so it is built that way rather than by editing a
+    // number: the shape that, defaulted, would have the page publish "there are people in these
+    // rounds" on behalf of a keeper that never said so, and go on counting down to a lobby a tripped
+    // burn brake is never going to open.
+    const raw = rawStatus();
+    raw.schema = 5;
+    delete (raw.keeper as Record<string, unknown>).notOpeningRounds;
+    delete (raw.keeper as Record<string, unknown>).houseOnlyRounds;
+    expect(parseKeeperStatus(raw)).toBeNull();
+  });
+
+  it("hands back the mode as a mode, carrying nothing about the round it was published beside", () => {
+    // THE PROPERTY THAT MAKES PUBLISHING IT A DISCLOSURE RATHER THAN A LEAK, stated as a test because
+    // it is the thing a future field would quietly break. The identical byte is published over a round
+    // that is entirely the arena's own wallets and over a round a real player is standing in, and
+    // nothing else in the parsed status moves with it — so no view can reconstruct who is in a round
+    // from this flag, however much it would like to.
+    const houseOnly = rawStatus();
+    (houseOnly.keeper as Record<string, unknown>).houseOnlyRounds = true;
+    const withRealPlayer = JSON.parse(JSON.stringify(houseOnly)) as Record<string, unknown>;
+    (withRealPlayer.round as Record<string, unknown>).fighterCount = 5;
+    (withRealPlayer.round as Record<string, unknown>).heldOpen = false;
+
+    const a = parseKeeperStatus(houseOnly)!;
+    const b = parseKeeperStatus(withRealPlayer)!;
+    expect(a.keeper.houseOnlyRounds).toBe(true);
+    expect(b.keeper.houseOnlyRounds).toBe(true);
+    // The rounds genuinely differ — without this the equality above is a pair of true booleans
+    // proving nothing at all.
+    expect(a.round!.fighterCount).not.toBe(b.round!.fighterCount);
+    // And the countdown is unmoved by the mode: it is not an input to any honesty rule in this file.
+    expect(keeperCountdown(a, NOW)).toEqual(keeperCountdown(parseKeeperStatus(rawStatus())!, NOW));
   });
 });
 

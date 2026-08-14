@@ -1,9 +1,12 @@
 // WHEN A FIGHT IS ALLOWED TO START — the policy that stopped the arena fighting itself, pinned.
 //
 // Every test here is about one of two failures. The first is money: a keeper that cycles rounds at
-// nobody burns 0.00981 SOL of permanently-locked rent per cycle, ~0.32 SOL/hour, and holds a
-// house-versus-house fight each time. The second is a number on a screen: a lobby held open for an
-// hour must never produce a countdown, because nothing happens at that deadline.
+// nobody parks 0.023497 SOL of rent per cycle and holds a house-versus-house fight each time. Since
+// v7 that rent is FLOAT — `close_round_account` returns it once `ROUND_RETENTION` newer rounds exist —
+// so the cost is ~0.00007 SOL of fees per round plus the standing float and the risk that a close
+// fails (COST-MODEL §0, §4), not the ~0.32 SOL/hour of permanent loss this header used to claim. The
+// second is a number on a screen: a lobby held open for an hour must never produce a countdown,
+// because nothing happens at that deadline.
 //
 // The fixture is a HELD-OPEN lobby — an hour of backstop, ONE house fighter, nobody real — because
 // that is the state the keeper now spends almost all of its life in.
@@ -24,6 +27,7 @@ function view(over: Partial<LobbyView> = {}): LobbyView {
     realFighterCount: 0,
     firstRealEntryObservedAtSec: null,
     holdOpen: true,
+    houseOnly: false,
     ...over,
   };
 }
@@ -192,6 +196,7 @@ describe("lobbyIsHeldOpen", () => {
         nowSec: NOW,
         realFighterCount: 0,
         holdOpen: true,
+        houseOnly: false,
       }), String(phaseCode)).toBe(false);
     }
   });
@@ -203,6 +208,83 @@ describe("lobbyIsHeldOpen", () => {
       nowSec: NOW,
       realFighterCount: 0,
       holdOpen: true,
+      houseOnly: false,
     })).toBe(false);
+  });
+
+  it("is false under house-only rounds, because the deadline is a schedule and not a backstop", () => {
+    // The predicate's own question is "is this keeper going to reach that deadline without closing the
+    // lobby first" — and under house-only it is not waiting for anybody, it is going to draw the round
+    // when the clock runs out. Reporting `heldOpen` would put `waiting-for-players` on the page in
+    // front of a lobby that fights in forty seconds.
+    expect(lobbyIsHeldOpen({
+      phaseCode: Phase.Lobby,
+      lobbyClosesAt: BACKSTOP,
+      nowSec: NOW,
+      realFighterCount: 0,
+      holdOpen: true,
+      houseOnly: true,
+    })).toBe(false);
+  });
+});
+
+describe("house-only rounds, with hold-open still switched on", () => {
+  // THE COMBINATION WORTH PINNING, because it is the one an operator actually types: hold-open is set
+  // on the deployment and `--house-only-rounds` is added to make the arena run at nobody. The claim is
+  // that house-only does not DISABLE hold-open — it collapses the backstop into a schedule, and the
+  // authority early close a real arrival depends on is fully retained. See `lobbyPolicy.ts`'s header.
+  const houseOnly = { houseOnly: true };
+
+  it("stops calling an empty lobby held open, so the page can draw an honest countdown", () => {
+    const plan = planLobby(view({ ...houseOnly }));
+    expect(plan.heldOpen).toBe(false);
+    // Still `wait` — there is nothing to send yet — but it is the ordinary wait of a lobby counting
+    // down, not an indefinite hold. The difference is entirely in what gets published.
+    expect(plan.step).toEqual({ kind: "wait" });
+  });
+
+  it("points the house's arrival window at the deadline, which is now when the round is really drawn", () => {
+    // `drawAt` is what `plannedHouseEntries` sizes and schedules against, so this is the line that
+    // makes a house-only board fill across the window rather than appear in one frame at the bell.
+    expect(planLobby(view({ ...houseOnly })).drawAt).toBe(BACKSTOP);
+    expect(planLobby(view({ ...houseOnly })).entriesCloseAt).toBeNull();
+  });
+
+  it("STILL handles a real player arriving, which is the half of hold-open that is retained", () => {
+    // THE PROOF THAT THE SECOND HALF SURVIVED, and the reason `heldOpen` could be turned off without
+    // taking the early close with it: `entriesCloseAt` is gated on `holdOpen` and the first real entry,
+    // never on `heldOpen`. So somebody who walks into a house-only round gets the identical treatment
+    // they would have got in a held-open one — a grace window, then their fight — rather than being
+    // made to wait out a deadline that was set for bots.
+    const arrived = view({ ...houseOnly, realFighterCount: 1, fighterCount: 11, firstRealEntryObservedAtSec: NOW });
+    expect(arrived.holdOpen).toBe(true); // the fixture's own premise, stated so the test cannot drift
+    const plan = planLobby(arrived);
+    expect(plan.entriesCloseAt).toBe(NOW + REAL_PLAYER_GRACE_SECONDS);
+    expect(plan.drawAt).toBe(NOW + REAL_PLAYER_GRACE_SECONDS);
+    expect(plan.step).toEqual({ kind: "wait" });
+
+    // And the grace really does end in the fight, rather than in a lobby that runs to its deadline.
+    const closed = planLobby(view({
+      ...houseOnly,
+      realFighterCount: 1,
+      fighterCount: 11,
+      firstRealEntryObservedAtSec: NOW,
+      nowSec: NOW + REAL_PLAYER_GRACE_SECONDS,
+    }));
+    expect(closed.step).toEqual({ kind: "closeEarly" });
+  });
+
+  it("closes the round at its deadline rather than abandoning it, because it can now hold a fight", () => {
+    // THE CONSEQUENCE THE MODE IS BOUGHT WITH, as behaviour. Under the treasury rule an empty lobby
+    // reaches its deadline with one fighter, `lobby_is_dead` is true, and `abandon_round` ends it
+    // cleanly. Fill that room and the same instant produces `close` instead — which is the round the
+    // operator asked for, and which is also why `abandon_round` is no longer available as a way out if
+    // the draw cannot land. `HOUSE_ONLY_ROUNDS_ENABLED` prices that.
+    const expired = { ...houseOnly, nowSec: BACKSTOP + CLOCK_SKEW_MARGIN_SECONDS };
+    expect(planLobby(view({ ...expired, fighterCount: 10 })).step).toEqual({ kind: "close" });
+    // And the empty-room escape hatch is gone with it: only a lobby that genuinely holds fewer than
+    // two fighters can still be abandoned, which under this mode means one whose house entries all
+    // failed.
+    expect(planLobby(view({ ...expired, fighterCount: 1 })).step).toEqual({ kind: "abandon" });
   });
 });

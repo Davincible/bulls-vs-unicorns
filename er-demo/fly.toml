@@ -227,6 +227,51 @@ primary_region = "fra"
   # house players" instruction expressed as something the chain enforces rather than something this
   # process promises, and a knob whose only safe value is 1 is a way to lose that by typo.
   #
+  # THAT PARAGRAPH IS NOW CONDITIONAL, AND SAYING SO IS THE POINT. The COUNT still has no knob and
+  # never will — but there is now a second EMPTY-ROOM POLICY, asked for by name rather than by number,
+  # and under it the count above is simply not consulted. So "a room with nobody real in it holds one
+  # fighter and cannot be drawn" is true of every deployment that has not set the line below, and false
+  # of one that has. See KEEPER_HOUSE_ONLY_ROUNDS immediately after this.
+
+  # KEEPER_HOUSE_ONLY_ROUNDS — DELIBERATELY NOT SET, AND NOT MERELY UNSET-BY-DEFAULT.
+  #
+  #     KEEPER_HOUSE_ONLY_ROUNDS = "1"     # <- do not uncomment without reading all of this
+  #
+  # It asks for an arena that keeps running with nobody real in it: an empty room is filled to the
+  # board, drawn, and fought by this keeper's own wallets, all day. What it costs is not the fighters.
+  #
+  # IT RETIRES THE GUARANTEE THE PARAGRAPH ABOVE DOCUMENTS AT LENGTH. Not weakens — retires. The one
+  # fighter is what puts an empty room below `enough_to_fight`; fill the room and the round is drawable
+  # by us and by any permissionless caller, and `abandon_round` — which requires `lobby_is_dead`, which
+  # requires FEWER THAN TWO fighters — is refused on it. "The house never fights itself" stops being
+  # something the chain enforces and becomes nothing at all.
+  #
+  # AND THE ABANDON PATH GOING AWAY IS THE EXPENSIVE HALF. With `abandon_round` refused, the only
+  # instruction that can end a house-only lobby is `close_lobby_and_draw`. If that cannot land — a dead
+  # ER validator, a VRF queue that refuses, a delegation lost — the round sits in `Lobby` with nothing
+  # left that will succeed on it, and its ~0.0235 SOL is stranded PERMANENTLY (`close_round_account`
+  # needs `house_swept`; sweeping needs a terminal phase). COST-MODEL §4.2 records 19 rounds already in
+  # exactly that state, holding ~0.16 SOL that no instruction will ever return. Today the population
+  # that can reach it is "rounds a real player entered", which is rare. This makes it "every round".
+  #
+  # WHAT IT COSTS TO RUN: ~0.031 SOL/day while `close_round_account` keeps reclaiming rent, and
+  # ~9.96 SOL/day the moment it silently stops — 330x, no exception, no failed transaction, a keeper
+  # that looks perfectly healthy throughout. That mechanism has NEVER RUN at MAX_FIGHTERS = 48. The
+  # keeper watches for it two ways and stops itself (`GET /reclamation.json`, and the burn brake — see
+  # scripts/keeper/README.md, "House-only rounds"), and neither of those is a reason to set this
+  # casually; they are what makes it survivable if you do.
+  #
+  # IT INTERACTS WITH KEEPER_HOLD_OPEN_LOBBY_SECONDS ABOVE. With this on, an empty lobby is drawn at
+  # its DEADLINE rather than held — so the seven-day backstop set above would become a seven-day
+  # SCHEDULE, i.e. one round a week. The keeper handles that itself: with this mode on it opens
+  # DEFAULT_LOBBY_SECONDS lobbies regardless of the backstop, and the authority early close still fires
+  # for a real arrival.
+  #
+  # DEVNET ONLY. Every endpoint the mode will touch — base RPC, router and the ER validator's own fqdn
+  # — is re-asserted against the devnet allowlist at boot, naming this feature, and the process refuses
+  # to start anywhere else. `fly secrets set KEEPER_HOUSE_ONLY_ROUNDS=1` is the no-deploy way to turn
+  # it on for an experiment; unsetting it restores today's behaviour exactly.
+  #
   # KEEPER_HOUSE_WALLET_COUNT IS THE ONE THAT IS NOT SELF-SERVICE. Raising it needs new keys generated
   # locally and `KEEPER_HOUSE_WALLETS` re-issued with all of them, in that order; the keeper refuses to
   # boot rather than generating wallets it would fund and then lose on the next restart. See
