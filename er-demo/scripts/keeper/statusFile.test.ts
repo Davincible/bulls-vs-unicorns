@@ -448,31 +448,45 @@ describe("the published status identifies none of the arena's own wallets", () =
     expectNothingIdentifying(body);
   });
 
-  it("publishes nothing identifying with the house-only mode ON and the keeper stopped", () => {
-    // THE CASE THAT PROVES THE DISCLOSURE DID NOT SMUGGLE ANYTHING IN BEHIND IT. Schema 6 puts a field
-    // with "house" in its name into a payload that was emptied of the house on purpose, and the
-    // argument for it is that the field is a literal from a boot flag with no inputs. An argument is
-    // not a guarantee; this is where it gets checked against the bytes.
-    //
-    // Everything that could plausibly travel WITH the mode is turned on at once — the flag, a stopped
-    // keeper, its funding detail, a lobby the arena is standing in by itself — because the leak this
-    // whole block exists for is the one that arrives through a field nobody thought of, and these are
-    // the newest fields in the file.
-    const publisher = publisherInTempDir(true);
-    publisher.setRound(roundIn(Phase.Lobby));
-    publisher.setNotOpeningRounds("rent-not-reclaimed");
-    publisher.setLowBalance({ lamports: 1n, floorLamports: 2n, nowSec: NOW });
-    publisher.publish();
+  // EVERY REASON, NOT A REPRESENTATIVE ONE. The sweep below is over serialized BYTES precisely
+  // because it catches leaks arriving through a field nobody thought to check, and "nobody thought to
+  // check it" is the state of every reason that was not the one the test happened to name. Kept as a
+  // literal list rather than imported: `NOT_OPENING_REASONS` is private to `keeperStatus.ts`, and a
+  // test that reads the same list the code reads asserts only that one list equals itself.
+  for (const reason of ["low-balance", "rent-not-reclaimed", "rent-not-swept"] as const) {
+    it(`publishes nothing identifying with the house-only mode ON and the keeper stopped: ${reason}`, () => {
+      // THE CASE THAT PROVES THE DISCLOSURE DID NOT SMUGGLE ANYTHING IN BEHIND IT. Schema 6 puts a
+      // field with "house" in its name into a payload that was emptied of the house on purpose, and
+      // the argument for it is that the field is a literal from a boot flag with no inputs. An
+      // argument is not a guarantee; this is where it gets checked against the bytes.
+      //
+      // Everything that could plausibly travel WITH the mode is turned on at once — the flag, a
+      // stopped keeper, its funding detail, a lobby the arena is standing in by itself — because the
+      // leak this whole block exists for is the one that arrives through a field nobody thought of,
+      // and these are the newest fields in the file.
+      //
+      // `"rent-not-swept"` IS THE ONE THIS PARAMETRISATION WAS ADDED FOR. It is the first reason
+      // whose EMISSION is decided by a number observed on chain — the gap between
+      // `Arena.round_counter` and `Treasury.rounds_swept` — so it is exactly the shape of thing this
+      // header warns about. It is safe because the observation selects BETWEEN literals and never
+      // enters one, and that claim is worth no more than the bytes it is checked against.
+      const publisher = publisherInTempDir(true);
+      publisher.setRound(roundIn(Phase.Lobby));
+      publisher.setNotOpeningRounds(reason);
+      publisher.setLowBalance({ lamports: 1n, floorLamports: 2n, nowSec: NOW });
+      publisher.publish();
 
-    const body = publisher.body();
-    const parsed = parseKeeperStatus(JSON.parse(body));
-    expect(parsed).not.toBeNull();
-    // Real first, and here that means the disclosure genuinely reached the payload: a publisher that
-    // silently dropped the flag would satisfy every absence below while publishing nothing at all.
-    expect(parsed!.keeper.houseOnlyRounds).toBe(true);
-    expect(parsed!.keeper.notOpeningRounds).toBe("rent-not-reclaimed");
-    expectNothingIdentifying(body);
-  });
+      const body = publisher.body();
+      const parsed = parseKeeperStatus(JSON.parse(body));
+      expect(parsed).not.toBeNull();
+      // Real first, and here that means the disclosure genuinely reached the payload: a publisher
+      // that silently dropped the flag would satisfy every absence below while publishing nothing at
+      // all.
+      expect(parsed!.keeper.houseOnlyRounds).toBe(true);
+      expect(parsed!.keeper.notOpeningRounds).toBe(reason);
+      expectNothingIdentifying(body);
+    });
+  }
 
   it("publishes the same mode byte whoever is standing in the round", () => {
     // THE PROPERTY THE FIELD IS DEFENDED ON, over the bytes rather than over the parsed object: it
@@ -516,7 +530,12 @@ describe("the mode and the reason, as the writer publishes them", () => {
   it("carries each reason through, and back to null when the keeper starts opening again", () => {
     const publisher = publisherInTempDir();
     expect(parsedBodyOf(publisher).keeper.notOpeningRounds).toBeNull();
-    for (const reason of ["low-balance", "rent-not-reclaimed"] as const) {
+    // EVERY MEMBER OF THE VOCABULARY, because the failure of missing one is not a missing test — it
+    // is a reason the writer can emit and the reader refuses, which takes the WHOLE file to null and
+    // puts "keeper is down" on the page at the exact moment the keeper is trying to say why it
+    // stopped. `NotOpeningReason` is now read off `NOT_OPENING_REASONS` so the writer and the parser
+    // cannot drift; this is what proves the pair actually survives a round trip.
+    for (const reason of ["low-balance", "rent-not-reclaimed", "rent-not-swept"] as const) {
       publisher.setNotOpeningRounds(reason);
       expect(parsedBodyOf(publisher).keeper.notOpeningRounds, reason).toBe(reason);
     }

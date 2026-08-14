@@ -697,13 +697,24 @@ export function plannedHouseEntries(
   let need0 = wanted.filter((s) => s === 0).length - split.house.side0;
   let need1 = wanted.filter((s) => s === 1).length - split.house.side1;
 
-  // PER SIDE, NOT ON THE TOTAL, and the difference is a round that cannot be drawn.
+  // PER SIDE, NOT ON THE TOTAL, and the difference is a round with no fight in it.
   //
   // This used to be `target - split.houseCount`, which is the same number whenever both deficits are
   // non-negative — and silently the wrong one when they are not. A house already AT its target but
   // standing entirely on one side has a total shortfall of zero, so the planner returned nothing,
-  // `cover` never got honoured, and the lobby reached its deadline with an empty side: undrawable,
-  // abandoned, one round's rent gone, and the people who turned up got no fight.
+  // `cover` never got honoured, and the lobby reached its deadline with an empty side.
+  //
+  // WHAT HAPPENS TO THAT LOBBY IS WORSE THAN IT SOUNDS AND DIFFERENT FROM WHAT THIS COMMENT USED TO
+  // CLAIM. It said "undrawable, abandoned, one round's rent gone", and none of the three is true. The
+  // chain has no side rule: `close_lobby_and_draw` requires the Lobby phase, `draw_is_permitted` and
+  // `enough_to_fight`, and `enough_to_fight` is `fighter_count >= 2` and nothing more. So the round is
+  // drawn like any other — and then `advance_fight` skips every drawn pair whose two fighters share a
+  // side, so it lands ZERO exchanges however long it is ticked, `fight_is_over` is true from the first
+  // instant (lib.rs says so deliberately: "such a round contains no fight at all and should be
+  // settleable immediately"), and it settles. It is terminal, so it sweeps and closes and its rent
+  // comes back on the ordinary schedule. The loss is not SOL. It is that people staked into a round in
+  // which nothing happened, which is the failure this arena can least afford and the one nothing
+  // downstream would ever report.
   //
   // Found by sweeping all 5,826 lobby shapes a sixteen-seat round can hold rather than by reasoning,
   // and it is worth being honest about how reachable it is: `allocateHouseSides` always joins the
@@ -712,60 +723,78 @@ export function plannedHouseEntries(
   // to survive, expensive to meet, and the fix is strictly a no-op in every shape that was already
   // correct: with both deficits non-negative the two expressions are equal.
   //
-  // AND IT DOES NOT APPLY WHEN THIS ROOM IS MEANT TO BE UNDRAWABLE, which is the treasury rule
-  // outranking drawability exactly as it does everywhere else in this function. A room with no real
-  // player in it, under `"unfightable"`, is a room that MUST NOT be drawable, so an empty side is the
-  // desired state and `cover` has nothing to say about it. Without that exception the per-side rule
-  // would look at the lone house fighter, see a bare side, and post a second one — handing a
-  // permissionless caller the house-versus-house fight this whole policy exists to make impossible. It
-  // is the first thing the boundary sweep caught after the per-side change, and it is the reason that
-  // change is a branch rather than a one-line swap.
+  // AND IT DOES NOT APPLY WHEN THIS ROOM IS MEANT TO HOLD NO FIGHT, which is the treasury rule
+  // outranking fightability exactly as it does everywhere else in this function. A room with no real
+  // player in it, under `"unfightable"`, is a room that MUST NOT be able to fight, so an empty side is
+  // the desired state and `cover` has nothing to say about it. Without that exception the per-side rule
+  // would look at the lone house fighter, see a bare side, and post a second one — which would carry
+  // the room past `enough_to_fight` and hand a permissionless caller the house-versus-house fight this
+  // whole policy exists to make impossible. It is the first thing the boundary sweep caught after the
+  // per-side change, and it is the reason that change is a branch rather than a one-line swap.
   //
   // ────────────────────────────────────────────────────────────────────────────────────────────────
-  // THE PREDICATE ASKS ABOUT DRAWABILITY, NOT ABOUT WHO IS IN THE ROOM, AND THAT DISTINCTION CLOSES A
-  // REAL HOLE
+  // THE PREDICATE ASKS WHETHER THIS ROOM IS MEANT TO FIGHT, NOT WHO IS IN IT, AND THAT DISTINCTION
+  // CLOSES A REAL HOLE
   // ────────────────────────────────────────────────────────────────────────────────────────────────
   //
   // It used to be spelled `split.realCount === 0`, which was the same question while there was only one
   // empty-room policy. Under `"house-only"` it stops being the same question, and keeping the old
-  // spelling would have left a lobby that cannot be drawn AND cannot be abandoned — the permanently
-  // stuck state this repo has already paid for nineteen times (COST-MODEL §4).
+  // spelling would have let a house-only round be DRAWN ONE-SIDED.
+  //
+  // WHICH IS A PRODUCT DEFECT AND NOT A RENT LOSS, and the distinction is worth being exact about
+  // because this comment claimed the second one for a while and the second one is not available. There
+  // is no side rule anywhere in the program: `close_lobby_and_draw` requires the Lobby phase,
+  // `draw_is_permitted` and `enough_to_fight`, the last of which is `fighter_count >= 2` and has no
+  // opinion about who stands where. So the round draws, and then it does not fight — `advance_fight`
+  // skips every drawn pair sharing a side, so zero exchanges land, `fight_is_over` is true from the
+  // first instant, and it settles with every fighter on the hp they walked in with. Terminal, therefore
+  // sweepable, therefore closeable: the ~0.0235 SOL comes back on the ordinary schedule. Nothing is
+  // stranded.
+  //
+  // WHAT IT COSTS IS THE THING THE MODE EXISTS TO BUY. `"house-only"` is on so that an arena nobody has
+  // found yet has something running in it; a round that draws, exchanges nothing and settles instantly
+  // is a non-round on screen, and this mode would produce them all day at a rate nothing measures. That
+  // is worth a branch. The genuine permanent strand under this mode is a different shape entirely — a
+  // draw that cannot LAND, on a dead ER validator or a VRF queue that refuses — and it is priced where
+  // the mode is turned on, in `HOUSE_ONLY_ROUNDS_ENABLED`.
   //
   // The shape that reaches it: a house-only room, house already AT its target, every fighter on one
   // side, and free wallets left in the bank. The total form computes `target - houseCount = 0`, the
   // per-side deficits say one side is empty, and with the old predicate neither `grow` nor `coverFloor`
-  // is allowed to speak — so the planner returns nothing, the lobby reaches its deadline with a bare
-  // side, `close_lobby_and_draw` is refused for the empty side and `abandon_round` is refused because
-  // ten fighters is past `enough_to_fight`, and the round's ~0.0235 SOL sits in `Lobby` forever. It
-  // needs `HOUSE_WALLET_COUNT > target` to be reachable, which is not an exotic configuration — it is
-  // the RECOMMENDED one (`HOUSE_WALLET_COUNT`'s own comment: a pool larger than the board is what makes
-  // the cast turn over), and at the production board it is the default, since the seat reservation
-  // holds the target at 39 against a bank of 48.
+  // is allowed to speak — so the planner returns nothing and the lobby reaches its deadline bare on one
+  // side. It needs `HOUSE_WALLET_COUNT > target` to be reachable, which is not an exotic configuration
+  // — it is the RECOMMENDED one (`HOUSE_WALLET_COUNT`'s own comment: a pool larger than the board is
+  // what makes the cast turn over), and at the production board it is the default, since the seat
+  // reservation holds the target at 39 against a bank of 48.
   //
-  // Asking "is this room meant to be drawable?" is the same question the treasury rule was always
-  // really answering, and it is a strict no-op under `"unfightable"`: there, `roomMustBeDrawable` is
-  // `realCount > 0` character for character, so all 86,580 swept shapes plan exactly what they planned
-  // before this parameter existed.
-  const roomMustBeDrawable = split.realCount > 0 || lobby.emptyRoom === "house-only";
-  const grow = roomMustBeDrawable
+  // Asking "is this room meant to hold a fight?" is the same question the treasury rule was always
+  // really answering — it holds an empty room at one fighter, which is BELOW `enough_to_fight`, and
+  // undrawability is how that rule is enforced rather than what it is for. Naming the predicate after
+  // the enforcement is what made it read as though the chain refused one-sided draws; it does not. And
+  // it is a strict no-op under `"unfightable"`: there, `roomMustBeFightable` is `realCount > 0`
+  // character for character, so all 86,580 swept shapes plan exactly what they planned before this
+  // parameter existed.
+  const roomMustBeFightable = split.realCount > 0 || lobby.emptyRoom === "house-only";
+  const grow = roomMustBeFightable
     ? Math.max(0, need0) + Math.max(0, need1)
     : target - split.houseCount;
 
   // THE THREE BOUNDS ON HOW MANY FIGHTERS TO ADD, and they are written as a floor and two ceilings
   // because that is the order they actually outrank each other in.
   //
-  //   coverFloor   ONE fighter onto an empty side, and it outranks both ceilings below. A lobby with
-  //                an empty side cannot be drawn AT ALL, so the choice there is not "a fuller board
-  //                versus a leaner one", it is "a round versus a round that gets abandoned with its
-  //                rent gone and the people who turned up sent away". It is zero for a room that is
-  //                MEANT to be undrawable — the treasury rule again, and the same `roomMustBeDrawable`
-  //                predicate `grow` is gated on, for the same reason and with the same no-op guarantee
-  //                under `"unfightable"`.
+  //   coverFloor   ONE fighter onto an empty side, and it outranks both ceilings below. The choice
+  //                there is not "a fuller board versus a leaner one", it is "a fight versus no fight":
+  //                a one-sided lobby is drawn like any other — `enough_to_fight` is a count and says
+  //                nothing about sides — and then exchanges nothing, because `advance_fight` skips
+  //                every pair that shares a side. One bot on the bare side is the difference between a
+  //                round and a settlement. It is zero for a room that is MEANT to be unfightable — the
+  //                treasury rule again, and the same `roomMustBeFightable` predicate `grow` is gated on,
+  //                for the same reason and with the same no-op guarantee under `"unfightable"`.
   //   ceilingRoom  the policy's target plus the seat reservation, i.e. the ordinary answer.
   //   freeSeats    the chain's own arithmetic. Nothing outranks this; `enter` answers `RoundFull`.
   const occupied0 = split.real.side0 + split.house.side0;
   const occupied1 = split.real.side1 + split.house.side1;
-  const coverFloor = roomMustBeDrawable && (occupied0 === 0 || occupied1 === 0) ? 1 : 0;
+  const coverFloor = roomMustBeFightable && (occupied0 === 0 || occupied1 === 0) ? 1 : 0;
   // THE FLOOR HAS TO NAME A SIDE, not just a count. Raising the shortfall alone was not enough and
   // failed in the one case it was written for: with fifteen real fighters stacked on side 0 the
   // reservation clamps `target` to zero, so `wanted` is empty, so BOTH deficits are zero — and the

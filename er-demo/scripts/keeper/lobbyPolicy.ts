@@ -13,14 +13,41 @@
 // cycle (see `HOLD_OPEN_LOBBY_SECONDS`), which was ~0.32 SOL/hour to run an arena with no players in
 // it, and every one of those fights was the house against itself.
 //
-// ONE HALF OF THAT ARGUMENT HAS SINCE GONE AWAY. `close_round_account` shipped in v7, so a round's
-// deposit is FLOAT — parked for `ROUND_RETENTION` rounds and handed back — and at `MAX_FIGHTERS = 48`
-// it is 0.023497 SOL parked against ~0.00007 SOL actually spent. Fixed cadence idles at ~0.0012
-// SOL/hour of real spend, not ~0.32 SOL/hour of loss (COST-MODEL §0, §1). What did NOT go away is the
-// other half — every one of those fights is still the house against itself — and what replaced the
-// money argument is exposure: each round opened is another deposit riding on a close landing, and
-// COST-MODEL §4 is about nothing but the ways that close fails. This policy is now defended on the
-// room and on the risk, and the arithmetic below is unchanged by any of it.
+// BOTH HALVES OF THAT ARGUMENT HAVE SINCE GONE AWAY, and writing that down is worth more than
+// restating a number: a policy still defended on two claims that stopped being true is a policy
+// nobody can re-examine.
+//
+// THE MONEY WENT FIRST. `close_round_account` shipped in v7, so a round's deposit is FLOAT — parked
+// for `ROUND_RETENTION` rounds and handed back — and at `MAX_FIGHTERS = 48` it is 0.023497 SOL parked
+// against ~0.00007 SOL of fees actually spent. Whatever the cadence, the spend is fees; the ~0.32
+// SOL/hour of permanent loss this file was written against is three orders of magnitude away and is
+// not coming back (COST-MODEL §0, §1).
+//
+// THE HOUSE FIGHTING ITSELF WENT SECOND, AND THIS PARAGRAPH CLAIMED OTHERWISE FOR A WHILE.
+// `HOUSE_MAX_WITHOUT_REAL_PLAYER` — the rule this file spends its next two hundred lines on — now
+// governs EVERY empty room rather than only a held-open one. So a fixed-cadence lobby that nobody
+// joins holds ONE fighter, which is below `enough_to_fight`, and at its deadline it is ABANDONED
+// rather than drawn. There are no house-versus-house rounds in any default configuration under
+// EITHER policy. That is exactly what `--house-only-rounds` exists to give up, and claiming the
+// cadence had already given it up would have argued for hold-open on a cost the cadence does not
+// have.
+//
+// WHAT ACTUALLY SURVIVES IS TWO THINGS, AND NEITHER OF THEM IS SOL/HOUR.
+//
+//   EXPOSURE. Every round opened is one more deposit riding on a close landing, and COST-MODEL §4 is
+//   about nothing but the ways that close fails: a skipped round, a round wedged before a terminal
+//   phase, a round left delegated. An IDLE fixed cadence accumulates that faster than the headline
+//   suggests, because §2's 204-second cycle is mostly a 124-second fight and an idle round has no
+//   fight in it — fewer signatures each, many more rounds a day. Hold-open's answer is one deposit
+//   instead of a day's worth.
+//
+//   THE ROOM, WHICH IS THE PRODUCT ARGUMENT AND OUTLASTS BOTH OF THE OTHERS. Under fixed cadence a
+//   visitor arrives at an arbitrary point in somebody else's cycle: a lobby with four seconds left on
+//   it, a fight already running, a result hold. Under hold-open the lobby is open whenever they get
+//   there, the house fills in AROUND them, and the fight starts because they showed up. That was
+//   always the best reason to want this policy; it is now the main one.
+//
+// The arithmetic below is unchanged by any of it.
 //
 // Now:
 //
@@ -116,7 +143,65 @@
 // for what the deployed backstop would have turned this mode into without it.
 //
 // ────────────────────────────────────────────────────────────────────────────────────────────────
-// THE ONE THING THIS FUNCTION IS TOLD RATHER THAN SHOWN
+// THE ROUND THAT WAS ALREADY STANDING WHEN THE MODE WAS SWITCHED ON
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+//
+// Everything above is about the rounds this keeper OPENS under the mode. It says nothing about the one
+// that was already open when the flag was set, and that silence stopped a live arena for a week. The
+// state it was found in, recorded rather than paraphrased, because a paragraph here is cheaper than a
+// second occurrence:
+//
+//     round #4   phase Lobby   lobbyOpenedAt 1786716371   lobbyClosesAt 1787321171
+//     heldOpen false   drawAt null   2 fighters, none of them real   KEEPER_HOUSE_ONLY_ROUNDS=1
+//
+// 604,800 seconds between those two stamps. That is `KEEPER_HOLD_OPEN_LOBBY_SECONDS` exactly as
+// `fly.toml` sets it, written by `open_round` under the policy in force when round #4 opened — and
+// `lobby_closes_at` is written ONCE. No instruction in the program moves it afterwards. So switching
+// the mode on changed everything about what the keeper INTENDS and nothing whatsoever about the
+// deadline it now intends against, and `openNextRound`'s `DEFAULT_LOBBY_SECONDS` line — the piece the
+// section above calls the one that makes the two flags compose — only ever applies to the NEXT round.
+// There was no next round. That is the whole bug: the mode has a steady state and had no way in.
+//
+// IT FAILS TWICE OVER, AND THE SECOND FAILURE GETS REPORTED AS A DIFFERENT BUG ENTIRELY.
+//
+//   THE LOBBY IS NO LONGER HELD, AND IS NOT GOING TO BE DRAWN EITHER. `lobbyIsHeldOpen` answers false
+//   under this mode by the argument in the section above — the deadline is a schedule and not a
+//   backstop, so there is nobody it is being held for — and the deadline it is calling a schedule is
+//   seven days out. Nothing is waiting for a player and nothing is going to draw the round, which is
+//   the one state this file was extracted to make impossible to reach quietly.
+//
+//   AND THE ROOM STOPS FILLING AT TWO. This is the half that gets reported as "one house wallet
+//   entered and then nothing", and the arithmetic is worth doing rather than calling it a trickle,
+//   because it is not a trickle — it is a freeze. `plannedHouseEntries` is handed `drawAt`, which with
+//   nobody real in the room is the deadline itself. `arrivalFraction` clamps to ZERO everywhere before
+//   `drawAt - REAL_PLAYER_GRACE_SECONDS` — 604,755 of the 604,800 seconds — `arrivalsDueBy` at fraction
+//   zero is exactly one by construction (`a_1 = 0`), and `target = max(fightability, min(board, due))`
+//   then floors that at `HOUSE_FLOOR = 2` because nobody real is in. So the board holds at TWO for a
+//   week and would jump to thirty-nine (the deployed board of 48 less `REAL_SEATS_RESERVED`) in the
+//   last forty-five seconds. The wallet that "entered at boot" is the fightability floor's second
+//   fighter joining the treasury rule's first, and there was never going to be a third.
+//
+// THE FIX IS THE AUTHORITY EARLY CLOSE, WHICH IS ALREADY BUILT AND WHICH THIS KEEPER ALREADY SIGNS FOR
+// A REAL ARRIVAL. `close_lobby_and_draw` with the `authority` account bypasses the deadline; the
+// deadline is the only thing wrong with this round; the keeper is the arena's authority. So under
+// house-only ONLY, a lobby whose deadline is further out than the mode itself would ever have stamped
+// is drawn now instead of next week — `deadlineIsOffSchedule` owns the comparison and `closeToSchedule`
+// is the step it produces.
+//
+// WHAT IT IS NOT, AND THE DISTINCTION IS THE GATE: a general repair for a long deadline. With the mode
+// OFF, a seven-day backstop over an empty lobby is not a fault at all — it is `--hold-open` doing
+// exactly what it was configured to do, and drawing it early would be the keeper overruling the
+// operator on the one policy the operator sets by hand. With the mode off, not one byte of this file's
+// behaviour moves.
+//
+// AND IT IS ONE ROUND'S WORTH OF WORK, WHICH IS WHY IT IS A TRANSITION AND NOT A POLICY. Once this
+// round is drawn the ordinary machine has it — Drawing, Fight, Settled, then `driveSettled`'s
+// `openNextRound`, which stamps `DEFAULT_LOBBY_SECONDS` under this mode. Round two of the mode's life
+// is already on schedule and so is every round after it, so this branch fires once per switch-on and
+// then cannot fire again for as long as the flag stays set.
+//
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// THE TWO THINGS THIS FUNCTION IS TOLD RATHER THAN SHOWN
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 //
 // `firstRealEntryObservedAtSec`. The program stamps no per-fighter entry time — a `Fighter` row is a
@@ -125,11 +210,20 @@
 // `settledObservedAtSec` is, and for the same reason. See `RoundTimeline` in keeper.ts for what a
 // restart does to it (it re-stamps to now, which only ever EXTENDS the window: the safe direction).
 //
+// `scheduleCloseRetryAfterSec`, which arrived with the transition above and is the reason this heading
+// says two. It is the keeper's own backoff after sending an off-schedule close, and it is HERE rather
+// than read at the top of the sending function the way `houseRetryAfterSec` and `sweepRetryAfterSec`
+// are. Those two guard work this plan has no step for — fielding the house, sweeping a take — so the
+// IO layer is the only place they could live. This one guards a STEP, and a plan that says "close it
+// now" once a second while the keeper means "not for another thirty" is a plan that does not describe
+// what the keeper is doing. Keeping it here also keeps the once-per-round property TESTABLE, which for
+// a decision this file exists to hold is the difference between a claim and a check.
+//
 // Everything else here is read off the account this second.
 
 import { Phase, lobbyIsOpen } from "../../src/chain/constants.ts";
 import {
-  CLOCK_SKEW_MARGIN_SECONDS, MIN_FIGHTERS_TO_FIGHT, REAL_PLAYER_GRACE_SECONDS,
+  CLOCK_SKEW_MARGIN_SECONDS, DEFAULT_LOBBY_SECONDS, MIN_FIGHTERS_TO_FIGHT, REAL_PLAYER_GRACE_SECONDS,
 } from "./config.ts";
 
 /** The single next thing to do with a lobby. Every one of these is an action the keeper can take from
@@ -142,6 +236,20 @@ export type LobbyStep =
   | { kind: "wait" }
   /** A real player is in and the grace window has run out: sign the early close. */
   | { kind: "closeEarly" }
+  /** UNDER HOUSE-ONLY ONLY: this lobby's deadline was stamped under a policy that is no longer in
+   *  force, so sign the same authority early close to bring the round onto the mode's schedule. See
+   *  this file's header for the arena this exists because of, and `deadlineIsOffSchedule` for the
+   *  comparison.
+   *
+   *  A SEPARATE STEP RATHER THAN A WIDENED `closeEarly`, and the two reasons are both about not
+   *  weakening the one that already works. The transaction is byte-identical — `close_lobby_and_draw`
+   *  with the operator as `authority` — but `closeEarly`'s log line says "a real player is in", which
+   *  here would be a lie about the only fact that matters; and the keeper THROTTLES this one and
+   *  deliberately does not throttle that one, because a real arrival's close is bounded by their
+   *  deadline and this one's condition persists for as long as the stale deadline does. Folding them
+   *  together would have meant either lying in the log or putting a backoff in front of a fight
+   *  somebody is standing in the room waiting for. */
+  | { kind: "closeToSchedule" }
   /** The permissionless close — the deadline has passed (or the lobby is full) with enough fighters
    *  to hold a fight. Unchanged from before any of this. */
   | { kind: "close" }
@@ -177,13 +285,28 @@ export interface LobbyView {
   /** Is the keeper running rounds with nobody real in them? `--house-only-rounds` /
    *  `KEEPER_HOUSE_ONLY_ROUNDS`, default OFF — see `HOUSE_ONLY_ROUNDS_ENABLED`.
    *
-   *  IT IS HERE ONLY TO ANSWER `heldOpen`, and that is the whole of its effect on this file. It does
-   *  not appear in `entriesCloseAt`, in `drawAt`, or in any step branch: an empty house-only lobby runs
-   *  to its deadline and is closed by the same permissionless branch that has always closed a lobby at
-   *  its deadline, and a real player who arrives into one gets the identical early close. See this
-   *  file's header for why "hold-open collapses into a schedule" is the accurate description and
-   *  "house-only turns hold-open off" is not. */
+   *  IT ANSWERS `heldOpen`, AND IT GATES EXACTLY ONE STEP: `closeToSchedule`. It appears in neither
+   *  `entriesCloseAt` nor `drawAt`, and in no OTHER step branch — an empty house-only lobby runs to its
+   *  deadline and is closed by the same permissionless branch that has always closed a lobby at its
+   *  deadline, and a real player who arrives into one gets the identical early close. See this file's
+   *  header for why "hold-open collapses into a schedule" is the accurate description and "house-only
+   *  turns hold-open off" is not.
+   *
+   *  THIS COMMENT USED TO SAY "ONLY TO ANSWER `heldOpen`, AND THAT IS THE WHOLE OF ITS EFFECT", which
+   *  was true and was also the shape of the bug: collapsing the backstop into a schedule is a claim
+   *  about a deadline, and the flag had no way to reach a deadline that was already stamped. The one
+   *  step is what closes that. */
   houseOnly: boolean;
+  /** Chain second before which the keeper will not re-send an off-schedule close, latched by the caller
+   *  when it sends one — the second of the two things this function is told rather than shown, and the
+   *  header argues why it is told rather than kept in the sending function.
+   *
+   *  Zero means "no close has been sent for this round", which is what `freshTimeline` gives every new
+   *  round and what a restart gives the round it boots into. Both resolve the same way: the close is
+   *  attempted immediately. That is the safe direction — a restart can only make the repair happen
+   *  SOONER, never later, and the transaction it might duplicate is one the program answers with a
+   *  phase error rather than a second draw. */
+  scheduleCloseRetryAfterSec: number;
 }
 
 export interface LobbyPlan {
@@ -237,8 +360,78 @@ export function lobbyIsHeldOpen(view: {
     && lobbyIsOpen(view.lobbyClosesAt, view.nowSec);
 }
 
+/** IS THIS LOBBY'S DEADLINE FURTHER OUT THAN THE MODE NOW RUNNING WOULD EVER HAVE STAMPED?
+ *
+ *  The question the transition in this file's header turns on, and it is asked of the deadline alone —
+ *  whether anything should be DONE about the answer is `scheduleCloseIsDue`'s job.
+ *
+ *  MEASURED AS TIME REMAINING, NOT AS `lobbyClosesAt - lobbyOpenedAt`. That second arithmetic is the
+ *  one `lobbyIsHeldOpen` rejects two doc comments above, for a reason that applies here word for word:
+ *  the stored WINDOW is a claim about the setting a round was opened under, and comparing it against
+ *  the setting configured today misclassifies every round opened under a third one. Remaining time is
+ *  also the quantity the outage was actually measured in — how much longer the arena stands still —
+ *  and it is the only one of the two this view carries, because `lobbyOpenedAt` was deliberately never
+ *  put on it.
+ *
+ *  THE SKEW MARGIN IS LOAD-BEARING AND IS NOT THE PROGRAM'S MARGIN. Everywhere else in this file
+ *  `CLOCK_SKEW_MARGIN_SECONDS` is about the ER refusing a transaction whose deadline it disagrees with;
+ *  here it is about not misreading OUR OWN lobby. `nowSec` is the ER's clock and `lobby_closes_at` was
+ *  stamped by `open_round` from the base layer's, so a lobby this keeper opened a second ago reads as
+ *  `DEFAULT_LOBBY_SECONDS` remaining plus whatever those two clocks disagree by. Without the margin,
+ *  two seconds of skew would make every freshly opened house-only lobby answer TRUE and be drawn on its
+ *  first pass — a fight every couple of seconds, each parking a round's rent — which is a far more
+ *  expensive failure than the week-long stall being fixed. With it, the round the mode opens is
+ *  structurally outside this predicate rather than probably outside it.
+ *
+ *  `holdOpen` IS IN THE CONDITION AND IT IS NOT DECORATION. It is this keeper's only assertion that an
+ *  authority-signed close can actually land: `HOLD_OPEN_ENABLED_DEFAULT` explains why that is an
+ *  operator switch rather than a probe, keeper.ts refuses to BOOT with `--hold-open` against an IDL
+ *  whose `close_lobby_and_draw` has no `authority` account, and `entriesCloseAt` — the early close that
+ *  already works — is gated on the same flag. Without it this would be the first path in this file able
+ *  to ask for an authority close that boot never vetted, and Anchor drops an account the IDL has never
+ *  heard of SILENTLY: the keeper would send what it believed was an early close and be answered with
+ *  `LobbyStillOpen`, an error about the clock, once every backoff for a week. The deployment this was
+ *  written for sets both flags (`fly.toml`), so the pairing costs the repair nothing. */
+function deadlineIsOffSchedule(view: LobbyView): boolean {
+  return view.holdOpen
+    && view.houseOnly
+    && view.lobbyClosesAt - view.nowSec > DEFAULT_LOBBY_SECONDS + CLOCK_SKEW_MARGIN_SECONDS;
+}
+
+/** SHOULD THE KEEPER SEND THE OFF-SCHEDULE CLOSE ON THIS PASS? The deadline question above, plus the
+ *  two things that decide whether acting on it is possible and whether it is due.
+ *
+ *  `enough_to_fight` IS THE CHAIN'S RULE AND IT BINDS ON THE AUTHORITY PATH EXACTLY AS IT DOES ON THE
+ *  PERMISSIONLESS ONE — the same fact `waitForFighters` exists for. Below two fighters this close is a
+ *  transaction that can only be rejected, so it is not attempted.
+ *
+ *  WHAT THAT MEANS FOR A STUCK LOBBY HOLDING FEWER THAN TWO, SAID OUT LOUD BECAUSE THE ANSWER IS "IT
+ *  STAYS STUCK" AND THAT DESERVES TO BE A DECISION RATHER THAN AN OMISSION. Such a round has no early
+ *  exit at all: `abandon_round` requires `lobby_is_dead`, which requires being PAST the deadline, and
+ *  the deadline is the thing that is a week away. There is no instruction any signer can send that ends
+ *  it sooner — so refusing here costs nothing that was available. What the keeper does instead is the
+ *  `wait` branch it already had: keep fielding the house. Under this mode `plannedHouseEntries` floors
+ *  its target at `HOUSE_FLOOR = 2` from the first pass whatever the arrival ramp says (that is the
+ *  `fightability` term), so the room is being topped up to exactly the count this close needs, on
+ *  `HOUSE_ENTRY_RETRY_SECONDS`, for as long as it takes. The realistic reason to be at one fighter is a
+ *  drained house wallet, which already raises `lastError` from `fieldHouseFighters`; refill it and the
+ *  second fighter lands and this becomes due on the next pass. And if nothing ever refills it, the
+ *  round still terminates: at the deadline `lobby_is_dead` is true and `abandon_round` ends it, exactly
+ *  as it does today. The floor is a delay, never a wedge.
+ *
+ *  THE BACKOFF IS THE THIRD CLAUSE AND IT IS WHY THIS FIRES ONCE PER ROUND RATHER THAN ONCE PER PASS.
+ *  The keeper loops at 1Hz and every decision here is re-derived from the chain rather than remembered,
+ *  so the condition above survives its own failed transaction — with no throttle, a close that cannot
+ *  land would be re-sent 604,800 times. See `SCHEDULE_CLOSE_RETRY_SECONDS` for the interval and for why
+ *  there is no attempt CAP to go with it. */
+function scheduleCloseIsDue(view: LobbyView): boolean {
+  return deadlineIsOffSchedule(view)
+    && view.fighterCount >= MIN_FIGHTERS_TO_FIGHT
+    && view.nowSec >= view.scheduleCloseRetryAfterSec;
+}
+
 /**
- * THE SINGLE NEXT THING TO DO WITH A LOBBY, from chain state plus one latched observation.
+ * THE SINGLE NEXT THING TO DO WITH A LOBBY, from chain state plus two latched observations.
  *
  * Read as a ladder, deadline first:
  *
@@ -251,7 +444,18 @@ export function lobbyIsHeldOpen(view: {
  *   backstop. Nothing is sent and nothing is spent; one house fighter sits in the room so it is not
  *   an empty page, and the chain itself refuses to draw a one-fighter round. Under `houseOnly` this
  *   row still says "wait" — but it is the ordinary wait of a lobby counting down to its deadline
- *   rather than an indefinite hold, and `heldOpen` says so.
+ *   rather than an indefinite hold, and `heldOpen` says so. The ONE exception is a deadline that
+ *   predates the mode: `scheduleCloseIsDue` sends the authority close rather than waiting out a
+ *   backstop nothing is going to be held for. It cannot fire on a lobby this mode opened.
+ *
+ * WHAT IS DELIBERATELY THE SAME ON THAT NEW ROW: `heldOpen`, `entriesCloseAt` and `drawAt`, all
+ * untouched. A synthesised `entriesCloseAt` of "now" would read as the honest answer and is a trap in
+ * two directions. It would put the round on the REAL-ARRIVAL ladder from the very next pass, because
+ * `entriesCloseAt !== null` is exactly what that ladder is keyed on — so the second pass would answer
+ * `closeEarly`, lose the backoff, and log a player who is not there. And it would drag `drawAt` onto
+ * `nowSec`, where `plannedHouseEntries` refuses every entry within `CLOCK_SKEW_MARGIN_SECONDS` of the
+ * draw and counts them `dropped`: a short-board warning and a published `lastError`, on a round the
+ * keeper is deliberately closing.
  *
  *   STILL OPEN, A REAL PLAYER IS IN — the fight is now on a schedule the keeper owns:
  *   `firstRealEntryObservedAt + REAL_PLAYER_GRACE_SECONDS`, capped at the chain's deadline because
@@ -282,7 +486,12 @@ export function planLobby(view: LobbyView): LobbyPlan {
     return plan(view.fighterCount < MIN_FIGHTERS_TO_FIGHT ? { kind: "abandon" } : { kind: "close" });
   }
 
-  if (entriesCloseAt === null) return plan({ kind: "wait" });
+  // NOBODY REAL IS IN. That used to be the end of the answer, and it still is unless this lobby's
+  // deadline came from a policy that is no longer running — see this file's header for the arena that
+  // spent a week in the `wait` this branch used to return unconditionally.
+  if (entriesCloseAt === null) {
+    return plan(scheduleCloseIsDue(view) ? { kind: "closeToSchedule" } : { kind: "wait" });
+  }
   if (view.nowSec < entriesCloseAt) return plan({ kind: "wait" });
   if (view.fighterCount < MIN_FIGHTERS_TO_FIGHT) return plan({ kind: "waitForFighters" });
   return plan({ kind: "closeEarly" });

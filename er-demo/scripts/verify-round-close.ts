@@ -3,11 +3,18 @@
 // anything, with all three of its own refusals and Anchor's fourth exercised against a real
 // validator before the one successful close is allowed to run.
 //
-// A `Round` is 1,102 bytes and its rent-exempt deposit is ~0.008561 SOL — 95.4% of the ~0.008971 a
-// whole round costs to run — and until v7 nothing reclaimed a lamport of it, because there was no
-// instruction that closed a `Round`. `close_round_account` hands that deposit back to the authority
-// that paid it at `open_round`. Being irreversible, the conditions under which it must NOT run
-// matter at least as much as the reclaim, which is why four of the five claims below are refusals.
+// A `Round` is 3,248 bytes and its rent-exempt deposit is ~0.023497 SOL — confirmed against live v8
+// rounds by `scripts/reclaim-status.ts` — and until v7 nothing reclaimed a lamport of it, because
+// there was no instruction that closed a `Round`. `close_round_account` hands that deposit back to
+// the authority that paid it at `open_round`. Being irreversible, the conditions under which it must
+// NOT run matter at least as much as the reclaim, which is why four of the five claims below are
+// refusals.
+//
+// (This header read "1,102 bytes and ~0.008561 SOL — 95.4% of the ~0.008971 a whole round costs to
+// run" for most of its life. The first two figures were measured at `MAX_FIGHTERS = 16`; the cap grew
+// the account 2.9x and the deposit 2.7x. The percentage is NOT restated at the new size because it
+// was never re-measured there — the same deliberate omission `closeRoundAccount` makes in
+// src/chain/round.ts. Do not reintroduce it from arithmetic; it needs a devnet measurement.)
 //
 // What this script proves, and refuses to pass without:
 //

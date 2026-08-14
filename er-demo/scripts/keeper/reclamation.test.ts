@@ -18,7 +18,8 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  ROUND_RENT_LAMPORTS, burnBrake, serializeReclamationReport, summariseReclamation,
+  ROUND_RENT_LAMPORTS, burnBrake, recordBurnSample, serializeReclamationReport, summariseReclamation,
+  sweepGapStop,
   type ReclamationState,
 } from "./reclamation.ts";
 
@@ -29,6 +30,11 @@ import {
 const THRESHOLD = 5_000_000;      // MAX_BURN_LAMPORTS_PER_ROUND — 0.005 SOL
 const ARM_AFTER = 45;             // BURN_ARM_AFTER_ROUNDS — 2 * ROUND_RETENTION + 5
 const WINDOW = 20;                // BURN_SAMPLE_ROUNDS — one retention window
+const STOP_AT_GAP = 25;           // SWEEP_GAP_STOP_ROUNDS — ROUND_RETENTION + 5 rounds of headroom
+
+/** The chain's retention window, which is the floor `STOP_AT_GAP` is derived from. Written out for
+ *  the same reason as the three above: the arithmetic below is checked against it by hand. */
+const RETENTION = 20;
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 
@@ -39,6 +45,85 @@ const HEALTHY = 70_000;
 const BROKEN = ROUND_RENT_LAMPORTS;
 
 const run = (value: number, count: number): number[] => Array.from({ length: count }, () => value);
+
+/** The ring the keeper builds, built the way the keeper builds it: one sample at a time, through the
+ *  function under test, folding its own return value back in. Never by constructing the array
+ *  directly — that would exercise `slice` and assert nothing about the accumulation, and the
+ *  accumulation is where every regression in this mechanism lives. */
+function ringOf(cap: number, samples: readonly number[]): number[] {
+  let ring: number[] = [];
+  for (const sample of samples) ring = recordBurnSample(ring, sample, cap);
+  return ring;
+}
+
+describe("the ring the brake reads, which nothing used to be able to reach", () => {
+  // WHY THIS BLOCK EXISTS AT ALL. This was two lines of push-and-shift inside `openNextRound`, between
+  // a balance read and a transaction send, so no test in this repo could execute it — a keeper and a
+  // chain were the only instruments that would. Every plausible slip there is silent AND permanent:
+  // nothing throws, no transaction fails, and the report goes on rendering a brake that will never have
+  // an opinion. The tests below are chosen one per slip.
+
+  it("holds every sample until it is full, and never more than cap after that", () => {
+    // The `<` for `>` regression, which grows the ring without bound. It costs nothing visible — the
+    // mean is taken over the window either way — so the only thing that would ever catch it is a
+    // length assertion, and the only place to make one is here.
+    for (let fed = 0; fed <= 2 * WINDOW; fed += 1) {
+      const ring = ringOf(WINDOW, run(HEALTHY, fed));
+      expect(ring.length).toBe(Math.min(fed, WINDOW));
+    }
+  });
+
+  it("drops the OLDEST sample and keeps the NEWEST", () => {
+    // `pop` for `shift`, and it is the most expensive one-character mistake available here. A ring that
+    // dropped the newest would freeze on a run's FIRST samples — the pre-turnover rounds that
+    // legitimately pay full rent and read exactly like a total reclamation outage — so the brake would
+    // arm on schedule and then trip on a keeper that was working. That is the false positive this whole
+    // mechanism is built to avoid, arriving through the one line nothing was watching.
+    //
+    // The values are named rather than counted, because both mistakes produce a ring of length three.
+    expect(ringOf(3, [1, 2, 3, 4, 5])).toEqual([3, 4, 5]);
+  });
+
+  it("reaches the arming threshold at BURN_ARM_AFTER_ROUNDS and can never reach it at BURN_SAMPLE_ROUNDS", () => {
+    // THE LOAD-BEARING TEST IN THIS FILE, because it is the only one that asserts the two constants are
+    // not interchangeable. `burnBrake` arms on `samples.length >= armAfter` and only then averages the
+    // last `windowSamples`, so the ring must be capped at the LARGER of the two. Cap it at the window
+    // and the length can never reach the threshold — the brake never forms an opinion, for the life of
+    // the process, and the report says `armed: false` beside a sample count that has quietly stopped
+    // growing, which is indistinguishable from a young arena that is simply still counting.
+    //
+    // Both halves are asserted because only the pair is a claim. The first alone passes under a ring
+    // that is uncapped, unshifted, or capped at anything at least as large; the second is what says the
+    // cap has to be this constant and not the one two lines above it in `config.ts`.
+    const armable = ringOf(ARM_AFTER, run(HEALTHY, ARM_AFTER));
+    expect(armable.length).toBe(ARM_AFTER);
+    expect(burnBrake(armable, THRESHOLD, ARM_AFTER, WINDOW).armed).toBe(true);
+
+    // Fed far past the arming threshold and still stuck at the window, which is what "never" means
+    // here: no amount of running gets this keeper a brake.
+    const stunted = ringOf(WINDOW, run(HEALTHY, 20 * ARM_AFTER));
+    expect(stunted.length).toBe(WINDOW);
+    expect(burnBrake(stunted, THRESHOLD, ARM_AFTER, WINDOW).armed).toBe(false);
+  });
+
+  it("leaves the array it was handed alone", () => {
+    // The purity the caller depends on: `openNextRound` assigns the return value back onto the keeper
+    // context, so a version that also mutated in place would double-append the moment anything else
+    // held the same array — and the reclamation report is handed exactly that reference every pass.
+    const before = run(HEALTHY, 3);
+    const copy = [...before];
+    recordBurnSample(before, BROKEN, 10);
+    expect(before).toEqual(copy);
+  });
+
+  it("keeps nothing at a non-positive cap", () => {
+    // Same direction every degenerate case in this mechanism takes. An empty ring cannot arm, and a
+    // brake that cannot arm stays open — so a misconfiguration costs SOL a human is watching rather
+    // than stopping an arena that was working.
+    expect(recordBurnSample(run(BROKEN, 5), BROKEN, 0)).toEqual([]);
+    expect(recordBurnSample(run(BROKEN, 5), BROKEN, -1)).toEqual([]);
+  });
+});
 
 describe("the brake will not have an opinion before it is entitled to one", () => {
   it("is not armed below armAfter, whatever the samples say", () => {
@@ -182,6 +267,163 @@ describe("the window is bounded", () => {
 });
 
 // ---------------------------------------------------------------------------------------------
+// The sweep-gap stop — the one that is armed while the brake above is still counting
+// ---------------------------------------------------------------------------------------------
+//
+// WHAT IS BEING PROTECTED, AND IT IS NOT THE SAME THING THE BRAKE PROTECTS. The brake needs 45
+// samples held in process memory and so has no opinion for ~2.6 hours after every restart — verified
+// in production, where two restarts in one day left the live endpoint reading
+// `armed: false, samplesObserved: 0 of 45` while the arena ran ~430 rounds/day. This stop is a
+// subtraction over chain state, so it is right on the first poll. Its two failure directions are the
+// brake's, with the same asymmetry and therefore the same verdict about which tests matter:
+//
+//   FALSE NEGATIVE   the stop stays open through a real sweep outage. Costs SOL at a rate a human is
+//                    watching, with the burn brake arming behind it as a second chance.
+//   FALSE POSITIVE   the stop LATCHES a healthy arena shut, and a latched stop needs a person and a
+//                    restart to clear. There is no second chance in that direction.
+
+/** The keeper's own snapshot shape, built the way `pollTreasury` builds it — both terms read at one
+ *  instant, which is the property the staleness argument in `sweepGapStop` rests on. */
+const polled = (roundCounter: number, roundsSwept: number | null, polledAtSec = 1_759_999_940) =>
+  ({ roundCounter, roundsSwept, polledAtSec });
+
+/** A poll showing exactly `gap` unswept rounds. */
+const atGap = (gap: number, polledAtSec?: number) => polled(400 + gap, 400, polledAtSec);
+
+describe("the sweep-gap stop, below its threshold", () => {
+  it("does nothing at the gap a healthy arena actually runs at", () => {
+    // ONE, not zero: the live round is opened and is not swept until it settles, so a perfectly
+    // healthy arena reads 1 forever. The live endpoint read exactly this against the deployed arena.
+    expect(sweepGapStop(atGap(1), STOP_AT_GAP, false)).toEqual({ gap: 1, tripped: false });
+  });
+
+  it("does nothing anywhere inside the retention window, where the rent is not due back yet", () => {
+    // THE FLOOR OF THE DERIVATION, walked rather than asserted at one point. `close_round_account`
+    // refuses every round inside `MIN_RETAINED_ROUNDS` with `RoundTooRecent` whether or not it was
+    // swept, so an unswept round in here has cost nothing: there is no close it prevented. A stop
+    // that fired in this range would be stopping a keeper that had lost precisely zero.
+    for (let gap = 0; gap <= RETENTION; gap += 1) {
+      expect(sweepGapStop(atGap(gap), STOP_AT_GAP, false).tripped, `gap ${gap}`).toBe(false);
+    }
+  });
+
+  it("does nothing through the headroom above the window, so a brief backlog is not an outage", () => {
+    // THE FIVE ROUNDS THAT SEPARATE "OVERDUE" FROM "STOPPED". A backlog drains at 1 Hz through
+    // `closeOneFinishedRound`'s sweep-first branch — twenty-five rounds clear in about twenty-five
+    // seconds — so these are the rounds in which a queue that is MOVING gets to finish moving.
+    for (let gap = RETENTION + 1; gap < STOP_AT_GAP; gap += 1) {
+      expect(sweepGapStop(atGap(gap), STOP_AT_GAP, false).tripped, `gap ${gap}`).toBe(false);
+    }
+  });
+});
+
+describe("the sweep-gap stop, at and above its threshold", () => {
+  it("stops AT the threshold, not one round past it", () => {
+    // `>=`, unlike `burnBrake`'s strict `>`, and the boundary is asserted from both sides because the
+    // pair is the claim. The brake compares a mean — a continuous quantity where sitting exactly on
+    // the ceiling is a real state in which nothing has gone wrong. This compares a COUNT OF ROUNDS:
+    // there is no fractional round between 24 and 25, so reaching the count is the event.
+    expect(sweepGapStop(atGap(STOP_AT_GAP - 1), STOP_AT_GAP, false).tripped).toBe(false);
+    expect(sweepGapStop(atGap(STOP_AT_GAP), STOP_AT_GAP, false).tripped).toBe(true);
+  });
+
+  it("stays stopped as the gap runs away, and reports the gap it stopped on", () => {
+    // The gap is monotonic while the cause persists, so everything past the threshold is the same
+    // verdict — and the number is carried out rather than swallowed, because "stopped" and "stopped
+    // 500 rounds behind" are the same decision and very different incidents.
+    for (const gap of [STOP_AT_GAP + 1, 50, 500]) {
+      expect(sweepGapStop(atGap(gap), STOP_AT_GAP, false)).toEqual({ gap, tripped: true });
+    }
+  });
+});
+
+describe("the sweep-gap stop latches, because its input recovers on its own and the leak does not", () => {
+  it("stays tripped once latched, even at a gap of one", () => {
+    // THE LOAD-BEARING TEST IN THIS BLOCK, and the one failure that is unique to this stop. The burn
+    // brake latches by physics — samples are taken at `open_round`, a stopped keeper opens nothing,
+    // the mean freezes. THIS input keeps moving: the treasury is still polled, `round_counter` is
+    // frozen because nothing is opening, and `rounds_swept` can still rise as the closer sweeps what
+    // it can reach. So the gap falls back toward healthy BECAUSE the keeper stopped, and a verdict
+    // recomputed from the gap alone would read that recovery as the problem being fixed, reopen the
+    // arena, and let the gap climb to the threshold again — an arena flapping between stopped and
+    // spending, which is the leak with a duty cycle rather than a brake.
+    expect(sweepGapStop(atGap(1), STOP_AT_GAP, true).tripped).toBe(true);
+    expect(sweepGapStop(atGap(0), STOP_AT_GAP, true).tripped).toBe(true);
+  });
+
+  it("stays tripped when the evidence disappears entirely", () => {
+    // A treasury poll that starts failing, or a program that answers with no treasury at all, must
+    // not release a stop that has already fired. "I can no longer see the problem" is not "the
+    // problem is fixed" — and this is the direction that matters, because the same two nulls are
+    // exactly what must never CAUSE a trip (see the block below). The latch is what makes those two
+    // positions consistent rather than contradictory.
+    expect(sweepGapStop(null, STOP_AT_GAP, true)).toEqual({ gap: null, tripped: true });
+    expect(sweepGapStop(polled(412, null), STOP_AT_GAP, true).tripped).toBe(true);
+  });
+
+  it("stays tripped under a threshold no gap could ever reach", () => {
+    // The latch is deliberately not conditioned on the configuration being sane. A latch a
+    // misconfiguration could release is not a latch — and an operator raising
+    // KEEPER_SWEEP_GAP_STOP_ROUNDS is expected to restart, which is the assertion that somebody
+    // looked, rather than to have a running keeper quietly resume on the new number.
+    expect(sweepGapStop(atGap(1), Number.MAX_SAFE_INTEGER, true).tripped).toBe(true);
+    expect(sweepGapStop(atGap(1), 0, true).tripped).toBe(true);
+  });
+});
+
+describe("what a missing or stale poll is allowed to do, which is nothing", () => {
+  it("does not trip when the treasury has never been polled", () => {
+    // NOT COMPUTED IS NOT ZERO AND IT IS CERTAINLY NOT A LEAK. This is the state every process is in
+    // for its first `TREASURY_POLL_SECONDS`, and a stop that fired here would stop every keeper on
+    // every boot.
+    expect(sweepGapStop(null, STOP_AT_GAP, false)).toEqual({ gap: null, tripped: false });
+  });
+
+  it("does not trip on a program with no Treasury account", () => {
+    // `init_treasury` runs on the first sweep, so an arena can legitimately be several rounds old
+    // before there is anything to read. A null `roundsSwept` differenced as zero would publish a gap
+    // equal to the whole of that arena's history and stop it instantly — which is why `sweepGapOf`
+    // answers null rather than defaulting, and why that null is checked here as well as there.
+    expect(sweepGapStop(polled(412, null), STOP_AT_GAP, false)).toEqual({ gap: null, tripped: false });
+    // Including at a round count far past the threshold, which is the case that would have fired.
+    expect(sweepGapStop(polled(9_999, null), STOP_AT_GAP, false).tripped).toBe(false);
+  });
+
+  it("reads the same at any poll age, because both terms come from one snapshot", () => {
+    // THE FAILURE THIS PINS IS THE ONE THAT WAS DESIGNED OUT UPSTREAM, pinned here because nothing
+    // else would notice it coming back. If the gap were ever computed from a FRESH `round_counter`
+    // against a STALE `rounds_swept`, it would grow without bound purely from a telemetry read
+    // failing — the keeper would stop over a problem that was never about money, on an arena that was
+    // sweeping perfectly. `pollTreasury` snapshots both terms at one instant, so an ageing reading
+    // FREEZES rather than drifts, and this function has no clock in its signature with which to do
+    // anything else. A healthy poll stays healthy however old it gets.
+    for (const age of [0, 30, 600, 86_400]) {
+      const arena = atGap(1, 1_760_000_000 - age);
+      expect(sweepGapStop(arena, STOP_AT_GAP, false), `age ${age}s`)
+        .toEqual({ gap: 1, tripped: false });
+    }
+  });
+});
+
+describe("a misconfigured sweep stop does nothing rather than everything", () => {
+  it("never trips on a non-positive threshold", () => {
+    // `config.ts` refuses such a value at module load, so this is the second of two lines that make
+    // it unreachable — and it takes the direction every degenerate case in this file takes, for the
+    // reason `burnBrake` argues: a false positive latches an arena that was working, and looks
+    // exactly like the fault it claims to have found.
+    expect(sweepGapStop(atGap(500), 0, false).tripped).toBe(false);
+    expect(sweepGapStop(atGap(500), -1, false).tripped).toBe(false);
+  });
+
+  it("never trips on a gap that is not a finite number", () => {
+    // It cannot come from `getAccountInfo`; it can come from arithmetic against something that was
+    // `undefined`. A stop that fired on a NaN would fire at random, and this one latches.
+    expect(sweepGapStop(polled(Number.NaN, 400), STOP_AT_GAP, false).tripped).toBe(false);
+    expect(sweepGapStop(polled(400, Number.NaN), STOP_AT_GAP, false).tripped).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
 // The report
 // ---------------------------------------------------------------------------------------------
 
@@ -214,11 +456,18 @@ const state = (over: Partial<ReclamationState> = {}): ReclamationState => ({
   closer: closer(),
   burnSamplesLamports: run(HEALTHY, ARM_AFTER),
   operatorLamports: 14_950_000_000,
+  sweepStoppedSinceSec: null,
   ...over,
 });
 
-const summarise = (s: ReclamationState) =>
-  summariseReclamation(s, THRESHOLD, ARM_AFTER, WINDOW, ROUNDS_PER_DAY);
+const THRESHOLDS = {
+  burnLamportsPerRound: THRESHOLD,
+  armAfterSamples: ARM_AFTER,
+  windowSamples: WINDOW,
+  stopAtGapRounds: STOP_AT_GAP,
+};
+
+const summarise = (s: ReclamationState) => summariseReclamation(s, THRESHOLDS, ROUNDS_PER_DAY);
 
 describe("the sweep gap, which COST-MODEL names as the health metric", () => {
   it("is round_counter minus rounds_swept", () => {
@@ -241,6 +490,36 @@ describe("the sweep gap, which COST-MODEL names as the health metric", () => {
     // about the past, and a reader comparing it against a round counter that has moved since would
     // be reading it as a fact about now.
     expect(summarise(state()).arena?.pollAgeSec).toBe(60);
+  });
+
+  it("publishes the stop beside the gap, with the threshold a reader would otherwise guess", () => {
+    // The threshold is published for `staleAfterSeconds`' reason: the keeper is the only party that
+    // knows what it stops at, and a reader inventing one would be reading a healthy gap as a near
+    // miss or vice versa.
+    const report = summarise(state());
+    expect(report.sweep).toEqual({ tripped: false, stopAtGapRounds: STOP_AT_GAP, stoppedSinceSec: null });
+  });
+
+  it("says TRIPPED off the keeper's latch and not off the gap it is looking at", () => {
+    // THE DISTINCTION THIS BLOCK EXISTS FOR, and the one place `sweep` reads differently from `burn`.
+    // The brake's samples freeze when it stops, so recomputing `burn.tripped` from them IS its latch.
+    // This stop's input recovers on its own the moment the keeper stops opening rounds — so a report
+    // that recomputed `tripped` from the gap would say `false` about a keeper that is stopped, on the
+    // one endpoint somebody opens to find out why it stopped.
+    const stopped = state({ arena: atGap(1), sweepStoppedSinceSec: 1_759_999_000 });
+    expect(stopped.arena!.roundCounter - stopped.arena!.roundsSwept!).toBe(1); // a healthy-looking gap
+    expect(summarise(stopped).sweepGap).toBe(1);
+    expect(summarise(stopped).sweep.tripped).toBe(true);
+    expect(summarise(stopped).sweep.stoppedSinceSec).toBe(1_759_999_000);
+  });
+
+  it("reports the stop as tripped on a wide gap even before the keeper has latched it", () => {
+    // The pass in which it first fires: the verdict is true from the gap alone, and the keeper writes
+    // its latch on the strength of it. Without this the test above would pass on a report that only
+    // ever echoed the latch back and had stopped reading the chain at all.
+    const wide = state({ arena: atGap(STOP_AT_GAP), sweepStoppedSinceSec: null });
+    expect(summarise(wide).sweep.tripped).toBe(true);
+    expect(summarise(wide).sweep.stoppedSinceSec).toBeNull();
   });
 });
 

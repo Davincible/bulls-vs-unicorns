@@ -658,13 +658,19 @@ describe("keeperCountdown while the keeper is not opening rounds", () => {
     // THE WHOLE POINT OF THE FIELD. Without it this is a settled round with a next-lobby time beside
     // a perfectly healthy-looking keeper, and the page counts down to a round nothing will open.
     //
-    // BOTH REASONS, because they are what the field is for. A funding floor and a burn brake are
-    // different incidents with different fixes, and the page has exactly one decision to make about
-    // them; a branch that happened to work for one would be a branch that reads the vocabulary rather
-    // than the null-ness, which is the mistake the derived field exists to make unavailable.
+    // EVERY REASON, because they are what the field is for. A funding floor, a burn brake and a
+    // sweep-gap stop are three different incidents with three different fixes, and the page has
+    // exactly one decision to make about them; a branch that happened to work for one would be a
+    // branch that reads the vocabulary rather than the null-ness, which is the mistake the derived
+    // field exists to make unavailable.
+    //
+    // THE LIST GREW AND THE ASSERTION DID NOT CHANGE, which is the property being demonstrated. A
+    // third cause was added to the vocabulary and this test needed one more literal and no new
+    // branch — whereas the schema-4 arrangement, where the countdown read `lowBalance` directly,
+    // would have needed a second detail block checked at every call site.
     const settled = { ...BASE, round: round({ ...inPhase("Settled") }), nextLobbyOpensAt: NOW + 8 };
     expect(keeperCountdown(settled, NOW)).toEqual({ kind: "next-lobby", seconds: 8 });
-    for (const reason of ["low-balance", "rent-not-reclaimed"] as const) {
+    for (const reason of ["low-balance", "rent-not-reclaimed", "rent-not-swept"] as const) {
       const stopped = { ...settled, keeper: { ...settled.keeper, notOpeningRounds: reason } };
       expect(keeperCountdown(stopped, NOW), reason).toEqual({ kind: "none" });
     }
@@ -713,7 +719,7 @@ describe("keeperCountdown while the keeper is not opening rounds", () => {
 describe("parsing the schema-6 fields", () => {
   it("carries the reason through as an explicit null and as each word of the vocabulary", () => {
     expect(parseKeeperStatus(rawStatus())!.keeper.notOpeningRounds).toBeNull();
-    for (const reason of ["low-balance", "rent-not-reclaimed"] as const) {
+    for (const reason of ["low-balance", "rent-not-reclaimed", "rent-not-swept"] as const) {
       const raw = rawStatus();
       (raw.keeper as Record<string, unknown>).notOpeningRounds = reason;
       expect(parseKeeperStatus(raw)!.keeper.notOpeningRounds, reason).toBe(reason);
@@ -744,7 +750,7 @@ describe("parsing the schema-6 fields", () => {
 
   it("rejects a reason outside the vocabulary rather than defaulting it to null", () => {
     // THE POINT OF CHECKING THE UNION INSTEAD OF `isString`. Each of these is a writer this reader
-    // does not understand — a newer keeper with a third cause, a typo, a hand-edit — and the only two
+    // does not understand — a newer keeper with a fourth cause, a typo, a hand-edit — and the only two
     // things a reader can do with one is refuse the file or call it null. Null means "another round is
     // coming", and it is certainly wrong: the writer went to the trouble of naming a reason it has
     // stopped. Refusing the file says "keeper down", which is this module's standing failure direction.

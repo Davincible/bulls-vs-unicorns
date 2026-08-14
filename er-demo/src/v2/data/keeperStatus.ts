@@ -290,8 +290,29 @@ export interface KeeperLowBalance {
  *                          one. The keeper stops opening at the point it can MEASURE the leak rather
  *                          than spending its way down to the floor and reporting `"low-balance"` a
  *                          day later, which is the same outage discovered too late to act on.
- */
-export type NotOpeningReason = "low-balance" | "rent-not-reclaimed";
+ *   `"rent-not-swept"`     the sweep-gap stop. `Arena.round_counter` has pulled far enough ahead of
+ *                          `Treasury.rounds_swept` that rounds are passing out of the retention
+ *                          window unswept — and the chain refuses `close_round_account` on an
+ *                          unswept round, so their rent stops coming back. THE SAME OUTAGE AS
+ *                          `"rent-not-reclaimed"`, CAUGHT BY A DIFFERENT INSTRUMENT, and the reason
+ *                          it earns its own word is WHEN each can speak: the brake needs 45 rounds
+ *                          of samples held in process memory, so it is blind for ~2.6 hours after
+ *                          every restart, while this is a subtraction over chain state and is right
+ *                          on the first poll. An operator reading this reason knows to look at the
+ *                          sweep rather than at the closer; one reading the other knows the reverse.
+ *                          `scripts/keeper/config.ts`'s `SWEEP_GAP_STOP_ROUNDS` owns the threshold.
+ *
+ * DERIVED FROM `NOT_OPENING_REASONS` RATHER THAN WRITTEN OUT BESIDE IT, and that is a correction
+ * rather than a tidy-up. The two used to be independent declarations — a union here and a
+ * `readonly NotOpeningReason[]` next to the parser — and that list's own comment claimed "adding a
+ * member to the type without adding it here fails to compile". IT DID NOT. An array annotated with a
+ * union type is perfectly legal holding a subset of it, so a third reason added to the union alone
+ * would have compiled, been emitted by the writer, and then been refused by `isNotOpeningReason` at
+ * the reader — taking the WHOLE file to null, which the page renders as "keeper is down" about a
+ * keeper that is running and has just told you exactly why it stopped. That is this module's worst
+ * failure mode reached by way of a comment that was not true. One declaration, the type read off the
+ * list, and the drift is not prevented by discipline but unrepresentable. */
+export type NotOpeningReason = (typeof NOT_OPENING_REASONS)[number];
 
 export interface KeeperStatus {
   schema: number;
@@ -478,11 +499,14 @@ function isNumberArray(v: unknown): v is number[] {
   return Array.isArray(v) && v.every(isNumber);
 }
 
-/** THE VOCABULARY ITSELF, so the guard below checks against the union rather than against `string`.
- *  Declared as a `readonly NotOpeningReason[]` so adding a member to the type without adding it here
- *  fails to compile: a reason the writer can emit and the reader silently refuses would take the
- *  whole file to `null`, and "keeper down" is a poor way to learn that two lists drifted apart. */
-const NOT_OPENING_REASONS: readonly NotOpeningReason[] = ["low-balance", "rent-not-reclaimed"];
+/** THE VOCABULARY ITSELF, AND THE ONLY PLACE IT IS WRITTEN DOWN — `NotOpeningReason` is read off
+ *  this tuple, so the guard below checks against exactly the strings the type permits and the two
+ *  cannot drift. See that type for what the previous arrangement failed to prevent.
+ *
+ *  `as const` IS LOAD-BEARING, NOT STYLE. Without it this is a `string[]`, `NotOpeningReason` widens
+ *  to `string`, and every compile-time check in this file that depends on the vocabulary being closed
+ *  — the writer's call sites, the parser's return type — silently stops checking anything. */
+const NOT_OPENING_REASONS = ["low-balance", "rent-not-reclaimed", "rent-not-swept"] as const;
 
 /** Checked against the closed vocabulary rather than merely `isString`, and the difference decides
  *  what the page says. An unrecognised reason is a writer this reader does not understand — a newer

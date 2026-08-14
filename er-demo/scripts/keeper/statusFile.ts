@@ -79,10 +79,23 @@
 //     house wallets are fighting and the round a real player just won publish the identical byte. It
 //     is a disclosure ABOUT THE OPERATING MODE, which is the arena describing its own behaviour, the
 //     argument `round.heldOpen` already survives on. Told MORE, not identified.
-//   * `keeper.notOpeningRounds` is a CLOSED VOCABULARY — two strings written in
+//   * `keeper.notOpeningRounds` is a CLOSED VOCABULARY — three strings written in
 //     `src/v2/data/keeperStatus.ts`, chosen at the call site, never assembled from anything observed.
 //     Same construction as `lastError.context`, and the same property does the work: a field with no
 //     inputs cannot be got wrong.
+//
+//     IT WAS TWO STRINGS AND IS NOW THREE, and the third is recorded here because of what it is
+//     DERIVED FROM rather than because the count changed. `"rent-not-swept"` is published when
+//     `Arena.round_counter - Treasury.rounds_swept` reaches `SWEEP_GAP_STOP_ROUNDS` — so unlike the
+//     other two, a NUMBER OBSERVED ON CHAIN decides whether it is emitted. That is exactly the shape
+//     of thing this header exists to catch, so it was checked rather than assumed, and it is safe for
+//     the reason the vocabulary is closed at all: the observation selects BETWEEN literals, it never
+//     enters one. The gap, the round counter, the threshold and the round number the keeper declined
+//     to open are all absent from the payload — the reason says only that no further round is coming
+//     and which instrument decided, which is the same sentence for a gap of 25 and a gap of 500. The
+//     numbers live on `/reclamation.json`, which is a different endpoint with a different audience.
+//     A reason that had interpolated the gap would have been a count leaking through a field nobody
+//     thinks of as a field, which is precisely how `lastError.message` leaked a house entry count.
 //
 // The byte-level sweep in `statusFile.test.ts` runs with the mode ON and a reason set, which is what
 // keeps that argument honest rather than merely stated.

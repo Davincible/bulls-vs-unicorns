@@ -131,14 +131,45 @@ rate rounds are opened.
 
 ### The honest caveat on the headline figure
 
-**Rent reclamation has never run at 48 fighters.** v8 has three rounds and the retention window is
+**Rent reclamation has never run at 48 fighters.** v8's counter is at 4 and the retention window is
 twenty, so nothing on this program has been closed yet. The 0.030 SOL/day depends on a mechanism that
 is built, tested and *unobserved at this account size* — where rent is 2.7× what it was when it was
 last observed working (0.008561 at sixteen fighters).
 
+**What has since been established, and what has not.** `scripts/reclaim-status.ts` simulates
+`close_round_account` against every live round without sending anything, and against v8 it shows the
+instruction is REACHABLE at the current 3,248-byte size: rounds 1–3 are terminal, swept and
+undelegated, and the only thing refusing them is `RoundTooRecent` (6021) — the retention guard doing
+its job. Round 4 is delegated and refuses with `AccountOwnedByWrongProgram` (3007), also correct.
+
+So the gating is proven at this size and nothing structural has broken. **The lamport transfer itself
+is still unproven at 48 fighters**, and it cannot be proven without either running twenty rounds or
+opening twenty-two against the live arena — the latter being a second writer to `arena.round_counter`,
+which is the failure `extendHouseBank.ts` opens by warning about. Continuous mode reaches round 20 in
+about seventy minutes and exercises it in production, which is the better proof and the reason that
+mode exists.
+
 **Watch `Treasury.rounds_swept` against `Arena.round_counter` for the first day of continuous
-running.** If the gap grows, the burn is 330× the headline and the balance is gone in a day and a
-half.
+running** — `GET /reclamation.json`, or `scripts/reclaim-status.ts` locally. If the gap grows, the
+burn is 330× the headline and the balance is gone in a day and a half.
+
+### Two brakes, because one of them is blind at exactly the wrong moment
+
+**The burn brake** measures net lamports between consecutive `open_round` balance readings and stops
+the keeper opening rounds above 0.005 SOL/round — ~70× the healthy figure and ~4.7× below the broken
+one, so ordinary variance cannot reach it and a real outage clears it on the first steady-state
+sample. It latches; a brake that reopened would resume draining.
+
+It has one residual that is worth stating rather than discovering: **it needs ~45 samples to arm, and
+its ring is process memory, so it restarts empty.** A keeper that restarts more often than ~2.6h
+therefore runs unbraked, and the restarts are not hypothetical — a `fly deploy` and a
+`fly secrets set` are one each. Persisting the ring is architecturally blocked (`fly.toml` rule 2
+forbids a volume, and the keeper's design is to re-derive from chain rather than remember).
+
+**The sweep-gap stop** covers exactly that window, because it needs no history: `round_counter −
+rounds_swept` is two numbers read off chain, healthy at 1, and it climbs monotonically and never
+recovers if sweeping stops. It is armed the instant the process starts. Threshold 25 — five rounds of
+headroom past the twenty-round retention, about seventeen minutes at 430 rounds/day.
 
 ---
 

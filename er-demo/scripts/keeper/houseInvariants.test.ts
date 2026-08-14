@@ -120,9 +120,14 @@ function fighter(wallet: PublicKey, side: 0 | 1): RawFighter {
   return { wallet, side, dead: 0, stake: new BN(1), hp: new BN(1), banked: new BN(0) };
 }
 
-function roundWith(fighters: RawFighter[]): RawRoundAccount {
+/** `seats` IS A PARAMETER RATHER THAN ALWAYS `SEATS`, AND IT IS THE ONLY INSTRUMENT THIS FILE HAS FOR
+ *  THE SEAT RESERVATION. `plannedHouseEntries` reads its seat count off `round.fighters.length` — the
+ *  chain's own number, deliberately not a copy — so the padding here is what decides whether the
+ *  reservation binds. Defaulted to `SEATS` so the two sweeps are untouched; see the ceiling test below
+ *  for the shape that needs the other value and why an env override would not do. */
+function roundWith(fighters: RawFighter[], seats: number = SEATS): RawRoundAccount {
   const padded = [...fighters];
-  while (padded.length < SEATS) padded.push(fighter(PublicKey.default, 0));
+  while (padded.length < seats) padded.push(fighter(PublicKey.default, 0));
   return {
     lobbyClosesAt: new BN(CLOSES_AT), fighterCount: fighters.length, fighters: padded,
   } as unknown as RawRoundAccount;
@@ -397,11 +402,20 @@ describe("and what it does to an empty lobby once the operator has asked for hou
     // sixty-six (the whole bank on side 0, and the whole bank on side 1), and the other sixty-four are
     // asserted.
     //
-    // WHAT IT COSTS IF IT IS EVER FALSE, because this is the mode's expensive edge: a house-only lobby
-    // that reaches its deadline with a bare side can neither be drawn (`enough_to_fight` needs both
-    // sides occupied to produce a fight worth the name, and `close_lobby_and_draw` is what ends it) nor
-    // abandoned (`lobby_is_dead` needs FEWER than two fighters, and there are ten). Its rent sits in
-    // `Lobby` forever — the state COST-MODEL §4 records nineteen rounds already in.
+    // WHAT IT COSTS IF IT IS EVER FALSE, AND IT IS NOT WHAT IT LOOKS LIKE. A house-only lobby that
+    // reaches its deadline with a bare side IS drawn: `enough_to_fight` is `fighter_count >= 2` and has
+    // no opinion about sides, and `close_lobby_and_draw` requires nothing beyond it. So the round is
+    // not stuck and its rent is not lost — it settles, sweeps and closes on the ordinary schedule.
+    //
+    // What it produces instead is a round with NO FIGHT IN IT. `advance_fight` skips every pair whose
+    // two fighters share a side, so a one-sided lineup lands zero exchanges however long it ticks;
+    // `fight_is_over` is `a == 0 || b == 0` and is therefore true from the first instant, which its own
+    // doc comment in lib.rs calls out as deliberate ("such a round contains no fight at all and should
+    // be settleable immediately"). Every fighter finishes on the hp they entered with and the occupied
+    // side collects the pot. That is a product failure rather than a treasury one, and it is why this
+    // property is asserted here rather than left to the rent arithmetic to catch: nothing downstream
+    // would ever report it. The mode's expensive edge is a DIFFERENT one — a draw that cannot LAND —
+    // and it is priced in `HOUSE_ONLY_ROUNDS_ENABLED`.
     let asserted = 0;
     for (const o of houseOnlyOutcomes) {
       if (o.ramp !== 1) continue;
@@ -496,6 +510,54 @@ describe("and what it does to an empty lobby once the operator has asked for hou
     // lands on the target to the fighter. Without this line a change that made `tidy` never true would
     // leave a green test asserting only the loose bound.
     expect(pinnedExactly).toBe(36);
+  });
+
+  it("holds the house at seats − REAL_SEATS_RESERVED when the reservation binds below the board — the production 39-of-48 case", () => {
+    // THE ARITHMETIC THE DOCUMENTATION MADE LOAD-BEARING AND THE SWEEP ABOVE NEVER REACHES. The boot
+    // banner, `scripts/keeper/README.md` and `fly.toml` all now quote a house-only round as fielding
+    // THIRTY-NINE fighters and not forty-eight, with nine seats standing empty for the whole lobby.
+    // That figure is `houseCeiling = seats - REAL_SEATS_RESERVED` winning a `Math.min` against the
+    // board — and at this file's configuration it never wins. The sweep runs at the code default
+    // `HOUSE_WALLET_COUNT = 10` against `SEATS = 48`, so the ceiling is 39, the board is 10, and the
+    // `min` picks the board in all 330 shapes. The ceiling branch is dead code under test, and the
+    // number three documents quote ships unexercised.
+    //
+    // PRODUCTION IS THE OPPOSITE CONFIGURATION, which is the whole reason this matters: `fly.toml`
+    // sets 48 wallets and a board of 48 as secrets, so there the ceiling is the ONLY binding term and
+    // the board never binds at all. The branch this file cannot reach is the branch every live
+    // house-only round is decided by.
+    //
+    // A SHORT ROUND RATHER THAN AN ENV OVERRIDE, because `config.ts` reads `process.env` at module
+    // load and its constants are frozen by the time any test runs — moving them would mean a separate
+    // vitest process or a mocked module, and either buys a second configuration of this file that
+    // somebody has to keep in step. The seat count needs neither: `plannedHouseEntries` takes it from
+    // `round.fighters.length`, the chain's own number rather than a copy, so a twelve-seat round asks
+    // the same question a forty-eight-seat round asks under a forty-eight-wallet bank. Twelve seats
+    // against a reservation of nine leaves a ceiling of three, which is comfortably below the board of
+    // ten, and three is then the only answer the policy can give.
+    //
+    // Asked of `plannedHouseEntries` directly rather than through `plan`, since threading a seat count
+    // through `Shape`, `plan` and `Outcome` would change the two sweeps to serve one example.
+    const shortSeats = 12;
+    const board = houseFighterCount({ side0: 0, side1: 0 }, "house-only");
+    const ceiling = shortSeats - REAL_SEATS_RESERVED;
+    // The premise, asserted rather than assumed: if a retuned grace or board ever made the board the
+    // smaller term again, this test would silently go back to measuring the board and the ceiling
+    // would be untested once more — with nothing to say so.
+    expect(ceiling, "the reservation must be the binding term or this test measures the board")
+      .toBeLessThan(board);
+
+    const { entries, houseTarget } = plannedHouseEntries(
+      bank, roundWith([], shortSeats), 7n, whenAt(1),
+      { drawAt: CLOSES_AT, emptyRoom: "house-only" },
+    );
+    expect(houseTarget).toBe(ceiling);
+    expect(entries.length).toBe(ceiling);
+    // AND THE NINE SEATS ARE ACTUALLY THERE, which is the promise the figure exists to make. The
+    // ceiling is only worth asserting because a visitor who clicks Enter finds a seat; a board that
+    // landed on the right number while filling the room would satisfy the line above and break the
+    // thing it is for.
+    expect(shortSeats - entries.length).toBe(REAL_SEATS_RESERVED);
   });
 
   it("fills the room gradually here too, because the ramp never knew about the treasury rule", () => {

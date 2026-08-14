@@ -213,7 +213,10 @@ export type EmptyRoomPolicy = "unfightable" | "house-only";
  * takes an empty side, even when fully throttled out by the count rule: eleven real players stacked
  * on side 0 still get one house fighter, and it stands on side 1. That is the one case where the
  * house adds a fighter to a room that does not need more fighters, and it is the case where the
- * alternative is a round that cannot be drawn.
+ * alternative is a round that is DRAWN AND STILL NOT A FIGHT. The chain does not refuse it — a draw
+ * needs `enough_to_fight`, which is a count — it runs it: `advance_fight` skips every pair sharing a
+ * side, so eleven people stake, nothing is exchanged, and it settles on the hp they walked in with.
+ * Nothing anywhere reports that, which is why the fighter is posted rather than the case detected.
  *
  * ────────────────────────────────────────────────────────────────────────────────────────────────
  * WHAT `"house-only"` IS, AND WHY IT IS THE ABSENCE OF POLICY RATHER THAN A NEW ONE

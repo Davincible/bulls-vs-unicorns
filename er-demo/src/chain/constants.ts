@@ -69,9 +69,12 @@ export const PROGRAM_ID = new PublicKey("ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzH
 // ---- round retention — mirrored from programs/bulls-arena/src/lib.rs ---------------------------
 //
 // HOW MANY OF THE NEWEST ROUNDS THE CHAIN GUARANTEES ARE STILL FETCHABLE. `close_round_account`
-// reclaims a finished round's ~0.008561 SOL rent — 95.4% of what a round costs — and this is the
-// floor it refuses to cross, enforced on chain rather than by the keeper so that no client has to
-// trust an operator's configuration for it.
+// reclaims a finished round's ~0.023497 SOL rent and this is the floor it refuses to cross, enforced
+// on chain rather than by the keeper so that no client has to trust an operator's configuration for
+// it. (~0.008561 at `MAX_FIGHTERS = 16`, before the cap grew the account from 1,102 to 3,248 bytes.)
+// The old note put that at "95.4% of what a round costs"; that ratio was measured on v6 and has NOT
+// been re-measured at the new size, so it is dropped rather than carried forward — see the same
+// deliberate omission at `closeRoundAccount` in round.ts.
 //
 // IT IS HERE BECAUSE IT IS A LABELLING RULE, not because anything in the browser calls the
 // instruction (nothing does — the keeper owns that). Round history is now a rolling window of this

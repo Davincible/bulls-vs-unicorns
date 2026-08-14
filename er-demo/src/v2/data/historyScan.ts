@@ -7,7 +7,7 @@
 // `historyScan.test.ts` can drive it directly.
 //
 // WHY IT STOPS EARLY, WHICH IT DID NOT USED TO. v7 added `close_round_account` and the keeper calls
-// it: every round outside the chain's retention window has its ~0.0085 SOL of rent reclaimed and its
+// it: every round outside the chain's retention window has its ~0.023497 SOL of rent reclaimed and its
 // account destroyed. A fixed newest-250 walk against a caught-up keeper therefore spent ~230 of its
 // 250 reads on addresses that hold nothing — tolerated (`fetchNullable` resolves to null, the row
 // simply isn't there) but pure waste, on every history fetch, against a rate-limited devnet RPC.

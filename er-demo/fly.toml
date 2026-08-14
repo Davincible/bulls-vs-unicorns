@@ -115,19 +115,33 @@ primary_region = "fra"
 [env]
   KEEPER_HTTP_PORT = "8080"
 
-  # HOLD OPEN, and the arithmetic is the whole argument.
+  # HOLD OPEN. The arithmetic that CHOSE this is below and is history; what keeps it set is underneath
+  # that. Read both, because the two answers agree and the reasons do not.
   #
-  # Every round permanently locks ~0.0098 SOL all-in, of which ~0.0085 is round-PDA rent that no
-  # instruction ever reclaims (verified, not inferred: rounds #4-#18 all still hold exactly
-  # 0.008498 SOL). The fixed cadence cycles a round about every 110 seconds, so an arena nobody is
-  # playing in costs:
+  # THE MEASUREMENT THAT CHOSE IT, LEFT AS RECORDED AND NO LONGER TRUE. At MAX_FIGHTERS = 16 and
+  # before close_round_account existed, every round permanently locked ~0.0098 SOL all-in, of which
+  # ~0.0085 was round-PDA rent that no instruction could reclaim (verified, not inferred: rounds
+  # #4-#18 all still held exactly 0.008498 SOL). The fixed cadence cycled about every 110 seconds, so
+  # an arena nobody was playing in cost:
   #
   #     fixed cadence   ~0.32   SOL/hour
   #     1-hour holds    ~0.0098 SOL/hour   <- 97% of the saving, and where this sits
   #
-  # A deployment that will sit idle most of the time must not run the fixed cadence. Hold-open opens
-  # ONE lobby with a one-hour backstop and holds it until a real player arrives, so the fight starts
-  # because a person showed up rather than because a timer fired.
+  # SINCE v7 THAT LOSS IS FLOAT, AND THE OTHER HALF OF THIS FILE ALREADY SAYS SO — see the ~0.00041
+  # SOL/cycle figure under KEEPER_HOLD_OPEN_LOBBY_SECONDS, measured with close_round_account
+  # reclaiming. Rent comes back once ROUND_RETENTION newer rounds exist, and at forty-eight seats the
+  # deposit is 0.023497 SOL rather than 0.0085. A cycling arena parks money; it does not burn it. Two
+  # figures three hundred times apart sat in one [env] block for a while, and the stale one is the
+  # first thing an operator reads when deciding this line — which is the whole reason it is now
+  # labelled rather than deleted.
+  #
+  # WHAT STILL SETS IT TO 1. Not SOL/hour. (a) EXPOSURE: every round opened is one more deposit riding
+  # on a close landing, and COST-MODEL §4 is about nothing but the ways that close fails. Hold-open
+  # carries one such deposit where the cadence carries a day's worth. (b) THE ROOM: a visitor to a
+  # cycling arena arrives at an arbitrary point in somebody else's round — a lobby with four seconds
+  # on it, or a fight already running. Hold-open opens ONE lobby and holds it until a real player
+  # arrives, so the fight starts because a person showed up rather than because a timer fired. The
+  # ladder above still picks the same rung; only what it is denominated in changed.
   #
   # The safety rail: this policy needs the authority-signed early close in close_lobby_and_draw to
   # be DEPLOYED. Nothing in this process can determine that — the IDL is generated from source, so a
@@ -156,9 +170,12 @@ primary_region = "fra"
   #
   # WHAT IT DOES TRADE AWAY, honestly: a round is delegated for the whole lobby, so if the ER
   # validator dies while a lobby is idle, `abandon_round` cannot undelegate it and that round can sit
-  # until the backstop finally fires — up to a week now, rather than up to an hour. That strands one
-  # round's ~0.0085 SOL for that long. It is a real cost and it is smaller than the one being
-  # removed, but it is the reason this line names a trade rather than just a number.
+  # until the backstop finally fires — up to a week now, rather than up to an hour. That parks one
+  # round's ~0.023497 SOL for that long (the forty-eight-seat deposit; the ~0.0085 this used to say
+  # was the sixteen-seat one, and it predates close_round_account). It comes back — the round still
+  # reaches a terminal phase and still gets closed — so the cost is a week of float on one round, not
+  # a loss. It is smaller than the one being removed, and it is the reason this line names a trade
+  # rather than just a number.
   KEEPER_HOLD_OPEN_LOBBY_SECONDS = "604800"
 
   # Both URLs are run through assertDevnetUrl at boot, on every endpoint including the ER
@@ -189,9 +206,15 @@ primary_region = "fra"
   #
   # A pool larger than the board would NOT put more fighters in a round; what it buys is that the CAST
   # CHANGES between rounds, because `plannedHouseEntries` rotates its starting point by round number.
-  # At a pool and a board that are both 48 that rotation is currently a no-op — every wallet is needed
-  # every round — and it is what makes raising the pool above the board a one-line secret change rather
-  # than a code change.
+  #
+  # AT A POOL AND A BOARD THAT ARE BOTH 48 THAT ROTATION IS LIVE, NOT A NO-OP, and this line said the
+  # opposite. The board is never what the house actually fields: `plannedHouseEntries` holds
+  # REAL_SEATS_RESERVED = 9 seats back out of the round's own 48, so the house is capped at
+  # 48 − realCount − 9, which is THIRTY-NINE at its very largest and smaller with anybody in the room.
+  # At least nine of the forty-eight wallets are therefore free every single round, the rotation starts
+  # from a different place in the pool each time, and the arena shows a changing cast rather than the
+  # same faces — the property this pair of secrets was set to buy, already being bought at the values
+  # in front of you.
   #
   # WHEN THEY ARRIVE IS ITS OWN PAIR OF KNOBS, AND NEITHER IS SET HERE BECAUSE THE DEFAULTS ARE THE
   # INTENDED PRODUCTION VALUES:

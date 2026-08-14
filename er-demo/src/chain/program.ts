@@ -214,7 +214,8 @@ export interface BullsArenaProgram {
      *  against the account passed in, so it is not redundant with `accounts({ round })`. */
     sweepHouseTake(roundNo: BN): MethodsBuilder;
     /** v7's `close_round_account` — the first instruction in this program that DESTROYS anything,
-     *  handing a finished round's ~0.0086 SOL rent deposit back to the authority that paid it.
+     *  handing a finished round's ~0.023497 SOL rent deposit back to the authority that paid it
+     *  (~0.0086 at `MAX_FIGHTERS = 16`, before the cap grew the account to 3,248 bytes).
      *
      *  DECLARED AHEAD OF THE IDL, exactly as the three above were and for the reason the note above
      *  spells out: this interface is hand-written against lib.rs, while Anchor builds from the IDL

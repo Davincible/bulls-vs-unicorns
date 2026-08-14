@@ -42,8 +42,31 @@
 // fooled that way — see `burnBrake` for the full argument — but it is a LAGGING measurement and it
 // cannot say anything at all for the first `armAfter` rounds.
 //
-// Neither one subsumes the other, so the report carries both and the brake is wired to the one that
-// cannot be fooled. That is not redundancy; they fail in different directions.
+// Neither one subsumes the other, so the report carries both. That is not redundancy; they fail in
+// different directions.
+//
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// BOTH WITNESSES ARE NOW WIRED TO A STOP, AND THE SECOND ONE EXISTS BECAUSE THE FIRST HAS NO MEMORY
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+//
+// This used to end "and the brake is wired to the one that cannot be fooled", with `burnBrake` the
+// only thing that could stop the arena. That was correct about which measurement is harder to fool
+// and wrong about what a safety device has to do first, which is EXIST WHEN THE FAILURE HAPPENS.
+//
+// The brake's ring is process memory. It needs `armAfter` samples — 45 rounds, ~2.6 hours — and a
+// restart empties it, so every deploy, every crash and every Fly machine migration buys the arena
+// another 2.6 unprotected hours. That is not a hypothetical: after two restarts on the day this was
+// written the live endpoint read `armed: false, samplesObserved: 0 of 45` while the arena ran at
+// ~430 rounds/day, which is the exact window in which the failure being guarded against costs
+// ~9.96 SOL/day against a 14.9 SOL balance — about thirty-six hours to empty.
+//
+// `sweepGapStop` needs no history at all. It is a subtraction between two numbers the chain itself
+// maintains, so it is armed on the first successful treasury poll — within `TREASURY_POLL_SECONDS`
+// of boot, rather than within 2.6 hours of it. It answers the narrower question, and a narrow
+// answer available immediately is worth more than a complete one that arrives after the balance is
+// gone. The two are complements in TIME as well as in what they can be fooled by: the sweep gap
+// covers the window the brake cannot see into, and the brake covers the failures a sweep gap of
+// zero is compatible with.
 
 /** WHAT ONE ROUND'S `Round` PDA HOLDS, in lamports — 0.023497 SOL, measured against v8 at
  *  `MAX_FIGHTERS = 48` (COST-MODEL.md §1, from a real 44-fighter round).
@@ -112,18 +135,73 @@ export interface ReclamationState {
     strandedNeverTerminalTotal: number;
     strandedStillDelegatedTotal: number;
   };
-  /** Operator lamports at each open_round, newest last, at most BURN_SAMPLE_ROUNDS entries. */
+  /** ONE SAMPLE PER ROUND, NEWEST LAST, AND EACH ONE IS A DIFFERENCE RATHER THAN A BALANCE: the net
+   *  lamports the previous round cost, taken between two consecutive `open_round` readings of the
+   *  operator wallet. `burnBrake` averages these directly, so a field holding the readings themselves
+   *  would report a mean balance as a mean burn.
+   *
+   *  CAPPED AT `BURN_ARM_AFTER_ROUNDS`, WHICH IS NOT THE WINDOW THE MEAN IS TAKEN OVER, and this line
+   *  used to name the other one. That is not a typo with a cosmetic cost. `burnBrake` arms on
+   *  `samples.length >= armAfter` and only then averages the last `windowSamples`, so a ring capped at
+   *  the WINDOW — `BURN_SAMPLE_ROUNDS`, the smaller number — can never reach the arming threshold and
+   *  the brake never forms an opinion at all. Nothing would say so: the report shows `armed: false`
+   *  beside a sample count that has silently stopped growing, which is what a young arena also looks
+   *  like. Naming the wrong constant HERE is the dangerous direction, because this is the interface the
+   *  keeper fills in — anyone reconciling the two would shrink the keeper's ring to match this doc and
+   *  disable the brake while tidying. `recordBurnSample` below owns the cap; fill this field with it. */
   burnSamplesLamports: number[];
   operatorLamports: number | null;
+  /** Chain second at which the SWEEP-GAP STOP first latched in this process, or null while it has
+   *  not. An OBSERVATION the keeper hands over, exactly like every other field here — this module
+   *  does not own the latch, it reports it and it honours it.
+   *
+   *  IT IS AN INPUT TO THE VERDICT AND NOT ONLY TO THE REPORT, which is the whole reason it crosses
+   *  this boundary rather than staying in `keeper.ts`. `sweepGapStop` takes the latch and returns it
+   *  back out as `tripped`, so the stop's own "once stopped, stay stopped" rule is a property of a
+   *  pure function that a test can execute, instead of two lines inside `openNextRound` that only a
+   *  keeper and a devnet could ever reach. `recordBurnSample` was extracted from that same function
+   *  for that same reason and its doc comment prices what leaving it there cost. */
+  sweepStoppedSinceSec: number | null;
 }
 
 // ---------------------------------------------------------------------------------------------
 // The brake
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * ONE SAMPLE INTO THE RING THE BRAKE READS — newest last, oldest dropped once the ring is `cap` long.
+ *
+ * IT IS A FUNCTION BECAUSE THE CAP IS LOAD-BEARING AND WAS UNREACHABLE WHERE IT LIVED. This was two
+ * lines of push-and-shift inside the keeper's `openNextRound`, between a balance read and a
+ * transaction send, where nothing can exercise it without a chain. Every plausible slip there is
+ * silent and permanent: the wrong constant disarms the brake forever (see
+ * `ReclamationState.burnSamplesLamports`), `pop` for `shift` averages a run's OLDEST rounds — the
+ * pre-turnover ones that legitimately read as a total outage — and `<` for `>` grows the ring without
+ * bound. Not one of those three fails a test, throws, or shows up in the report. Given a name, all
+ * three are swept in `reclamation.test.ts`.
+ *
+ * PURE, RETURNING A NEW ARRAY, in a file whose whole discipline is that every judgement in it can be
+ * run on its own. Mutating the caller's array would save one 45-element allocation per round — once
+ * every ~204 seconds, which is not a cost worth an argument — and would make "does it keep the
+ * newest" and "did the caller happen to be holding an alias" the same test.
+ *
+ * A NON-POSITIVE `cap` KEEPS NOTHING, which is the direction every degenerate case in this file
+ * takes. `burnBrake` refuses to arm on a non-positive `armAfter`, and an empty ring cannot arm it
+ * either, so a misconfigured brake stays open rather than stopping an arena that was working.
+ */
+export function recordBurnSample(samples: readonly number[], lamports: number, cap: number): number[] {
+  if (cap <= 0) return [];
+  return [...samples, lamports].slice(-cap);
+}
+
 export interface BurnVerdict {
-  /** Enough samples to have an opinion at all — `samplesObserved >= armAfter`. While this is false
-   *  the mean below is still reported, and still true, but nothing may act on it. */
+  /** Enough samples to have an opinion at all — `samplesObserved >= armAfter`. While this is false the
+   *  mean below is usually still reported, and when reported it is still true; nothing may act on it.
+   *  NOT ALWAYS REPORTED, THOUGH, which is the correction to what this used to claim: three states null
+   *  the mean outright rather than merely disqualifying it — no sample yet, a non-positive
+   *  `windowSamples`, and a window holding a non-finite sample. All three also leave this false, so
+   *  `armed: false` beside a null mean does not distinguish a young arena from a misconfigured brake.
+   *  `samplesObserved` in the report is what separates them. */
   armed: boolean;
   /** The `n` of the mean beside it: how many samples the average was actually taken over, which is
    *  `min(observed, windowSamples)`. Deliberately NOT the number observed — a mean's sample size is
@@ -214,6 +292,142 @@ export function burnBrake(
     return { armed: false, samples: window.length, meanLamportsPerRound: null, tripped: false };
   }
   return { armed, samples: window.length, meanLamportsPerRound: mean, tripped: armed && mean > thresholdLamports };
+}
+
+// ---------------------------------------------------------------------------------------------
+// The other stop — the one that is armed the instant the process starts
+// ---------------------------------------------------------------------------------------------
+
+export interface SweepGapVerdict {
+  /** `Arena.round_counter - Treasury.rounds_swept` as of the last poll, or null when it cannot be
+   *  COMPUTED — no poll has landed, or this program has no Treasury account. Null is never a gap of
+   *  zero; see `sweepGapOf`. */
+  gap: number | null;
+  tripped: boolean;
+}
+
+/**
+ * HAS SWEEPING FALLEN SO FAR BEHIND THAT RENT HAS STOPPED COMING BACK? — the second safety stop, and
+ * the one that needs no history to have an opinion.
+ *
+ * `sweep_house_take` is the PRECONDITION of `close_round_account`: the chain refuses a close on an
+ * unswept round (`RoundNotSwept`), because the round account is the only place that round's fees and
+ * penalties are recorded and closing it unswept would forfeit them silently. So a keeper that stops
+ * sweeping stops reclaiming, whatever else is working, and the ~0.0235 SOL each round parks stops
+ * coming back at exactly the rate rounds are opened.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────────
+ * WHY THE GAP IS THE RIGHT INSTRUMENT, AND WHAT IT IS NOT
+ * ─────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * `rounds_swept` is a COUNT and not a watermark, and lib.rs argues that choice at length beside the
+ * field: a watermark (`sweep round n only if n == swept + 1`) would prove the total was COMPLETE,
+ * and was rejected on liveness, because one round that can never be swept would block every later
+ * round's fees forever. A count makes one stuck round cost exactly one stuck round.
+ *
+ * TWO CONSEQUENCES FOLLOW FROM THAT AND BOTH MATTER HERE.
+ *
+ * The good one: a backlog DRAINS. `closeOneFinishedRound`'s `sweep-first` branch sweeps any terminal
+ * unswept round the close cursor walks onto — at least two idle passes each, and none at all during
+ * `Drawing` or `Fight` — so twenty-five rounds clear in well under a minute of idle passes. A gap
+ * still past the threshold a whole round later is not a queue being worked off; it is one that has
+ * stopped.
+ *
+ * THAT FALLBACK IS ITSELF RETENTION-GATED, WHICH IS THE REGIME THIS STOP IS TIGHTEST IN. The cursor
+ * never looks at a round newer than `ROUND_RETENTION`, so a round whose SETTLE-TIME sweep missed
+ * (`driveSettled`, the only prompt sweeper) waits twenty rounds for the fallback and contributes 1 to
+ * the gap throughout. Consistent settle-sweep failure therefore parks the gap at ~21 on an arena that
+ * is losing nothing — the rent could not have come back before the retention boundary in any case.
+ * `SWEEP_GAP_STOP_ROUNDS` in `config.ts` owns that argument and the decision to stay at 25 through it.
+ *
+ * The bad one, and it is the standing caveat on this whole mechanism: THE GAP HAS A PERMANENT FLOOR
+ * EQUAL TO THE NUMBER OF ROUNDS THAT NEVER REACHED A TERMINAL PHASE. Sweeping requires `Settled` or
+ * `Abandoned`, so a round wedged in `Lobby` or in the `Drawing` hole `abandon_round` documents can
+ * never be swept and its unit of gap never comes back. Each one permanently spends one round of the
+ * headroom between healthy and the stop. COST-MODEL §4.2 records 19 such rounds on the PREVIOUS
+ * program — which against a stop at 25 would have left five. The arena this ships to is a fresh
+ * program (`round_counter` 4, `sweepGap` 1, zero stranded rounds, verified against the live
+ * endpoint), so the floor is zero today. IT IS NOT ZERO FOREVER, and the thing to watch is
+ * `closer.stranded.neverTerminal` in this same report: every entry it gains is a round of headroom
+ * this stop will never get back, and enough of them turn this into a stop that fires on a healthy
+ * arena. That is the false positive `burnBrake`'s own doc calls worse than having no brake, so it is
+ * written here rather than discovered.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────────
+ * WHAT A STALE OR MISSING POLL IS ALLOWED TO DO, DECIDED RATHER THAN INHERITED
+ * ─────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * THIS FUNCTION HAS NO CLOCK IN ITS SIGNATURE, AND THAT ABSENCE IS THE STATEMENT. Staleness cannot
+ * enter the decision because there is nothing here to compute it from. Three separate positions,
+ * each taken on purpose:
+ *
+ *   * A MISSING POLL IS NOT EVIDENCE. `arena === null` (nothing polled yet, or a program with no
+ *     `sweep_house_take` at all) and `roundsSwept === null` (no Treasury account yet — `init_treasury`
+ *     runs on the first sweep, so a young arena legitimately has none) both mean the gap cannot be
+ *     computed. Not computed is not "zero" and it is certainly not "leaking": the stop stays open,
+ *     which is the direction every degenerate case in this file takes.
+ *   * STALENESS CANNOT MANUFACTURE A GAP, because `pollTreasury` stores BOTH terms together and takes
+ *     the counter FIRST. This is the failure that would have mattered: a fresh `round_counter`
+ *     differenced against a stale `rounds_swept` would grow without bound purely from a telemetry read
+ *     failing, and would stop the arena over a problem that was never about money. What actually
+ *     protects against it is that `ctx.treasury` is replaced as a whole or not at all — a failed poll
+ *     leaves the previous PAIR standing, so an ageing reading freezes rather than drifts.
+ *
+ *     THE TWO READS ARE NOT LITERALLY SIMULTANEOUS AND THE DIRECTION OF THAT SKEW IS THE POINT.
+ *     `roundCounter` comes from the pass's chain state, read before the awaited `fetchTreasury()`, so
+ *     the counter term is always the OLDER of the two. The gap can therefore only be UNDER-reported,
+ *     never over-reported, which is the safe direction for a number wired to a stop. Anyone reordering
+ *     those two reads inverts that, silently, into a stop that can fire on skew alone.
+ *   * A STALE READING THAT IS ALREADY PAST THE THRESHOLD STILL TRIPS, and this is the one that was a
+ *     genuine choice. REJECTED: gating the trip on `pollAgeSec` below some ceiling. It buys almost
+ *     nothing — every reading is evaluated while fresh (the poll runs every 30s, the stop is asked
+ *     once per ~200s round) so a gap this large has already been seen at age ~0 and has already
+ *     latched — and it costs the one case where it would have acted: a correlated failure in which
+ *     the treasury read and the sweeps break together, where the gate would disable the stop
+ *     precisely when the fire started. A frozen reading of 25+ also cannot decay into a false alarm
+ *     on any timescale that matters: it would take 24 sweeps landing unseen, which is 24 rounds,
+ *     which is ~80 minutes of the poll failing while transactions succeed. `pollAgeSec` is published
+ *     beside the gap so a human can see how old the evidence was; it is not a veto over it.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────────
+ * THE LATCH IS AN ARGUMENT, NOT A FLAG
+ * ─────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * `burnBrake` latches by accident of physics: samples are taken at `open_round`, a stopped keeper
+ * opens nothing, so the mean freezes at the value that tripped it and the stop cannot clear itself.
+ * THIS ONE HAS NO SUCH LUCK AND THE DIFFERENCE IS DANGEROUS. The treasury keeps being polled while
+ * the keeper is stopped, and `round_counter` freezes while `rounds_swept` can still rise as the
+ * closer drains what it can — so the gap SHRINKS on its own after the stop, and a verdict recomputed
+ * from the gap alone would clear, reopen the arena, let the gap climb again, and trip again. An
+ * arena flapping between stopped and spending is not a safety device; it is the leak with a duty
+ * cycle.
+ *
+ * So `latched` is an input and the rule is unconditional: once stopped, stopped for the life of the
+ * process, whatever the gap does afterwards and whatever the configuration says. It is deliberately
+ * not conditioned on `stopAtGapRounds` being sane either — a latch that a misconfiguration could
+ * release would not be a latch. Clearing it is a person: read this report, work out which rounds
+ * stopped being swept and why, fix it, restart. `rentIsComingBack` in keeper.ts makes the same
+ * argument for the same reason — a restart is not a workaround here, it is the assertion that
+ * somebody looked.
+ *
+ * `>=` RATHER THAN `burnBrake`'S STRICT `>`, and the two are right for different reasons rather than
+ * inconsistent. The brake compares a MEAN — a continuous quantity where "exactly at the ceiling" is
+ * a real state in which nothing has gone wrong yet, so the ceiling has to be crossed. This compares
+ * a COUNT OF ROUNDS. There is no fractional round between 24 and 25; reaching the count IS the
+ * event, and `>` would simply mean a stop at 26 written as 25.
+ */
+export function sweepGapStop(
+  arena: ReclamationState["arena"],
+  stopAtGapRounds: number,
+  latched: boolean,
+): SweepGapVerdict {
+  const gap = sweepGapOf(arena);
+  if (latched) return { gap, tripped: true };
+  // A non-positive threshold is a misconfiguration, and a misconfigured stop does nothing rather
+  // than stopping everything — `burnBrake`'s asymmetry, for its reason. `config.ts` refuses such a
+  // value at module load, so this is the second of the two lines that make that unreachable.
+  if (gap === null || !Number.isFinite(gap) || stopAtGapRounds <= 0) return { gap, tripped: false };
+  return { gap, tripped: gap >= stopAtGapRounds };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -327,11 +541,65 @@ export interface ReclamationReport {
     thresholdSolPerDay: number | null;
     roundsPerDay: number | null;
   };
+  /** THE SWEEP-GAP STOP, beside the brake because they answer the same owner's question from two
+   *  sides — see this file's header on why both exist and why this one is the one that is armed
+   *  during the first 2.6 hours of every process.
+   *
+   *  THE MEASUREMENT IS DELIBERATELY NOT REPEATED IN HERE. The gap itself is the top-level
+   *  `sweepGap` and its freshness is `arena.pollAgeSec`; copying either into this block would be two
+   *  fields for one fact, which is how a reader ends up comparing a report against itself. What this
+   *  block adds is what the keeper DID about it.
+   *
+   *  THE TWO FIELDS ANSWER TWO DIFFERENT QUESTIONS AND THE PAIR IS WHAT A READER WANTS. `tripped` is
+   *  the stop's verdict as of this render — `latched || gap >= stopAtGapRounds`. `stoppedSinceSec` is
+   *  whether the KEEPER has acted on it yet, and when.
+   *
+   *  SO THE TWO CAN LEGITIMATELY DISAGREE, IN BOTH DIRECTIONS, and each disagreement means something
+   *  precise rather than being a wrinkle to apologise for:
+   *    * `tripped: true, stoppedSinceSec: null` — the gap has just crossed and no `open_round` has
+   *      been attempted since. The stop is asked in `openNextRound`, which is reached once per round,
+   *      so this window is up to a full round wide (longer across a fight) and the keeper is still
+   *      finishing what it started. `keeper-status.json` still says rounds are coming, correctly.
+   *    * `tripped: true, stoppedSinceSec: <t>` beside a `sweepGap` back down at 1 — the keeper is
+   *      latched. Its input recovers once it stops opening (see `sweepGapStop`), so a healthy-looking
+   *      gap here is the CONSEQUENCE of the stop and not evidence against it.
+   *  This is the one place this block reads differently from `burn`, whose samples freeze when it
+   *  stops, so that block's `tripped` and its latch are the same fact. */
+  sweep: {
+    tripped: boolean;
+    stopAtGapRounds: number;
+    /** Unix SECONDS, or null while the stop has not fired. */
+    stoppedSinceSec: number | null;
+  };
   operator: { lamports: string | null; sol: number | null };
   /** THE ONE NUMBER THIS WHOLE ENDPOINT IS FOR: the operator balance divided by the observed daily
    *  burn. Null rather than `Infinity` when the burn is zero, negative or unknown — see
    *  `summariseReclamation` for the argument. */
   runwayDays: number | null;
+}
+
+/**
+ * THE CONFIGURED KNOBS THE REPORT AND THE TWO STOPS RUN ON, as a named record rather than a run of
+ * positional numbers. `config.ts` owns every value; this is the shape they arrive in.
+ *
+ * IT IS A RECORD BECAUSE TWO OF THESE FIELDS ARE THE SAME TYPE AND THE SAME UNIT, and swapping them
+ * is silent in both directions AND wrong in the expensive one. `armAfterSamples` is 45 rounds and
+ * `stopAtGapRounds` is 25 rounds; passed positionally, transposing them compiles, runs, and produces
+ * a burn brake that arms after 25 samples — inside the retention turnover, so it trips on a healthy
+ * young arena, which `burnBrake`'s own doc calls the failure worse than having no brake — beside a
+ * sweep stop that waits for a gap of 45, by which time twenty-five rounds of rent are already
+ * overdue. Neither one throws, neither shows up in the report as anything but a number that looks
+ * plausible. Named fields make the transposition unrepresentable rather than merely unlikely.
+ */
+export interface ReclamationThresholds {
+  /** `MAX_BURN_LAMPORTS_PER_ROUND` — the mean net cost per round the brake stops at. */
+  burnLamportsPerRound: number;
+  /** `BURN_ARM_AFTER_ROUNDS` — samples that must exist before the brake may have an opinion. */
+  armAfterSamples: number;
+  /** `BURN_SAMPLE_ROUNDS` — how many of them the mean is taken over. */
+  windowSamples: number;
+  /** `SWEEP_GAP_STOP_ROUNDS` — the sweep gap at which the keeper stops opening rounds. */
+  stopAtGapRounds: number;
 }
 
 /**
@@ -362,12 +630,20 @@ export interface ReclamationReport {
  */
 export function summariseReclamation(
   state: ReclamationState,
-  thresholdLamports: number,
-  armAfter: number,
-  windowSamples: number,
+  thresholds: ReclamationThresholds,
   roundsPerDay: number,
 ): ReclamationReport {
+  // Renamed on the way in only where this function's own prose already had a name for the thing —
+  // `thresholdLamports` and `armAfter` appear in the arithmetic and the doc comment below, and
+  // renaming them here would have made a fifteen-line block disagree with the code under it.
+  const {
+    burnLamportsPerRound: thresholdLamports, armAfterSamples: armAfter, windowSamples, stopAtGapRounds,
+  } = thresholds;
   const verdict = burnBrake(state.burnSamplesLamports, thresholdLamports, armAfter, windowSamples);
+  // THE LATCH IS THE INPUT, not the gap alone — see `sweepGapStop`. A report that recomputed this
+  // from the gap would say `tripped: false` about a keeper that is stopped, on the one endpoint
+  // somebody reads to find out why it stopped.
+  const sweep = sweepGapStop(state.arena, stopAtGapRounds, state.sweepStoppedSinceSec !== null);
 
   // PRICED OFF THE TOTALS, NEVER OFF THE LIST LENGTHS. The lists are bounded samples; see
   // `ReclamationState.closer`. Counting the sample would understate the loss precisely when it is
@@ -424,6 +700,11 @@ export function summariseReclamation(
       thresholdLamportsPerRound: lamportString(thresholdLamports),
       thresholdSolPerDay: rateIsMeasured ? sol(thresholdLamports * roundsPerDay) : null,
       roundsPerDay: rateIsMeasured ? roundsPerDay : null,
+    },
+    sweep: {
+      tripped: sweep.tripped,
+      stopAtGapRounds,
+      stoppedSinceSec: state.sweepStoppedSinceSec,
     },
     operator: {
       lamports: state.operatorLamports === null ? null : lamportString(state.operatorLamports),

@@ -193,6 +193,7 @@ describe("a lobby with nobody real in it", () => {
       firstRealEntryObservedAtSec: null,
       holdOpen: true,
       houseOnly: false,
+      scheduleCloseRetryAfterSec: 0,
     });
     expect(plan.step).toEqual({ kind: "abandon" });
 
@@ -206,6 +207,7 @@ describe("a lobby with nobody real in it", () => {
       firstRealEntryObservedAtSec: null,
       holdOpen: false,
       houseOnly: false,
+      scheduleCloseRetryAfterSec: 0,
     }).step).toEqual({ kind: "abandon" });
   });
 
@@ -347,21 +349,26 @@ describe("the end of the arrival window", () => {
 
   it("covers an empty side even when the count rule has throttled the house out", () => {
     // Eleven real players all stacked on side 0: the count rule says no house fighters, but a round
-    // with an empty side cannot be drawn. The one fighter it fields must stand on side 1. It takes
-    // eleven rather than three now, because below the board target the count rule is still asking.
+    // with an empty side is a queue rather than a fight. The chain does not stop it — `enough_to_fight`
+    // is a count and eleven is past it, so the round draws — it just exchanges nothing, because
+    // `advance_fight` skips every pair sharing a side. The one fighter it fields must stand on side 1.
+    // It takes eleven rather than three now, because below the board target the count rule is still
+    // asking.
     expect(sidesOf(roundWith(players(11, 0)), FILL_TIME)).toEqual([1]);
   });
 
   it("covers an empty side even when it is already at its target, just badly arranged", () => {
     // THE ONE THE TOTAL-SHORTFALL ARITHMETIC MISSED. Five real players and five house fighters, all
     // ten of them on side 1. The policy wants five house fighters and five are standing, so the total
-    // shortfall is zero — but side 0 is empty, so this lobby cannot be drawn at all, and the old
-    // `target - houseCount` returned nothing and let it reach its deadline and be abandoned.
+    // shortfall is zero — but side 0 is empty, so the old `target - houseCount` returned nothing and
+    // let this lobby reach its deadline bare on one side. It is then drawn like any other (the program
+    // has no side rule; `enough_to_fight` is `fighter_count >= 2`) and settles having exchanged
+    // nothing, because `advance_fight` skips every pair whose fighters share a side.
     //
     // `allocateHouseSides` always joins the smaller side, so this keeper does not arrange itself this
-    // way; the fixture is built by hand. It is here because the cost of meeting it once (a round's
-    // ~0.0235 SOL of rent parked for the retention window, and players who turned up and got no
-    // fight — only the first of which comes back) is far above the cost of surviving it always.
+    // way; the fixture is built by hand. It is here because the cost of meeting it once — five people
+    // staked into a round in which nothing happened, and nothing downstream that would ever say so —
+    // is far above the cost of surviving it always.
     const stacked = roundWith([
       ...players(5, 1),
       ...bank.active.slice(0, 5).map((w) => fighter(w.keypair.publicKey, 1)),

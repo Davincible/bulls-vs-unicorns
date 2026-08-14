@@ -219,8 +219,10 @@ export function enter(
 // WITH it — and it must be the arena's own authority, or the program answers `NotTheAuthority` rather
 // than falling through — the deadline is bypassed and the fight starts now. That is what lets a
 // keeper hold ONE lobby open indefinitely and begin the moment a real player joins, instead of
-// cycling rounds on a timer. The saving is rent: every cycle sinks ~0.0085 SOL into a `Round`
-// account whether or not anybody played.
+// cycling rounds on a timer. The saving is rent: every cycle sinks ~0.023497 SOL into a `Round`
+// account whether or not anybody played. (That was ~0.0085 when this note was written at
+// `MAX_FIGHTERS = 16`; the 16 -> 48 cap grew the account from 1,102 to 3,248 bytes, so the figure the
+// hold-open argument rests on is 2.7x what it used to be — see the rent derivation below.)
 //
 // THAT RENT IS NO LONGER PERMANENT, WHICH IS A CHANGE FROM WHAT THIS NOTE USED TO SAY. It read
 // "nothing ever closes a `Round` account"; as of v7 `closeRoundAccount` does, once a round is

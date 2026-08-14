@@ -441,6 +441,36 @@ export const CLOSE_ATTEMPTS_PER_ROUND = 3;
  *  still firing for a real arrival. */
 export const HOUSE_ONLY_ROUNDS_ENABLED = envFlag("KEEPER_HOUSE_ONLY_ROUNDS", false);
 
+/** HOW LONG TO WAIT BEFORE RE-SENDING THE CLOSE THAT DRAGS AN OFF-SCHEDULE LOBBY ONTO THE MODE'S
+ *  SCHEDULE. `lobbyPolicy.ts`'s header owns what that close is and the week-long outage it exists
+ *  because of; this is the number in front of it.
+ *
+ *  SAME SHAPE AND SAME REASONING AS `SWEEP_RETRY_SECONDS`, `HOUSE_ENTRY_RETRY_SECONDS` AND
+ *  `CLOSE_RETRY_SECONDS`. The decision is re-derived from the chain on every pass rather than
+ *  remembered, and the condition it is derived from — a deadline further out than this mode would ever
+ *  stamp — is not changed one bit by the transaction failing. Unthrottled, a close that cannot land is
+ *  re-sent at 1Hz for as long as the stale deadline lasts, which in the deployment that motivated this
+ *  is 604,800 seconds of doomed sends.
+ *
+ *  THIRTY RATHER THAN THREE, matching `CLOSE_RETRY_SECONDS` and for its reason: there is no window to
+ *  hit. The stale deadline is a week out, so nothing is lost by trying again in half a minute, and the
+ *  failures that realistically stop this close landing are the ones `HOUSE_ONLY_ROUNDS_ENABLED` already
+ *  names — a dead ER validator, a VRF queue refusing, a delegation lost — none of which clears inside
+ *  the three seconds a house entry or a sweep is given.
+ *
+ *  THERE IS DELIBERATELY NO ATTEMPT CAP TO GO WITH IT, WHICH IS THE ONE PLACE THIS DEPARTS FROM
+ *  `CLOSE_ATTEMPTS_PER_ROUND`. That cap exists so one round the keeper cannot close is unable to hold a
+ *  BACKLOG hostage — there is other work queued behind it, and moving on reclaims the rest. Here there
+ *  is no backlog: the round this close is about IS the arena, and giving up on it restores precisely
+ *  the stuck state the close was written to end. `HOUSE_ONLY_ROUNDS_ENABLED` already commits to the
+ *  same answer for the same reason ("THE KEEPER'S ANSWER IS TO RETRY `close_lobby_and_draw` FOREVER"),
+ *  so this is that policy reaching one more caller rather than a new policy.
+ *
+ *  Not an env knob, exactly like `SWEEP_RETRY_SECONDS` and `HOUSE_ENTRY_RETRY_SECONDS`: it decides
+ *  nothing an operator needs to tune, and every value inside an order of magnitude of it behaves the
+ *  same way against a deadline a week out. */
+export const SCHEDULE_CLOSE_RETRY_SECONDS = 30;
+
 // ---- the brake that watches what a continuously-running arena burns ---------------------------------
 //
 // WHY THIS EXISTS AT ALL, IN ONE SENTENCE FROM THE MEASUREMENT: the arena costs ~0.030 SOL/day while
@@ -516,6 +546,35 @@ export const BURN_SAMPLE_ROUNDS = ROUND_RETENTION;
  *  all. That is the price of an alarm that is never wrong about a young arena. */
 export const BURN_ARM_AFTER_ROUNDS = 2 * ROUND_RETENTION + 5;
 
+// THE RELATION THE TWO CONSTANTS ABOVE ARE ONLY CORRECT TOGETHER UNDER, CHECKED RATHER THAN STATED.
+// `reclamation.ts` writes this inequality out and then says, correctly, that it cannot check it: doing
+// so would need a copy of the chain's retention window inside a module that decides nothing about the
+// chain. This file has that number, so this file is where the statement becomes a check.
+//
+// IT HOLDS BY CONSTRUCTION TODAY, WHICH IS THE ARGUMENT FOR THE CHECK AND NOT AGAINST IT. Both terms
+// are derived from `ROUND_RETENTION` two lines apart, so `2R + 5 - R = R + 5 >= R` for every retention
+// an operator can ask for — including a raised `KEEPER_ROUND_RETENTION`, which is the one way these
+// numbers move without anybody editing this file. What the check defends is the EDIT: the two
+// derivations look like duplication, "45 and 20 both come from 20" reads like a number that wants
+// tidying into one, and the failure of tidying it is silent in both directions. Set the arming
+// threshold to the window and the ring in `keeper.ts` can never reach it, so the brake never arms at
+// all. Set the window to the arming threshold and the window at the moment of arming still contains
+// pre-turnover rounds — the ones that legitimately pay full rent — so the mean reads several times the
+// threshold (the paragraph above prices one such value at four times it) and a perfectly healthy
+// keeper stops itself within its first couple of hours. That false positive is indistinguishable from
+// the outage the brake exists to catch, which is the worse of the two.
+if (BURN_ARM_AFTER_ROUNDS - BURN_SAMPLE_ROUNDS < ROUND_RETENTION) {
+  throw new Error(
+    `The burn brake is misconfigured: BURN_ARM_AFTER_ROUNDS=${BURN_ARM_AFTER_ROUNDS} minus ` +
+    `BURN_SAMPLE_ROUNDS=${BURN_SAMPLE_ROUNDS} is ${BURN_ARM_AFTER_ROUNDS - BURN_SAMPLE_ROUNDS}, which is ` +
+    `below ROUND_RETENTION=${ROUND_RETENTION}. The mean is taken over the last ${BURN_SAMPLE_ROUNDS} of ` +
+    `${BURN_ARM_AFTER_ROUNDS} samples, so its oldest member would be a round whose rent had not yet come ` +
+    `back — a young arena legitimately pays full rent for its first ${ROUND_RETENTION} rounds — and the ` +
+    `brake would trip on a keeper that was working, an alarm indistinguishable from the outage it is ` +
+    `for. Raise BURN_ARM_AFTER_ROUNDS or lower BURN_SAMPLE_ROUNDS; do not make them equal.`,
+  );
+}
+
 /** HOW OFTEN THE OPERATOR BALANCE AND `Treasury.rounds_swept` ARE RE-READ.
  *
  *  COST-MODEL §4 names the one thing to watch for the first day of continuous running — the gap between
@@ -530,6 +589,105 @@ export const BURN_ARM_AFTER_ROUNDS = 2 * ROUND_RETENTION + 5;
  *  cannot tell you anything new is not caution, it is a 429 waiting to happen. */
 export const TREASURY_POLL_SECONDS = envNumber("KEEPER_TREASURY_POLL_SECONDS", 30);
 
+/** THE SWEEP GAP AT WHICH THE KEEPER STOPS OPENING NEW ROUNDS — the other safety stop, and the only
+ *  one that is armed while the burn brake above is still counting.
+ *
+ *  WHY A SECOND STOP EXISTS AT ALL, WHICH IS A FACT ABOUT PROCESS LIFETIME RATHER THAN ABOUT MONEY.
+ *  `BURN_ARM_AFTER_ROUNDS` is 45 samples, ~2.6 hours at this cadence, and the ring that holds them is
+ *  PROCESS MEMORY — it starts empty on every boot. So every deploy, crash and machine migration hands
+ *  the arena another 2.6 hours with no brake, and this was observed rather than predicted: after two
+ *  restarts in one day the live endpoint read `armed: false, samplesObserved: 0 of 45` while the arena
+ *  ran ~430 rounds/day, which is the window in which COST-MODEL §0's failure costs ~9.96 SOL/day
+ *  against a 14.9 SOL balance — thirty-six hours, end to end. A stop derived from CHAIN STATE has no
+ *  such window: `Arena.round_counter - Treasury.rounds_swept` is right on the first successful poll,
+ *  so this one is armed `TREASURY_POLL_SECONDS` after boot instead of 2.6 hours after it.
+ *
+ *  WHY 25, DERIVED RATHER THAN PICKED. The floor of the derivation is `MIN_RETAINED_ROUNDS` = 20, the
+ *  chain's own retention window, imported into `ROUND_RETENTION` above:
+ *
+ *    * BELOW 20 A GAP OWES NOTHING YET. `close_round_account` refuses any round inside the retention
+ *      window with `RoundTooRecent`, so an unswept round younger than that could not have been closed
+ *      even if it had been swept. A stop at, say, 10 would be firing over rent that was not due back.
+ *    * AT 20 THE OLDEST UNSWEPT ROUND IS EXACTLY AT THE BOUNDARY — the first round whose rent is now
+ *      due back and is not coming, because the sweep it needs never happened.
+ *    * 25 IS THAT PLUS FIVE ROUNDS OF HEADROOM. At ~430 rounds/day a round is ~201s, so five rounds is
+ *      ~17 minutes of running past the point of first real consequence, and 5 x 0.023497 = ~0.117 SOL
+ *      of rent gone overdue. Overdue, NOT lost: sweeping is not destructive and a swept round stays
+ *      closeable forever, so every lamport in that headroom comes back the moment the cause is fixed.
+ *      Seventeen minutes and a recoverable 0.117 SOL is what is being bought, and what it buys is the
+ *      certainty that a brief sweep backlog is not mistaken for an outage.
+ *
+ *  THE HEADROOM IS ENOUGH FOR A BACKLOG THAT DRAINS, AND THE FALLBACK SWEEPER DOES DRAIN ONE.
+ *  `closeOneFinishedRound`'s `sweep-first` branch sweeps any terminal unswept round the close cursor
+ *  walks onto. It costs at least two passes per round — the branch deliberately does not advance the
+ *  cursor, so the round is re-examined next pass — and it only runs on idle passes, never during
+ *  `Drawing` or `Fight` (`housekeepingIsWelcome`). So a backlog of twenty-five clears in under a
+ *  minute of idle passes rather than the twenty-five seconds a 1 Hz reading suggests, which is still
+ *  well inside one round.
+ *
+ *  ────────────────────────────────────────────────────────────────────────────────────────────────
+ *  THE REGIME THIS THRESHOLD IS ACTUALLY TIGHT IN, AND IT IS NOT THE ONE THE HEADROOM WAS SIZED FOR
+ *  ────────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ *  "Healthy is 1" is true only while the SETTLE-TIME sweep lands. `driveSettled` sweeps a round once
+ *  it has come home from the ER, inside the result hold, and that is the only place a round is swept
+ *  PROMPTLY. The fallback above is gated by `isPastRetention` — it is reached from the close cursor,
+ *  which by construction never looks at a round newer than `ROUND_RETENTION` — so a round whose
+ *  settle-time sweep missed is not swept again for twenty more rounds.
+ *
+ *  Each such miss therefore contributes 1 to the gap for ~20 rounds. If settle-time sweeping fails
+ *  CONSISTENTLY while the closer keeps working, the steady-state gap is ~21, not 1 — and that arena is
+ *  still financially healthy, because `close_round_account` could not have run before the retention
+ *  boundary anyway, so the rent comes back at the same rate one pass later. Against a stop of 25 that
+ *  leaves FIVE rounds of headroom, not twenty-four, and it is the same five the check below enforces
+ *  as the minimum.
+ *
+ *  THIS IS THE MOST LIKELY WAY THIS CONSTANT FIRES ON AN ARENA THAT IS LOSING NOTHING, and it is
+ *  stated here rather than discovered because it is the fact that would move the choice between 25 and
+ *  40. It is left at 25 deliberately: the same five rounds also make the stop fire early on the
+ *  outage it is FOR, an arena in this regime is genuinely misbehaving even if it is not yet losing
+ *  money, and the report says which case it is — `sweepGap` climbing while `closer.reclaimed` also
+ *  climbs is the benign regime, and neither climbing is the real one. If a settle-sweep fault is ever
+ *  observed and judged acceptable to run through, raise this rather than remove it.
+ *
+ *  REJECTED: 40. It is the same shape of argument one rung further out — 20 rounds of headroom, ~67
+ *  minutes, ~0.470 SOL overdue, which is an entire retention window's float turned overdue before the
+ *  keeper acts. The stop's value is that it fires while the loss is still float; 40 spends most of
+ *  that. The operator chose 25 knowing both numbers.
+ *
+ *  WHAT IT CANNOT SURVIVE, STATED HERE BECAUSE IT IS THE ONE WAY THIS NUMBER GOES WRONG. The gap has a
+ *  permanent floor equal to the number of rounds that never reached a terminal phase: sweeping needs
+ *  `Settled` or `Abandoned`, so a round wedged in `Lobby` or in the `Drawing` hole can never be swept
+ *  and its unit of gap never returns. Each one permanently spends a round of the 24 between healthy
+ *  (a gap of 1 — the live round is unswept until it settles) and this stop. COST-MODEL §4.2 records 19
+ *  such rounds on the PREVIOUS program, which against this threshold would have left five. The arena
+ *  this ships to is a fresh program — `round_counter` 4, `sweepGap` 1, zero stranded rounds, read off
+ *  the live endpoint — so the floor is zero today and this is a warning rather than a defect. Watch
+ *  `closer.stranded.neverTerminal` in `/reclamation.json`: it is the count of headroom spent, and if it
+ *  climbs this constant has to climb with it or the stop starts firing on a healthy arena.
+ *
+ *  ENV-OVERRIDABLE ON `KEEPER_MAX_BURN_SOL_PER_ROUND`'S ARGUMENT, and refused below the retention
+ *  window rather than clamped — see the check under it. */
+export const SWEEP_GAP_STOP_ROUNDS = envNumber("KEEPER_SWEEP_GAP_STOP_ROUNDS", 25);
+
+// REFUSED RATHER THAN CLAMPED, and refused against the CHAIN'S window rather than against zero. A
+// threshold at or below `ROUND_RETENTION` stops the keeper over rounds whose rent the program would
+// not have handed back yet in any case — `close_round_account` answers `RoundTooRecent` inside that
+// window whether or not the round was swept — so the stop would be firing on a keeper that had lost
+// nothing, which is the false positive `burnBrake`'s doc block calls worse than having no brake at
+// all. Strictly greater, because equality is the boundary case where the oldest unswept round is
+// exactly at the edge and nothing is overdue yet. Same shape and same argument as the burn brake's
+// relation check above and `ROUND_RETENTION`'s own floor check.
+if (!Number.isInteger(SWEEP_GAP_STOP_ROUNDS) || SWEEP_GAP_STOP_ROUNDS <= ROUND_RETENTION) {
+  throw new Error(
+    `KEEPER_SWEEP_GAP_STOP_ROUNDS=${SWEEP_GAP_STOP_ROUNDS} is not a whole number greater than ` +
+    `ROUND_RETENTION=${ROUND_RETENTION}. A sweep gap inside the retention window costs nothing yet: ` +
+    `close_round_account refuses every round in it with RoundTooRecent regardless of sweeping, so the ` +
+    `keeper would stop opening rounds over rent that was not due back — an alarm indistinguishable ` +
+    `from the outage it exists to catch, on an arena that was working. Raise it or unset it.`,
+  );
+}
+
 // ---- running out of money -------------------------------------------------------------------------
 
 /** THE BALANCE BELOW WHICH THE KEEPER STOPS OPENING NEW ROUNDS.
@@ -541,26 +699,52 @@ export const TREASURY_POLL_SECONDS = envNumber("KEEPER_TREASURY_POLL_SECONDS", 3
  *  the balance says — the guard refuses to START work it cannot finish, which is the only point where
  *  refusing costs nothing.
  *
- *  0.05 SOL, chosen against the measured cost rather than picked for roundness — AND THE MEASUREMENT
- *  IT WAS CHOSEN AGAINST HAS MOVED UNDER IT. This is flagged rather than fixed: the number is an
- *  operator's decision and `KEEPER_MIN_BALANCE_SOL` is where they make it, so the honest thing a
- *  comment can do is stop describing a margin that is no longer there.
+ *  0.6 SOL, AND IT IS SIZED AGAINST THE FLOAT WINDOW RATHER THAN AGAINST A ROUND. It was 0.05 for
+ *  most of this file's life, chosen when a round cost 0.008971 all-in at `MAX_FIGHTERS = 16` — 5.6
+ *  rounds' outflow, a little under a third of that era's 0.171 SOL retention float. That reasoning was
+ *  sound and its measurement moved out from under it: at forty-eight fighters `OpenRound` and
+ *  `DelegateRound` move ~0.0268 SOL out of the operator per round (0.023502 + 0.003221, COST-MODEL
+ *  §1), and the twenty-round retention window stands at 0.470 SOL (§3). Against those, 0.05 was under
+ *  TWO rounds' outflow and about a tenth of the window — the "several rounds' worth" margin was
+ *  entirely spent, and with it the reserve meant to fund the closes that bring the rent back.
  *
- *  WHAT IT WAS. A round cost 0.008971 all-in at `MAX_FIGHTERS = 16`, of which 0.008561 was rent, so
- *  0.05 stood at ~5.6 rounds' outflow — a little under a third of the twenty-round retention window's
- *  0.171 SOL of float. Several rounds' worth, deliberately: a floor of exactly one round's cost would
- *  stop the keeper at the moment it could no longer act, with nothing left to pay for the closes that
- *  would recover the rent it is sitting on.
+ *  WHY THE WINDOW IS THE RIGHT UNIT AND A COUNT OF ROUNDS IS NOT. The keeper is always carrying
+ *  `ROUND_RETENTION` rounds of rent it has paid and cannot yet reclaim — 0.470 SOL of float that the
+ *  operator must be FUNDED for even though none of it is spent. A floor set to a few rounds' outflow
+ *  measures the wrong thing: it answers "can I afford the next round" when the question that empties a
+ *  wallet is "am I funded for the float I am already carrying". 0.6 covers the whole 0.470 window with
+ *  ~0.13 SOL — about five rounds' outflow — of margin on top, so the keeper stops with enough left to
+ *  keep signing the closes that turn that float back into balance.
  *
- *  WHAT IT IS NOW. Opening a round moves ~0.0268 SOL out of the wallet at forty-eight fighters
- *  (0.023497 rent + 0.003221 delegation escrow + fees, COST-MODEL §1), and the retention window stands
- *  at 0.470 SOL (§3). So the floor is **under two rounds' outflow and about a tenth of the window** —
- *  the "several rounds' worth" margin the paragraph above bought is spent, and with it the reserve
- *  that was meant to fund the closes. Raising it is a one-line env change and wants an owner's
- *  decision, not a silent edit here.
+ *  IT IS A STOP-OPENING FLOOR AND NOT A FAILURE THRESHOLD — it refuses to START a round, never
+ *  interrupts one, and needs no restart to clear: the guard re-reads the balance every
+ *  `LOW_BALANCE_RECHECK_SECONDS` and resumes on its own once SOL lands. That is the sense in which it
+ *  differs from the two stops above, which latch for the life of the process.
+ *
+ *  IT DOES NOT, HOWEVER, HEAL ITSELF, AND THE OBVIOUS ARGUMENT THAT IT DOES IS WRONG. This block used
+ *  to say that closes keep running while the keeper is stopped, so the balance climbs back through the
+ *  floor unaided — 0.470 SOL of retained float coming home. That reasoning does not survive contact
+ *  with `isPastRetention`. `closeOneFinishedRound` may only close a round satisfying
+ *  `roundNo + ROUND_RETENTION <= round_counter`, and `round_counter` FREEZES the moment this guard
+ *  stops opening rounds. In the steady state the close cursor has already caught up — that is what
+ *  "reclamation is working" means — so it sits at `round_counter - ROUND_RETENTION + 1`, one past the
+ *  last closeable round, and there are ZERO closes left to run. The float is locked, not returning.
+ *
+ *  SO THE FLOOR IS A HARD STOP THAT WAITS FOR A HUMAN, and 0.6 is chosen knowing that rather than in
+ *  spite of it. It makes covering the whole float MORE important and not less: an operator who is
+ *  going to have to send SOL anyway should be told while the arena still holds every lamport it needs
+ *  to finish the round in flight and to close the backlog once funded, rather than after it has spent
+ *  its way into a window it cannot buy its way out of. The log line the guard prints says exactly
+ *  this — send SOL to the operator, and it resumes within `LOW_BALANCE_RECHECK_SECONDS`.
+ *
+ *  The asymmetry that picks the direction still holds, on the honest version of the argument: a floor
+ *  that is too HIGH costs an arena that is down until somebody tops it up, which is visible, bounded
+ *  and fixed by one transfer. A floor that is too LOW is a keeper that spends its way to zero
+ *  mid-window and strands rent it can no longer pay the fees to recover, which is permanent. Take the
+ *  cheap failure.
  *
  *  It is a FLOOR, not a reserve: the keeper does not refuse to spend below it, it refuses to open. */
-export const MIN_BALANCE_SOL = envNumber("KEEPER_MIN_BALANCE_SOL", 0.05);
+export const MIN_BALANCE_SOL = envNumber("KEEPER_MIN_BALANCE_SOL", 0.6);
 
 /** The same floor in LAMPORTS, which is the unit every balance in this process is actually in.
  *
@@ -1178,6 +1362,7 @@ export interface KeeperCliOptions {
 
 export const CLI_USAGE =
   "usage: bun run scripts/keeper/keeper.ts [--rounds N] [--dry-run] [--hold-open]\n" +
+  "                                        [--no-close-rounds] [--house-only-rounds]\n" +
   "  --rounds N   stop cleanly after N rounds have settled and undelegated\n" +
   "  --dry-run    boot, read the chain, decide the next action and write the status file — send nothing\n" +
   "  --hold-open  hold ONE lobby open until a real player joins, then start the fight (needs the\n" +

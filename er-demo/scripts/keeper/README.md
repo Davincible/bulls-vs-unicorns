@@ -319,8 +319,9 @@ that a person who clicks Enter finds a seat.
 
 **`--house-only-rounds`, or `KEEPER_HOUSE_ONLY_ROUNDS=1`. Off by default, devnet only, and it retires
 the one guarantee this document has so far described as unconditional.** Unsetting it restores today's
-behaviour exactly — there is no migration, no state to unwind, and no round already opened that
-behaves differently afterwards.
+behaviour exactly — there is no migration and no state to unwind. **Switching it *on* does reach the
+round already standing**, which is the one direction this paragraph used to deny and the correction is
+"Switching it on mid-round" below.
 
 It asks for an arena that keeps running with nobody real in it: an empty room is filled, drawn and
 fought by house wallets, all day.
@@ -360,6 +361,38 @@ One consequence is in the keeper rather than in the policy. Production sets
 reach, and one round *per week* as a schedule. So `openNextRound` opens `DEFAULT_LOBBY_SECONDS` lobbies
 whenever this mode is on, whatever `--hold-open` says.
 
+### Switching it on mid-round
+
+**That last paragraph only ever applied to the *next* round, and the gap cost a live arena seven days.**
+`open_round` stamps `lobby_closes_at` **once** and no instruction in the program can move it, so a
+lobby that was already open when the flag was set keeps the backstop it was born with. Setting the
+flag changed everything about what the keeper *intended* and nothing at all about the deadline it was
+intending against: `lobbyIsHeldOpen` went false (nothing is being held for anybody), the deadline it
+was now calling a schedule was a week out, and nothing was going to draw the round. Found as round #4
+in `Lobby` with `lobbyClosesAt` 604,800 seconds after `lobbyOpenedAt`, two fighters, and no next round
+coming.
+
+The room stopping at two is the same bug wearing a different face, and it gets reported as *"one house
+wallet entered and then nothing"*. The arrival ramp is anchored to `drawAt`, which with nobody real in
+the room is the deadline — so `arrivalFraction` is pinned at zero for 604,755 of the 604,800 seconds,
+`arrivalsDueBy` is one, and the fightability floor makes it two. Not a trickle: a freeze.
+
+**The keeper now closes such a lobby itself.** Under this mode *only*, a lobby whose deadline is
+further out than the mode would ever stamp (`DEFAULT_LOBBY_SECONDS`, plus the clock-skew margin so a
+freshly-opened lobby can never be mistaken for one) is ended with the **authority early close** — the
+same `close_lobby_and_draw` a real arrival gets, throttled to one attempt per
+`SCHEDULE_CLOSE_RETRY_SECONDS` and retried until it lands. It fires once per switch-on: everything
+after that round is opened on the mode's own schedule.
+
+Three things it deliberately does not do. It **does not fire with the mode off** — a seven-day backstop
+over an empty lobby is `--hold-open` working as configured, not a fault. It **does not fire below
+`enough_to_fight`**, because the program refuses that close at one fighter; such a round has no early
+exit at all (`abandon_round` needs the deadline to have *passed*), so the keeper keeps fielding the
+house — the target is floored at two from the first pass under this mode — and closes the moment the
+second fighter lands, or abandons at the deadline as it always did. And it **does not touch the
+real-arrival close**: somebody who walks into the stuck round is on the ordinary grace ladder from that
+instant, unthrottled.
+
 ### Watching what it costs
 
 ```bash
@@ -371,7 +404,8 @@ carries **two independent witnesses**, because neither subsumes the other:
 
 | | |
 |---|---|
-| `sweepGap` | `Arena.round_counter` minus `Treasury.rounds_swept`, polled every `KEEPER_TREASURY_POLL_SECONDS` (30). A direct observation of the chain's own bookkeeping, right immediately. `pollAgeSec` beside it says how fresh. |
+| `sweepGap` | `Arena.round_counter` minus `Treasury.rounds_swept`, polled every `KEEPER_TREASURY_POLL_SECONDS` (30). A direct observation of the chain's own bookkeeping, right immediately. `pollAgeSec` beside it says how fresh. Healthy is **1** — the live round is unswept until it settles. |
+| `sweep` | what the keeper *did* about that gap: `stopAtGapRounds` is the threshold, `tripped` is the keeper's latched state, `stoppedSinceSec` is when it fired. `tripped` stays true after the gap recovers — see below. |
 | `burn` | the mean net lamports per round, measured from the operator balance at consecutive `open_round`s. Lagging, and it cannot say anything for its first 45 rounds — but a keeper that sweeps perfectly and then fails every `close_round_account` has a sweep gap of **zero** and is burning 9.96 SOL/day. The balance cannot be fooled that way. |
 
 Also `closer.skipped` and `closer.stranded`, each with the round numbers and the SOL they represent.
@@ -397,6 +431,62 @@ To clear it: read `/reclamation.json`, decide which witness is complaining, fix 
 keeper**. The restart is not a workaround; it is the assertion that somebody looked. To run knowingly
 at a higher burn, raise `KEEPER_MAX_BURN_SOL_PER_ROUND` — the honest way to say "I accept this" is a
 number the boot banner prints, not a disabled mechanism nobody can see the state of.
+
+### The sweep-gap stop, which is armed when the brake is not
+
+The brake's 45 samples live in **process memory and start empty on every boot**, so every deploy,
+crash or machine migration buys the arena ~2.6 hours with no brake at all. That is not hypothetical:
+after two restarts in one day the live endpoint read `armed: false, samplesObserved: 0 of 45` while
+the arena ran ~430 rounds/day — the window in which a reclamation outage costs ~9.96 SOL/day against a
+14.9 SOL balance.
+
+So there is a second stop that needs **no history**. The keeper stops opening rounds once `sweepGap`
+reaches `KEEPER_SWEEP_GAP_STOP_ROUNDS` (**25**), and it is armed on the first successful treasury
+poll — seconds after boot rather than 2.6 hours after it. `keeper.notOpeningRounds` becomes
+`"rent-not-swept"`.
+
+**Why 25.** `close_round_account` refuses any round inside the 20-round retention window with
+`RoundTooRecent` whether or not it was swept, so a gap below 20 has cost nothing — there is no close
+it prevented. At 20 the oldest unswept round is exactly at the boundary: the first round whose rent is
+due back and is not coming, because the sweep it needs never happened. 25 is that plus five rounds of
+headroom — ~17 minutes at ~430 rounds/day, and ~0.117 SOL gone *overdue*, not lost, since a swept
+round stays closeable forever. Five is enough because a real backlog drains through
+`closeOneFinishedRound`'s sweep-first branch — two idle passes per round, none during a fight, so 25
+clear in well under a minute. A gap still past 25 when the next round is due is a queue that has
+**stopped**, not one being worked off.
+
+> **The regime where five rounds is tight.** "Healthy is 1" holds only while the *settle-time* sweep
+> lands (`driveSettled`, the only prompt sweeper). The fallback above is reached from the close cursor,
+> which never looks at a round newer than `ROUND_RETENTION` — so a round whose settle-time sweep missed
+> waits 20 rounds for the fallback and adds 1 to the gap throughout. **Consistent settle-sweep failure
+> parks the gap at ~21 on an arena that is losing nothing**, because the rent could not have come back
+> before the retention boundary anyway. That leaves five rounds of headroom, not 24. It is left at 25
+> knowingly: such an arena is misbehaving even if it is not yet losing money, and the report
+> distinguishes the cases — `sweepGap` climbing while `closer.reclaimed` climbs too is the benign
+> regime; neither climbing is the real one.
+
+**It latches, and for a different reason than the brake does.** The brake latches by physics — no open
+means no sample, so its mean freezes. This stop's input *recovers on its own*: once the keeper stops
+opening rounds `round_counter` freezes while `rounds_swept` can still rise, so the gap falls back
+toward healthy **because** the keeper stopped. A stop that read that as the problem being fixed would
+reopen the arena, let the gap climb, and trip again — the leak with a duty cycle. So `sweep.tripped`
+in the report is the latch, not the live gap, and it stays true beside a `sweepGap` of 1.
+
+**A stale or missing poll never trips it.** No poll yet, and a program with no `Treasury` account, both
+mean the gap cannot be *computed* — which is not zero and is not a leak. Staleness cannot manufacture
+a gap either, because `pollTreasury` snapshots `round_counter` and `rounds_swept` at one instant, so an
+ageing reading freezes rather than drifts. A reading that is *already* past the threshold does still
+trip: gating on `pollAgeSec` was rejected because it would disable the stop exactly when the treasury
+read and the sweeps fail together.
+
+> **The one way this threshold goes wrong.** The gap has a permanent floor equal to the number of
+> rounds that never reached a terminal phase — sweeping requires `Settled` or `Abandoned`, so a round
+> wedged in `Lobby` or in the `Drawing` hole can never be swept and its unit of gap never returns.
+> Each one permanently spends a round of the 24 between healthy and the stop. COST-MODEL §4.2 records
+> **19** such rounds on the *previous* program, which against 25 would have left five. The current
+> arena is a fresh program with a gap of 1 and zero stranded rounds, so the floor is zero today —
+> but watch `closer.stranded.neverTerminal`. If it climbs, raise `KEEPER_SWEEP_GAP_STOP_ROUNDS` with
+> it, or the stop starts firing on a healthy arena.
 
 ## What it costs
 
@@ -443,11 +533,19 @@ is parking `KEEPER_HOUSE_WALLET_TARGET_SOL` in four more wallets: **+0.04 SOL**,
 0.06 to 0.10 SOL. At 0.01 SOL each and 5,000 lamports a round, a wallet reaches its 0.002 SOL refill
 floor after ~1,600 rounds. None of this is the cost worth watching; the exposure above is.
 
-**Reconciled across 28 real rounds the all-in figure is 0.00981 SOL per round** (net of a one-time
-0.06 SOL house-wallet funding, now 0.10), of which `open_round`'s 0.008503160 SOL is permanent and
-`delegate_round`'s 0.003220520 SOL comes back when undelegation closes the delegation accounts. That
-every round PDA keeps its deposit forever is verified rather than inferred: rounds #4 to #18 all still
-hold exactly 0.008498 SOL.
+**Reconciled across 28 real rounds the all-in figure was 0.00981 SOL per round** (net of a one-time
+0.06 SOL house-wallet funding, now 0.10), of which `open_round`'s 0.008503160 SOL *was* permanent and
+`delegate_round`'s 0.003220520 SOL came back when undelegation closed the delegation accounts. That
+every round PDA kept its deposit was verified rather than inferred at the time: rounds #4 to #18 all
+still held exactly 0.008498 SOL.
+
+**Both tenses are deliberate.** Those rounds predate `close_round_account`, and nothing has gone back
+to close them — so they are still sitting there, which is what makes them a *record* rather than a
+claim about today. Since v7 the deposit is float: a finished round is swept and closed once
+`ROUND_RETENTION` newer rounds exist, and the operator gets the whole ~0.023497 SOL back. Every figure
+in this section is a sixteen-fighter, pre-v7 measurement — the section header says so — and this
+paragraph is the one that most reads like a claim about today, which is why it carries the correction
+rather than relying on a reader having kept the header in mind for forty lines.
 
 **That was the entire argument for `--hold-open`**, and it is the ladder that chose an hour for the
 backstop:
@@ -549,7 +647,32 @@ is unavailable.
 ### The funding floor
 
 The keeper stops **opening** rounds when the payer falls below `KEEPER_MIN_BALANCE_SOL` (default
-0.05), and keeps driving whatever round is already in flight all the way to a terminal state.
+**0.6**), and keeps driving whatever round is already in flight all the way to a terminal state.
+
+**0.6 is sized against the float window, not against a round.** The keeper is always carrying
+`ROUND_RETENTION` rounds of rent it has paid and cannot yet reclaim — **0.470 SOL** at 48 fighters
+(COST-MODEL §3) — that the operator has to be funded for even though none of it is spent. A floor set
+to a few rounds' outflow answers "can I afford the next round" when the question that empties a wallet
+is "am I funded for the float I am already carrying". 0.6 covers the whole window plus ~0.13 SOL of
+margin. (It was 0.05 for most of this keeper's life, chosen when a round cost 0.008971 all-in at
+`MAX_FIGHTERS = 16`; at 48 fighters a round moves ~0.0268 SOL out, so 0.05 had become **under two
+rounds' outflow and about a tenth of the window**.)
+
+Unlike the two rent stops, this floor **does not latch** — the guard re-reads the balance every
+`LOW_BALANCE_RECHECK_SECONDS` and resumes on its own once SOL arrives, with no restart.
+
+**It does not heal itself, though, and the obvious argument that it does is wrong.** Closes are
+retention-gated (`roundNo + ROUND_RETENTION <= round_counter`), and `round_counter` *freezes* the
+moment the keeper stops opening. In the steady state the close cursor has already caught up — that is
+what "reclamation is working" means — so it sits one past the last closeable round and **there are
+zero closes left to run**. The 0.470 SOL of float is locked, not returning. This is a hard stop that
+waits for a human.
+
+Which is *why* 0.6 covers the whole float rather than a few rounds' outflow: an operator who will have
+to send SOL anyway should be told while the arena still holds enough to finish the round in flight and
+to close the backlog once funded. A floor that is too high costs an arena down until somebody
+transfers — visible, bounded, one transaction. A floor that is too low is a keeper that spends its way
+to zero mid-window and strands rent it can no longer pay the fees to recover — permanent.
 
 That asymmetry is the whole design. Running out *between* `delegate_round` and `resolve` is the
 expensive failure: the rent is already paid, the round is delegated, and stopping there would strand
@@ -846,7 +969,8 @@ Configuration — safe in `fly.toml`'s `[env]`, except where noted.
 | `KEEPER_HOUSE_STAKE_MAX_USD` | `20` | ceiling of that band, and **the single number that decides house exposure per round** — see "What it puts at risk". `50` restores the old band and roughly doubles it |
 | `KEEPER_CLOSE_ROUNDS` | `1` (**on**) | reclaim finished rounds' rent (0.023497 SOL each — all but the ~0.00007 SOL of fees a round spends). `0` or `--no-close-rounds` disables it — see "Reclaiming the rent" |
 | `KEEPER_ROUND_RETENTION` | `20` (the chain's `MIN_RETAINED_ROUNDS`) | how many newest rounds are never closed. Can be **raised**, never lowered — a lower value is refused at boot |
-| `KEEPER_MIN_BALANCE_SOL` | `0.05` | below this the keeper opens no new rounds, while finishing any round in flight — see "The funding floor" |
+| `KEEPER_MIN_BALANCE_SOL` | `0.6` | below this the keeper opens no new rounds, while finishing any round in flight. Sized to cover the whole 0.470 SOL retention float plus margin, and it self-heals as closes return rent — see "The funding floor" |
+| `KEEPER_SWEEP_GAP_STOP_ROUNDS` | `25` | the `round_counter` − `rounds_swept` gap at which the keeper opens no more rounds. Must be **greater than** `KEEPER_ROUND_RETENTION` — a lower value is refused at boot, because a gap inside the retention window has cost nothing. Armed on the first treasury poll, and it **latches** — see "The sweep-gap stop" |
 | `VITE_KEEPER_STATUS_URL` | `/keeper-status.json` | **front end only**, set in Vercel, not here. The full absolute URL of the endpoint above |
 | `VITE_BASE_RPC` | `https://api.devnet.solana.com` | **front end only**, set in Vercel, not here. The browser's base-layer RPC — deliberately a *different* key from `KEEPER_BASE_RPC`, see below |
 
