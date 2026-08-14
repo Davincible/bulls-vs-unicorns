@@ -36,6 +36,64 @@ The split is forced, not stylistic:
 Third-party dependencies resolve **upward** from either location into the repo-root `node_modules`
 that `/package.json` declares, which is the piece that lets both halves work at once.
 
+### Relative imports in this graph end in `.js`, and everywhere else they end in `.ts`
+
+The repo's house style is `.ts` extensions in relative imports, enabled by `allowImportingTsExtensions`
+in `tsconfig.api.json` and `tsconfig.app.json`. **The files Vercel deploys are the exception.** Both
+routes returned `500 FUNCTION_INVOCATION_FAILED` on every request until they stopped doing it:
+
+```
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/var/task/er-demo/api/src/linksHandler.ts'
+imported from /var/task/api/links.js
+```
+
+Vercel does not bundle these functions. It transpiles each `.ts` it reaches into a `.js` beside it —
+the dependencies really are deployed — but it does not rewrite the specifiers that name them, so a
+`.ts` import is a path with no file at it. `moduleResolution: "bundler"` resolves `./x.js` back to
+`./x.ts` at type-check time, so this costs nothing and `npm run typecheck` still covers both trees.
+`api/links.ts`'s header carries the full argument and the alternatives that were rejected.
+
+The graph is **ten files**, and it is exactly the set reachable from the two entry points:
+
+| | |
+|---|---|
+| `/api/links.ts`, `/api/avatar/[xId]/[hash].ts` | the entry points |
+| `api/src/` | `linksHandler` `neonStore` `avatarHandler` `env` `attest` `wallets` `pgStore` |
+| `er-demo/src/v2/data/` | `xLinkSign` — server-only by design, see its header |
+
+`houseWallets.ts`, `reserved.ts` and `store.ts` are in the graph too and need nothing, having no
+relative imports of their own. `memoryStore.ts` and `avatarIngest.ts` are **not** deployed — tests and
+operator commands reach them, Vercel never does — which is why they still read `.ts`.
+
+**To check whether the set has grown**, do not read this table: run `npx vercel build` and look at
+what landed in `.vercel/output/functions/api/links.func/`. That directory is the deployed bundle, and
+comparing a specifier against the file beside it is the check that caught this in the first place.
+
+#### The convention has three edges, and all three are silent
+
+Vercel's tracer resolves `./foo.js` to `foo.ts` through a **fallback**, not through normal resolution:
+it tries the literal path, and only on failure retries with `.ts` substituted. That has consequences.
+
+* **The fallback is `.js` → `.ts` only.** A `.jsx`, `.mjs` or `.cjs` specifier pointing at a `.tsx`,
+  `.mts` or `.cts` source is **not traced at all** — the dependency never ships. Today the graph is
+  ten plain `.ts` files, so this cannot bite; the day someone puts a `.tsx` or a `.mts` in it, the
+  rule stops working and says nothing. Keep the deployed graph plain `.ts`.
+* **A literal `.ts` specifier still traces.** It is found, transpiled and shipped — under its new
+  `.js` name — so the bundle looks complete and the import inside it names a file that is not there.
+  That is why the original failure was a hard 500 rather than a missing file at build time.
+* **A stale real `foo.js` beside `foo.ts` wins silently**, because the fallback only fires when the
+  literal path is *missing*. Never commit build output next to these sources.
+
+#### `/api/tsconfig.json` is the gate that makes all of this fail loudly
+
+`@vercel/node` runs its own `tsc` over the functions, finding its config by walking up from the entry
+point for a file named exactly `tsconfig.json` — so `er-demo/tsconfig.api.json` was **never** in
+scope, and Vercel type-checked with its own defaults. Worse, it reports errors with `console.error`
+and builds anyway: the original bug printed **eighteen `TS5097`** lines into a deploy that reported
+success. `/api/tsconfig.json` now sets `noEmitOnError: true`, so a future `.ts` specifier fails the
+build instead. Its header carries the rest, including why `allowImportingTsExtensions` cannot go there
+and why `/package.json` now pins `@types/node` beside `typescript`.
+
 ### `functions` in `vercel.json` is a tripwire, not decoration
 
 ```json

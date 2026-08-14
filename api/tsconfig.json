@@ -1,0 +1,76 @@
+// TYPE-CHECKING THE FUNCTIONS THE WAY VERCEL ACTUALLY DOES IT. This is the only TypeScript config on
+// this side of the repo that Vercel's own compiler will ever read, and until it existed there was
+// none — which is the root of the incident recorded in `api/links.ts`.
+//
+// `@vercel/node` type-checks every function it builds, using a config it finds by walking UP from the
+// ENTRY POINT FILE looking for something named literally `tsconfig.json`. From `/api/links.ts` that
+// walk is `/api/`, then the repo root, then out of the project. It never reaches
+// `er-demo/tsconfig.api.json` — wrong name, wrong directory — so the project that `npm run typecheck`
+// uses to cover this directory has never had any bearing on what Vercel compiles. Before this file
+// the walk found nothing at all and Vercel fell back to its own defaults, so the two halves of the
+// build disagreed about what this code even compiles against. That is not a tidiness complaint: it is
+// exactly how `/api/links` and `/api/avatar/*` came to serve a hard 500 from behind a green local gate
+// and a deploy that reported success.
+//
+// WHAT IS DELIBERATELY ABSENT, because each looks like an obvious addition:
+//
+//   `allowImportingTsExtensions` — CANNOT be set here, and must not be wanted. `@vercel/node`
+//   force-sets `noEmit: false` after merging these options, and TypeScript permits the flag only
+//   under `noEmit` or `emitDeclarationOnly`, so adding it trades TS5097 for TS5096. It would also fix
+//   nothing if it were legal: suppressing a diagnostic never changes the emit, and the specifier
+//   would still name a file that is not there. `.js` specifiers are the convention (see
+//   `er-demo/api/README.md`), and Vercel's default `moduleResolution: "nodenext"` is precisely what
+//   enforces it — under nodenext a `.ts` specifier is an error, which is the behaviour we want.
+//
+//   `module` / `moduleResolution` — left to Vercel's defaults on purpose. They decide how the
+//   function is EMITTED, and the emit is the platform's business. Overriding them to match
+//   `tsconfig.api.json`'s `bundler` would make one word agree across two files while silently
+//   changing the JavaScript that runs in production. That is the wrong trade in a file whose whole
+//   job is to stop these two views from diverging where nobody can see it.
+{
+  "compilerOptions": {
+    /* THE SAME ENVIRONMENT `er-demo/tsconfig.api.json` ARGUES FOR, restated here only because Vercel
+       cannot see that file. ES2023 with NO DOM, for its reason verbatim: this code runs on a server,
+       and `document` or `window` compiling here would be a bug that only shows up at 3am. Everything
+       web-standard it uses — `Request`, `Response`, `fetch`, `TextEncoder` — comes from `@types/node`.
+
+       This is load-bearing rather than cosmetic. With the DOM lib in scope, `BodyInit` is the
+       BROWSER's, which does not accept a `Uint8Array<ArrayBufferLike>` — so `avatarHandler.ts`'s
+       `new Response(bytes, …)`, correct under the gate and correct at runtime, was reported as
+       TS2345 on every deploy. One `lib` line retires that whole class of false report, and a false
+       report in a build log is worse than none: it is what teaches people to stop reading it.
+
+       `types: ["node"]` FORCED A REAL DEPENDENCY TO BE DECLARED, and finding out why is the second
+       thing this file paid for. Narrowing to `node` turned `Request` and `Response` into TS2304
+       "cannot find name" — because the repo root resolved `@types/node@12.20.55`, a transitive
+       version hoisted from somewhere in the dependency tree, with no `fetch` globals in it at all.
+       `er-demo/node_modules` has 24.13.3, so `npm run typecheck` saw modern Node and Vercel saw Node
+       12, and the DOM lib had been quietly covering for that gap the entire time. `/package.json`
+       already pins `typescript` for exactly this reason — so Vercel compiles with a known version —
+       and `@types/node` was the omission beside it; it is now pinned to the same 24.x the `engines`
+       field declares the functions run on. Do not remove it because "nothing imports it". */
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "skipLibCheck": true,
+
+    /* THE GATE THIS DIRECTORY NEVER HAD, and the reason this file is worth its length.
+
+       Vercel prints type errors through `console.error` and carries on building unless
+       `noEmitOnError` is set. So the original `.ts`-specifier bug printed EIGHTEEN TS5097 lines into
+       a deploy that reported success and then served 500s to every visitor: the compiler said the
+       specifier was invalid, the file tracer shipped the dependency under a different name, and
+       nothing in the pipeline compared those two statements. This line makes the next one a failed
+       build instead of a log line nobody reads.
+
+       It does mean an unrelated type error anywhere the functions import can fail a deploy. That is
+       the intent and it matches `er-demo/tsconfig.json`'s posture exactly — one tree, one answer —
+       and a deploy that fails loudly is the cheap end of this trade. The expensive end is what
+       happened here. */
+    "noEmitOnError": true
+  },
+
+  /* Scoped to this directory. The modules under `er-demo/` are pulled in as IMPORTS of the two entry
+     points and checked with these same options, which is the point; widening `include` to reach them
+     directly would only add the files nothing deploys. */
+  "include": ["**/*.ts"]
+}

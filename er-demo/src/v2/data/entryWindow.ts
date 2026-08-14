@@ -52,14 +52,22 @@
 //         transactionLogs:    undefined
 //     No logs. No `Error Code:` line. No name. THE HEX CODE IS THE ONLY SIGNAL THERE IS.
 //
-// That is why this module matches on the NUMBER as well as the name, and why `useActions.ts`'s
-// `isFightBehind` — which matches `Error Code: FightBehind` and nothing else — cannot fire on the
-// rollup path at all. Matching a number is exactly the thing that file's comment warns against
-// ("a client keyed on 6022 silently starts catching a different error the next time the program grows
-// one"), and the warning is right. The answer is not to match names we will never see; it is to stop
-// hard-coding the number: `enterErrorCodes()` reads name → code out of the IDL THAT WAS FETCHED AT
-// RUNTIME, which is a contract with the DEPLOYED program. A variant inserted above `NotInLobby` moves
-// the number in lib.rs, in the IDL, and here, together, with nothing to remember.
+// That is why this module matches on the NUMBER as well as the name. Matching a number is exactly
+// the thing `useActions.ts`'s comment warned against ("a client keyed on 6022 silently starts
+// catching a different error the next time the program grows one"), and the warning is right. The
+// answer is not to match names we will never see; it is to stop HARD-CODING the number:
+// `enterErrorCodes()` reads name → code out of the IDL THAT WAS FETCHED AT RUNTIME, which is a
+// contract with the DEPLOYED program. A variant inserted above `NotInLobby` moves the number in
+// lib.rs, in the IDL, and here, together, with nothing to remember.
+//
+// THIS PARAGRAPH USED TO END BY NAMING TWO CLASSIFIERS THAT COULD NOT FIRE ON THE ROLLUP AT ALL —
+// `useActions.ts`'s `isFightBehind` and `walletFault.ts`'s `SESSION_GONE`, both keyed on prose the
+// router does not send — and recorded it as a fact rather than as a defect. It was a defect: the
+// first is the page's whole answer to a fight behind the clock and the second is the whole of the
+// automatic session renewal, and both were dead in the only environment they run in. They now share
+// this module's matcher and this module's measurement, via `programError.ts`. What is left here is
+// the ENTRY vocabulary and the copy; what was general moved out. Nothing about the entry path
+// changed, and `entryWindow.test.ts` is what says so.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 //
 // ONE OBJECT, TWO TENSES, AND THAT IS THE WHOLE POINT OF PUTTING BOTH HALVES IN ONE FILE.
@@ -87,6 +95,12 @@ import { ENTRY_CLOSE_GUARD_MS, type PhaseName } from "../contract.ts";
 import { MAX_FIGHTERS } from "../../sim/erSim.ts";
 import { unattendedSigning } from "./autoPolicy.ts";
 import type { SigningPlan } from "./autoSession.ts";
+// THE MEASUREMENT ABOVE NOW LIVES IN `programError.ts`, AND SO DOES THE CODE THAT ACTS ON IT. This
+// module was where the rollup's wording was first written down, and then two other classifiers —
+// `useActions.ts`'s `isFightBehind` and `walletFault.ts`'s session check — turned out to need exactly
+// the same three anchored forms and exactly the same flattening. Three transcriptions of one devnet
+// capture is the shape of the bug this file's header describes, so there is one.
+import { errorCodeOf, errorText, failedWith } from "./programError.ts";
 
 /** WHY A DEPOSIT CANNOT LAND, in the only three terms `enter` can refuse one for a reason a player
  *  had no control over. Named after what is TRUE of the round, never after the Rust variant — the
@@ -288,58 +302,22 @@ const REFUSAL_BY_ERROR: ReadonlyArray<readonly [name: string, code: EntryRefusal
  *  Built from `loadIdl()`'s `errors` array rather than written down, because a hard-coded 6002 is a
  *  number that silently means something else after the next variant is inserted, while the IDL is
  *  fetched at runtime and cannot be ahead of the program it describes. An IDL with no `errors` array
- *  yields an empty map, and the matcher below degrades to name-only — which is the pre-rollup
- *  behaviour and refuses nothing that used to work. */
+ *  yields an empty map, and `failedWith` degrades to name-only — which is the pre-rollup behaviour
+ *  and refuses nothing that used to work.
+ *
+ *  STILL THREE NAMES AND NOT THE WHOLE TABLE, though `errorCodeOf` would happily read any of them.
+ *  This map is what `refusalFromProgramError` iterates, so its CONTENTS are the claim about which
+ *  failures this module rewrites — see the `0x1771` test in `entryWindow.test.ts` for what a wider
+ *  map would silently start claiming. `useActions.ts` resolves `FightBehind` separately for the same
+ *  reason: two questions, two lookups, neither able to answer the other by accident. */
 export function enterErrorCodes(errors: ReadonlyArray<{ name: string; code: number }> | undefined):
   ReadonlyMap<string, number> {
   const map = new Map<string, number>();
   for (const [errorName] of REFUSAL_BY_ERROR) {
-    const found = errors?.find((e) => e.name === errorName);
-    if (found !== undefined) map.set(errorName, found.code);
+    const code = errorCodeOf(errors, errorName);
+    if (code !== undefined) map.set(errorName, code);
   }
   return map;
-}
-
-/** Everything readable off a thrown chain error, flattened once.
- *
- *  FOUR FIELDS, AND EVERY ONE OF THEM REALLY ARRIVES. `@solana/web3.js`'s `SendTransactionError` puts
- *  the RPC's sentence in `transactionMessage` and the simulation logs in `transactionLogs`, and
- *  inlines the last ten log lines into `message`; `logs` is its own deprecated accessor for the same
- *  array, and is the field `useActions.ts`'s `isFightBehind` reads. On the ER path measured above,
- *  only `message`/`transactionMessage` are populated at all. Reading all four costs nothing and is
- *  the difference between working in a test and working in the browser. */
-function errorText(e: unknown): string {
-  if (typeof e === "string") return e;
-  if (e === null || e === undefined || typeof e !== "object") return "";
-  const o = e as { message?: unknown; transactionMessage?: unknown; logs?: unknown; transactionLogs?: unknown };
-  const parts: string[] = [];
-  for (const v of [o.message, o.transactionMessage]) if (typeof v === "string") parts.push(v);
-  for (const v of [o.logs, o.transactionLogs]) {
-    if (Array.isArray(v)) for (const l of v) if (typeof l === "string") parts.push(l);
-  }
-  return parts.join("\n");
-}
-
-/**
- * Did the chain refuse this `enter` for reason `errorName`?
- *
- * THREE ANCHORED FORMS, because the same refusal arrives written three different ways depending on
- * which layer answered — all three observed on devnet, none of them inferred:
- *
- *   `Error Code: NotInLobby.`      the Anchor log line. Base layer only; the router strips logs.
- *   `Error Number: 6002.`          the same log line's other half.
- *   `custom program error: 0x1772` the RPC's own sentence, and on the ROLLUP PATH THE ONLY ONE THERE
- *                                  IS. Lower-case hex, hence the case-insensitive match.
- *
- * Each is anchored to its surrounding phrase rather than matched bare: a loose `/6002/` would find a
- * lamport figure, a slot, or half a signature. `\b` on the name so a future `NotInLobbyYet` is not
- * read as this one — the same rule `isFightBehind` follows and for the same reason.
- */
-function refusedWith(text: string, errorName: string, code: number | undefined): boolean {
-  if (new RegExp(`Error Code: ${errorName}\\b`).test(text)) return true;
-  if (code === undefined) return false;
-  if (new RegExp(`Error Number: ${code}\\b`).test(text)) return true;
-  return new RegExp(`custom program error: 0x${code.toString(16)}\\b`, "i").test(text);
 }
 
 /**
@@ -359,7 +337,7 @@ export function refusalFromProgramError(
   const text = errorText(e);
   if (text === "") return null;
   for (const [errorName, code] of REFUSAL_BY_ERROR) {
-    if (refusedWith(text, errorName, codes.get(errorName))) return entryRefusalCopy(code, roundNo);
+    if (failedWith(text, errorName, codes.get(errorName))) return entryRefusalCopy(code, roundNo);
   }
   return null;
 }

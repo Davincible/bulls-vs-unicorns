@@ -14,8 +14,14 @@
 // decoder, makes no network call it did not initiate, and has nothing in it that could be pointed at
 // an internal host.
 
-import { handleAvatar } from "../../../er-demo/api/src/avatarHandler.ts";
-import { neonStore } from "../../../er-demo/api/src/neonStore.ts";
+// `.js` SPECIFIERS FOR `.ts` FILES — deliberate, and `api/links.ts` carries the full argument and the
+// three rejected alternatives. The short version: Vercel transpiles this function's dependencies to
+// `.js` without rewriting the specifiers that name them, so a `.ts` here is a module Node cannot find
+// at runtime. This route was broken in exactly the same way and by the same commit as `/api/links`,
+// which is worth knowing because nothing distinguished the two — there is no test that runs either
+// file, and there cannot be while they are the wiring that only Vercel executes.
+import { handleAvatar } from "../../../er-demo/api/src/avatarHandler.js";
+import { neonStore } from "../../../er-demo/api/src/neonStore.js";
 
 // Cold start, not per request — see `api/links.ts`.
 const store = neonStore(process.env);

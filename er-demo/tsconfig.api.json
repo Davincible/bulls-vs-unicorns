@@ -29,7 +29,24 @@
     "skipLibCheck": true,
 
     /* Bundler mode — matching tsconfig.app.json, because `.ts` extensions in relative imports are
-       the house style and the shared modules under src/v2/data/ are written that way. */
+       the house style and the shared modules under src/v2/data/ are written that way.
+
+       WITH ONE EXCEPTION, AND IT IS THE CODE THIS PROJECT EXISTS TO COVER. Every relative import in
+       the serverless graph — the two entry points under `../api`, the modules under `api/src` they
+       reach, and `src/v2/data/xLinkSign.ts` — now ends in `.js` instead. Not a drift and not a
+       preference: Vercel transpiles those files to `.js` WITHOUT rewriting the specifiers between
+       them, so a `.ts` extension there is a module that does not exist at runtime, and both routes
+       returned `ERR_MODULE_NOT_FOUND` on every request while this config type-checked them clean.
+       `api/links.ts`'s header has the evidence and the rejected alternatives.
+
+       BOTH SETTINGS BELOW ARE STILL LOAD-BEARING, which is the part that looks wrong at a glance.
+       `moduleResolution: "bundler"` is what resolves `./x.js` to `./x.ts` on disk — it is the reason
+       the fix is free rather than a build step. `allowImportingTsExtensions` still covers everything
+       under `api/src` that the tests import and every `.ts` specifier elsewhere in the two trees this
+       project includes; turning it off to force the new convention would take the app's own imports
+       down with it, since `../api` and `api` are checked by the same options. The convention is held
+       by `er-demo/api/README.md` and by the comments at the import sites, deliberately, because a
+       compiler flag cannot express "only the files Vercel deploys". */
     "module": "esnext",
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,

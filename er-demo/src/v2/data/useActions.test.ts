@@ -27,6 +27,7 @@ import {
 } from "./useActions.ts";
 import { MAX_STEPS_PER_CALL, finalCursor } from "../../chain/constants.ts";
 import { MAX_FIGHTERS } from "../../sim/erSim.ts";
+import { baseLayerError, routerError } from "./chainErrorShapes.ts";
 
 /** A press whose outcome the test decides, standing in for a wallet dialog. */
 function pending(): {
@@ -194,40 +195,81 @@ describe("recognising a fight the chain says is behind the clock", () => {
   // slightly worse sentence. `FightBehind` is the one the page ACTS on — it answers by sending a tick
   // and retrying the extract. A false positive spends the player's fees on a round that was never
   // behind; a false negative shows them "tick it first" and no tick button. Both are worth a test.
+  //
+  // AND THIS BLOCK USED TO PROVE THE WRONG THING, WHICH IS WORTH LEAVING ON THE RECORD RATHER THAN
+  // QUIETLY REWRITING. Its first case was titled "recognises the plain error the router surfaces" and
+  // handed the classifier an object carrying `logs` with an `Error Code: FightBehind` line in it. The
+  // router surfaces no such thing — `chainErrorShapes.ts`'s `routerError` is what it actually throws,
+  // and it has no logs at all. So the one test that claimed to cover production covered the base
+  // layer twice, and a classifier that could not fire on the rollup passed six green assertions. The
+  // fixtures below are the captured shapes; the titles now say which layer each one is.
 
-  it("recognises the plain error the router surfaces, with the name in the logs", () => {
-    expect(isFightBehind({
-      message: "failed to send transaction: custom program error: 0x1786",
-      logs: [
-        "Program ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe invoke [1]",
-        "Program log: AnchorError occurred. Error Code: FightBehind. Error Number: 6022. Error Message: the fight has not been advanced to the present — tick it first, then extract.",
-      ],
-    })).toBe(true);
+  /** The number the deployed program gives `FightBehind` today, straight out of
+   *  `public/idl/bulls_arena.json` — supplied here the way `useActions.ts` supplies it at runtime,
+   *  from the IDL, so this test exercises the real path rather than a literal the code never sees. */
+  const CODE = 6022;
+
+  it("reads the ROLLUP's hex code, which on that path is the only signal there is", () => {
+    // THE CASE THE WHOLE FIX EXISTS FOR. Every extract goes through the Magic Router into the ER
+    // (`chain/sendTx.ts`), and this is what comes back: no logs, no name, `0x1786`. Before this, the
+    // tick-and-retry below `isFightBehind`'s call site was unreachable in production.
+    expect(isFightBehind(routerError("0x1786"), CODE)).toBe(true);
+  });
+
+  it("reads the BASE layer's Anchor logs too, which must not regress", () => {
+    // Nothing a player does lands here while a round is delegated, but a round that has undelegated
+    // does, and so does every script under `scripts/`. Two layers, one classifier.
+    expect(isFightBehind(baseLayerError("FightBehind", CODE, "tick it first, then extract"), CODE)).toBe(true);
   });
 
   it("recognises it when the name is only in the message", () => {
-    expect(isFightBehind(new Error("Error Code: FightBehind. Error Number: 6022."))).toBe(true);
+    expect(isFightBehind(new Error("Error Code: FightBehind. Error Number: 6022."), CODE)).toBe(true);
   });
 
   it("does not answer to any OTHER program error, however similar the shape", () => {
     // `FightNotOverYet` is the near neighbour and the dangerous one: it is also about the fight's
     // progress, it is also raised on a payout path, and answering it with a tick-and-retry would be a
-    // client quietly grinding a fight in order to settle a round early.
-    for (const name of ["FightNotOverYet", "NotInFight", "RoundFull", "AlreadySwept"]) {
-      expect(isFightBehind({ logs: [`Program log: AnchorError occurred. Error Code: ${name}. Error Number: 6019.`] }), name)
-        .toBe(false);
+    // client quietly grinding a fight in order to settle a round early. Checked on BOTH layers, since
+    // a false positive on the rollup is the one nobody would see coming.
+    for (const [name, number] of [["FightNotOverYet", 6013], ["NotFighting", 6003], ["RoundFull", 6007]] as const) {
+      expect(isFightBehind(baseLayerError(name, number, "no"), CODE), name).toBe(false);
+      expect(isFightBehind(routerError(`0x${number.toString(16)}`), CODE), name).toBe(false);
     }
     // Matched on the whole name, not a prefix of it.
-    expect(isFightBehind(new Error("Error Code: FightBehindSomethingElse."))).toBe(false);
+    expect(isFightBehind(new Error("Error Code: FightBehindSomethingElse."), CODE)).toBe(false);
+  });
+
+  it("does not fire on a bare number that happens to appear in unrelated text", () => {
+    // The reason the hex form is anchored to `custom program error:` rather than matched loose. A
+    // signature, a slot or a lamport figure containing the digits must not send the page off to spend
+    // a player's fees ticking a fight that was never behind.
+    expect(isFightBehind(new Error("Transaction 3n1786Kq… failed after 6022 slots at height 1786"), CODE)).toBe(false);
+  });
+
+  it("falls back to the name when the IDL could not be read at all", () => {
+    // `fightBehindCode()` resolves to `undefined` rather than throwing when `loadIdl()` fails. That
+    // must cost the base layer nothing — it is byte-for-byte the behaviour this function had before
+    // the rollup was accounted for — and it must give up HONESTLY on the rollup shape rather than
+    // guessing whatever sits at index 22 today.
+    expect(isFightBehind(baseLayerError("FightBehind", CODE, "tick it first"), undefined)).toBe(true);
+    expect(isFightBehind(routerError("0x1786"), undefined)).toBe(false);
+  });
+
+  it("follows the IDL rather than a number written down here", () => {
+    // THE POINT OF PASSING THE CODE IN. A variant inserted above `FightBehind` renumbers it in
+    // lib.rs, in the IDL and in the argument together — so a page running against that deploy answers
+    // its new number and stops answering the old one, with nothing for anybody to remember.
+    expect(isFightBehind(routerError("0x1787"), 6023)).toBe(true);
+    expect(isFightBehind(routerError("0x1786"), 6023)).toBe(false);
   });
 
   it("reads a thrown string too, since not everything that throws builds an Error", () => {
-    expect(isFightBehind("Error Code: FightBehind. Error Number: 6022.")).toBe(true);
+    expect(isFightBehind("Error Code: FightBehind. Error Number: 6022.", CODE)).toBe(true);
   });
 
   it("survives every shape a thrown value can take without a name in it", () => {
     for (const junk of [null, undefined, "", "FightBehind", 6022, {}, new Error(""), { logs: null }]) {
-      expect(isFightBehind(junk), String(junk)).toBe(false);
+      expect(isFightBehind(junk, CODE), String(junk)).toBe(false);
     }
   });
 });

@@ -8,9 +8,9 @@
 // Importing the client's own module means the round-trip test in `attest.test.ts` is a genuine proof
 // that the two halves agree, rather than a proof that two copies of my own opinion agree.
 
-import { avatarPathFor, type LinkAttestation } from "../../src/v2/data/xLink.ts";
-import { signAttestation, type AttestationKey } from "../../src/v2/data/xLinkSign.ts";
-import type { LinkRow } from "./store.ts";
+import { avatarPathFor, type LinkAttestation } from "../../src/v2/data/xLink.js";
+import { signAttestation, type AttestationKey } from "../../src/v2/data/xLinkSign.js";
+import type { LinkRow } from "./store.js";
 
 /**
  * Sign one row.

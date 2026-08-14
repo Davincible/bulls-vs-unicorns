@@ -505,8 +505,22 @@ function isNumberArray(v: unknown): v is number[] {
  *
  *  `as const` IS LOAD-BEARING, NOT STYLE. Without it this is a `string[]`, `NotOpeningReason` widens
  *  to `string`, and every compile-time check in this file that depends on the vocabulary being closed
- *  — the writer's call sites, the parser's return type — silently stops checking anything. */
-const NOT_OPENING_REASONS = ["low-balance", "rent-not-reclaimed", "rent-not-swept"] as const;
+ *  — the writer's call sites, the parser's return type — silently stops checking anything.
+ *
+ *  EXPORTED FOR THE TWO LOOPS THAT PARAMETRISE THEMSELVES OVER IT, and that is the entire reason —
+ *  no production caller outside this module reads it, and none needs to, since a reader gets the
+ *  vocabulary already enforced by `parseKeeperStatus` and the guard below it. The two are the
+ *  serialized-byte anonymity sweep in `scripts/keeper/statusFile.test.ts`, which publishes each reason
+ *  with the house-only mode on and checks the bytes identify no wallet the arena owns, and the parser
+ *  round-trip in `keeperStatus.test.ts`. Both used to hold their own copy of these three strings,
+ *  which meant a fourth reason added HERE would be emitted by the writer, accepted by the parser,
+ *  swept by nothing and round-tripped by nothing — with no test failing anywhere to say so, because a
+ *  loop over a stale copy does not break, it just runs three times. Adding a reason is now one edit
+ *  here rather than that edit plus two nobody is prompted to make. It does not make the vocabulary
+ *  self-certifying: `keeperStatus.test.ts`'s "rejects a reason outside the vocabulary" test still pins
+ *  membership with literals written independently of this tuple, which is where an assertion ABOUT
+ *  the list belongs — as opposed to one merely parametrised BY it, which is all these two are. */
+export const NOT_OPENING_REASONS = ["low-balance", "rent-not-reclaimed", "rent-not-swept"] as const;
 
 /** Checked against the closed vocabulary rather than merely `isString`, and the difference decides
  *  what the page says. An unrecognised reason is a writer this reader does not understand — a newer

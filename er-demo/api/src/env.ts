@@ -12,7 +12,7 @@
 // start rather than inside a request. Vercel surfaces that as a function-level error with the
 // message intact.
 
-import { attestationKeyFrom, type AttestationKey } from "../../src/v2/data/xLinkSign.ts";
+import { attestationKeyFrom, type AttestationKey } from "../../src/v2/data/xLinkSign.js";
 import { PublicKey } from "@solana/web3.js";
 
 /** The 32-byte ed25519 secret that signs attestations. Generated offline by

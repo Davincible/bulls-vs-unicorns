@@ -12,11 +12,20 @@
 
 import { ed25519 } from "@noble/curves/ed25519";
 import { PublicKey } from "@solana/web3.js";
+// `./xLink.js` NAMES `./xLink.ts`, AND THIS IS THE ONLY FILE UNDER `src/` THAT WRITES AN IMPORT THAT
+// WAY. It looks like a mistake next to `XAvatar.tsx` and `LeaderboardView.tsx`, which import the very
+// same module as `../data/xLink.ts` and are correct to. The difference is the paragraph at the top of
+// this file: `xLink.ts` is verified in the browser, `xLinkSign.ts` is never imported by the bundle at
+// all — its only callers are `api/src/env.ts`, `api/src/attest.ts` and `scripts/xlink-keygen.ts`, so
+// this module ships inside the Vercel function, where the file beside it at runtime is `xLink.js` and
+// a `.ts` specifier is `ERR_MODULE_NOT_FOUND`. See `api/links.ts` for why, and note the pleasant
+// consequence: if this import ever needs to say `.ts` again, that means something in the browser
+// bundle started importing the signer, which is the one thing this file was split out to prevent.
 import {
   ATTESTATION_TTL_SECONDS,
   canonicalBytes,
   type LinkAttestation,
-} from "./xLink.ts";
+} from "./xLink.js";
 
 /** Everything an attestation says except the parts the signer decides. */
 export interface AttestationPayload {

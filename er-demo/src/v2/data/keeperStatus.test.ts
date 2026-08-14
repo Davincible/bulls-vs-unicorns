@@ -27,6 +27,7 @@ import { describe, expect, it } from "vitest";
 import { PHASE_NAME } from "../../chain/constants.ts";
 import {
   KEEPER_STATUS_SCHEMA,
+  NOT_OPENING_REASONS,
   isKeeperOutOfFunds,
   isKeeperStale,
   isKeeperStalled,
@@ -35,6 +36,7 @@ import {
   type KeeperPhaseName,
   type KeeperRoundStatus,
   type KeeperStatus,
+  type NotOpeningReason,
 } from "./keeperStatus.ts";
 
 /** A fixed unix SECOND to hang every fixture off, so no test depends on when it was run. */
@@ -667,10 +669,12 @@ describe("keeperCountdown while the keeper is not opening rounds", () => {
     // THE LIST GREW AND THE ASSERTION DID NOT CHANGE, which is the property being demonstrated. A
     // third cause was added to the vocabulary and this test needed one more literal and no new
     // branch — whereas the schema-4 arrangement, where the countdown read `lowBalance` directly,
-    // would have needed a second detail block checked at every call site.
+    // would have needed a second detail block checked at every call site. The fourth will need
+    // neither, the literal included: the loop is parametrised over `NOT_OPENING_REASONS` itself, so
+    // "every reason" stays true of whatever the vocabulary is rather than of what it was.
     const settled = { ...BASE, round: round({ ...inPhase("Settled") }), nextLobbyOpensAt: NOW + 8 };
     expect(keeperCountdown(settled, NOW)).toEqual({ kind: "next-lobby", seconds: 8 });
-    for (const reason of ["low-balance", "rent-not-reclaimed", "rent-not-swept"] as const) {
+    for (const reason of NOT_OPENING_REASONS) {
       const stopped = { ...settled, keeper: { ...settled.keeper, notOpeningRounds: reason } };
       expect(keeperCountdown(stopped, NOW), reason).toEqual({ kind: "none" });
     }
@@ -718,8 +722,14 @@ describe("keeperCountdown while the keeper is not opening rounds", () => {
 
 describe("parsing the schema-6 fields", () => {
   it("carries the reason through as an explicit null and as each word of the vocabulary", () => {
+    // EACH WORD, taken from `NOT_OPENING_REASONS` rather than copied out of it. The writer emits
+    // whatever is in that tuple; a copy here would go on round-tripping the three it was written with
+    // while the parser quietly stopped being checked against the fourth — and the parser refusing an
+    // unrecognised reason takes the WHOLE file to null, which the page draws as "keeper is down"
+    // about a keeper that is running and has just said why it stopped. That is this module's worst
+    // failure mode, and it is the one a stale copy here would leave unguarded.
     expect(parseKeeperStatus(rawStatus())!.keeper.notOpeningRounds).toBeNull();
-    for (const reason of ["low-balance", "rent-not-reclaimed", "rent-not-swept"] as const) {
+    for (const reason of NOT_OPENING_REASONS) {
       const raw = rawStatus();
       (raw.keeper as Record<string, unknown>).notOpeningRounds = reason;
       expect(parseKeeperStatus(raw)!.keeper.notOpeningRounds, reason).toBe(reason);
@@ -759,6 +769,34 @@ describe("parsing the schema-6 fields", () => {
       (raw.keeper as Record<string, unknown>).notOpeningRounds = bad;
       expect(parseKeeperStatus(raw), JSON.stringify(bad)).toBeNull();
     }
+  });
+
+  it("keeps the vocabulary CLOSED at the type level, which only `as const` is doing", () => {
+    // THIS ASSERTION WAS BELIEVED TO EXIST AND DID NOT, which is the reason it is worth its length.
+    // `NOT_OPENING_REASONS`'s own comment calls `as const` "load-bearing, not style" — correctly:
+    // without it the tuple is `string[]`, `NotOpeningReason` widens to `string`, and every
+    // compile-time check that depends on the vocabulary being closed silently stops checking. The
+    // writer's `setNotOpeningRounds` would accept any string, and `statusFile.ts`'s anonymity rule —
+    // which rests entirely on this field being a closed vocabulary with NO INTERPOLATED INPUT — would
+    // become an unenforced convention rather than a type.
+    //
+    // AND NOTHING WOULD HAVE GONE RED. Measured rather than assumed: with `as const` removed,
+    // `tsc -b --force` is clean and every runtime test in this file and in `statusFile.test.ts`
+    // passes, because `isNotOpeningReason` is a `.includes` call that cannot see a type and the
+    // rejection test above feeds it literals that are not members either way. The guarantee was
+    // resting on a comment.
+    //
+    // HOW THIS LINE WORKS, since `@ts-expect-error` is the only one of its kind in this codebase and
+    // a reader deleting it should know what they are deleting: the directive REQUIRES the next line
+    // to fail type-checking. While the vocabulary is closed, assigning a bare string to
+    // `NotOpeningReason` is an error and the directive is satisfied. Drop the `as const` and the
+    // assignment becomes legal, the directive has nothing to suppress, and `tsc -b` fails HERE with
+    // "unused '@ts-expect-error' directive" — at the guard, naming the thing that broke.
+    // @ts-expect-error — a bare string is not a `NotOpeningReason`, and that is the whole assertion.
+    const notAReason: NotOpeningReason = "keeper got bored";
+    // The runtime half, so this is not purely a compiler artefact: whatever the type says, the string
+    // above is genuinely outside the vocabulary the parser and the writer share.
+    expect(NOT_OPENING_REASONS as readonly string[]).not.toContain(notAReason);
   });
 
   it("rejects a mode flag that is not a boolean", () => {

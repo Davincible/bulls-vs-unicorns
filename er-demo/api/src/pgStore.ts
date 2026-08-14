@@ -16,7 +16,7 @@
 // returning `int8` as a string instead of a number (which is exactly what the HTTP driver does) must
 // produce a loud failure at the seam and not a `NaN` three layers away.
 
-import type { AvatarBytes, IngestTarget, LinkRow, LinkStore } from "./store.ts";
+import type { AvatarBytes, IngestTarget, LinkRow, LinkStore } from "./store.js";
 
 export type SqlRow = Record<string, unknown>;
 

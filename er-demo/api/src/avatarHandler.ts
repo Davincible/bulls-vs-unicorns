@@ -18,8 +18,8 @@
 // identically — §7.3's failure ladder is the flat side-coloured disc on every rung — so there is
 // nothing to gain from being more specific and an information leak to lose.
 
-import type { LinkStore } from "./store.ts";
-import { isReservedXId, RESERVED_MOCK_X_IDS } from "./reserved.ts";
+import type { LinkStore } from "./store.js";
+import { isReservedXId, RESERVED_MOCK_X_IDS } from "./reserved.js";
 
 export interface AvatarDeps {
   readonly store: LinkStore;

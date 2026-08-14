@@ -1,12 +1,17 @@
 // THE ERROR SHAPES HERE ARE MEASURED, NOT INVENTED, and that is what makes this file worth having.
 //
-// Each `SendTransactionError`-alike below was captured by sending a doomed `enter` at the deployed
-// program on devnet (v8, ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe) and printing the thrown
-// object — once against the base layer, once through the Magic Router into the ER, which is the path
-// every real deposit takes. They differ in the one way that decides how this module can possibly
-// work: the base layer returns Anchor's logs and therefore the error's NAME, and the rollup returns
-// no logs at all and nothing but a hex code. A test written against hand-typed strings would have
-// passed for a classifier that only ever worked on the layer players never touch.
+// Each `SendTransactionError`-alike was captured by sending a doomed `enter` at the deployed program
+// on devnet (v8, ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe) and printing the thrown object — once
+// against the base layer, once through the Magic Router into the ER, which is the path every real
+// deposit takes. They differ in the one way that decides how this module can possibly work: the base
+// layer returns Anchor's logs and therefore the error's NAME, and the rollup returns no logs at all
+// and nothing but a hex code. A test written against hand-typed strings would have passed for a
+// classifier that only ever worked on the layer players never touch.
+//
+// THE TWO BUILDERS MOVED OUT, to `chainErrorShapes.ts`, and that module's header argues why at
+// length. Short version: they stopped being this file's fixtures the moment two more classifiers
+// turned out to need them, and three hand-copies of one capture is the same defect this file's
+// paragraph above is about, with more places to make it.
 
 import { describe, expect, it } from "vitest";
 import { ENTRY_CLOSE_GUARD_MS } from "../contract.ts";
@@ -24,6 +29,7 @@ import {
   type EntryWindow,
 } from "./entryWindow.ts";
 import { classifyWalletError } from "./walletFault.ts";
+import { baseLayerError, routerError } from "./chainErrorShapes.ts";
 
 /** The deployed program's numbers, straight out of `public/idl/bulls_arena.json`. Written as the IDL
  *  shape rather than as a map so the test exercises `enterErrorCodes` the way the app does. */
@@ -40,47 +46,6 @@ const NOW = 1_700_000_000_000;
 
 function lobby(over: Partial<EntryWindow> = {}): EntryWindow {
   return { roundNo: 42n, phase: "Lobby", lobbyClosesAtMs: NOW + 60_000, fighterCount: 3, ...over };
-}
-
-/**
- * WHAT THE MAGIC ROUTER ACTUALLY THROWS — no logs, no name, one hex code, captured verbatim.
- *
- * `transactionLogs` is `undefined` and not `[]`: the router's JSON-RPC error carries no `data.logs`
- * at all, so web3.js's `SendTransactionError` constructor never gets an array to hold. That is the
- * single most load-bearing fact in this module.
- */
-function routerError(hex: string) {
-  const e = new Error(
-    "Simulation failed. \nMessage: solana rpc request error: RPC response error -32003: " +
-      `transaction verification error: Error processing Instruction 0: custom program error: ${hex}; . ` +
-      "\n\nCatch the `SendTransactionError` and call `getLogs()` on it for full details.",
-  ) as Error & { transactionMessage?: string; transactionLogs?: string[]; signature?: string };
-  e.name = "SendTransactionError";
-  e.signature = "";
-  e.transactionMessage =
-    "solana rpc request error: RPC response error -32003: transaction verification error: " +
-    `Error processing Instruction 0: custom program error: ${hex}; `;
-  e.transactionLogs = undefined;
-  return e;
-}
-
-/** What the BASE layer throws for the same refusal: the same wrapper, with Anchor's logs intact. */
-function baseLayerError(name: string, number: number, msg: string) {
-  const logs = [
-    "Program ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe invoke [1]",
-    "Program log: Instruction: Enter",
-    `Program log: AnchorError thrown in programs/bulls-arena/src/lib.rs:1557. Error Code: ${name}. ` +
-      `Error Number: ${number}. Error Message: ${msg}.`,
-    "Program ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe consumed 7695 of 200000 compute units",
-    `Program ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe failed: custom program error: 0x${number.toString(16)}`,
-  ];
-  const e = new Error(`Simulation failed. \nMessage: Transaction simulation failed. \nLogs: \n${JSON.stringify(logs)}. `) as
-    Error & { transactionMessage?: string; transactionLogs?: string[] };
-  e.name = "SendTransactionError";
-  e.transactionMessage = "Transaction simulation failed: Error processing Instruction 0: custom program error: 0x" +
-    number.toString(16);
-  e.transactionLogs = logs;
-  return e;
 }
 
 // ---------------------------------------------------------------------------------------------

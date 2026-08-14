@@ -9,9 +9,9 @@
 // imports it — there is nothing here to test that is not the driver's own job.
 
 import { neon } from "@neondatabase/serverless";
-import { createPgStore, type SqlQuery } from "./pgStore.ts";
-import { requireDatabaseUrl } from "./env.ts";
-import type { LinkStore } from "./store.ts";
+import { createPgStore, type SqlQuery } from "./pgStore.js";
+import { requireDatabaseUrl } from "./env.js";
+import type { LinkStore } from "./store.js";
 
 /** THE CAST, and it is the only one in this directory.
  *

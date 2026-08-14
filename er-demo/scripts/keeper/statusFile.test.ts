@@ -29,7 +29,7 @@ import { BN } from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
 import { PHASE_NAME, Phase } from "../../src/chain/constants.ts";
 import {
-  KEEPER_STATUS_SCHEMA, parseKeeperStatus, type KeeperRoundStatus,
+  KEEPER_STATUS_SCHEMA, NOT_OPENING_REASONS, parseKeeperStatus, type KeeperRoundStatus,
 } from "../../src/v2/data/keeperStatus.ts";
 import {
   createStatusPublisher, honestEntriesCloseAt, honestNextLobbyOpensAt, roundStatusFrom,
@@ -450,10 +450,30 @@ describe("the published status identifies none of the arena's own wallets", () =
 
   // EVERY REASON, NOT A REPRESENTATIVE ONE. The sweep below is over serialized BYTES precisely
   // because it catches leaks arriving through a field nobody thought to check, and "nobody thought to
-  // check it" is the state of every reason that was not the one the test happened to name. Kept as a
-  // literal list rather than imported: `NOT_OPENING_REASONS` is private to `keeperStatus.ts`, and a
-  // test that reads the same list the code reads asserts only that one list equals itself.
-  for (const reason of ["low-balance", "rent-not-reclaimed", "rent-not-swept"] as const) {
+  // check it" is the state of every reason that was not the one the test happened to name.
+  //
+  // IMPORTED NOW, REVERSING WHAT THIS COMMENT USED TO ARGUE — recorded rather than quietly deleted,
+  // because the old argument is a good one and somebody will reach for it again. It ran: keep the
+  // list literal, since `NOT_OPENING_REASONS` was private to `keeperStatus.ts` and "a test that reads
+  // the same list the code reads asserts only that one list equals itself". That objection is sound,
+  // and remains sound, for a test whose SUBJECT is the vocabulary — comparing the list to itself
+  // proves nothing about which strings belong in it. It was wrong here because this loop's subject is
+  // not the vocabulary. The tuple is the PARAMETER, not the claim: the assertion is not "these three
+  // strings are the reasons", it is "for every reason the writer can emit, the serialized bytes
+  // identify no wallet the arena owns" — a property swept once per reason, and a local copy answers
+  // "every reason the writer can emit" with whatever somebody typed the day they wrote it. The
+  // fourth reason's sweep would then not FAIL, it would not exist: the loop runs three times, every
+  // test in the file stays green, and the byte-level check silently stops covering the newest field
+  // in the payload. That is the worst shape a coverage gap can take, and `notOpeningRounds` is the
+  // field most likely to grow one — `"rent-not-swept"` is already emitted on an ON-CHAIN OBSERVATION
+  // (`statusFile.ts`'s header on the anonymity rule, and the case comment below), which is precisely
+  // the kind of reason that arrives next and precisely the kind this sweep exists to check.
+  //
+  // MEMBERSHIP IS STILL ASSERTED, JUST NOT FROM THIS LIST. `keeperStatus.test.ts`'s "rejects a reason
+  // outside the vocabulary" test feeds the parser strings the tuple does not contain — `"unknown"`,
+  // `"low_balance"`, `"rent-not-reclaimed "` with the trailing space — so the closed vocabulary is
+  // pinned by literals written independently of it. Importing it here makes nothing self-certifying.
+  for (const reason of NOT_OPENING_REASONS) {
     it(`publishes nothing identifying with the house-only mode ON and the keeper stopped: ${reason}`, () => {
       // THE CASE THAT PROVES THE DISCLOSURE DID NOT SMUGGLE ANYTHING IN BEHIND IT. Schema 6 puts a
       // field with "house" in its name into a payload that was emptied of the house on purpose, and

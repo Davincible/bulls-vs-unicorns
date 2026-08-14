@@ -45,6 +45,11 @@
 // fact read from OUR devnet RPC and cannot be affected by Phantom's setting at all).
 // ------------------------------------------------------------------------------------------------
 
+// THE ONE IMPORT, AND IT IS NOT A BREACH OF THE RULE ABOVE. `programError.ts` is as pure as this
+// module and paraphrases nothing — it only knows how to READ what the two layers throw, which is a
+// job this file was already doing badly on one of them. See `SESSION_INVALID_TOKEN_CODE` below.
+import { failedWith } from "./programError.ts";
+
 /** @see classifyWalletError for what each one is inferred from. */
 export type WalletFaultCode =
   | "not-installed"
@@ -132,7 +137,55 @@ const BARE_WALLET_ERROR = /^wallet\w*error$/i;
  * program error, and swallowing those into a network advisory would hide the actual answer.
  */
 const WRONG_NETWORK = /blockhash not found|could not find blockhash|unknown blockhash|block height exceeded|transaction (has )?expired/i;
+/**
+ * THE WORDINGS. These are the SDK's and the adapter's own strings — a gum error, a hand-built
+ * `SessionTokenNotFound`, Anchor's `ConstraintSeeds` on the session account — and they are worth
+ * keeping because they arrive from code paths that never touch the chain at all.
+ *
+ * THEY ARE NO LONGER THE WHOLE ANSWER, AND FOR A WHILE THEY WERE, WHICH MADE THIS DEAD CODE WHERE IT
+ * MATTERED MOST. Every one of them is PROSE, and the only layer that sends prose is the base layer.
+ * A session-signed `enter` or `extract` runs in the Ephemeral Rollup — every live round is delegated
+ * — and the rollup answers with `custom program error: 0x1771` and nothing else: no logs, no
+ * `Error Code:` line, no name (`programError.ts`'s header carries the capture). So the chain's own
+ * authoritative "this session is finished" signal, which is the one `autoSession.ts`'s `afterRefusal`
+ * is built on, matched nothing in production. A lapsed session mid-fight did not renew itself and
+ * re-send the move as designed; it put a raw hex string in a red toast.
+ */
 const SESSION_GONE = /session.{0,40}(expired|invalid)|invalidtoken|sessiontokennotfound|constraintseeds.{0,40}session/i;
+/**
+ * `SessionError::InvalidToken`'s NUMBER, which is what the rollup actually sends.
+ *
+ * PROVENANCE, BECAUSE A WRITTEN-DOWN ERROR NUMBER IS THE THING THIS REPO KEEPS REFUSING TO DO. It is
+ * the second variant of `SessionError` in session-keys 3.1.1
+ * (`~/.cargo/registry/.../session-keys-3.1.1/src/lib.rs`, `ValidityTooLong` then `InvalidToken`), and
+ * `#[error_code]` numbers from 6000 — so 6001, and `0x1771` on the wire. The version is pinned at
+ * `programs/bulls-arena/Cargo.toml:52`.
+ *
+ * WHY IT IS A LITERAL AND NOT AN IDL LOOKUP, unlike every other number this page matches.
+ * `entryWindow.ts` and `useActions.ts` read theirs out of the runtime-fetched IDL so a renumbered
+ * variant moves both sides together — but this error does not belong to our program. It belongs to
+ * the session-keys CRATE, is returned from inside our program by the `#[session_auth_or]` macro, and
+ * therefore appears in NEITHER our IDL nor our error table. There is nothing to look it up in. What
+ * pins it instead is `walletFault.test.ts`, which reads gum-sdk's own `gpl_session.json` and fails if
+ * that number ever moves — the closest thing to the Rust enum that JavaScript can reach.
+ *
+ * AND 6001 IS AMBIGUOUS IN GENERAL — JUST NOT HERE, WHICH IS THE WHOLE ARGUMENT.
+ * `ArenaError::RoundOutOfOrder` is ALSO 6001 and `0x1771` from the same program id, so on the wire
+ * the two are genuinely indistinguishable — the repo root's `MAGICBLOCK_FEEDBACK.md` reports this
+ * upstream, and `entryWindow.test.ts`'s `0x1771` case refuses to guess between them. This module can
+ * guess, because it only ever sees errors from a BROWSER, and a browser sends exactly three
+ * instructions. Every named import this bundle takes from `chain/round.ts` is `enter`, `extract`,
+ * `tick` and three PDA helpers, across four files (`useActions.ts`, `ui/EnterForm.tsx`,
+ * `ui/ExtractButton.tsx`, `chain/useFightTicker.ts`) — nothing else. `RoundOutOfOrder` is raised in
+ * one place, `open_round` (lib.rs:1558), which is authority-only and which nothing under `src/`
+ * builds. So on this path `0x1771` can only be a session token the chain has refused.
+ *
+ * THAT IS AN ARGUMENT ABOUT A CALLER, AND A TEST HOLDS IT UP: `walletFault.test.ts` asserts that no
+ * browser module imports an authority instruction builder. If somebody ever adds an admin panel to
+ * this bundle, that test fails and points here rather than silently telling an operator their session
+ * expired when the round counter was out of step.
+ */
+export const SESSION_INVALID_TOKEN_CODE = 6001;
 
 /** Everything readable off an unknown throw, flattened once so the matchers below read plainly.
  *
@@ -234,7 +287,12 @@ export function classifyWalletError(e: unknown): WalletFault {
     };
   }
 
-  if (SESSION_GONE.test(text)) {
+  // BOTH LAYERS, ONE VERDICT. `failedWith` covers `Error Code: InvalidToken` (base layer, where
+  // Anchor's logs survive), `Error Number: 6001`, and `custom program error: 0x1771` — which is the
+  // ONLY form the rollup sends and therefore the only one that fires where players actually are. The
+  // prose patterns stay ahead of it because they also catch failures that never reached the chain at
+  // all (a gum SDK error, a `SessionTokenNotFound` this app built itself); neither test is redundant.
+  if (SESSION_GONE.test(text) || failedWith(text, "InvalidToken", SESSION_INVALID_TOKEN_CODE)) {
     return {
       code: "session-expired",
       // THE WORDS A PLAYER READS ONLY WHEN THE AUTOMATIC RECOVERY ALSO FAILED. A refused

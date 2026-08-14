@@ -91,6 +91,7 @@ import {
 import { extractEligibility } from "./extractTerms.ts";
 import { NO_WALLET_MESSAGE } from "./identity.ts";
 import type { PlayBlock } from "./playGate.ts";
+import { errorCodeOf, errorText, failedWith } from "./programError.ts";
 import type { ArenaContextValue, ToastKind } from "./types.ts";
 import { classifyWalletError } from "./walletFault.ts";
 
@@ -144,29 +145,43 @@ export const STOPPED_WAITING = "StoppedWaiting";
  *  already moved once. */
 export const CATCH_UP_CALLS = Math.ceil(finalCursor(MAX_FIGHTERS) / MAX_STEPS_PER_CALL);
 
-/** Did the program refuse this because the fight is behind the clock? See the call site in `extract`.
+/**
+ * Did the program refuse this because the fight is behind the clock? See the call site in `extract`.
  *
- *  MATCHED BY NAME, NEVER BY NUMBER — the same rule `scripts/keeper/log.ts#failedWith` follows, and
- *  for the same reason: `#[error_code]` numbers start at 6000 and shift whenever a variant is
- *  inserted above, so a client keyed on `6022` silently starts catching a different error the next
- *  time the program grows one. The name is stable in a way the index is not.
+ * THIS USED TO BE `/Error Code: FightBehind\b/` AND NOTHING ELSE, AND THAT MADE IT DEAD CODE ON THE
+ * ONLY PATH IT RUNS ON. The argument for name-only was sound as far as it went — `#[error_code]`
+ * numbers start at 6000 and shift whenever a variant is inserted above, so a client with `6022`
+ * written into it silently starts catching a different error the next time the program grows one, and
+ * `scripts/keeper/log.ts` follows the same rule for the same reason. What it missed is WHERE this
+ * runs. Every extract goes through `ConnectionMagicRouter` into the ER (`chain/sendTx.ts`), and the
+ * rollup answers a refusal with `custom program error: 0x1786` — no logs, no `Error Code:` line, no
+ * name at all. See `programError.ts`'s header for the devnet capture. So the branch below this one —
+ * the tick-and-retry that is the page's entire answer to a fight nobody has been ticking — could not
+ * be reached in production, while its tests, every one of them written out of base-layer strings,
+ * went on passing. That is the defect, and the tests were half of it.
  *
- *  BOTH SHAPES ARE CHECKED because both really arrive. Anchor throws a typed `AnchorError` when it
- *  can parse the simulation logs; a failure that surfaces through the Magic Router instead arrives as
- *  a plain error carrying the raw `logs`, which is where the `Error Code:` line lives. Checking only
- *  the typed one would make this work in tests and not in the browser. */
-export function isFightBehind(e: unknown): boolean {
+ * THE FIX IS NOT TO MATCH THE NUMBER; IT IS TO STOP WRITING THE NUMBER DOWN. `code` comes from
+ * `fightBehindCode()` below, which reads it out of the IDL FETCHED AT RUNTIME — a contract with the
+ * deployed program rather than a memory of one. A variant inserted above `FightBehind` moves the
+ * number in lib.rs, in the IDL and here together. `undefined` (no IDL, no `errors` array) degrades to
+ * the name alone, which is exactly the behaviour this function used to have and refuses nothing that
+ * used to work.
+ *
+ * A PARAMETER RATHER THAN AN `await` INSIDE, so this stays pure and synchronous — a plain Node test
+ * can call it, which is the discipline `entryWindow.ts` and `walletFault.ts` are held to and the only
+ * reason a classifier in this codebase is testable at all. It also keeps the happy path untouched:
+ * the call site resolves the code only after something has already failed.
+ *
+ * THE TYPED CHECK STAYS FIRST AND IS NOT REDUNDANT. Anchor builds an `AnchorError` when it can parse
+ * simulation logs, which is the base layer and the scripts under `scripts/`; the text match covers
+ * everything else. Both really arrive, so both are checked.
+ */
+export function isFightBehind(e: unknown, code: number | undefined): boolean {
   if (e instanceof AnchorError && e.error.errorCode.code === "FightBehind") return true;
-  if (typeof e === "string") return FIGHT_BEHIND.test(e);
-  const thrown = e as { logs?: unknown; message?: unknown };
-  const logs = Array.isArray(thrown?.logs) ? thrown.logs.join("\n") : "";
-  const message = typeof thrown?.message === "string" ? thrown.message : "";
-  return FIGHT_BEHIND.test(`${logs}\n${message}`);
+  // `\b` inside `failedWith` so the match is the whole variant name: a future `FightBehindBy` would
+  // otherwise be read as this one, and the page would answer it by grinding the fight.
+  return failedWith(errorText(e), "FightBehind", code);
 }
-
-/** `\b` so the match is the whole variant name: a future `FightBehindBy` would otherwise be read as
- *  this one, and the page would answer it by grinding the fight. */
-const FIGHT_BEHIND = /Error Code: FightBehind\b/;
 
 export function isStoppedWaiting(e: unknown): boolean {
   return e instanceof Error && e.name === STOPPED_WAITING;
@@ -189,6 +204,26 @@ function enterCodes(): Promise<ReadonlyMap<string, number>> {
     .then((idl) => enterErrorCodes(idl.errors))
     .catch(() => enterErrorCodes(undefined));
   return enterCodesCache;
+}
+
+/** `FightBehind`'s number on THIS deploy, resolved the same way and on the same terms as the three
+ *  above — and deliberately not folded into that map.
+ *
+ *  ONE CACHE PER QUESTION, NOT ONE CACHE. Widening `enterCodes()` to carry a fourth name would cost
+ *  nothing at the fetch (`loadIdl()` is itself cached, so this is a second `.then` over a resolved
+ *  promise and a microtask) and would quietly change what `refusalFromProgramError` claims: that
+ *  function ITERATES the map it is handed, so every name in it is a failure this page rewrites into
+ *  entry copy. `entryWindow.test.ts`'s `0x1771` case is the standing assertion about what belongs in
+ *  there. An extract that is behind the clock is not an entry refusal and must never be worded as one.
+ *
+ *  A FAILURE TO READ THE IDL IS NOT A FAILURE TO REPORT THE ERROR — `undefined`, and `isFightBehind`
+ *  falls back to the name, which is what this page did before the rollup. */
+let fightBehindCodeCache: Promise<number | undefined> | null = null;
+function fightBehindCode(): Promise<number | undefined> {
+  fightBehindCodeCache ??= loadIdl()
+    .then((idl) => errorCodeOf(idl.errors, "FightBehind"))
+    .catch(() => undefined);
+  return fightBehindCodeCache;
 }
 
 /**
@@ -601,7 +636,16 @@ export function useActions(params: ActionsParams): WriteActions {
           try {
             return await sendExtract();
           } catch (e) {
-            if (caught >= CATCH_UP_CALLS || !isFightBehind(e)) throw e;
+            // `await` INSIDE THE CATCH, NOT BEFORE THE LOOP, so the happy path never waits on the
+            // IDL at all — the same rule `enterCodes()` follows and states. By the time this runs a
+            // send has already failed, so a microtask over an already-resolved promise is free.
+            //
+            // AND IT CANNOT SWALLOW `e`. Awaiting inside a `catch` is normally a way to lose the
+            // error you were handling — a rejection here would replace it and the player would be
+            // shown the IDL fetch instead of the chain's refusal. `fightBehindCode()` ends in
+            // `.catch(() => undefined)`, so it has no rejected state to hand back. That `.catch` is
+            // load-bearing for this line, not just for the degradation it documents.
+            if (caught >= CATCH_UP_CALLS || !isFightBehind(e, await fightBehindCode())) throw e;
             // Its own `sendTx`, i.e. its own transaction — see the note above before merging these.
             const tick = buildTick(p, { round: roundPda, steps: MAX_STEPS_PER_CALL });
             await sendTx(router, tick, signer, "tick (catching the fight up for extract)");

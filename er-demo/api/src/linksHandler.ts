@@ -22,13 +22,13 @@
 // doubt, return fewer rows. The failure mode of returning nothing is the ordinary rendering of this
 // page (§8), and it is indistinguishable from a player who chose not to link.
 
-import { LINKS_ENDPOINT, type LinkAttestation, type LinksResponse } from "../../src/v2/data/xLink.ts";
-import type { AttestationKey } from "../../src/v2/data/xLinkSign.ts";
-import { attestRow } from "./attest.ts";
-import type { HouseListSource } from "./houseWallets.ts";
-import { isReservedXId, RESERVED_MOCK_X_IDS } from "./reserved.ts";
-import type { LinkStore } from "./store.ts";
-import { parseWalletList } from "./wallets.ts";
+import { LINKS_ENDPOINT, type LinkAttestation, type LinksResponse } from "../../src/v2/data/xLink.js";
+import type { AttestationKey } from "../../src/v2/data/xLinkSign.js";
+import { attestRow } from "./attest.js";
+import type { HouseListSource } from "./houseWallets.js";
+import { isReservedXId, RESERVED_MOCK_X_IDS } from "./reserved.js";
+import type { LinkStore } from "./store.js";
+import { parseWalletList } from "./wallets.js";
 
 export interface LinksDeps {
   readonly store: LinkStore;

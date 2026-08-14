@@ -11,7 +11,7 @@
 // time. What this removes is the trivially scrapeable bulk export, which is the difference between
 // "someone determined can build this list" and "someone bored already has it".
 
-import { MAX_WALLETS_PER_QUERY } from "../../src/v2/data/xLink.ts";
+import { MAX_WALLETS_PER_QUERY } from "../../src/v2/data/xLink.js";
 import { PublicKey } from "@solana/web3.js";
 
 /** Why a wallet list was refused. Goes in a 400 body and in a log line; never near a player. */
