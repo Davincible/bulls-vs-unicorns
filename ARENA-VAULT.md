@@ -518,11 +518,21 @@ marked as such):
 | `claim` | 0 | 48 | ~7 (guess: 7 per tx) |
 | **total** | **5** | **106** | **~33** |
 | fees at 5,000 lamports/tx | 0.000073 SOL* | 0.00053 | 0.00017 |
+| **plus unreturned delegation** | **0.000405** | 0.000405 | 0.000405 |
 | **per day at ~417 rounds** | **0.030 SOL** | **0.22 SOL** | **0.070 SOL** |
 
 \* measured; the others derived from it.
 
-**So custody costs between 2.3× and 7.4× the current operating burn**, and the whole of the
+**CORRECTED 2026-08-15.** This table originally costed custody against a ~0.030 SOL/day baseline. The
+baseline was wrong by 6x — `DelegateRound` leaves 405,000 lamports/round behind that
+`ProcessUndelegation` never returns (COST-MODEL §1.1) — so today's arena is ~0.178 SOL/day, not 0.030.
+The custody DELTA below is unaffected, because delegation happens once per round either way; what
+changes is that the multiple is smaller than it looks. Custody adds ~0.04-0.19 SOL/day of fees on top
+of a 0.178 base, i.e. **~1.2x to ~2.1x**, not the 2.3x-7.4x this section claimed when it was measuring
+against a base that was six times too small.
+
+**So custody costs between ~1.2× and ~2.1× the current operating burn** (it read 2.3×-7.4× when the
+base was mis-measured at 0.030 SOL/day; see the correction above), and the whole of the
 increase is house bots entering and being claimed for on the base layer. Two facts make that worse
 than the table looks:
 

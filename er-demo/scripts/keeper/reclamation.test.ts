@@ -1,9 +1,11 @@
 // THE BRAKE, AS PROPERTIES RATHER THAN EXAMPLES — because an example is a number somebody chose and
 // the failures that matter here are the ones nobody chose.
 //
-// WHAT IS BEING PROTECTED. COST-MODEL.md §4: the arena costs ~0.030 SOL/day while rent reclamation
-// works and ~9.96 SOL/day the moment it stops, which empties a 14.95 SOL balance in about thirty-six
-// hours. `burnBrake` is what stops that, and it has exactly two ways to be wrong — both silent, and
+// WHAT IS BEING PROTECTED. COST-MODEL.md §4: the arena costs ~0.178 SOL/day while rent reclamation
+// works and ~10.14 SOL/day the moment it stops, which empties a 24 SOL balance in under three days.
+// (Those first two numbers were ~0.030 and ~9.96 until the healthy side was measured rather than
+// estimated — see §1.1 and the note on HEALTHY below. The RATIO barely moved, which is why every
+// property in this file survived the correction unchanged except the three that pinned the literals.) `burnBrake` is what stops that, and it has exactly two ways to be wrong — both silent, and
 // they are not the same size:
 //
 //   FALSE NEGATIVE   the brake stays open through a real outage. Costs SOL, at a rate a human is
@@ -38,11 +40,22 @@ const RETENTION = 20;
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 
-/** Steady state with reclamation working: fees only, ~0.00007 SOL a round (COST-MODEL §1). */
-const HEALTHY = 70_000;
+/** Steady state with reclamation working: ~0.00042 SOL a round, MEASURED over 206 rounds of
+ *  continuous running (COST-MODEL §1.1) rather than estimated.
+ *
+ *  THIS WAS 70_000 AND THE COMMENT SAID "fees only", AND BOTH WERE WRONG — the figure came from
+ *  COST-MODEL §1 before it was found to have filed `DelegateRound` as float without subtracting what
+ *  `ProcessUndelegation` returns. 405,000 lamports a round never comes back, so healthy burn is six
+ *  times what this file used to assert.
+ *
+ *  It matters here specifically because these tests exist to prove the brake DOES NOT fire in steady
+ *  state. Run against 70,000 they proved that about an arena which does not exist; the real margin —
+ *  420,000 against a 5,000,000 threshold, 11.9x rather than 70x — was untested until now. */
+const HEALTHY = 420_000;
 
-/** Reclamation stopped: the round's rent leaves and nothing returns it. */
-const BROKEN = ROUND_RENT_LAMPORTS;
+/** Reclamation stopped: the round's rent leaves and nothing returns it, ON TOP of the ordinary burn.
+ *  Summed rather than substituted — a broken round still pays everything a healthy one pays. */
+const BROKEN = HEALTHY + ROUND_RENT_LAMPORTS;
 
 const run = (value: number, count: number): number[] => Array.from({ length: count }, () => value);
 
@@ -169,9 +182,12 @@ describe("the brake against a working arena and a broken one", () => {
     expect(verdict.armed).toBe(true);
     expect(verdict.tripped).toBe(false);
     expect(verdict.meanLamportsPerRound).toBe(HEALTHY);
-    // Two orders of magnitude of headroom. The threshold is not a hair's breadth from steady state,
-    // which is why a healthy arena's ordinary noise cannot reach it.
-    expect(HEALTHY * 50).toBeLessThan(THRESHOLD);
+    // AN ORDER OF MAGNITUDE OF HEADROOM, and this assertion used to say fifty. It read
+    // `HEALTHY * 50 < THRESHOLD` and passed only because HEALTHY was wrong by 6x — the real margin is
+    // 11.9x, not 70x (COST-MODEL §1.1, and the corrected block on MAX_BURN_LAMPORTS_PER_ROUND). Ten is
+    // asserted rather than eleven so an ordinary retune of the threshold does not red this test for a
+    // margin that is still comfortable; anything at or below 10x should be a deliberate decision.
+    expect(HEALTHY * 10).toBeLessThan(THRESHOLD);
   });
 
   it("trips on a run of broken rounds", () => {
@@ -596,8 +612,10 @@ describe("the burn, in the unit the question was asked in", () => {
     const report = summarise(state());
     expect(report.burn.meanLamportsPerRound).toBe(String(HEALTHY));
     expect(report.burn.solPerDay).toBeCloseTo(HEALTHY * ROUNDS_PER_DAY / LAMPORTS_PER_SOL, 6);
-    // ~0.030 SOL/day — the headline figure in COST-MODEL §0, arrived at from the other direction.
-    expect(report.burn.solPerDay!).toBeCloseTo(0.0297, 4);
+    // ~0.178 SOL/day — the CORRECTED headline in COST-MODEL §0, arrived at from the other direction.
+    // Was 0.0297 here, matching a §0 that was wrong by 6x; both moved together, which is the point of
+    // pinning a document's number in a test at all.
+    expect(report.burn.solPerDay!).toBeCloseTo(0.178, 3);
     expect(report.burn.thresholdSolPerDay).toBeCloseTo(2.12, 2);
     expect(report.burn.tripped).toBe(false);
   });
@@ -613,8 +631,11 @@ describe("the burn, in the unit the question was asked in", () => {
   it("carries the outage through to SOL/day at the rate that empties the wallet", () => {
     const report = summarise(state({ burnSamplesLamports: run(BROKEN, ARM_AFTER) }));
     expect(report.burn.tripped).toBe(true);
-    // COST-MODEL §0's 9.96 SOL/day, which is the whole reason this endpoint exists.
-    expect(report.burn.solPerDay!).toBeCloseTo(9.96, 2);
+    // COST-MODEL §0's outage rate, which is the whole reason this endpoint exists. ~10.14 rather than
+    // the 9.96 asserted before: a broken round pays the ordinary burn AND the unreturned rent, and
+    // BROKEN is now the sum rather than the rent alone. The risk is unchanged — what moved is the
+    // healthy side, not the outage.
+    expect(report.burn.solPerDay!).toBeCloseTo(10.14, 2);
   });
 });
 

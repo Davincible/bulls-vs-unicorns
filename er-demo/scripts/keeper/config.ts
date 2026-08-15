@@ -482,17 +482,29 @@ export const SCHEDULE_CLOSE_RETRY_SECONDS = 30;
 
 /** THE PER-ROUND BURN AT WHICH THE KEEPER STOPS OPENING NEW ROUNDS, IN LAMPORTS.
  *
- *  THE THRESHOLD IS EASY BECAUSE THE TWO STATES ARE THREE ORDERS OF MAGNITUDE APART, and that is the
- *  entire reason a single number can do this job. From COST-MODEL §1:
+ *  THE THRESHOLD IS EASY BECAUSE THE TWO STATES ARE NEARLY TWO ORDERS OF MAGNITUDE APART, and that is
+ *  the entire reason a single number can do this job. MEASURED, over 206 rounds of unattended
+ *  continuous running (COST-MODEL §1.1) rather than estimated:
  *
- *      a round whose rent comes back     ~0.00007 SOL/round  =     ~70,000 lamports   (fees only)
- *      a round whose rent does NOT       ~0.0235  SOL/round  = ~23,497,000 lamports   (fees + rent)
+ *      a round whose rent comes back     ~0.00042 SOL/round  =    ~420,000 lamports
+ *      a round whose rent does NOT       ~0.0239  SOL/round  = ~23,917,000 lamports  (the above + rent)
  *
  *  Any threshold strictly between those two separates them, so the choice is which side to leave room
- *  on rather than a fine judgement about a boundary. 0.005 SOL = 5,000,000 lamports is ~70x the healthy
- *  figure — so ordinary variance, a retried signature, a chunked house top-up landing in the same round,
- *  none of them come close to it — and ~4.7x BELOW the broken one, so a genuine reclamation outage
- *  clears it on the first steady-state sample rather than on an unlucky one.
+ *  on rather than a fine judgement about a boundary. 0.005 SOL = 5,000,000 lamports is ~11.9x the
+ *  healthy figure — so ordinary variance, a retried signature, a chunked house top-up landing in the
+ *  same round, none of them come close to it — and ~4.8x BELOW the broken one, so a genuine
+ *  reclamation outage clears it on the first steady-state sample rather than on an unlucky one.
+ *
+ *  THIS BLOCK USED TO SAY 70,000 AND "~70x", AND BOTH WERE WRONG. It took the healthy figure from
+ *  COST-MODEL §1's fees-only estimate, which had filed `DelegateRound` as float without subtracting
+ *  what `ProcessUndelegation` actually returns — 405,000 lamports a round never comes back. The
+ *  threshold VALUE survives the correction untouched (5,000,000 still sits cleanly between 420,000
+ *  and 23,917,000), but the margin is 11.9x rather than 70x, which is the number to reason from if it
+ *  is ever retuned. Recorded rather than quietly amended, because a safety constant justified by a
+ *  figure that is off by 6x is right by luck, and luck does not survive the next edit.
+ *
+ *  The irony worth keeping: THIS BRAKE IS WHAT CAUGHT IT. It sat armed and green reporting 420,000
+ *  against a document claiming 70,000 for hours before anyone compared the two.
  *
  *  MEASURED AS NET LAMPORTS PER ROUND, WHICH IS WHY GROSS FLOW DOES NOT ENTER INTO IT. `OpenRound` and
  *  `DelegateRound` move ~0.0268 SOL out of the operator every single round, healthy or not — that is
