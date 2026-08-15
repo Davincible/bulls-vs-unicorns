@@ -11,14 +11,21 @@ The question this answers: **what does it cost to run games continuously, with n
 
 ## 0. The answer, and the number that is 330× larger
 
-**Steady state: ~0.030 SOL/day.** ~0.9/month, ~11/year, at 424 rounds/day.
+**Steady state: ~0.178 SOL/day.** ~5.4/month, ~65/year, at 424 rounds/day.
+
+> **CORRECTED 2026-08-15, and the original figure was wrong by 6x.** This said ~0.030 SOL/day on the
+> strength of §1's "only the fees are spent". Measured against 206 unattended rounds of continuous
+> running: **420,108 lamports/round**, agreeing to 0.03% with the keeper's own burn brake (420,000).
+> The cause is not fees — it is delegation, and §1 had it filed as float. See §1.1.
 
 **Gross flow: ~11.4 SOL/day.** Almost all of it returns. It nets to the figure above *only while rent
 reclamation keeps working*.
 
 **If reclamation stops: ~9.96 SOL/day, permanently.** At a 14.95 SOL balance that is about 36 hours.
 
-The distance between 0.03 and 9.96 is the whole risk, and §4 is about nothing else.
+The distance between 0.178 and 9.96 is the whole risk, and §4 is about nothing else. (It was
+written as "0.03 and 9.96"; the left-hand number was wrong by 6x — §1.1 — and the risk it describes
+is unchanged, because a reclamation outage adds rent to the burn regardless of what the burn was.)
 
 ---
 
@@ -37,11 +44,48 @@ Sampling 25 operator transactions for what actually leaves the wallet:
 | Instruction | Leaves the operator | Comes back |
 |---|---|---|
 | `OpenRound` | **0.023502 SOL** | at `close_round_account`, 20 rounds later |
-| `DelegateRound` | **0.003221 SOL** | at undelegation, same round |
+| `DelegateRound` | **0.003221 SOL** | **only 0.002816 of it** — see §1.1 |
 | ~5 transactions of fees | **~0.00007 SOL** | **never** |
 | **Total out** | **~0.0268 SOL** | |
 
-**Only the fees are spent. Everything else is float.**
+**This table used to end "Only the fees are spent. Everything else is float." That is false, and it
+is the single largest error this document has made.** See §1.1.
+
+### 1.1 Delegation is not free, and it is the whole operating cost
+
+`DelegateRound` pays an escrow and `ProcessUndelegation` returns it — but **not all of it**. Measured
+on three consecutive rounds, byte-identical each time rather than varying:
+
+```
+DelegateRound         operator delta   -3,220,520 lamports   (x3, identical)
+ProcessUndelegation   operator delta   +2,815,520 lamports   (x3, identical)
+                                        ───────────
+                      NOT RETURNED         405,000 lamports/round   = 0.000405 SOL
+```
+
+That is **96% of the arena's entire running cost**, and the old model classified it as float because
+it saw money go out at delegation and come back at undelegation without comparing the two numbers.
+
+```
+delegation, unreturned    405,000 lamports/round      0.172 SOL/day
+transaction fees           ~15,000                    0.006 SOL/day
+------------------------------------------------------------------
+measured total            420,108 lamports/round      0.178 SOL/day
+```
+
+The reconciliation that makes this trustworthy rather than a plausible story: **the operator wallet
+fell 0.0865 SOL across rounds 37 → 243**, which is 420,108 lamports/round, and the keeper's burn
+brake — computed independently, from balance readings straddling each `open_round` — reports 420,000.
+Two instruments, one number, 0.03% apart.
+
+**Transaction count was never the problem.** 200 consecutive operator transactions span 136.8
+minutes at 1.5/min, which is **exactly 5.0 per round** — precisely what §1 claims — with **zero
+failures**. The model counted the right transactions and mispriced one of them.
+
+**What this does not change:** the arena is still cheap and still sustainable. At 24.45 SOL the
+runway is ~137 days (the keeper reports 141), and the reclamation mechanism §4 is about still works —
+rent genuinely does come back, 220 times and counting. What changes is that "essentially free" was
+never true, and anyone sizing a mainnet deployment off the old figure would have been out by 6x.
 
 ### Why only five transactions
 
@@ -82,7 +126,8 @@ overhead      8s     draw, undelegate, sweep round-trips
 cycle       204s  →  424 rounds/day
 ```
 
-At 424 × 0.00007 SOL: **0.030 SOL/day**.
+At 424 × 0.000420 SOL (the MEASURED per-round burn, not the fee estimate this line used to
+multiply): **0.178 SOL/day**. §1.1 has the derivation and the reconciliation.
 
 Fight length is the term that moves with the seat cap. At n=16 the median was 83s and the cycle would
 be ~163s — 530 rounds/day and a slightly *higher* daily fee bill, because the rounds are shorter.
@@ -230,6 +275,14 @@ in `er-demo/scripts/keeper/config.ts`.
 ## 7. What this document got wrong on the way
 
 Recorded because the corrections are the useful part.
+
+**The headline was 0.030 SOL/day and the real figure is 0.178 — wrong by 6x, for over a day.** The
+error was structural, not arithmetic: §1 watched `DelegateRound` pay an escrow and `ProcessUndelegation`
+return one, and filed the line as float WITHOUT SUBTRACTING THE TWO. 405,000 lamports a round never
+came back. The tell was available the whole time and nobody looked: the keeper's own burn brake was
+reporting 420,000 lamports/round against a document claiming ~70,000, and the brake was armed and
+green because its threshold (5,000,000) is set to catch reclamation failure, not to police the model.
+A gauge reading six times the documented value is a finding even when it is inside its limits.
 
 **The first figure was 0.000073 SOL/round and it counted the wrong thing.** It summed fees on
 transactions *touching the round PDA*, which silently excludes everything the operator pays elsewhere
