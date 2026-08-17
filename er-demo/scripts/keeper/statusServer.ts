@@ -28,7 +28,10 @@
 //                             on RPC, a devnet blip — a 429, a slow block — would fail the check and
 //                             the platform would KILL A PERFECTLY HEALTHY KEEPER, mid-round,
 //                             stranding a delegated round whose rent nothing reclaims. The blip is
-//                             transient and the restart is not. So it answers from memory only.
+//                             transient and the restart is not. So it answers from memory only —
+//                             including the ONE condition it now fails on, which is whether the main
+//                             loop has completed a pass. See the section below on why that stopped
+//                             being "report it, do not act on it" on 2026-08-16.
 //
 //   GET /reclamation.json     is rent still coming back? PUBLIC, unauthenticated, `no-store`, with
 //                             the ordinary CORS spread — the opposite of the roster below in every
@@ -48,15 +51,63 @@
 //                             than a 401 when no token is configured — so a keeper without the
 //                             feature is indistinguishable from one that never had the route.
 //
-// WHY `/health` IS ALWAYS 200 WHILE THE PROCESS ANSWERS. Answering an HTTP request at all already
-// proves the thing a liveness probe is for: the process is up and its event loop is turning. The
-// heartbeat age is reported in the body because a stopped heartbeat beside a responsive server is a
-// real bug worth seeing — but it is not made a FAILURE, because the only condition it would add is
-// one nobody has observed, and the cost of a false positive is a restart that lands in the middle of
-// a round. Report it; do not act on it. (`engine/`'s Dockerfile points its check at `/live` and
-// explicitly NOT at `/health`, for the mirror-image reason: engine's `/health` returns 503 on a
-// solvency freeze, which a restart cannot fix, so using it there would restart-loop an incident.
-// Here `/health` is the one that is safe to probe. The divergence is deliberate.)
+// `/health` USED TO BE UNCONDITIONALLY 200 WHILE THE PROCESS ANSWERED, AND THAT WAS WRONG. The
+// argument it stood on is worth keeping rather than deleting, because it was sound on the evidence
+// it had and the shape of its failure is the interesting part:
+//
+//   "Answering an HTTP request at all already proves the thing a liveness probe is for: the process
+//    is up and its event loop is turning. The heartbeat age is reported in the body because a
+//    stopped heartbeat beside a responsive server is a real bug worth seeing — but it is not made a
+//    FAILURE, because THE ONLY CONDITION IT WOULD ADD IS ONE NOBODY HAS OBSERVED, and the cost of a
+//    false positive is a restart that lands in the middle of a round. Report it; do not act on it."
+//
+// On 2026-08-16 somebody observed it. The keeper finished round #678, went silent for 22 hours, and
+// answered every single one of Fly's health probes with a 200 throughout, because a process whose
+// main loop is stuck inside an await still has an event loop that turns and still serves HTTP
+// perfectly. `fly status` read 1/1 checks passing over a dead arena. The premise "nobody has
+// observed it" was the load-bearing clause, and it expired.
+//
+// SO ONE CONDITION IS NOW A FAILURE, AND EXACTLY ONE: THE MAIN LOOP HAS NOT COMPLETED A PASS. See
+// `loopWatchdog.ts`. Three things about that are deliberate and none of them should be relaxed:
+//
+//   * IT IS STILL IN-PROCESS ARITHMETIC. `deps.loop()` subtracts two numbers already in memory. NO
+//     CHAIN CALL, and the whole original design decision survives intact — a devnet blip, a 429, a
+//     slow block still cannot fail this check, because none of them is what it measures. That
+//     property is the reason this endpoint is safe to point a platform check at and it is not
+//     negotiable.
+//   * IT IS NOT THE HEARTBEAT AGE. That one is still REPORTED and still not a failure, and the
+//     original argument for it is untouched: a stopped heartbeat beside a responsive server remains
+//     a condition nobody has observed. Pass age is a different fact, and it is the one with an
+//     incident behind it.
+//   * IT DOES NOT FIRE FOR A KEEPER THAT IS MERELY FAILING. `loopWatchdog` marks a pass on the error
+//     path too, so a keeper catching, backing off and retrying through a devnet outage is iterating
+//     and reads healthy here. The false positive the original argument feared — "a restart that
+//     lands in the middle of a round" over a transient chain fault — is structurally excluded rather
+//     than merely traded away.
+//
+// AND A CORRECTION TO WHAT FAILING THIS CHECK ACTUALLY DOES, because the rest of this repo's comments
+// have been optimistic about it. On Fly Machines a failing `[[http_service.checks]]` DOES NOT restart
+// or replace anything after a deploy has completed — Fly's docs say so in as many words — it only
+// takes the machine out of fly-proxy's rotation. With exactly one machine (fly.toml rule 1) that
+// means the public endpoints 503. So the value of this failure is SIGNAL: `fly status` stops reading
+// 1/1, and anything watching /health finally learns what nothing here could tell it before. The
+// self-correction is `loopWatchdog`'s non-zero exit, not this.
+//
+// AND ONE CONSEQUENCE OF THAT DEROUTE WORTH KNOWING BEFORE AN INCIDENT RATHER THAN DURING ONE. Once
+// the proxy pulls the machine, EVERY route on this server becomes unreachable from outside, not just
+// the one that failed — `/keeper-status.json` and `/reclamation.json` included. So during the window
+// between the two stages, the `stalledSince` this keeper just published and the diagnosis in this
+// endpoint's own body are both things you cannot `curl` for. They are in `fly logs`, which is where
+// the watchdog writes its twelve lines and where anybody looking at a keeper that went quiet starts
+// anyway. Publishing the stall is therefore FOR THE FILE CHANNEL AND FOR AFTER THE RESTART, not for
+// the browser mid-incident; the browser reads the 503 exactly as it reads a 404, which is "keeper is
+// down", which is the true answer.
+//
+// (`engine/`'s Dockerfile points its check at `/live` and explicitly NOT at `/health`, for the
+// mirror-image reason: engine's `/health` returns 503 on a solvency freeze, which a restart cannot
+// fix, so using it there would restart-loop an incident. Here `/health` is still the one that is safe
+// to probe — the one condition added above is precisely a condition a restart DOES fix. The
+// divergence is deliberate and stays.)
 //
 // THE SERVER MUST NEVER TAKE THE KEEPER DOWN. `startStatusServer` returns null on a bind failure
 // rather than throwing: rounds matter more than telemetry, and a port already in use is not a reason
@@ -71,6 +122,7 @@
 // Node and has no `Bun` global at all.
 
 import { KEEPER_STATUS_SCHEMA } from "../../src/v2/data/keeperStatus.ts";
+import type { LoopLiveness } from "./loopWatchdog.ts";
 import { c, error as logError, ok } from "./log.ts";
 
 /** The port the status server binds, and the port `fly.toml` and the Dockerfile both name. 8080
@@ -412,6 +464,18 @@ export interface StatusServerDeps {
   /** Age of the published heartbeat in seconds, from memory. `statusFile.ts`'s
    *  `publisher.heartbeatAgeSeconds`. */
   heartbeatAgeSeconds: () => number;
+  /** IS THE MAIN LOOP TURNING? — `loopWatchdog.ts`'s `liveness`, and the only thing on this server
+   *  that can produce a non-200.
+   *
+   *  ONE CALL RETURNING BOTH FIELDS, mirroring the shape `LoopLiveness` already argues for: read
+   *  through two accessors, `stalled` and `passAgeSeconds` could be sampled either side of a
+   *  heartbeat and the body would contradict itself about the one thing it exists to say.
+   *
+   *  REQUIRED, NOT OPTIONAL, and for the same reason `reclamation` below is. An optional dependency
+   *  would let a keeper that forgot to wire it serve a cheerful 200 forever — which is not a
+   *  hypothetical failure mode here, it is a verbatim description of the 22 hours this field was
+   *  added to end. The type is what makes forgetting impossible; a default would make it easy. */
+  loop: () => LoopLiveness;
   /** The reclamation report, ALREADY RENDERED — `serializeReclamationReport(summariseReclamation(…))`,
    *  built where the keeper already holds the state it summarises.
    *
@@ -588,11 +652,30 @@ export function handleKeeperRequest(request: Request, deps: StatusServerDeps): R
 
   if (path === HEALTH_PATH) {
     // Built here rather than fetched from anywhere: no chain call, no filesystem, no status body.
-    // `heartbeatAgeSeconds` is one subtraction of two numbers already in memory. See this file's
-    // header for why a stale heartbeat is REPORTED here and not turned into a failure.
+    // `heartbeatAgeSeconds` is one subtraction of two numbers already in memory, and `loop()` is
+    // another. See this file's header for why a stale heartbeat is REPORTED and not turned into a
+    // failure, while a stalled LOOP is both.
     const age = deps.heartbeatAgeSeconds();
-    return new Response(`${JSON.stringify({ ok: true, schema: KEEPER_STATUS_SCHEMA, heartbeatAgeSeconds: age })}\n`, {
-      status: 200,
+    const loop = deps.loop();
+    // 503, not 500: this is "not currently able to serve", which is the truth about a keeper whose
+    // loop has stopped, and it is the code every platform check and every uptime monitor already
+    // reads as unhealthy without configuration. `ok` mirrors the status code so that the one-line
+    // probe in the Dockerfile (`r.ok`) and a human reading the body cannot come to different
+    // conclusions.
+    const healthy = !loop.stalled;
+    const body = {
+      ok: healthy,
+      schema: KEEPER_STATUS_SCHEMA,
+      heartbeatAgeSeconds: age,
+      // BOTH FIELDS, ALWAYS, HEALTHY OR NOT. A pass age that only appeared once it was alarming
+      // would be a number nobody could calibrate at the moment they most needed to — the reader has
+      // no way to know whether 4s is normal for this keeper unless they have seen it during normal
+      // operation. It is also what makes this endpoint answer the question the whole incident turned
+      // on, "is the loop running", rather than only "is it definitely not".
+      loop: { passAgeSeconds: loop.passAgeSeconds, stalled: loop.stalled },
+    };
+    return new Response(`${JSON.stringify(body)}\n`, {
+      status: healthy ? 200 : 503,
       headers: { ...cors, "Content-Type": "application/json", "Cache-Control": NO_STORE },
     });
   }

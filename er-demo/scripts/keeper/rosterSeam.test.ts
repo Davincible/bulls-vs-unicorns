@@ -48,6 +48,7 @@ function keeper(houseToken: string | null = TOKEN) {
   return (request: Request): Response => handleKeeperRequest(request, {
     body: () => "",
     heartbeatAgeSeconds: () => 0,
+    loop: () => ({ passAgeSeconds: 0, stalled: false }),
     reclamation: () => "",
     policy: resolveAllowedOrigins(undefined),
     houseToken,

@@ -142,7 +142,8 @@ import {
   DELEGATION_WAIT_SECONDS, DRAW_TIMEOUT_SECONDS, ERROR_BACKOFF_BASE_SECONDS, ERROR_BACKOFF_MAX_SECONDS,
   HEARTBEAT_INTERVAL_SECONDS, HOLD_OPEN_LOBBY_SECONDS, HOUSE_BOARD_TARGET, HOUSE_DISPLACEMENT,
   HOUSE_ENTRY_RETRY_SECONDS, HOUSE_STAKE_MAX_USD, HOUSE_STAKE_MIN_USD, HOUSE_WALLET_COUNT,
-  LOOP_INTERVAL_SECONDS, REAL_PLAYER_GRACE_SECONDS, REAL_SEATS_RESERVED, RESOLVE_RETRY_ATTEMPTS,
+  LOOP_INTERVAL_SECONDS, LOOP_STALL_EXIT_SECONDS, LOOP_STALL_PUBLISH_SECONDS,
+  REAL_PLAYER_GRACE_SECONDS, REAL_SEATS_RESERVED, RESOLVE_RETRY_ATTEMPTS,
   RESOLVE_RETRY_WAIT_SECONDS, RESULT_HOLD_SECONDS, STALE_AFTER_SECONDS,
   STALL_AFTER_CONSECUTIVE_FAILURES, SWEEP_RETRY_SECONDS, UNDELEGATE_WAIT_SECONDS,
   BURN_ARM_AFTER_ROUNDS, BURN_SAMPLE_ROUNDS, MAX_BURN_LAMPORTS_PER_ROUND, TREASURY_POLL_SECONDS,
@@ -177,6 +178,7 @@ import {
   enterHouseFighters, fundHouseBank, loadOrCreateHouseBank, plannedHouseEntries,
   type HouseBank,
 } from "./houseBank.ts";
+import { createLoopWatchdog } from "./loopWatchdog.ts";
 import { createStatusPublisher, roundStatusFrom, type StatusPublisher } from "./statusFile.ts";
 import {
   c, describeError, error, failedWith, fmtDuration, fmtSol, heading, info, ok, plain,
@@ -2225,11 +2227,33 @@ async function main(): Promise<void> {
   // spends, and nothing should spend before the process has said it is alive.
   const bank = loadOrCreateHouseBank(options.dryRun);
 
+  // IS THE MAIN LOOP STILL TURNING? Built here, before the publisher that drives it and before the
+  // server that reports it, and DISARMED until `watchdog.arm()` immediately above the `while`. The
+  // whole argument — the 22-hour silence of 2026-08-16, why the heartbeat and the failure counter
+  // and `/health` each missed it, why the exit is safe, and what was rejected — is in
+  // `loopWatchdog.ts`. Two things are visible from here and both are deliberate:
+  //
+  //   * `onStall` sets `stalledSince` and NOTHING ELSE. It does not clear it: the main loop's own
+  //     clean-pass clear below is the right condition for both detectors, and a watchdog that
+  //     cleared it would wipe the failure counter's alarm the instant one read succeeded.
+  //   * `exit` IS `process.exit`, WRITTEN OUT HERE RATHER THAN DEFAULTED INSIDE THE MODULE, so that
+  //     the one thing in this process that can end it while rounds are running is on the page a
+  //     reader is already looking at.
+  const watchdog = createLoopWatchdog({
+    publishAfterSeconds: LOOP_STALL_PUBLISH_SECONDS,
+    exitAfterSeconds: LOOP_STALL_EXIT_SECONDS,
+    onStall: () => publisher.setStalledSince(client.nowSec()),
+    exit: (code) => process.exit(code),
+  });
+
   const publisher = createStatusPublisher({
     programId: PROGRAM_ID.toBase58(),
     arenaPda: client.arenaPda.toBase58(),
     nowSec: client.nowSec,
     houseOnlyRounds: options.houseOnlyRounds,
+    // THE CHECK RIDES THE HEARTBEAT, which is the one component with 22 hours of evidence that it
+    // survives the fault. See `StatusPublisherOptions.onHeartbeat`.
+    onHeartbeat: () => watchdog.check(),
   });
 
   // THE SECOND CHANNEL, and in production the only one that reaches a browser — see
@@ -2273,6 +2297,10 @@ async function main(): Promise<void> {
     policy: originPolicy,
     body: publisher.body,
     heartbeatAgeSeconds: publisher.heartbeatAgeSeconds,
+    // THE SIGNAL THAT DID NOT EXIST ON 2026-08-16 — see `loopWatchdog.ts`. Read through the watchdog
+    // rather than copied out of it, because the server is started here, minutes before the loop it
+    // reports on: a snapshot taken now would answer for the rest of the process's life.
+    loop: watchdog.liveness,
     reclamation: () => reclamationBody,
     houseToken: houseTokenPolicy.token,
     // Read through a closure rather than passed as an array, so the endpoint always answers from the
@@ -2431,6 +2459,10 @@ async function main(): Promise<void> {
       : `${HOUSE_MAX_WITHOUT_REAL_PLAYER} fighter and no fight when nobody is`})${c.x}`,
   );
   plain(`  cadence        result hold ${RESULT_HOLD_SECONDS}s · draw timeout ${DRAW_TIMEOUT_SECONDS}s · heartbeat ${HEARTBEAT_INTERVAL_SECONDS}s/stale ${STALE_AFTER_SECONDS}s`);
+  // PRINTED AT BOOT RATHER THAN LEFT IN `config.ts`, because these two are the only numbers in this
+  // process that can end it, and an operator reading `fly logs` after an unexplained restart should
+  // find the thresholds that caused it in the same place as the restart. See `loopWatchdog.ts`.
+  plain(`  loop watchdog  stall at ${LOOP_STALL_PUBLISH_SECONDS}s without a completed pass · exit 1 at ${LOOP_STALL_EXIT_SECONDS}s  ${c.d}(a restart is the proven fix — round #678, 2026-08-16)${c.x}`);
   plain(`  house sweep    ${features.houseTakeSweep
     ? "on — each finished round's fees and penalties are swept onto the arena's Treasury"
     : `${c.d}unavailable — this IDL has no sweep_house_take; each round's take stays on the round${c.x}`}`);
@@ -2571,6 +2603,12 @@ async function main(): Promise<void> {
     }
     stopSignalled = true;
     stopper.abort();
+    // BEFORE THE LOOP IS TOLD ANYTHING ELSE. "Finishing the current step" can legitimately mean a
+    // `close_round` send followed by `waitForUndelegation` at UNDELEGATE_WAIT_SECONDS, during which
+    // no pass completes — so on a slow enough shutdown the watchdog would cross its exit threshold
+    // and `process.exit(1)` in the middle of an orderly stop, turning a clean deploy into a crash
+    // Fly would then restart from. A keeper that was asked to stop is not a keeper that hung.
+    watchdog.disarm();
     warn(`${signal} received — finishing the current step, then stopping`);
   };
   process.on("SIGINT", () => onSignal("SIGINT"));
@@ -2581,6 +2619,13 @@ async function main(): Promise<void> {
 
   publisher.startHeartbeat();
   publisher.publish();
+
+  // START WATCHING, on the line above the loop and nowhere else. Everything before this — reading a
+  // keypair, choosing an ER validator, funding the house bank — is boot, and boot already exits
+  // non-zero on its own failures (see the `unhandledRejection` note above). Arming here is what makes
+  // the watchdog's clock mean "since the loop was last known to be turning" rather than "since this
+  // process started", and it is what puts the FIRST pass under the same guard as the thousandth.
+  watchdog.arm();
 
   let consecutiveErrors = 0;
   let lastState: KeeperChainState | null = null;
@@ -2629,15 +2674,37 @@ async function main(): Promise<void> {
       );
       publisher.publish();
 
+      // THE MARK, ON THE SUCCESS PATH. See its twin in the `catch` below, and `loopWatchdog.ts` for
+      // what it is asserting and why nothing here asserted it before 2026-08-16.
+      watchdog.passCompleted();
+
       consecutiveErrors = 0;
       // A clean pass clears both. `lastError` otherwise persists for the life of the process, so a
       // single blip at minute two is still on screen at hour six, indistinguishable from a keeper
       // that is failing right now.
+      //
+      // AND THIS IS THE ONLY PLACE `stalledSince` IS CLEARED, now that two different detectors can
+      // set it — the consecutive-failure counter below and the loop watchdog on the heartbeat. One
+      // clearer with the right condition beats each detector clearing its own: a watchdog that
+      // cleared on any completed pass would wipe this counter's alarm the moment a single read
+      // succeeded mid-outage, and a counter that cleared on a successful read would wipe the
+      // watchdog's. A CLEAN PASS is the condition that honestly ends both states.
       publisher.setLastError(null);
       publisher.setStalledSince(null);
     } catch (e) {
       consecutiveErrors += 1;
       recordError(ctx, "main-loop", e);
+      // THE MARK, ON THE ERROR PATH TOO, AND THAT IS THE DESIGN RATHER THAN A CONVENIENCE. The
+      // watchdog's invariant is THE LOOP WENT ROUND, not that the pass succeeded. A keeper riding out
+      // a devnet outage is catching, backing off and retrying — it is iterating, and a restart does
+      // not fix devnet — so it must keep marking or the watchdog would replace the machine on a
+      // condition the replacement inherits, repeatedly, until Fly's restart budget was spent and the
+      // machine left stopped for good. The state where the loop is alive and failing already has its
+      // instrument: `stalledSince` via STALL_AFTER_CONSECUTIVE_FAILURES, ten lines down.
+      //
+      // Taken BEFORE the backoff sleep, so the sleep counts against the next pass rather than being
+      // charged to this one twice.
+      watchdog.passCompleted();
       if (consecutiveErrors === STALL_AFTER_CONSECUTIVE_FAILURES) {
         // ONCE, at the threshold, not on every failing pass. From here the heartbeat keeps saying the
         // process is alive — which it is — so the status file has to say the other thing too, or the

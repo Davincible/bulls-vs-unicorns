@@ -298,6 +298,24 @@ export interface StatusPublisherOptions {
    *  read a different process's `startedAt` and `roundsCompleted`. One optional field is a cheap price
    *  for a test suite that cannot interfere with a running arena. */
   filePath?: string;
+  /** RUN THIS AT THE TOP OF EVERY HEARTBEAT, BEFORE THE TIMESTAMP AND THE WRITE.
+   *
+   *  It exists for exactly one caller — `loopWatchdog.check()` — and the reason it hangs off the
+   *  heartbeat rather than off a timer of its own is the whole point of the mechanism. On
+   *  2026-08-16 the main loop stopped for 22 hours and this interval kept firing throughout, which
+   *  makes it the ONE component in this process with proof that it survives the fault. A watchdog on
+   *  a second `setInterval` would be a new thing that can stop, watching a thing that stopped.
+   *
+   *  ORDER MATTERS AND IS THE REASON THIS IS CALLED FIRST. The hook may set `stalledSince`; running
+   *  it before `heartbeatAt` is stamped and before `publishSafely` means the stall reaches the file
+   *  on the very beat that detects it, rather than two seconds later. It may also end the process,
+   *  in which case not having stamped the heartbeat yet is precisely correct — see `stopHeartbeat`'s
+   *  neighbours in `keeper.ts` on why a keeper must never write a fresh heartbeat on its way out.
+   *
+   *  GUARDED, because the heartbeat is the last instrument standing during the fault it is watching
+   *  for. A throw from here must never be the thing that stops `heartbeatAt` advancing — that would
+   *  convert a detected hang into an undetected one, which is the incident again with an extra step. */
+  onHeartbeat?: () => void;
 }
 
 export interface StatusPublisher {
@@ -497,7 +515,26 @@ export function createStatusPublisher(options: StatusPublisherOptions): StatusPu
       // mean "this process was alive at this moment" rather than "something happened at this moment".
       // That is also precisely why `stalledSince` exists: alive is not the same as progressing, and
       // this timer cannot tell the difference.
+      //
+      // AND THAT LAST SENTENCE IS WHY `onHeartbeat` IS NOW CALLED FROM HERE. This timer cannot tell
+      // the difference — but it is the only thing still running when there IS a difference, so it is
+      // where the thing that CAN tell has to be asked from. See `StatusPublisherOptions.onHeartbeat`.
       heartbeat = setInterval(() => {
+        try {
+          options.onHeartbeat?.();
+        } catch (e) {
+          // Swallowed on purpose, and this is the one place in this module where swallowing is the
+          // safer error. The heartbeat is the last instrument standing during the fault the hook
+          // exists to detect; letting a throw out of here would stop `heartbeatAt` advancing and
+          // turn a detected hang into a silent one. Logged once per occurrence rather than counted,
+          // because unlike a write failure this cannot be a steady-state condition — the only caller
+          // does arithmetic on two numbers, so a throw here is a bug, not an environment.
+          logError(
+            `the heartbeat hook threw — the heartbeat itself is unaffected and keeps running, but ` +
+            `whatever it was watching for is no longer being watched: ` +
+            `${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
         status.keeper.heartbeatAt = options.nowSec();
         publishSafely("heartbeat");
       }, HEARTBEAT_INTERVAL_SECONDS * 1_000);

@@ -360,10 +360,23 @@ primary_region = "fra"
 # process is answering, precisely so a devnet RPC blip cannot get a healthy keeper killed. The
 # divergence between the two files is deliberate in both directions.
 #
-# This check therefore means "the process is alive", and nothing more. "The keeper is working" is
-# keeper.heartbeatAt and keeper.stalledSince in the status file, which the front end already reads —
-# and a stalled keeper is one that is catching, backing off and retrying, which a restart does not
-# fix, because what is unwell is devnet.
+# This check therefore means "the process is alive", and nothing more — AND THAT SENTENCE IS WHY THE
+# ARENA WAS DEAD FOR 22 HOURS ON 2026-08-16. Round #678 completed at 08:53:38Z, the main loop stopped,
+# and #679 never opened. Throughout, this check passed, `heartbeatAt` stayed 2-3 seconds old (it runs
+# on an independent timer), `stalledSince` stayed null (it counts FAILED passes, and a hung `await`
+# throws nothing), and `notOpeningRounds` stayed null. Every signal on this machine said healthy.
+#
+# The paragraph above also used to end "a stalled keeper is one that is catching, backing off and
+# retrying, which a restart does not fix, because what is unwell is devnet." That is true of the
+# stall this file knew about and FALSE of the one that happened: a `fly machine restart` recovered it
+# instantly and it has run normally since.
+#
+# `scripts/keeper/loopWatchdog.ts` is the fix, and it is deliberately NOT wired to this check —
+# A FAILING FLY HEALTH CHECK DOES NOT RESTART A MACHINE. Fly's docs are explicit that post-deploy a
+# failing check only removes the machine from fly-proxy's rotation; restarting "needs to be done
+# manually". So a health-check-based answer would have taken the arena out of rotation and left it
+# hung, which is the same outage with worse symptoms. The watchdog exits non-zero instead, and the
+# restart policy below is what turns that into a recovery.
 [[http_service.checks]]
   interval = "30s"
   timeout = "5s"
@@ -416,3 +429,26 @@ kill_timeout = 20
   size = "shared-cpu-1x"          # one poll loop and a tiny HTTP server; this is not CPU work
   memory = "512mb"                # not for the workload — for Bun plus the web3.js/Anchor object
                                   # graph, which is the same dependency tree the browser app carries
+
+# ---------------------------------------------------------------------------------------------
+# RESTART POLICY, WRITTEN DOWN RATHER THAN INHERITED. Absent this block Fly defaults to `on-fail`,
+# which is what is wanted — but `loopWatchdog.ts` now depends on it, and a load-bearing default that
+# nothing states is a default somebody changes without knowing what it was holding up.
+#
+# `on-failure` restarts on a NON-ZERO exit. (The value is `on-failure`, not `on-fail` — `fly config
+# validate` rejects the latter outright, which is the only reason this file has it right.) The watchdog exits 1, so a hung loop self-recovers.
+#
+# DELIBERATELY NOT `always`, and this is the one real judgement here. `always` would also restart on
+# a CLEAN exit — and a clean exit is how this keeper's safety guards refuse: the devnet assertion, and
+# the boot check that once correctly refused a 32-fighter board against a 30-wallet pool. Those must
+# STAY DOWN until a human fixes the configuration; restart-looping a keeper that is refusing on
+# purpose would bury the reason in a scroll of identical boot banners. Availability is not the
+# property to maximise when the process is telling you it is misconfigured.
+#
+# The residual, stated because `auto_start_machines = false` makes it permanent: a machine that
+# exhausts Fly's restart budget stays stopped and nothing here will start it. That is the correct
+# failure for a crash loop and the wrong one for bad luck, and the only signal is the status file
+# going stale — which is now a thing the front end can actually see, because the watchdog publishes
+# before it exits.
+[[restart]]
+  policy = "on-failure"

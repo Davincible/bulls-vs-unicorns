@@ -838,6 +838,154 @@ export const ERROR_BACKOFF_MAX_SECONDS = 30;
  *  chain says happened before deciding what to do next. */
 export const READ_RETRY_DELAYS_MS = [500, 1_000, 2_000];
 
+// ---- the loop watchdog ---------------------------------------------------------------------------
+//
+// THE INCIDENT THESE TWO NUMBERS EXIST FOR, written down because the whole design follows from it.
+//
+// On 2026-08-16T08:53:38Z the keeper finished round #678, printed `ROUND #678 COMPLETE`, and then
+// produced NO LOG OUTPUT OF ANY KIND FOR 22 HOURS. It never opened #679. A `fly machine restart`
+// recovered it instantly. Throughout those 22 hours every health signal this process had said it was
+// fine, and each one missed it for its own separate reason:
+//
+//   * `keeper-status.json`'s `heartbeatAt` stayed 2-3 seconds old, continuously. It was TELLING THE
+//     TRUTH. `HEARTBEAT_INTERVAL_SECONDS` and `statusFile.ts`'s `startHeartbeat` both say plainly
+//     that the heartbeat runs on its own `setInterval`, deliberately independent of the loop, so
+//     that a keeper waiting out a 60-second lobby keeps saying it is alive. It proves THE PROCESS is
+//     alive. It has never proved the loop is running, and it never claimed to.
+//   * `stalledSince` stayed null, because `STALL_AFTER_CONSECUTIVE_FAILURES` counts CONSECUTIVE
+//     FAILED PASSES and a hung `await` produces no failed passes. The counter never incremented. That
+//     mechanism detects a loop that is ERRORING; this one had STOPPED, which is a different fault
+//     with an opposite signature — zero errors instead of many.
+//   * `notOpeningRounds` stayed null: neither the burn brake nor the sweep-gap stop had fired, and
+//     neither has any opinion about whether the loop is turning.
+//   * `/health` returned 200 and Fly's check passed 1/1, because `/health` makes no chain calls and
+//     answers for as long as the process answers — which is the correct design (see `statusServer.ts`
+//     and the Dockerfile: a devnet blip must never get a healthy keeper killed) and is exactly why it
+//     could not catch this.
+//
+// NOTHING ANYWHERE ASSERTED THAT THE MAIN LOOP HAD COMPLETED A PASS RECENTLY. That is the gap, and
+// `loopWatchdog.ts` is the assertion. These are its two thresholds.
+//
+// WHY PASS COMPLETION AND NOT ROUND PROGRESS. The loop iterates at ~1Hz regardless of phase — it
+// ticks during a fight, waits during a lobby, holds during a result — so "a pass completed recently"
+// is a valid liveness invariant at every instant of a round. "A round advanced recently" is not: a
+// 60-second lobby, a 180-second fight and a hold-open are all legitimately quiet, and a watchdog on
+// round progress would either fire during a healthy fight or be set so loose it never fires at all.
+
+/** How long without a completed main-loop pass before the keeper PUBLISHES itself as stalled — sets
+ *  `stalledSince`, fails `/health` on loop liveness, and says so in the log.
+ *
+ *  THE FLOOR IS THE SLOWEST PASS THAT IS STILL LEGITIMATE, and the honest way to bound that is NOT to
+ *  enumerate the phase machine. A first draft of this number did exactly that — it added up
+ *  `readChainState`, one `close_round`, and `waitForUndelegation`, got ~120s, and set the threshold
+ *  at 180. It was wrong, it was wrong in the dangerous direction, and it was wrong for a reason worth
+ *  writing down: AN ENUMERATION OF A PHASE MACHINE ROTS EVERY TIME SOMEBODY ADDS A SEND, silently,
+ *  and nothing fails until a healthy keeper is being declared hung on a busy afternoon.
+ *
+ *  WHAT THE 120 MISSED, concretely, so the correction is checkable rather than asserted. The
+ *  round-transition pass — `driveSettled` with the round home and the hold expired — runs
+ *  `sweepHouseTake` and THEN `openNextRound` in the same pass. `sweepHouseTake` SWALLOWS its failure
+ *  (deliberately: the take stays on the round and anyone can sweep it later), so a `sweep_house_take`
+ *  that runs all the way to blockhash expiry costs its full ~60-90s AND THE PASS CARRIES ON. Then
+ *  `openNextRound` sends `open_round`, `delegate_round` + `waitForDelegation`, and `fundHouseBank` —
+ *  which at `HOUSE_WALLET_COUNT` = 48 is `ceil(48/15)` = four SEQUENTIAL confirmed base-layer
+ *  transactions. Those all throw on expiry, so at most one of them can run to the wire before the
+ *  pass unwinds; but one swallowed expiry plus one throwing expiry plus the reads is already ~220s.
+ *  The 180 was under a pass the keeper takes at the top of every single round.
+ *
+ *  SO THE BOUND IS STATED STRUCTURALLY INSTEAD, over the one quantity that cannot drift:
+ *
+ *    * EVERY send in this keeper is bounded by BLOCKHASH EXPIRY. `sendTx` confirms against
+ *      `{ blockhash, lastValidBlockHeight }`, and a Solana blockhash is valid for 150 slots — about
+ *      60 seconds, call it 90 on an unwell devnet. There is no unbounded await on the send path.
+ *    * A send that THROWS ends the pass (the main loop catches, marks, and backs off), so only the
+ *      DELIBERATELY SWALLOWED ones can stack. There are two such call sites today —
+ *      `sweepHouseTake` and `closeOneFinishedRound`'s close — and `closeOneFinishedRound` runs only
+ *      on an idle pass, which by definition is not a transition pass.
+ *    * The reads are bounded too: `withReadRetry` absorbs `READ_RETRY_DELAYS_MS` = 3.5s per read
+ *      before failing upward, and a pass does a handful of them (~15s twice, for the read at the top
+ *      and the `refreshAfterStep` re-read).
+ *
+ *  300 SECONDS is therefore THREE full blockhash expiries back to back plus all the reads and every
+ *  bounded wait — roughly 270s of sends plus 30s of everything else — against a pass in which at most
+ *  two can stack today. It is deliberately generous, and the asymmetry is the argument: the failure
+ *  this guards against lasted 22 HOURS, so buying certainty with two extra minutes of detection
+ *  latency is free, while a threshold tight enough to cry wolf on a congested devnet would be
+ *  ignored within a week — and an alarm nobody trusts is the incident again.
+ *
+ *  IT IS NO LONGER SHORTER THAN ONE ROUND (~204s end to end), and that property is given up
+ *  deliberately rather than lost. It was borrowed from `STALL_AFTER_CONSECUTIVE_FAILURES`, where it
+ *  holds honestly — but the arithmetic above says a SINGLE PASS can legitimately outlast a nominal
+ *  round when a transition stacks two expiring sends, so "flag it inside one round" was an aspiration
+ *  the numbers do not support. Stating a property the code cannot keep is worse than not having it.
+ *
+ *  THE ERROR PATH IS NOT THE BINDING CONSTRAINT, and that is a consequence of where the mark is
+ *  taken rather than luck. `loopWatchdog.passCompleted()` is called in the main loop's `catch` as
+ *  well as on the success path — the invariant is THE LOOP WENT ROUND, not that it succeeded — so the
+ *  widest gap in a loop that is alive and failing is one failing pass plus `ERROR_BACKOFF_MAX_SECONDS`
+ *  = 30s, far inside this. That ordering is deliberate and it is what makes this watchdog safe to
+ *  point at `process.exit`: a devnet outage cannot trip it, because a keeper riding out an outage is
+ *  iterating. `stalledSince` via `STALL_AFTER_CONSECUTIVE_FAILURES` is the instrument for that state,
+ *  a restart does not fix it, and fly.toml's own comment says so — "a stalled keeper is one that is
+ *  catching, backing off and retrying, which a restart does not fix, because what is unwell is
+ *  devnet".
+ *
+ *  Against 22 hours, five minutes is 0.38%. */
+export const LOOP_STALL_PUBLISH_SECONDS = envNumber("KEEPER_LOOP_STALL_PUBLISH_SECONDS", 300);
+
+/** How long without a completed pass before the keeper EXITS NON-ZERO so Fly's restart policy
+ *  replaces the machine. Twice `LOOP_STALL_PUBLISH_SECONDS`.
+ *
+ *  WHY EXIT AT ALL, WHEN `/health` IS ALREADY FAILING BY NOW. Because on Fly Machines a failing
+ *  health check DOES NOT RESTART ANYTHING. Fly's docs are explicit: "your Machines won't
+ *  automatically restart or stop due to failing their health checks, this needs to be done manually"
+ *  (fly.io/docs/reference/health-checks/). A failing `[[http_service.checks]]` only makes fly-proxy
+ *  stop routing to the machine — which on a one-machine app means 503s, not a repair. The check has
+ *  teeth during a DEPLOY and none afterwards. Self-killing is the only in-platform self-correction
+ *  there is, and it is the pattern Fly's own staff recommend for exactly this. The restart policy
+ *  with no `[[restart]]` block in fly.toml is `on-fail`, which restarts on a non-zero exit and
+ *  deliberately does NOT restart on a clean one — so this must be `exit(1)` and not `exit(0)`.
+ *
+ *  600 SECONDS, AND THE NUMBER IS LOAD-BEARING IN A WAY THE FIRST ONE IS NOT — it is chosen against
+ *  Fly's restart BUDGET. `on-fail` allows up to 10 restarts within a 5-minute window and then leaves
+ *  the machine `stopped`; and because fly.toml sets `auto_start_machines = false`, `stopped` is
+ *  terminal until a human intervenes. A watchdog that could exhaust that budget would convert a
+ *  22-hour outage into a permanent one, which is a strictly worse incident than the one it fixes.
+ *  At 600s the shortest possible cycle is boot (tens of seconds, per fly.toml's 90s `grace_period`)
+ *  plus 600s of silence — ten minutes, twice the window. Two restarts can never fall inside one
+ *  5-minute window, let alone ten. The budget is UNREACHABLE BY CONSTRUCTION rather than merely
+ *  unlikely, and THAT is the property to preserve if anyone retunes this downward: the hard floor is
+ *  300s, and anything at or below it re-opens a permanent outage as a possible outcome.
+ *
+ *  THE 300-SECOND GAP BETWEEN PUBLISHING AND EXITING IS ALSO THE DOUBLE-SEND GUARD. A Solana
+ *  transaction is valid for 150 slots — about 60 seconds — after its recent blockhash, so anything
+ *  this process put on the wire before the first alarm is permanently unlandable five times over by
+ *  the time the second one fires. See `loopWatchdog.ts` for the rest of that argument, which is
+ *  stronger than the timing alone.
+ *
+ *  Ten minutes of downtime against 22 hours is 0.76%. */
+export const LOOP_STALL_EXIT_SECONDS = envNumber("KEEPER_LOOP_STALL_EXIT_SECONDS", 600);
+
+if (LOOP_STALL_EXIT_SECONDS <= LOOP_STALL_PUBLISH_SECONDS) {
+  throw new Error(
+    `KEEPER_LOOP_STALL_EXIT_SECONDS=${LOOP_STALL_EXIT_SECONDS} is not greater than ` +
+    `KEEPER_LOOP_STALL_PUBLISH_SECONDS=${LOOP_STALL_PUBLISH_SECONDS}. The keeper would kill itself at ` +
+    `or before the moment it first said why, so the one log line and the one published status that ` +
+    `explain the restart would never reach anybody — an operator would see a machine that reboots ` +
+    `itself for no stated reason, which is the 22-hour silence of 2026-08-16 with extra steps.`,
+  );
+}
+
+if (LOOP_STALL_PUBLISH_SECONDS <= ERROR_BACKOFF_MAX_SECONDS) {
+  throw new Error(
+    `KEEPER_LOOP_STALL_PUBLISH_SECONDS=${LOOP_STALL_PUBLISH_SECONDS} is not longer than ` +
+    `ERROR_BACKOFF_MAX_SECONDS=${ERROR_BACKOFF_MAX_SECONDS}. A keeper riding out a devnet outage ` +
+    `sleeps that long BETWEEN passes by design, so the watchdog would read a healthy backoff as a ` +
+    `hung loop and restart the machine over a condition a restart cannot fix — repeatedly, until Fly's ` +
+    `restart budget was spent and the machine was left stopped for good.`,
+  );
+}
+
 // ---- clocks that are not our clock ----------------------------------------------------------------
 
 /** How often the keeper re-measures the offset between its own clock and the chain's.

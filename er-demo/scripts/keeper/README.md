@@ -745,6 +745,25 @@ The six fields that carry the meaning:
   first clean pass. Note there is no `staleAfterSeconds` equivalent for it: the threshold is chosen on
   the keeper's side to mean "this is not a blip", precisely so a reader is never handed a countdown
   that flickers off and back on again.
+
+  **It has two causes, and they want opposite responses from an operator.** The one above is a keeper
+  that is *failing* — every pass throws, `keeper.lastError.context` says which part, and a restart does
+  not help because what is unwell is devnet. The second arrived with `loopWatchdog.ts` after the
+  22-hour hang of 2026-08-16: a keeper whose loop has **stopped**, producing no errors at all, which is
+  exactly why the failure counter above could not fire and never will. After
+  `LOOP_STALL_PUBLISH_SECONDS` (300) without a completed pass the watchdog sets this same field, and
+  there **a restart is the fix** — it is what recovered round #679, and five minutes later the keeper
+  performs it on itself.
+
+  One field for both, deliberately, and the alternative was rejected on record: a new
+  `notOpeningRounds` member would be a second alarm for one fact, and `isNotOpeningReason` refuses the
+  *whole file* on a reason it does not recognise, so a new member reaching a not-yet-redeployed page
+  would turn the status to null — coupling an incident fix to a front-end deploy. The reader's meaning
+  is unchanged either way ("alive, not progressing, promise nothing"), and both causes are cleared by
+  the same condition, a clean pass. **Which cause it is, is one `curl` away**: `/health` answers 503
+  with `loop.stalled` true for the hang and 200 for the failing keeper — and if the endpoint is
+  unreachable because fly-proxy has dropped the machine from rotation, that *is* the answer. `fly logs`
+  carries the `LOOP STALLED` block either way.
 - **`nextLobbyOpensAt`** — non-null **only** while the keeper is holding between rounds. Null during
   Lobby (the chain's own `lobby_closes_at` is the honest countdown there), and null during Drawing and
   Fight, because a VRF callback lands when it lands and a fight ends when it ends. There is no honest
@@ -794,23 +813,88 @@ the number.
 
 ### The health endpoint
 
-`GET /health` → `200 {"ok":true,"schema":5,"heartbeatAgeSeconds":N}`.
+```
+GET /health  ->  200 {"ok":true,"schema":6,"heartbeatAgeSeconds":1,"loop":{"passAgeSeconds":0.7,"stalled":false}}
+             ->  503 {"ok":false,"schema":6,"heartbeatAgeSeconds":1,"loop":{"passAgeSeconds":304.2,"stalled":true}}
+```
 
-**It makes no chain calls, and that is the whole design.** If it depended on RPC, a devnet blip — a
-429, a slow block — would fail the platform's check and get a *perfectly healthy keeper killed
+The `loop` block is on **every** answer, healthy or not, and `ok` always mirrors the status code — the
+Dockerfile's one-line probe reads `r.ok` and a human reads the body, and the two must never be able to
+come to different conclusions.
+
+**It makes no chain calls, and that is still the whole design.** If it depended on RPC, a devnet blip —
+a 429, a slow block — would fail the platform's check and get a *perfectly healthy keeper killed
 mid-round*, stranding a delegated round whose rent nothing reclaims. The blip is transient; the restart
-is not. So it answers from memory only, and it returns 200 for as long as the process is answering:
-answering an HTTP request at all already proves the thing a liveness probe is for.
+is not. So it answers from memory only: `heartbeatAgeSeconds` is one subtraction of two numbers already
+in memory and `loop` is another, and neither can be made slow, made to throw, or made to fail by
+anything happening on devnet.
 
-`heartbeatAgeSeconds` is **reported, not enforced**. A stopped heartbeat beside a responsive server
-would be a real bug worth seeing — but it is not made a failure, because the condition has never been
-observed and the cost of a false positive is a restart landing in the middle of a round. "Is the keeper
-*working*" is `keeper.heartbeatAt` and `keeper.stalledSince` in the status, which the front end already
-reads.
+**It used to return 200 for as long as the process was answering, and that was wrong.** The argument it
+stood on is worth keeping rather than deleting, because it was sound on the evidence it had and the
+shape of its failure is the interesting part: *answering an HTTP request at all already proves the thing
+a liveness probe is for — the process is up and its event loop is turning; the only condition failing
+would add is one nobody has observed, and the cost of a false positive is a restart landing in the
+middle of a round.* On **2026-08-16** somebody observed it. The keeper completed round #678 at
+08:53:38Z, printed its `ROUND #678 COMPLETE` banner, and then produced no log output of any kind **for
+22 hours**, never opening #679. It answered every one of Fly's probes with a 200 throughout, because a
+process stuck inside an `await` still has an event loop that turns and still serves HTTP perfectly.
+`heartbeatAt` was 2–3 seconds old the entire time, `stalledSince` was null, `notOpeningRounds` was null,
+and `fly status` read 1/1 checks passing over a dead arena. `fly machine restart` recovered it
+instantly. The premise "nobody has observed it" was the load-bearing clause, and it expired.
+
+**So exactly one condition now fails this check: the main loop has not completed a pass.**
+`scripts/keeper/loopWatchdog.ts` owns it, and three things about it are deliberate:
+
+- **It is still in-process arithmetic.** `deps.loop()` subtracts two numbers, from a *monotonic* clock
+  (`performance.now()`, not the keeper's wall clock, which an NTP correction inside a long-lived
+  Firecracker VM can step forward by minutes — and a step *backwards* would be the silent version, an
+  age that goes negative and a watchdog that never fires). The original design decision survives
+  untouched: a devnet blip still cannot fail this check, because a chain fault is not what it measures.
+- **It is not the heartbeat age.** That one is still **reported, not enforced**, and its original
+  argument is intact — a stopped heartbeat beside a responsive server would be a real bug worth seeing,
+  but it has never been observed and the cost of a false positive is a restart landing mid-round. Pass
+  age is a different fact, and it is the one with an incident behind it.
+- **It does not fire for a keeper that is merely failing.** The mark is taken in the main loop's `catch`
+  as well as on the success path, because the invariant is *the loop went round*, not that the pass
+  succeeded. A keeper catching, backing off and retrying through a devnet outage is iterating, so it
+  keeps marking, so it reads healthy here — and `KEEPER_LOOP_STALL_PUBLISH_SECONDS` is refused at boot
+  if it is not longer than `ERROR_BACKOFF_MAX_SECONDS` (30), so that cannot quietly stop being true.
+  The false positive the old argument feared is structurally excluded rather than traded away.
+
+`loop.passAgeSeconds` reads about a second on a healthy keeper (`LOOP_INTERVAL_SECONDS` is 1), and
+**0 before the loop has started** — the watchdog is armed on the line above the `while`, not at
+construction, because `startStatusServer` comes up minutes earlier so that Fly's check has something to
+answer during the slow half of boot, and counting that boot work as an overdue pass would 503 a keeper
+that was starting normally. Both fields are published on every answer rather than only when alarming,
+which is the point: a number that appeared only once it was bad would be one nobody could calibrate at
+the moment they most needed to.
+
+**Two stages, and the second is not optional.** At `LOOP_STALL_PUBLISH_SECONDS` (300) the keeper says
+so — it sets `keeper.stalledSince`, fails this endpoint, and writes a loud multi-line diagnosis to the
+log, whose silence *was* the incident. At `LOOP_STALL_EXIT_SECONDS` (600) it calls `process.exit(1)`,
+and Fly's `on-fail` restart policy replaces the machine.
+
+**Because a failing health check does not restart a Fly Machine, and this repo's comments used to be
+optimistic about that.** Fly's docs say it outright — "your Machines won't automatically restart or stop
+due to failing their health checks, this needs to be done manually"
+(<https://fly.io/docs/reference/health-checks/>). After a deploy has completed, a failing
+`[[http_service.checks]]` only takes the machine out of fly-proxy's rotation. The check has teeth
+*during* a deploy and none afterwards. So this endpoint failing buys **signal** — `fly status` stops
+reading 1/1, and any external monitor finally learns what nothing here could tell it before — and only
+the non-zero exit buys **self-correction**.
+
+**And on a one-machine app, being out of rotation has a consequence worth knowing before 3am:** while
+`/health` is 503, fly-proxy also stops serving `/keeper-status.json` and `/reclamation.json` from
+outside. During that window the diagnosis is reachable through `fly logs` and `fly ssh console`, not
+through `curl`. That is a cost of the 503 rather than an argument against it — the page reading "keeper
+is down" over a keeper that *is* down is the correct answer, and it is the answer it could not get for
+22 hours.
 
 (`engine/`'s Dockerfile points its check at `/live` and explicitly **not** at `/health`, for the
-mirror-image reason: engine's `/health` returns 503 on a solvency freeze, which a restart cannot fix.
-Here `/health` is the one that is safe to probe. The divergence is deliberate in both directions.)
+mirror-image reason: engine's `/health` returns 503 on a solvency freeze, which a restart cannot fix, so
+probing it there would restart-loop an incident. Here `/health` is still the one that is safe to probe,
+and the divergence survives the change above for a precise reason — the one condition added here is
+precisely a condition a restart **does** fix. It is what recovered #679.)
 
 ### The roster endpoint
 
@@ -971,6 +1055,8 @@ Configuration — safe in `fly.toml`'s `[env]`, except where noted.
 | `KEEPER_ROUND_RETENTION` | `20` (the chain's `MIN_RETAINED_ROUNDS`) | how many newest rounds are never closed. Can be **raised**, never lowered — a lower value is refused at boot |
 | `KEEPER_MIN_BALANCE_SOL` | `0.6` | below this the keeper opens no new rounds, while finishing any round in flight. Sized to cover the whole 0.470 SOL retention float plus margin, and it self-heals as closes return rent — see "The funding floor" |
 | `KEEPER_SWEEP_GAP_STOP_ROUNDS` | `25` | the `round_counter` − `rounds_swept` gap at which the keeper opens no more rounds. Must be **greater than** `KEEPER_ROUND_RETENTION` — a lower value is refused at boot, because a gap inside the retention window has cost nothing. Armed on the first treasury poll, and it **latches** — see "The sweep-gap stop" |
+| `KEEPER_LOOP_STALL_PUBLISH_SECONDS` | `300` | seconds without a **completed main-loop pass** before the keeper publishes `stalledSince`, fails `/health`, and logs the diagnosis. Sized as **three full blockhash expiries** (~90s each) plus the reads, because that is a bound the code cannot drift away from — every send here is capped by blockhash expiry and only the deliberately-swallowed ones can stack. It is *not* an enumeration of the phase machine: the first version of this number was, priced the worst pass at ~120s, and was **under a pass the keeper takes at the top of every round** — `driveSettled` runs `sweepHouseTake` (whose failure is swallowed, so an expiring sweep costs its full window *and the pass carries on*) and then `openNextRound` in the same pass, which is ~220s. Refused at boot if it is not longer than `ERROR_BACKOFF_MAX_SECONDS` (30) — see "The health endpoint" |
+| `KEEPER_LOOP_STALL_EXIT_SECONDS` | `600` | seconds without a completed pass before the keeper **exits 1** so Fly's `on-fail` policy replaces the machine, which is the only self-correction there is: a failing health check does not restart a Fly Machine. Refused at boot if it is not greater than the publish threshold, so the restart can never arrive before the log line explaining it. **Do not lower it below ~300**: `on-fail` allows 10 restarts per 5-minute window and then leaves the machine `stopped`, which under `auto_start_machines = false` is terminal until a human intervenes — at 600s plus boot, two restarts cannot fall inside one window *by construction*. The 300s gap to the publish threshold is also the double-send guard: a blockhash is valid ~60s, so nothing this process put on the wire before the first alarm can still land when it exits |
 | `VITE_KEEPER_STATUS_URL` | `/keeper-status.json` | **front end only**, set in Vercel, not here. The full absolute URL of the endpoint above |
 | `VITE_BASE_RPC` | `https://api.devnet.solana.com` | **front end only**, set in Vercel, not here. The browser's base-layer RPC — deliberately a *different* key from `KEEPER_BASE_RPC`, see below |
 
@@ -1019,15 +1105,26 @@ direction.
 
 ```
 $ curl -s https://bulls-arena-keeper-devnet.fly.dev/health
-{"ok":true,"schema":5,"heartbeatAgeSeconds":1}
+{"ok":true,"schema":6,"heartbeatAgeSeconds":1,"loop":{"passAgeSeconds":0.7,"stalled":false}}
 ```
 
+Two ages, and they answer two different questions — that is the whole shape of this body.
+
+`loop.passAgeSeconds` is the one with an incident behind it: seconds since the main loop last completed
+a pass, about a second on a healthy keeper (`LOOP_INTERVAL_SECONDS` is 1) and 0 before the loop has
+started. **It is the only thing on this server that can produce a non-200.** Past
+`KEEPER_LOOP_STALL_PUBLISH_SECONDS` (300) it flips `loop.stalled`, `ok` goes false and the status code
+goes 503; past `KEEPER_LOOP_STALL_EXIT_SECONDS` (600) the process exits 1 and Fly replaces the machine.
+Read it during normal operation so the number means something to you when it is not normal.
+
 `heartbeatAgeSeconds` under `staleAfterSeconds` (15) is what **you** read; the platform's check
-deliberately ignores it and passes on the 200 alone (see the health endpoint above — a check that
-could fail on a devnet blip would restart a healthy keeper mid-round). A number climbing past 15 while
-the endpoint still answers means the loop's timer has stopped: the process is up and not keeping time.
-That is the one condition here a restart genuinely fixes, and it is the one you have to act on
-yourself, because nothing else will.
+deliberately ignores it and passes on the 200 as far as this field is concerned (see the health endpoint
+above — a check that could fail on a devnet blip would restart a healthy keeper mid-round, and a stopped
+heartbeat beside a responsive server is still a condition nobody has observed). A number climbing past
+15 while the endpoint still answers means the heartbeat timer has stopped: the process is up and not
+keeping time. That is a condition a restart genuinely fixes, and it is still the one **you** have to act
+on yourself, because nothing else will — the watchdog watches the loop, not this timer, and it rides on
+this timer precisely because on 2026-08-16 the heartbeat was the one component that kept running.
 
 ```
 $ curl -s https://bulls-arena-keeper-devnet.fly.dev/keeper-status.json | jq '{schema, cluster: .chain.cluster, age: (now - .keeper.heartbeatAt | floor), stalled: .keeper.stalledSince, round: .round.no, phase: .round.phase, fighters: .round.fighterCount, held: .round.heldOpen}'
@@ -1039,17 +1136,24 @@ things to read, in order — everything else is detail:
 
 1. `age` (`now - keeper.heartbeatAt`) **under 15**. Over it, the keeper is down and nothing else in the
    file means anything.
-2. `keeper.stalledSince` is `null`. Non-null is the third state: alive, heartbeating, and its loop
-   failing every pass. A restart will not help — `keeper.lastError.context` says which PART is failing
-   (`main-loop`, `entry-fill`, `take-sweep`, …); the *reason* is in the Fly logs, deliberately, because
-   exception text names accounts and this file is public.
+2. `keeper.stalledSince` is `null`. Non-null is the third state — alive, heartbeating, not progressing
+   — and it now has **two causes that want opposite responses**, so read `/health` before you decide.
+   *Failing:* `/health` still answers 200, the loop is throwing every pass, and a restart will not help
+   — `keeper.lastError.context` says which PART is failing (`main-loop`, `entry-fill`, `take-sweep`, …);
+   the *reason* is in the Fly logs, deliberately, because exception text names accounts and this file is
+   public. *Hung:* `/health` answers 503 with `loop.stalled` true (or does not answer at all, because
+   fly-proxy has dropped the machine), there is no `lastError` to read because a stopped loop throws
+   nothing, and a restart **is** the fix — which the keeper performs on itself
+   `KEEPER_LOOP_STALL_EXIT_SECONDS` after the last completed pass. See "The health endpoint".
 3. `chain.cluster` is `"devnet"`. It is written unconditionally and asserted by the parser; if it were
    ever anything else, something is very wrong upstream.
 4. `round` is non-null and its `phase` moves. `roundsCompleted` rising is the "it is actually doing the
    job" signal; under `--hold-open` it can legitimately sit still for an hour, which is the point.
 
-If the browser says "keeper is down" while `/health` answers, it is almost always one of two things,
-and they are distinguishable in one command:
+If the browser says "keeper is down" while `/health` answers **200**, it is almost always one of two
+things, and they are distinguishable in one command. (A 503, or nothing answering at all, is a different
+problem and the section above it is the one to read: the loop has stopped, the machine is out of
+fly-proxy's rotation, and the page is correct.)
 
 ```sh
 # CORS — the page's origin is not on the list. Look for the allow header.
@@ -1172,10 +1276,13 @@ which it did not used to — see "The funding floor" above. Expect:
 - the round already in flight **finishes normally**. Its countdown keeps running, the fight resolves,
   the round settles and undelegates. Only the *next* one never opens;
 - `keeper.stalledSince` stays **null**, and this is the part worth internalising: refusing to open is
-  the correct outcome of a pass, not a failure, so nothing increments a failure count. A keeper out of
-  money is not a stalled keeper, and looking for `stalledSince` will mislead you;
-- `/health` keeps returning **200** throughout, and Fly does not restart anything. That is correct: the
-  process is fine, it is out of money, and restarting it would not add any.
+  the correct outcome of a pass, not a failure, so nothing increments a failure count — and for the
+  same reason nothing the loop watchdog measures moves either, because a pass that decided not to open
+  a round is still a pass that completed. A keeper out of money is not a stalled keeper under either
+  meaning of the word, and looking for `stalledSince` will mislead you;
+- `/health` keeps returning **200** throughout — the loop is still turning at 1Hz, which is the only
+  condition that endpoint fails on — and Fly does not restart anything. That is correct: the process is
+  fine, it is out of money, and restarting it would not add any.
 
 So the signature is **`lowBalance` non-null + `stalledSince` null + `/health` fine**. It resumes on its
 own within 15 seconds of a top-up landing — no restart, no deploy.

@@ -21,7 +21,7 @@
 // `honestNextLobbyOpensAt` is where both rules live, as a pure function, so both can be checked here
 // without a chain, a filesystem or a clock.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,7 +35,7 @@ import {
   createStatusPublisher, honestEntriesCloseAt, honestNextLobbyOpensAt, roundStatusFrom,
   type CountdownLatch,
 } from "./statusFile.ts";
-import { RESULT_HOLD_SECONDS } from "./config.ts";
+import { HEARTBEAT_INTERVAL_SECONDS, RESULT_HOLD_SECONDS } from "./config.ts";
 
 const NOW = 1_800_000_000;
 
@@ -57,6 +57,109 @@ function publisherInTempDir(houseOnlyRounds = false) {
     filePath: join(dir, "keeper-status.json"),
   });
 }
+
+describe("the heartbeat carries the loop watchdog", () => {
+  // WHY THE HOOK IS HERE AT ALL. On 2026-08-16 the keeper's main loop stopped for 22 hours and THIS
+  // INTERVAL KEPT FIRING THROUGHOUT — `heartbeatAt` stayed 2-3 seconds old the whole time. That makes
+  // it the one component in the process with evidence that it survives the fault, which is why
+  // `loopWatchdog.check()` rides it rather than a `setInterval` of its own. A watchdog on a second
+  // timer would be a new thing that can stop, watching a thing that stopped.
+
+  afterEach(() => { vi.useRealTimers(); });
+
+  /** A MOVING CLOCK, not the file's frozen `NOW`. The property most of these tests are really about
+   *  is that `heartbeatAt` KEPT ADVANCING — and against `() => NOW` that assertion is vacuous, since
+   *  the publisher renders the same value at construction and would pass whether or not the timer
+   *  ever fired. The clock is stepped by hand alongside the fake timers. */
+  function beatingPublisher(onHeartbeat: () => void) {
+    const dir = mkdtempSync(join(tmpdir(), "keeper-status-"));
+    const clock = { now: NOW };
+    const publisher = createStatusPublisher({
+      programId: "Pr0gram11111111111111111111111111111111111",
+      arenaPda: "Aren4Pda1111111111111111111111111111111111",
+      nowSec: () => clock.now,
+      houseOnlyRounds: false,
+      filePath: join(dir, "keeper-status.json"),
+      onHeartbeat,
+    });
+    return { publisher, clock };
+  }
+
+  /** Advance the fake timers and the injected clock together, one heartbeat at a time, so every beat
+   *  observes a different second. */
+  function beat(clock: { now: number }, times: number): void {
+    for (let i = 0; i < times; i++) {
+      clock.now += HEARTBEAT_INTERVAL_SECONDS;
+      vi.advanceTimersByTime(HEARTBEAT_INTERVAL_SECONDS * 1_000);
+    }
+  }
+
+  it("runs the hook on every beat", () => {
+    vi.useFakeTimers();
+    const onHeartbeat = vi.fn();
+    const { publisher, clock } = beatingPublisher(onHeartbeat);
+    publisher.startHeartbeat();
+    beat(clock, 5);
+    publisher.stopHeartbeat();
+    expect(onHeartbeat).toHaveBeenCalledTimes(5);
+    // And it genuinely stops, so a keeper on its way out is not still running a watchdog that could
+    // exit the process during the last lines of `main()`.
+    beat(clock, 5);
+    expect(onHeartbeat).toHaveBeenCalledTimes(5);
+  });
+
+  it("runs it BEFORE the write, so a stall it publishes reaches the file on the same beat", () => {
+    // Two seconds is not much, but the ordering is free and the alternative is a status file that
+    // disagrees with the log line that was written from the same instant.
+    vi.useFakeTimers();
+    const { publisher, clock } = beatingPublisher(() => publisher.setStalledSince(NOW - 300));
+    publisher.startHeartbeat();
+    beat(clock, 1);
+    publisher.stopHeartbeat();
+    const parsed = parseKeeperStatus(JSON.parse(publisher.body()))!;
+    expect(parsed.keeper.stalledSince).toBe(NOW - 300);
+    // ON THE SAME BEAT: the heartbeat this payload carries is the one the hook ran before, not a
+    // later one. Without this the assertion above would also pass if the stall arrived a beat late.
+    expect(parsed.keeper.heartbeatAt).toBe(NOW + HEARTBEAT_INTERVAL_SECONDS);
+  });
+
+  it("keeps beating when the hook throws", () => {
+    // THE ONE PLACE IN THIS MODULE WHERE SWALLOWING IS THE SAFER ERROR. The heartbeat is the last
+    // instrument standing during the fault the hook exists to detect; letting a throw out of here
+    // would stop `heartbeatAt` advancing and turn a DETECTED hang into a silent one — the 2026-08-16
+    // incident again, with an extra step.
+    vi.useFakeTimers();
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      let beats = 0;
+      const { publisher, clock } = beatingPublisher(() => {
+        beats += 1;
+        throw new Error("watchdog is broken");
+      });
+      publisher.startHeartbeat();
+      beat(clock, 3);
+      publisher.stopHeartbeat();
+      expect(beats).toBe(3);
+      // AND THE PAYLOAD ADVANCED THROUGH ALL THREE, which is the property that actually matters and
+      // the reason the clock above moves. Against a frozen `nowSec` this assertion would hold even if
+      // the timer had died on beat one.
+      expect(parseKeeperStatus(JSON.parse(publisher.body()))!.keeper.heartbeatAt)
+        .toBe(NOW + HEARTBEAT_INTERVAL_SECONDS * 3);
+      expect(stderr.mock.calls.flat().join("\n")).toContain("heartbeat hook threw");
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it("is optional, so a publisher with no watchdog beats exactly as it always did", () => {
+    vi.useFakeTimers();
+    const publisher = publisherInTempDir();
+    publisher.startHeartbeat();
+    expect(() => vi.advanceTimersByTime(HEARTBEAT_INTERVAL_SECONDS * 1_000 * 3)).not.toThrow();
+    publisher.stopHeartbeat();
+    expect(parseKeeperStatus(JSON.parse(publisher.body()))).not.toBeNull();
+  });
+});
 
 function roundIn(phase: number, no = 7): KeeperRoundStatus {
   return {
@@ -507,6 +610,58 @@ describe("the published status identifies none of the arena's own wallets", () =
       expectNothingIdentifying(body);
     });
   }
+
+  // ---- the loop watchdog's publish, against the same sweep ---------------------------------------
+  //
+  // The watchdog added by the 2026-08-16 incident (see `loopWatchdog.ts`) publishes into this payload,
+  // so it has to pass the same door as everything else. It publishes ONE field and that field is a
+  // number, which is why these are short — but "it is obviously fine" is precisely what was said about
+  // `lastError.message`, and that leaked the arena's own wallets to every browser.
+
+  it("publishes nothing identifying when the loop watchdog fires, with house-only mode ON", () => {
+    // HOUSE-ONLY MODE ON, deliberately, because that is the configuration in which this payload is
+    // most at risk of describing the arena's own wallets and it is the mode the byte sweep exists to
+    // be honest about. The watchdog's stall lands on top of it.
+    const publisher = publisherInTempDir(true);
+    publisher.setRound(roundIn(Phase.Fight));
+    publisher.setStalledSince(NOW - 300); // exactly what `onStall` does in keeper.ts
+    publisher.publish();
+
+    const body = publisher.body();
+    const parsed = parseKeeperStatus(JSON.parse(body));
+    expect(parsed).not.toBeNull();
+    // Real first — see the block comment. Both facts genuinely reached the payload.
+    expect(parsed!.keeper.houseOnlyRounds).toBe(true);
+    expect(parsed!.keeper.stalledSince).toBe(NOW - 300);
+    expectNothingIdentifying(body);
+  });
+
+  it("adds NOTHING to the closed vocabulary — the watchdog leaves `notOpeningRounds` null", () => {
+    // THE DESIGN DECISION THIS PINS, which is a rejection rather than an omission. A hung loop does
+    // mean no further round is coming, so a fourth `NOT_OPENING_REASONS` member was the obvious move.
+    // It was rejected for two reasons, both in `loopWatchdog.ts`'s header:
+    //
+    //   * `stalledSince` ALREADY means "alive and not progressing", `isKeeperStalled` already reads
+    //     it, and the page already stops its countdown on it. Publishing both would be two alarms for
+    //     one fact — which `openNextRound` refuses one screen over, in as many words.
+    //   * `isNotOpeningReason` refuses the WHOLE FILE on a reason it does not recognise, so a new
+    //     member reaching a front end deployed before it turns the entire status to null. An incident
+    //     fix has to be shippable on its own, without a coupled front-end deploy.
+    //
+    // If somebody later adds the member, this test fails and they have to come back and re-argue it.
+    const publisher = publisherInTempDir(true);
+    publisher.setRound(roundIn(Phase.Fight));
+    publisher.setStalledSince(NOW - 300);
+    publisher.publish();
+
+    const parsed = parseKeeperStatus(JSON.parse(publisher.body()))!;
+    expect(parsed.keeper.stalledSince).toBe(NOW - 300);
+    expect(parsed.keeper.notOpeningRounds).toBeNull();
+    // And the vocabulary itself is untouched, which is the assertion that actually catches the
+    // addition — a new member would be published by some other call site and slip past the check
+    // above.
+    expect(NOT_OPENING_REASONS).toEqual(["low-balance", "rent-not-reclaimed", "rent-not-swept"]);
+  });
 
   it("publishes the same mode byte whoever is standing in the round", () => {
     // THE PROPERTY THE FIELD IS DEFENDED ON, over the bytes rather than over the parsed object: it

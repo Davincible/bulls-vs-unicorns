@@ -53,6 +53,10 @@ function deps(overrides: Partial<Parameters<typeof handleKeeperRequest>[1]> = {}
   return {
     body: () => BODY,
     heartbeatAgeSeconds: () => 1,
+    // A TURNING LOOP BY DEFAULT, so every pre-existing test in this file keeps describing the healthy
+    // server it always described. The stalled case is opted into explicitly, per the same rule as the
+    // roster token below: a test that depends on an unhealthy keeper should say so on its own line.
+    loop: () => ({ passAgeSeconds: 1, stalled: false }),
     reclamation: () => RECLAMATION_BODY,
     policy: resolveAllowedOrigins("https://arena.example"),
     houseToken: null as string | null,
@@ -193,6 +197,116 @@ describe("the health endpoint", () => {
 
   it("is no-store — a cached 200 would answer for a process that has since stopped", () => {
     expect(handleKeeperRequest(get(HEALTH_PATH), deps()).headers.get("cache-control")).toBe("no-store");
+  });
+
+  // ---- loop liveness, added after the 22-hour silence of 2026-08-16 -------------------------------
+  //
+  // The keeper ran round #678 to completion, hung, and answered every one of Fly's probes with a 200
+  // for 22 hours, because a process whose main loop is stuck inside an await still turns its event
+  // loop and still serves HTTP perfectly. `fly status` read 1/1 checks passing over a dead arena.
+  // This is the one condition this endpoint now fails on.
+
+  it("fails 503 when the main loop has stopped completing passes", () => {
+    const res = handleKeeperRequest(get(HEALTH_PATH), deps({
+      loop: () => ({ passAgeSeconds: 240, stalled: true }),
+    }));
+    expect(res.status).toBe(503);
+    return expect(res.json()).resolves.toMatchObject({
+      ok: false,
+      loop: { passAgeSeconds: 240, stalled: true },
+    });
+  });
+
+  it("reports the pass age when HEALTHY too, not only when alarming", () => {
+    // A number that only appears once it is bad is a number nobody can calibrate at the moment they
+    // most need to. This is also what makes the endpoint answer "is the loop running", rather than
+    // only "is it definitely not".
+    const res = handleKeeperRequest(get(HEALTH_PATH), deps({
+      loop: () => ({ passAgeSeconds: 0.8, stalled: false }),
+    }));
+    expect(res.status).toBe(200);
+    return expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      loop: { passAgeSeconds: 0.8, stalled: false },
+    });
+  });
+
+  it("keeps the body's `ok` and the status code agreeing, in both directions", async () => {
+    // The Dockerfile's probe reads `r.ok`, which is the STATUS CODE; a human reads the body. They
+    // must never reach different conclusions from one response — so this reads BOTH and compares
+    // them to each other, rather than asserting the status code twice in different spellings.
+    for (const stalled of [false, true]) {
+      const res = handleKeeperRequest(get(HEALTH_PATH), deps({
+        loop: () => ({ passAgeSeconds: 1, stalled }),
+      }));
+      const body = await res.json() as { ok: boolean };
+      expect(body.ok, `body.ok at stalled=${stalled}`).toBe(res.status === 200);
+      expect(res.status, `status at stalled=${stalled}`).toBe(stalled ? 503 : 200);
+    }
+  });
+
+  it("still fails on a stalled loop while the heartbeat is perfectly fresh", () => {
+    // THE INCIDENT, EXACTLY. `heartbeatAt` was 2-3 seconds old continuously for 22 hours — it was
+    // telling the truth, because it proves the PROCESS is alive and has never claimed more. This
+    // endpoint must not be reassured by it.
+    const res = handleKeeperRequest(get(HEALTH_PATH), deps({
+      heartbeatAgeSeconds: () => 2,
+      loop: () => ({ passAgeSeconds: 79_200, stalled: true }),
+    }));
+    expect(res.status).toBe(503);
+    return expect(res.json()).resolves.toMatchObject({ ok: false, heartbeatAgeSeconds: 2 });
+  });
+
+  it("does NOT fail on a stale heartbeat alone — that argument is untouched", () => {
+    // The original reasoning survives for the heartbeat: a stopped heartbeat beside a responsive
+    // server remains a condition nobody has observed, so it stays reported and unactioned. Only the
+    // clause about pass age expired.
+    const res = handleKeeperRequest(get(HEALTH_PATH), deps({
+      heartbeatAgeSeconds: () => 9_999,
+      loop: () => ({ passAgeSeconds: 1, stalled: false }),
+    }));
+    expect(res.status).toBe(200);
+  });
+
+  it("carries no interpolated input in the new fields, only numbers and booleans", () => {
+    // THE SAME RULE `statusFile.ts`'s header sets for `keeper-status.json`, applied to the channel
+    // that just grew a field: nothing interpolated from an exception, an account or a count may enter
+    // a payload this process publishes. It is asserted over the KEYS AND THE VALUE TYPES rather than
+    // by matching on a fixture, because that is what catches a future field carrying a fact under a
+    // name nobody thought to check — which is precisely how `lastError.message` once leaked a house
+    // entry count into the browser's payload.
+    //
+    // `loop` has no inputs at all: `stalled` is a boolean the watchdog latched from its own clock and
+    // `passAgeSeconds` is one subtraction of two monotonic readings. Neither can be made to carry a
+    // pubkey, a fighter count or the text of an exception, whatever goes wrong upstream.
+    const res = handleKeeperRequest(get(HEALTH_PATH), deps({
+      loop: () => ({ passAgeSeconds: 240.5, stalled: true }),
+    }));
+    return res.json().then((raw) => {
+      const body = raw as Record<string, unknown>;
+      expect(Object.keys(body).sort()).toEqual(["heartbeatAgeSeconds", "loop", "ok", "schema"]);
+      const loop = body.loop as Record<string, unknown>;
+      expect(Object.keys(loop).sort()).toEqual(["passAgeSeconds", "stalled"]);
+      expect(typeof loop.passAgeSeconds).toBe("number");
+      expect(typeof loop.stalled).toBe("boolean");
+      // And no strings anywhere in the response but the ones the transport requires. A payload of
+      // numbers and booleans cannot leak; the moment one of these becomes a string, somebody has to
+      // come back and argue for it here.
+      expect(JSON.stringify(body)).not.toMatch(/"[^"]*":\s*"/);
+    });
+  });
+
+  it("makes no chain call to decide any of it — `loop` is asked once and nothing else is", () => {
+    // `/health`'s no-chain-calls contract is the design decision in `statusServer.ts` most worth
+    // defending, and adding a failure condition is exactly the change that could break it. The body
+    // is never read, and `loop` is one subtraction of two numbers already in memory.
+    const loop = vi.fn(() => ({ passAgeSeconds: 1, stalled: false }));
+    const body = vi.fn(() => BODY);
+    const reclamation = vi.fn(() => RECLAMATION_BODY);
+    handleKeeperRequest(get(HEALTH_PATH), deps({ loop, body, reclamation }));
+    expect(loop).toHaveBeenCalledTimes(1);
+    expect(body).not.toHaveBeenCalled();
+    expect(reclamation).not.toHaveBeenCalled();
   });
 });
 
