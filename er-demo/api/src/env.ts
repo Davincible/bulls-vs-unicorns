@@ -67,8 +67,20 @@ export const HOUSE_TOKEN_ENV = "KEEPER_HOUSE_TOKEN";
  *
  * Nothing in this directory reads it — it is the browser's. The constant is here so that a search
  * for either name finds both.
+ *
+ * IT NAMED A VARIABLE THAT DOES NOT EXIST UNTIL 2026-08-15, and the failure was the exact one the
+ * paragraph above describes. This said `VITE_XLINK_TRUSTED_KEYS`; the browser reads
+ * `VITE_LINK_ATTESTATION_KEYS` (`src/v2/data/linkSource.ts`, `PRODUCTION_KEYS_RAW`). Nothing caught
+ * it because nothing in this directory consumes the constant and `env.test.ts` only asserted that it
+ * starts with `VITE_` — so the one place the two names had to agree was a string literal compared
+ * against nothing.
+ *
+ * The cost was not hypothetical: `xlink-keygen.ts` INTERPOLATES this constant into the setup
+ * instructions it prints, so following those instructions to the letter set a variable no code reads,
+ * Vite did not inline it (it inlines only referenced `VITE_*`), and the site rendered as though
+ * nobody had linked — silently, which is what the keygen script warns about four lines from here.
  */
-export const CLIENT_TRUSTED_KEYS_ENV = "VITE_XLINK_TRUSTED_KEYS";
+export const CLIENT_TRUSTED_KEYS_ENV = "VITE_LINK_ATTESTATION_KEYS";
 
 /** Base64 of exactly 32 bytes: 43 payload characters and one `=`. Anchored, so a longer secret with
  *  a valid prefix is a failure rather than a truncation. */

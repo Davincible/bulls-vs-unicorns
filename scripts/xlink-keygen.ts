@@ -15,14 +15,14 @@
 //
 //     the public key must be in the CLIENT's trusted set, or nothing works and nothing says so.
 //
-// If `VITE_XLINK_TRUSTED_KEYS` does not contain the public half of `XLINK_ATTESTATION_SECRET`, every
+// If `VITE_LINK_ATTESTATION_KEYS` does not contain the public half of `XLINK_ATTESTATION_SECRET`, every
 // attestation the API signs is rejected by `verifyAttestation()` as `untrusted-key`, `linkMapFrom`
 // drops all of them, and the leaderboard renders exactly as it does when nobody has linked — which
 // is what it renders for most players anyway. There is no screen that could show the difference and
 // no error a player generates. Copy both lines below, together, in one sitting.
 //
 // ROTATION IS A DEPLOY, NOT A FLAG DAY, and that is the whole reason the client takes a SET. Add the
-// new public key to `VITE_XLINK_TRUSTED_KEYS` alongside the old one and deploy; THEN switch
+// new public key to `VITE_LINK_ATTESTATION_KEYS` alongside the old one and deploy; THEN switch
 // `XLINK_ATTESTATION_SECRET` to the new secret and deploy again; then remove the old public key on a
 // third deploy, once nothing is signing with it. At no point is there a window in which a live
 // attestation fails to verify. With a single key there is no such ordering — every cached bundle in
