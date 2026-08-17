@@ -9,5 +9,20 @@
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.scripts.tsbuildinfo",
     "noEmit": true
   },
-  "include": ["scripts"]
+  //
+  // `../scripts` IS THE REPO-ROOT `/scripts/` DIRECTORY, and adding it closed the same hole this
+  // file's own header describes, one level up. The four operator commands for the wallet↔X register
+  // (`xlink-keygen`, `xlink-seed`, `xlink-ingest`, `xlink-suppress`) live at the repo root — they are
+  // `.vercelignore`d and never deployed, so they cannot sit under `/api`, and `er-demo/api/README.md`
+  // records that placement deliberately. The consequence nobody had noticed is that they were covered
+  // by NO tsconfig at all: this project's `include` stopped at `er-demo/scripts`, `tsconfig.api.json`
+  // covers `api` and `../api`, and there is no tsconfig at the repo root. So four files that talk
+  // directly to Postgres, import the shared store modules and are run by `bun` (which strips types
+  // without checking them) could type-error in silence — which is word for word the failure the header
+  // above was written about.
+  //
+  // Found while making `IngestTarget.avatarUrl` nullable (migration 0002): `xlink-ingest.ts` had to
+  // learn about the new state, and the gate that should have insisted on it did not exist. It does now.
+  // Both directories are checked by `npm run typecheck` and by the command in the header.
+  "include": ["scripts", "../scripts"]
 }

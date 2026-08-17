@@ -636,26 +636,65 @@ export function profileUrl(record: LinkRecord): string {
 // ------------------------------------------------------------------------------------------------
 
 /**
- * THE SHAPES OF THE LINK CEREMONY, defined now and deliberately unimplemented.
+ * THE SHAPES OF THE LINK CEREMONY.
  *
  * They live here so that the contract is complete — a reader can see the whole feature from one file
  * — and so that the identity provider stays an implementation detail. Nothing below names Privy or
  * X: the browser posts a `proof` it does not interpret, the server hands it to whichever broker is
  * configured, and swapping brokers changes neither this file nor anything that imports it. That
- * substitutability is what `TWITTER-CONNECT.md` §5's signed-attestation design was bought for.
+ * substitutability is what `TWITTER-CONNECT.md` §5's signed-attestation design was bought for, and it
+ * has now been spent once — see below.
  *
  * THERE IS NO SHAPE HERE THAT CAN CARRY A TYPED HANDLE. `LinkRequest` has no `handle` field and never
  * will. The identity comes from `proof`, which only the broker can produce — so the old `prompt()`
  * fallback has nowhere to put its answer, and "OAuth failed" has exactly one representable outcome,
  * which is no link. That is the header's rule, expressed one layer up.
+ *
+ * ================================================================================================
+ * WHAT CHANGED WHEN THE BROKER BECAME PRIVY, AND WHY THE CONTRACT SHRANK RATHER THAN GREW.
+ *
+ * `TWITTER-CONNECT.md` §3.4 held Privy as the sanctioned contingency — "if X refuses or delays a
+ * developer account, Privy is the Stage-3 substitute and nothing else in the plan changes" — and that
+ * contingency was taken. Almost nothing here changed, which is the design working; the one thing that
+ * did is worth recording, because it made this file SMALLER.
+ *
+ * The raw-X ceremony needed two legs of our own — `POST /api/x/start` to mint PKCE state and
+ * `GET /api/x/callback` to exchange the code, fetch `/2/users/me` and revoke the access token — and a
+ * `ticket` to carry the result of the second into the third. With Privy, the OAuth round trip happens
+ * between the browser and `privy.io`; what comes back is an identity token that ALREADY CARRIES the
+ * verified X account, signed by Privy, verifiable by anybody holding Privy's public keys. So:
+ *
+ *   * `X_START_ENDPOINT` and `X_CALLBACK_ENDPOINT` are gone. Not "unimplemented" — they do not exist,
+ *     and a constant naming a route with no function behind it is a lie a future reader would build
+ *     against. If the raw-X path is ever taken (§2's costs make it the cheaper one at scale), they
+ *     come back together with the two functions, and nothing else on this page has to move.
+ *   * `ticket` became `proof`, which is the name this header always used for it, and it moved onto the
+ *     CHALLENGE request only. The server verifies the proof, extracts the identity, and writes both
+ *     into the message it stores — so by the time the signature comes back there is nothing left for
+ *     the client to prove, and `LinkRequest` has no proof field for a stale one to be replayed in.
+ *   * There is no token for us to revoke, because we are never issued one. §6.4's "there is no
+ *     credential to leak" is now true by construction rather than by discipline: the X access token
+ *     exists only inside Privy, and the identity token we do see is verified, read and dropped.
+ * ================================================================================================
  */
 export interface ChallengeRequest {
   /** The wallet CONNECTED IN THE BROWSER AT CLAIM TIME. Never a hint carried from the start of the
    *  ceremony: what the user sees is what they sign is what gets linked. */
   readonly wallet: string;
-  /** Single-use, issued by `/api/x/callback`, five minute TTL. Proves fact A (this browser controls
-   *  the X account) without the browser ever holding an X credential. */
-  readonly ticket: string;
+  /** Which ceremony this is. An unlink challenge carries no `proof` — a player who has lost access to
+   *  their X account must still be able to take their face off this site, so revocation cannot depend
+   *  on the identity provider they are walking away from. */
+  readonly purpose: "link" | "unlink";
+  /**
+   * THE BROKER'S PROOF THAT THIS BROWSER CONTROLS AN X ACCOUNT. Required for `purpose: "link"` and
+   * FORBIDDEN for `purpose: "unlink"` — the server refuses a request that carries one anyway rather
+   * than ignoring it, because a credential arriving where none is wanted is a client bug worth
+   * hearing about.
+   *
+   * Opaque to this file and to every client that sends it. Today it is a Privy identity token; the
+   * client's only job is to obtain one and hand it over unread.
+   */
+  readonly proof?: string;
 }
 
 export interface ChallengeResponse {
@@ -667,25 +706,30 @@ export interface ChallengeResponse {
   readonly expiresAt: number;
 }
 
+/**
+ * `POST /api/x/link`.
+ *
+ * IDENTICAL IN SHAPE TO `UnlinkRequest`, AND THAT IS NOT AN OVERSIGHT. Both are "here is a signature
+ * over a challenge you issued"; the HTTP METHOD is the discriminator, and the challenge itself
+ * remembers which ceremony it belongs to (it was recorded when the nonce was minted, and the intent is
+ * written into the bytes the player signed). Two names are kept because the two requests mean
+ * different things to a reader, and because merging them would invite a future field onto both.
+ */
 export interface LinkRequest {
   readonly wallet: string;
-  readonly ticket: string;
   readonly nonce: string;
   /** base64 of the 64-byte detached ed25519 signature over utf8(`ChallengeResponse.message`). Fact B.
    *  Bound to fact A because the X id is INSIDE the bytes that were signed. */
   readonly signature: string;
 }
 
-/** `DELETE /api/x/link` — authenticated by a FRESH wallet signature over a FRESH nonce, so a stolen
- *  ticket or a stale session cannot unlink somebody. Same shape as a link minus the ticket: there is
- *  no X account to prove, only a wallet. */
+/** `DELETE /api/x/link` — authenticated by a FRESH wallet signature over a FRESH nonce, so a stale
+ *  session cannot unlink somebody. There is no X account to prove here, only a wallet. */
 export interface UnlinkRequest {
   readonly wallet: string;
   readonly nonce: string;
   readonly signature: string;
 }
 
-export const X_START_ENDPOINT = "/api/x/start";
-export const X_CALLBACK_ENDPOINT = "/api/x/callback";
 export const X_CHALLENGE_ENDPOINT = "/api/x/challenge";
 export const X_LINK_ENDPOINT = "/api/x/link";

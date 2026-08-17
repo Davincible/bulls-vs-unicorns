@@ -5,7 +5,7 @@
  * IDL can be found at `target/idl/bulls_arena.json`.
  */
 export type BullsArena = {
-  "address": "ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe",
+  "address": "FcLNVuH9A354Kcjyctxn422naJ1mDm32QCJxaS7x1vQE",
   "metadata": {
     "name": "bullsArena",
     "version": "0.1.0",
@@ -517,38 +517,38 @@ export type BullsArena = {
             "program": {
               "kind": "const",
               "value": [
-                196,
+                217,
+                16,
+                217,
                 6,
-                230,
-                80,
-                29,
-                123,
-                80,
-                54,
-                219,
-                5,
-                26,
-                63,
-                232,
-                50,
-                187,
-                134,
-                103,
-                13,
-                213,
-                67,
-                189,
-                153,
-                75,
-                68,
-                102,
-                81,
-                94,
+                238,
+                138,
+                190,
+                154,
+                220,
+                79,
+                105,
+                131,
+                32,
                 92,
-                143,
-                124,
-                196,
-                13
+                210,
+                14,
+                65,
+                62,
+                177,
+                179,
+                210,
+                54,
+                159,
+                222,
+                129,
+                235,
+                246,
+                212,
+                230,
+                23,
+                137,
+                167
               ]
             }
           }
@@ -630,7 +630,7 @@ export type BullsArena = {
         },
         {
           "name": "ownerProgram",
-          "address": "ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe"
+          "address": "FcLNVuH9A354Kcjyctxn422naJ1mDm32QCJxaS7x1vQE"
         },
         {
           "name": "delegationProgram",

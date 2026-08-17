@@ -1,6 +1,13 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { assertNotReserved, isReservedXId, RESERVED_MOCK_X_IDS, ReservedXIdError } from "./reserved.ts";
+import {
+  assertNotReserved,
+  isReservedHandle,
+  isReservedXId,
+  RESERVED_HANDLES,
+  RESERVED_MOCK_X_IDS,
+  ReservedXIdError,
+} from "./reserved.ts";
 
 /** The fixture the deny list exists because of. Read at test time only — a serverless function has
  *  no `public/` and a deny list that depends on a file being present is a deny list that fails open
@@ -54,5 +61,54 @@ describe("enforcement", () => {
     })();
     expect(e.xId).toBe("42");
     expect(e.name).toBe("ReservedXIdError");
+  });
+});
+
+describe("isReservedHandle", () => {
+  it("refuses the site's own names", () => {
+    // A fighter called `@bullsvsunicorns`, with a real avatar, on our own leaderboard, reads as US. That
+    // is the same class of misrepresentation as §6.3's house-wallet rule.
+    expect(isReservedHandle("bullsvsunicorns")).toBe(true);
+    expect(isReservedHandle("bullsvunicorns")).toBe(true);
+  });
+
+  it("refuses handles that carry the operator's authority", () => {
+    for (const handle of ["support", "admin", "moderator", "staff", "official", "security", "team", "help"]) {
+      expect(isReservedHandle(handle)).toBe(true);
+    }
+  });
+
+  it("folds case, because that is not a different identity", () => {
+    // X handles are case-insensitive for the purposes of who you appear to be: `@Support` and `@support`
+    // are different strings and the same impersonation.
+    expect(isReservedHandle("SUPPORT")).toBe(true);
+    expect(isReservedHandle("Admin")).toBe(true);
+    expect(isReservedHandle("  support  ")).toBe(true);
+  });
+
+  it("is an EXACT match and not a substring test", () => {
+    // The rejected alternative, asserted so nobody helpfully "improves" it: a shape rule would refuse
+    // `@supporter`, `@teammate` and every other ordinary account belonging to the people this feature
+    // exists for. Those refusals would be unexplainable to the player and invisible to us. The answer to
+    // a creative impersonator is `scripts/xlink-suppress.ts`, which exists and is tested.
+    for (const ordinary of ["supporter", "adminx", "teammate", "helpful", "unicorns", "bulls"]) {
+      expect(isReservedHandle(ordinary)).toBe(false);
+    }
+  });
+
+  it("is overridable for tests, like the id list", () => {
+    expect(isReservedHandle("nobody", new Set(["nobody"]))).toBe(true);
+    expect(isReservedHandle("support", new Set(["nobody"]))).toBe(false);
+  });
+
+  it("holds only lowercase entries, or the fold above would miss them", () => {
+    // A capital letter in the list is an entry that can never match, and nothing would say so.
+    for (const entry of RESERVED_HANDLES) expect(entry).toBe(entry.toLowerCase());
+  });
+
+  it("holds only handles X could actually issue", () => {
+    // An entry longer than 15 characters or carrying a `-` is an entry no account can have, which is a
+    // rule protecting nothing while looking like protection.
+    for (const entry of RESERVED_HANDLES) expect(entry).toMatch(/^[a-z0-9_]{1,15}$/);
   });
 });

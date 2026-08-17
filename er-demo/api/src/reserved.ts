@@ -60,3 +60,68 @@ export function assertNotReserved(xId: string, reserved: ReadonlySet<string> = R
 export function isReservedXId(xId: string, reserved: ReadonlySet<string> = RESERVED_MOCK_X_IDS): boolean {
   return reserved.has(xId);
 }
+
+// ================================================================================================
+// HANDLES THE REGISTER WILL NOT PUT A FACE BESIDE, EVEN THOUGH X SAYS THEY ARE REAL.
+//
+// Every handle that reaches the write path is GENUINE — it came out of a verified identity token, so
+// whoever presented it really does control that X account. This list is not about forgery. It is about
+// one specific confusion the arena's own page would create: a fighter labelled `@support` or
+// `@bullsvsunicorns`, with a real avatar, on our own leaderboard, reads as US. That is a
+// misrepresentation of the same shape as §6.3's house-wallet rule — an account wearing the operator's
+// authority — and it is the one the operator cannot answer afterwards, because the impersonation
+// happens on the page the player is already trusting.
+//
+// ------------------------------------------------------------------------------------------------
+// EXACT MATCHES ONLY, AND THE ALTERNATIVE WAS SERIOUSLY CONSIDERED AND REJECTED.
+//
+// The tempting rule is a SHAPE — "any handle containing `bullsvsunicorns`", or "anything ending in
+// `_support`". It catches far more, and it refuses `@bullsvsunicornsfan`, `@ilovebullsvsunicorns` and
+// every other account belonging to exactly the people this feature exists for. That failure is
+// unexplainable to the player (the copy they would see is `FAILURE_COPY.unavailable`, which says "try
+// again in a minute" about something that will never work) and invisible to us. Refusing a fan to catch
+// a troll is the wrong direction on a feature whose whole point is fans.
+//
+// So this list is a FLOOR, not a solution, and the real answer to a creative impersonator is the one
+// §7.4 already built: `scripts/xlink-suppress.ts`, which takes an identity down inside one CDN TTL.
+// "A moderation capability you have to build during the incident is not a capability" — it exists, it
+// is tested, and it covers everything a static list cannot.
+//
+// CASE IS FOLDED, because X handles are case-insensitive for the purposes of who you appear to be:
+// `@Support` and `@support` are different strings and the same impersonation.
+// ================================================================================================
+
+/**
+ * The arena's own names and the generic operator words. Lowercase; compare through
+ * `isReservedHandle`.
+ *
+ * Kept deliberately short. Every entry has to answer "would a face beside this handle, on our
+ * leaderboard, read as the site speaking?" — which is why `admin` and `support` are here and, say,
+ * `bulls` and `unicorns` are not: those are ordinary words that thousands of real accounts own, and a
+ * fighter called `@bulls` reads as a person with a good handle rather than as us.
+ */
+export const RESERVED_HANDLES: ReadonlySet<string> = new Set<string>([
+  // The site itself, and the two spellings of it somebody would actually register.
+  "bullsvsunicorns",
+  "bullsvunicorns",
+  // Words that carry the operator's authority. A player who is being scammed by `@support` will not
+  // remember that the handle was not ours.
+  "admin",
+  "administrator",
+  "help",
+  "helpdesk",
+  "moderator",
+  "official",
+  "security",
+  "staff",
+  "support",
+  "team",
+]);
+
+/** Case-folded exact membership. Not a substring test — see this file's second header. */
+export function isReservedHandle(
+  handle: string,
+  reserved: ReadonlySet<string> = RESERVED_HANDLES,
+): boolean {
+  return reserved.has(handle.trim().toLowerCase());
+}

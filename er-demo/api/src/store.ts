@@ -32,8 +32,21 @@ export interface LinkRow {
  *  is a stronger guarantee than remembering not to. */
 export interface IngestTarget {
   readonly xId: string;
-  /** The upstream `pbs.twimg.com` URL. NEVER SERVED. */
-  readonly avatarUrl: string;
+  /**
+   * The upstream `pbs.twimg.com` URL. NEVER SERVED.
+   *
+   * `null` MEANS THE X ACCOUNT HAS NO PROFILE PICTURE AT ALL, which is a real state rather than a
+   * missing value: X serves the default egg from `abs.twimg.com`, a host the column's CHECK may not
+   * name and a picture we would refuse anyway, because the arena's own flat side-coloured disc (§7.3)
+   * is both better looking and more honest than a grey silhouette. Migration 0002 carries the whole
+   * argument and the reason this could not stay `NOT NULL`: under it, an otherwise perfectly proven
+   * link could not be stored.
+   *
+   * Every consumer must therefore decide what to do with "there is nothing to fetch". There is exactly
+   * one consumer (`scripts/xlink-ingest.ts`) and its answer is to skip the row, leaving
+   * `avatar_hash` NULL — which is the same state as "avatar in flight" and renders identically.
+   */
+  readonly avatarUrl: string | null;
   readonly suppressed: boolean;
 }
 
@@ -89,6 +102,12 @@ export interface LinkStore {
    * The kill switch (§7.4). Idempotent by nature — setting a suppressed row suppressed is a no-op
    * that still reports success, because an operator running the command twice during an incident
    * must not be told they failed.
+   *
+   * IT WRITES IN TWO PLACES AND THAT IS THE POINT. `x_link.suppressed` is what both read paths filter
+   * on in SQL, so no handler can forget it; `x_link_suppressed` (migration 0003) is keyed on the x_id
+   * and OUTLIVES THE ROW, because a player may delete their own row while suppressed (§6.2 says they
+   * may, and they must) and the identity must still come back suppressed if they link again.
+   * Implementations must keep both, and `unlink` must touch neither.
    *
    * @returns `false` only when the x_id does not exist, which is the one answer the operator needs
    *   distinguished: "I typed the wrong id" and "it is now suppressed" must not look alike.

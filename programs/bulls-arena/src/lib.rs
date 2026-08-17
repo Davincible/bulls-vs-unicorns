@@ -121,7 +121,7 @@ use session_keys::{session_auth_or, Session, SessionError, SessionToken};
 // cannot be resized in place past `MAX_PERMITTED_DATA_INCREASE`.
 //
 // A fresh id has no such rounds, which is why the plan is safe. An in-place upgrade of v7 is not.
-declare_id!("ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe"); // devnet keypair: .devnet/program-keypair-v8.json
+declare_id!("FcLNVuH9A354Kcjyctxn422naJ1mDm32QCJxaS7x1vQE"); // devnet keypair: .devnet/program-keypair-v9.json
 
 pub const ARENA_SEED: &[u8] = b"arena";
 pub const ROUND_SEED: &[u8] = b"round";

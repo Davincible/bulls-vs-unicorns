@@ -275,6 +275,18 @@ It loses on two counts: the **$299/month cliff at 500 MAU**, charged on *all* ap
 **Keep it warm.** If X refuses or delays a developer account, Privy is the Stage-3 substitute and
 nothing else in the plan changes.
 
+> **TAKEN, 2026-08-17.** See §10 Stage 3 for what the substitution actually cost. Two of the paragraphs
+> above have aged and should be read with that in mind:
+>
+> * *"it becomes our identity database, which we would then have to migrate off"* — reduced, deliberately.
+>   The register is keyed on **X's own numeric account id**, and the Privy DID is verified and then
+>   **thrown away** rather than stored (`api/src/privyIdentity.ts`). So the rows hold no
+>   broker-specific identifier: moving to a raw X app later is a change to how fact A is proved, not a
+>   data migration.
+> * *"the $299/month cliff at 500 MAU, charged on all app users"* — still true, still the reason this was
+>   the contingency rather than the plan, and still the trigger to revisit. Re-checked 2026-08-17: free
+>   below 500 MAU, $299/mo for 500–2,499, $499/mo for 2,500–9,999.
+
 ### 3.5 Rejected with regret: an on-chain PDA link register
 
 The option that fits this codebase's instincts best, and it would work. The API signs an attestation;
@@ -694,6 +706,29 @@ the frozen shared instance stays frozen.
 
 **Depends on: Stages 1 and 2, and an X developer account. The only stage with an external dependency,
 deliberately last. Contingency: substitute Privy; nothing else changes.**
+
+> **BUILT, WITH THE CONTINGENCY TAKEN (2026-08-17).** The substitution cost less than "nothing else
+> changes" promised — it made this list SHORTER — and the two differences are worth recording where the
+> plan is read rather than only where the code is:
+>
+> * **`/api/x/start` and `/api/x/callback` do not exist.** The OAuth round trip happens between the
+>   browser and `privy.io`; what comes back is an identity token that already carries the verified X
+>   account, signed by Privy and verifiable against their public JWKS. So there is no PKCE state of ours
+>   to mint, no code to exchange, and no `ticket` to carry between two legs of our own — the identity
+>   proof travels with the challenge request. `src/v2/data/xLink.ts` records the contract change.
+> * **There is no token to revoke.** The X access token is issued to Privy, never to us; the identity
+>   token is verified, read and dropped without being stored. §6.4's "there is no credential to leak" is
+>   now true by construction.
+>
+> Everything else in this list is built as written: the challenge, the link, the signed unlink, the
+> house-wallet rejection (after the signature, so it cannot be a roster oracle), and the flag — which is
+> a server variable, `XLINK_WRITE_ENABLED`, because a query parameter cannot gate a write. The consent
+> copy was already written (`src/v2/data/xConsent.ts`); the client that shows it is not built.
+> `er-demo/api/README.md` has the operator's checklist, including the Privy dashboard settings that
+> cannot be set from this repo.
+>
+> Stage 4's rate limits arrived early, because an unauthenticated endpoint that writes rows and verifies
+> signatures could not ship without them.
 
 ### Stage 4 — hardening and launch
 - Rate limits per IP and per wallet on `/start` and `/link`.

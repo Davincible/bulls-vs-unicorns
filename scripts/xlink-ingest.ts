@@ -35,7 +35,20 @@ const sql = neonSql(process.env);
 const store = neonStore(process.env);
 
 async function pending(): Promise<string[]> {
-  const rows = await sql`SELECT x_id FROM x_link WHERE avatar_hash IS NULL AND NOT suppressed ORDER BY linked_at`;
+  // `avatar_url IS NOT NULL` is part of "pending", not a filter applied afterwards. A row with no
+  // upstream picture is permanently in the `avatar_hash IS NULL` set — there is nothing that could ever
+  // move it out — so including it would make every `--all` run report the same rows as skipped for
+  // ever, and (because a run whose every row was skipped exits non-zero) would make a healthy database
+  // look like a broken command. Selecting only rows there is something to do about keeps "nothing
+  // pending" meaning what it says.
+  const rows = await sql`
+    SELECT x_id
+      FROM x_link
+     WHERE avatar_hash IS NULL
+       AND avatar_url IS NOT NULL
+       AND NOT suppressed
+     ORDER BY linked_at
+  `;
   return rows.map((r) => String(r.x_id));
 }
 
@@ -50,6 +63,15 @@ async function ingestOne(xId: string): Promise<boolean> {
   // suppressed rows rather than hiding them: it must be able to SEE the flag in order to refuse.
   if (target.suppressed) {
     process.stderr.write(`  ${xId}: suppressed — refusing to ingest\n`);
+    return false;
+  }
+  // NOTHING TO FETCH IS NOT A FAILURE. Since migration 0002 `avatar_url` may be NULL, which means the
+  // X account has no profile picture — X serves the default egg from a host this column may not name,
+  // and the arena's flat side-coloured disc is the better rendering anyway (§7.3). The row stays with
+  // `avatar_hash` NULL, which is the same state as "avatar in flight" and renders identically, so
+  // `--all` must not report this as an error or every run would look broken.
+  if (target.avatarUrl === null) {
+    process.stdout.write(`  ${xId}: no upstream picture — nothing to ingest\n`);
     return false;
   }
   try {

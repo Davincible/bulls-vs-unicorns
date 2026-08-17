@@ -3,6 +3,7 @@
 // Everything here is DETERMINISTIC. No random keys, no `Date.now()`, no network. A test that fails
 // once in fifty is a test the next person deletes.
 
+import { ed25519 } from "@noble/curves/ed25519";
 import { PublicKey } from "@solana/web3.js";
 import { attestationKeyFrom, type AttestationKey } from "../../src/v2/data/xLinkSign.ts";
 import type { HouseList, HouseListSource } from "./houseWallets.ts";
@@ -30,6 +31,41 @@ export const NOW = 1_800_000_000;
 export function houseSource(wallets: readonly string[], unknown = false): HouseListSource {
   const list: HouseList = { wallets: new Set(wallets), unknown };
   return { get: async () => list };
+}
+
+/**
+ * A REAL ed25519 KEYPAIR, which `wallet(n)` above deliberately is not.
+ *
+ * `wallet(n)` builds a base58 string out of 32 identical bytes: a valid pubkey SHAPE, which is all the
+ * read path ever needs, and something nobody can sign for. The write path verifies signatures, so it
+ * needs the other thing — a public key that is genuinely the public half of a secret we hold.
+ *
+ * Derived from a filled byte array rather than randomly, for `testKit.ts`'s standing reason: a test
+ * that fails once in fifty is a test the next person deletes, and a failing signature test with a
+ * random key is unreproducible.
+ */
+export function walletKeypair(seed: number): { readonly secret: Uint8Array; readonly address: string } {
+  const secret = new Uint8Array(32).fill(seed);
+  return { secret, address: new PublicKey(ed25519.getPublicKey(secret)).toBase58() };
+}
+
+/** Sign a message string the way a wallet would: detached ed25519 over its UTF-8 bytes, base64 — the
+ *  encoding `LinkRequest.signature` specifies and `writeHttp.ts#signatureBytes` accepts. */
+export function signMessageBase64(secret: Uint8Array, message: string): string {
+  const sig = ed25519.sign(new TextEncoder().encode(message), secret);
+  let bin = "";
+  for (const b of sig) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+/** A deterministic 32-byte-nonce source for `newNonce`. Each call fills the buffer with a different
+ *  byte, so successive nonces differ and every one of them is predictable from the test. */
+export function countingRandom(start = 1): (out: Uint8Array) => void {
+  let n = start;
+  return (out: Uint8Array) => {
+    out.fill(n & 0xff);
+    n += 1;
+  };
 }
 
 /** A 64-character lowercase hex string, which is the only thing `avatarPathFor` and the proxy route

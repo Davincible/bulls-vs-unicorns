@@ -45,6 +45,37 @@ function isBase58Pubkey(v: string): boolean {
 }
 
 /**
+ * ONE wallet, from a JSON body on the write path.
+ *
+ * The same `PublicKey` decode as `parseWalletList`, and it lives here rather than in the handlers for
+ * the reason this whole module exists: there is exactly one definition of "a wallet string this API
+ * will accept", and a second one written in a hurry next to a new endpoint is how a route ends up
+ * putting a four-byte "pubkey" into a signature verification.
+ *
+ * STRICTER THAN THE CLIENT'S `isWalletString`, DELIBERATELY, and the asymmetry is argued in
+ * `xLink.ts`: over there a wallet is a MAP KEY, compared against fighters and never used as a public
+ * key, so alphabet-and-length is the honest check. Here it is about to be handed to
+ * `ed25519.verify` as a 32-byte public key, where a wrong length is a thrown exception inside a
+ * request rather than a row that matches nothing.
+ */
+export function parseWallet(raw: unknown): SingleWallet {
+  if (typeof raw !== "string") return { kind: "rejected", reason: "missing", detail: "wallet is required" };
+  const trimmed = raw.trim();
+  if (trimmed === "") return { kind: "rejected", reason: "empty", detail: "wallet is empty" };
+  if (!isBase58Pubkey(trimmed)) {
+    return { kind: "rejected", reason: "not-base58", detail: "wallet must be a base58 ed25519 pubkey" };
+  }
+  return { kind: "ok", wallet: trimmed };
+}
+
+/** One wallet or a reason. A separate type from `WalletList` rather than a one-element list, so a call
+ *  site cannot write `wallets[0]` and be right by luck; the `kind` discriminant is the same shape for
+ *  the same `strictNullChecks` reason recorded above. */
+export type SingleWallet =
+  | { readonly kind: "ok"; readonly wallet: string }
+  | { readonly kind: "rejected"; readonly reason: WalletListRejection; readonly detail: string };
+
+/**
  * `?wallets=<comma-separated base58>`.
  *
  * @param raw the query parameter exactly as it arrived, or `null`/`undefined` when it was not sent.

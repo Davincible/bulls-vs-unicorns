@@ -121,7 +121,15 @@ export function createPgStore(sql: SqlQuery): LinkStore {
       `;
       if (rows.length === 0) return null;
       const r = rows[0];
-      return { xId: str(r, "x_id"), avatarUrl: str(r, "avatar_url"), suppressed: r.suppressed === true };
+      // `strOrNull` for `avatar_url`, not `str`: since migration 0002 the column is nullable, and null
+      // means "this X account has no profile picture" rather than "a value went missing". `store.ts`
+      // carries the argument. Coercing it with `str` would throw at the seam on a row the ceremony is
+      // entitled to write.
+      return {
+        xId: str(r, "x_id"),
+        avatarUrl: strOrNull(r, "avatar_url"),
+        suppressed: r.suppressed === true,
+      };
     },
 
     async putAvatar(xId: string, avatarHash: string, bytes: Uint8Array, atSec: number): Promise<boolean> {
@@ -142,11 +150,45 @@ export function createPgStore(sql: SqlQuery): LinkStore {
     },
 
     async setSuppressed(xId: string, suppressed: boolean): Promise<boolean> {
+      // ------------------------------------------------------------------------------------------
+      // TWO PLACES, ONE STATEMENT. `x_link.suppressed` is the copy both read paths filter on in SQL;
+      // `x_link_suppressed` is the durable record that survives the player deleting their own row.
+      // Migration 0003 carries the whole argument, including the three-step bypass this closes:
+      // suppress, unlink (allowed, and must stay allowed), relink — which used to return an identity
+      // to the leaderboard because the flag lived on the row the player had just deleted.
+      //
+      // The CTE writes a different TABLE from the one the main statement updates, which is the rule
+      // `pgWriteStore.ts` follows for the same reason: a data-modifying CTE touching the main
+      // statement's own table can hand it a tuple the same command has already changed.
+      //
       // `RETURNING` rather than a row count, so "no such x_id" is distinguishable from "already in
       // that state". An operator typing an id wrong during an incident must not be told it worked.
+      // ------------------------------------------------------------------------------------------
+      if (suppressed) {
+        // The tombstone is written ONLY for an id that is actually in the register — `SELECT … FROM
+        // updated` yields nothing when the UPDATE matched nothing — so a mistyped id leaves no trace
+        // to puzzle over later.
+        const rows = await sql`
+          WITH updated AS (
+            UPDATE x_link SET suppressed = TRUE WHERE x_id = ${xId} RETURNING x_id
+          ), tombstoned AS (
+            INSERT INTO x_link_suppressed (x_id)
+            SELECT x_id FROM updated
+            ON CONFLICT (x_id) DO NOTHING
+          )
+          SELECT x_id FROM updated
+        `;
+        return rows.length === 1;
+      }
+      // Un-suppressing removes the tombstone UNCONDITIONALLY, not only when a row exists. An operator
+      // must be able to undo a suppression whose `x_link` row the player has since deleted; otherwise
+      // the identity could never link again and nothing would explain why.
       const rows = await sql`
+        WITH untombstoned AS (
+          DELETE FROM x_link_suppressed WHERE x_id = ${xId}
+        )
         UPDATE x_link
-           SET suppressed = ${suppressed}
+           SET suppressed = FALSE
          WHERE x_id = ${xId}
         RETURNING x_id
       `;

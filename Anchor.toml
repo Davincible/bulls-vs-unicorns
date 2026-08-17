@@ -29,7 +29,7 @@ skip-lint = false
 # The deployed v8 program, matching `declare_id!` in programs/bulls-arena/src/lib.rs and the
 # identical entry in programs/bulls-arena/Anchor.toml. `anchor build` verifies these agree and
 # rewrites them when they do not, which is why a wrong value here is worse than no value.
-bulls_arena = "ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe"
+bulls_arena = "FcLNVuH9A354Kcjyctxn422naJ1mDm32QCJxaS7x1vQE"
 
 # `bulls_vault` IS DELIBERATELY ABSENT. `programs/vault` is not a member of this workspace (see
 # Cargo.toml's [workspace] members), it is Anchor 0.30.1 and cannot share a dependency graph with the

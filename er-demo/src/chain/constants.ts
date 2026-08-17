@@ -64,7 +64,7 @@ assertDevnetUrl(BASE_RPC, "base devnet RPC");
 // A ROUND NUMBER FROM AN OLDER ID DOES NOT EXIST HERE: a new program id has its own Arena PDA and its
 // own counter, so this deployment's rounds start again at #1. App.tsx already follows the arena's own
 // `round_counter`, so nothing needs to be told; its `DEFAULT_ROUND_NO` is only a pre-load placeholder.
-export const PROGRAM_ID = new PublicKey("ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe");
+export const PROGRAM_ID = new PublicKey("FcLNVuH9A354Kcjyctxn422naJ1mDm32QCJxaS7x1vQE");
 
 // ---- round retention — mirrored from programs/bulls-arena/src/lib.rs ---------------------------
 //

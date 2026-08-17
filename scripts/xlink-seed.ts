@@ -85,10 +85,20 @@ if (!/^[A-Za-z0-9_]{1,15}$/.test(handle)) throw new Error(`handle must match X's
 if (new PublicKey(wallet).toBytes().length !== 32) throw new Error("wallet must be a base58 ed25519 pubkey");
 assertNotReserved(xId);
 
-// The default is X's "egg" placeholder, which is a real `pbs.twimg.com` URL and therefore satisfies
-// the table's anti-SSRF CHECK. A seeded row with no ingest is the ordinary "avatar in flight" state
-// and renders as the flat disc, so this is a safe default rather than a broken one.
-const url = avatarUrl ?? "https://pbs.twimg.com/sticky/default_profile_images/default_profile_normal.png";
+// NULL, NOT A PLACEHOLDER URL, when no picture is given.
+//
+// This used to default to `https://pbs.twimg.com/sticky/default_profile_images/default_profile_normal.png`
+// with the note that it "is a real pbs.twimg.com URL and therefore satisfies the table's anti-SSRF
+// CHECK". It satisfied the CHECK and it is not a real URL: X's default profile images live on
+// `abs.twimg.com`, so that path 404s at ingest — permanently, on every run, for every row seeded
+// without a picture. The column said "the picture is at this address" about an address with no picture
+// at it, which is a lie in the data whose only cost is a failing fetch for ever.
+//
+// Migration 0002 makes the column nullable precisely so that "there is no picture" can be stated
+// rather than faked; the write path needs it for X accounts with no avatar, and this command should
+// not model the world differently from the ceremony. `xlink-ingest.ts` skips a NULL row, the read path
+// emits `avatarPath: ""`, and the client draws the flat side-coloured disc — §7.3's ordinary rung.
+const url = avatarUrl ?? null;
 
 // UPSERT ON `x_id`, and the `wallet` unique index does the rest: moving an X account to a new wallet
 // updates this row and, because no two rows may share a wallet, cannot leave the old pairing behind.

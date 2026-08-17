@@ -210,6 +210,13 @@ Four endpoints, and no more:
 
 Plus `GET /api/avatar/{xId}` — §2.4.
 
+**The built routes are named differently, and this table is the older sketch.** What exists is
+`POST /api/x/challenge` (which does the nonce leg *and* verifies the Privy identity token, because the
+message it composes has to name the X account it binds), `POST /api/x/link`, `DELETE /api/x/link` — one
+route, two methods, since Vercel routes by path — and `GET /api/links?wallets=…` rather than
+`/api/profiles?w=…`. `er-demo/api/README.md` has the wire shapes; `src/v2/data/xLink.ts` has them as
+types, which is the copy to build against.
+
 **Record shape.** Keyed on wallet; the durable X key is the **numeric account id**, never the handle:
 
 ```
@@ -334,13 +341,19 @@ is created and every moment it is served:
    house *after* it linked, and a bug in the write path all end at the same place, and only a filter
    at the point of reading catches all three.
 
-**Status, since this section reads as though both were built.** Guard 2 is built, tested and live
-(`api/src/linksHandler.ts` — which answers `GET`/`HEAD` and 405s everything else). Guard 1 is **not
-built yet**: there is no write route anywhere under `api/`, so `POST /api/x/link` is at this moment a
-specification in this document rather than code, which is exactly why §6.4 says start with the
-server. Until it lands, the read filter is the only thing standing between a row that reaches the
-table by any route and a face on one of these wallets — which it does catch, because it filters at
-the point of reading. Delete this paragraph when the route exists. Do not delete it before.
+**Status: both guards are now built.** Guard 2 is `api/src/linksHandler.ts` (answers `GET`/`HEAD`, 405s
+everything else). Guard 1 is `api/src/linkWriteHandler.ts`, and one detail of it is worth carrying up
+here because it is a rule about this document's subject rather than an implementation note: **the house
+check runs AFTER the wallet signature has verified.** Reaching it requires an ed25519 signature from the
+wallet in question, so the only party who can learn "this wallet is one of the arena's" is a party
+holding that wallet's private key — who already knows. Checked any earlier, the endpoint would be a way
+to read the roster off the error text one candidate wallet at a time, which is exactly what declining to
+publish the list was for. The refusal itself is the generic `503 {"error":"unavailable"}`, byte-identical
+to a keeper outage and to an unexpected fault.
+
+It fails closed in both directions: a worker that has never once read the roster writes nothing at all
+(`HouseListCache` reports `unknown`), and a deployment with no `KEEPER_HOUSE_TOKEN` throws at cold start
+rather than starting up unable to enforce this rule.
 
 Both read the list from the keeper's live endpoint over an authenticated channel:
 `GET /house-wallets.json`, carrying `Authorization: Bearer $KEEPER_HOUSE_TOKEN`. **Not** from
@@ -887,8 +900,9 @@ and `withLinks` for the round — including the part that looks like a micro-opt
   **The invariant is unchanged: a face means a person, and the arena's own wallets may not wear one.**
   It is enforced on the server at both ends of a link's life — `/api/x/link` refuses to create such a
   link, `/api/links` refuses to serve one — which is where §2.7 always said the durable version lived.
-  Read §2.7's status paragraph before relying on that sentence: only the read half is built today, and
-  this bullet is describing the design rather than reporting the tree.
+  Both halves are now built and tested; §2.7's status paragraph has the detail that matters, which is
+  that the write-path check runs *after* the wallet signature so that it cannot be used as a roster
+  oracle.
   If a refusal ever needs a user-facing message, it must be **indistinguishable from the generic one**
   (`FAILURE_COPY.unavailable`); a message that names its reason is a membership oracle, and anyone
   could read the roster off it one wallet at a time. `data/linkFighters.ts`'s header carries the full

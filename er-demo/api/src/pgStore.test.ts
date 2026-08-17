@@ -136,6 +136,38 @@ describe("putAvatar", () => {
 });
 
 describe("setSuppressed", () => {
+  it("writes the DURABLE record as well as the row's flag, in one statement", async () => {
+    // Migration 0003. The flag is what both read paths filter on; the tombstone is what survives the
+    // player deleting their own row, which they may do while suppressed (§6.2). Without it, suppress ->
+    // unlink -> relink returned the identity to the leaderboard.
+    const { sql, calls } = fakeSql(() => [{ x_id: "42" }]);
+    await createPgStore(sql).setSuppressed("42", true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toContain("UPDATE x_link");
+    expect(calls[0].sql).toContain("INSERT INTO x_link_suppressed");
+    expect(calls[0].sql).toContain("SELECT x_id FROM updated");
+    expect(calls[0].values).toEqual(["42"]);
+  });
+
+  it("writes no tombstone for an x_id that is not in the register", async () => {
+    // `SELECT … FROM updated` yields nothing when the UPDATE matched nothing, so a mistyped id leaves no
+    // trace to puzzle over later. Asserted on the statement, since the fake has no tables.
+    const { sql, calls } = fakeSql(() => []);
+    expect(await createPgStore(sql).setSuppressed("42", true)).toBe(false);
+    expect(calls[0].sql).toContain("SELECT x_id FROM updated");
+  });
+
+  it("removes the durable record UNCONDITIONALLY when un-suppressing", async () => {
+    // An operator must be able to lift a suppression whose row the player has since deleted; otherwise
+    // the identity could never link again and nothing would explain why. So the DELETE is not gated on
+    // the UPDATE having matched.
+    const { sql, calls } = fakeSql(() => [{ x_id: "42" }]);
+    await createPgStore(sql).setSuppressed("42", false);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toContain("DELETE FROM x_link_suppressed");
+    expect(calls[0].sql).toContain("SET suppressed = FALSE");
+  });
+
   it("distinguishes 'no such x_id' from 'done'", async () => {
     // An operator typing an id wrong during an incident must not be told it worked.
     const missing = fakeSql(() => []);
@@ -143,6 +175,8 @@ describe("setSuppressed", () => {
 
     const present = fakeSql(() => [{ x_id: "1" }]);
     expect(await createPgStore(present.sql).setSuppressed("1", true)).toBe(true);
-    expect(present.calls[0].values).toEqual([true, "1"]);
+    // Only the id is bound now: since migration 0003 the boolean is spelled in the statement (two
+    // statements, one per direction) because each direction also has to maintain the durable record.
+    expect(present.calls[0].values).toEqual(["1"]);
   });
 });

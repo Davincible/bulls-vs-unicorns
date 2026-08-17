@@ -1,10 +1,22 @@
 # `api/` — the wallet ↔ X register, server half
 
-Stage 2 of `TWITTER-CONNECT.md`. **No X, no OAuth, no secrets in the repo.**
+Stages 2 and 3 of `TWITTER-CONNECT.md`. **No X developer app, no OAuth of our own, no secrets in the
+repo.**
 
-Two public routes and four operator commands. Everything here is written so that the expensive
+Four public routes and four operator commands. Everything here is written so that the expensive
 mistakes — a suppressed picture that keeps being served, an automated wallet wearing a person's face,
-a signature no browser accepts — are caught by `npm test` rather than by production.
+a signature no browser accepts, a nonce that can be replayed — are caught by `npx vitest run` rather
+than by production.
+
+| Route | Method | What it is |
+|---|---|---|
+| `/api/links?wallets=…` | `GET` | The read path. Signed attestations, one per linked wallet. **Stage 2.** |
+| `/api/avatar/<x_id>/<hash>.webp` | `GET` | The avatar proxy. Reads a row; never fetches. **Stage 2.** |
+| `/api/x/challenge` | `POST` | Verify a Privy identity token, mint a single-use wallet challenge. **Stage 3.** |
+| `/api/x/link` | `POST` / `DELETE` | Redeem the challenge: create or remove the link. **Stage 3.** |
+
+The two Stage 3 routes are **behind `XLINK_WRITE_ENABLED=on` and off by default** — see
+[The link ceremony](#the-link-ceremony--stage-3) below.
 
 ---
 
@@ -12,7 +24,7 @@ a signature no browser accepts — are caught by `npm test` rather than by produ
 
 | Path | What it is |
 |---|---|
-| `/api/links.ts`, `/api/avatar/[xId]/[hash].ts` | **Vercel entry points.** Repo root. Wiring only — env, driver, hand off. |
+| `/api/links.ts`, `/api/avatar/[xId]/[hash].ts`, `/api/x/challenge.ts`, `/api/x/link.ts` | **Vercel entry points.** Repo root. Wiring only — env, driver, hand off. |
 | `er-demo/api/src/**` | **The implementation and its tests.** Reachable by `npm test` and `npm run typecheck`. |
 | `er-demo/api/migrations/` | The checked-in SQL. Nothing runs it automatically. |
 | `/scripts/xlink-*.ts` | The operator commands. Repo root, `.vercelignore`d, never deployed. |
@@ -53,17 +65,30 @@ the dependencies really are deployed — but it does not rewrite the specifiers 
 `./x.ts` at type-check time, so this costs nothing and `npm run typecheck` still covers both trees.
 `api/links.ts`'s header carries the full argument and the alternatives that were rejected.
 
-The graph is **ten files**, and it is exactly the set reachable from the two entry points:
+The graph is **twenty files**, and it is exactly the set reachable from the four entry points:
 
 | | |
 |---|---|
-| `/api/links.ts`, `/api/avatar/[xId]/[hash].ts` | the entry points |
-| `api/src/` | `linksHandler` `neonStore` `avatarHandler` `env` `attest` `wallets` `pgStore` |
-| `er-demo/src/v2/data/` | `xLinkSign` — server-only by design, see its header |
+| entry points | `/api/links.ts` `/api/avatar/[xId]/[hash].ts` `/api/x/challenge.ts` `/api/x/link.ts` |
+| read path | `linksHandler` `avatarHandler` `attest` `env` `neonStore` `pgStore` `wallets` `houseWallets` `reserved` `store` |
+| write path | `challengeHandler` `linkWriteHandler` `challenge` `writeHttp` `writeWiring` `writeEnv` `writeStore` `pgWriteStore` `privyIdentity` `rateLimit` `clientNetwork` |
+| `er-demo/src/v2/data/` | `xLink` `xLinkSign` — server-reachable by design, see `xLinkSign`'s header |
 
-`houseWallets.ts`, `reserved.ts` and `store.ts` are in the graph too and need nothing, having no
-relative imports of their own. `memoryStore.ts` and `avatarIngest.ts` are **not** deployed — tests and
+`memoryStore.ts`, `memoryWriteStore.ts` and `avatarIngest.ts` are **not** deployed — tests and
 operator commands reach them, Vercel never does — which is why they still read `.ts`.
+
+**The two halves do not mix, and that is checked rather than asserted.** No read function carries a
+write module. It was briefly untrue: `writeConfig` started life in `env.ts`, which every route imports,
+so `privyIdentity.js` and `rateLimit.js` were traced into `api/links.func` and
+`api/avatar/[xId]/[hash].func` — two modules that parse tokens and derive secrets, shipped into two
+routes that only ever read a row. Nothing broke and no test failed; `npx vercel build` showed it. The
+write path's own configuration now lives in `writeEnv.ts`, which nothing but `/api/x/*` imports.
+To re-check:
+
+```bash
+npx vercel build
+find .vercel/output/functions/api/links.func -name 'privyIdentity.js' -o -name 'rateLimit.js'   # must be empty
+```
 
 **To check whether the set has grown**, do not read this table: run `npx vercel build` and look at
 what landed in `.vercel/output/functions/api/links.func/`. That directory is the deployed bundle, and
@@ -136,6 +161,18 @@ The owner sets these in the Vercel project. **All of them; the feature is silent
 | `DATABASE_URL` | Server | Neon Postgres connection string. Neon's Vercel integration sets this for you. |
 | `KEEPER_HOUSE_TOKEN` | Server, **required**, mark Sensitive | Bearer token for the keeper's roster endpoint. Must be **byte-identical** to the `KEEPER_HOUSE_TOKEN` fly secret on `bulls-arena-keeper-devnet`. Missing → the API **throws at cold start**, deliberately: see below. |
 | `KEEPER_HOUSE_URL` | Server, optional | Defaults to `https://bulls-arena-keeper-devnet.fly.dev/house-wallets.json`. Deliberately **not** `VITE_`-prefixed — that prefix is what inlines a value into the public bundle, and this is one half of a private channel. |
+| `XLINK_WRITE_ENABLED` | Server, **Stage 3 gate** | Must be exactly `on`. Anything else — absent, `1`, `true`, `ON` — is **off**, and off means `/api/x/*` answers `503 {"error":"disabled"}` and requires none of the variables below. Set it in **Preview only** until the ceremony has been exercised. |
+| `PRIVY_APP_ID` | Server, required **when the gate is on** | The Privy app id (`cmsnbbun8007m0cjxbfx762sw`). **`VITE_PRIVY_APP_ID` is accepted instead** — the app id is a public client id that already ships in the bundle, so one value under two names beats two that can disagree. |
+| `PRIVY_API_URL` | Server, optional | Defaults to `https://api.privy.io`. Only for pointing a test at something else. |
+
+> **`PRIVY_APP_SECRET` is deliberately unused.** It is set in this project and the write path never
+> reads it: the identity token is verified against Privy's **public** JWKS, so there is no Privy
+> credential in the function and nothing there to leak. See `api/src/privyIdentity.ts`'s header for the
+> three verification routes that were weighed and why this one won.
+
+> **Preview environments are missing two of these today.** `vercel env ls` shows `KEEPER_HOUSE_TOKEN`
+> and `VITE_PRIVY_APP_ID` set for **Production only**. Until they are added to Preview, `/api/links`
+> 500s on any preview deployment (it needs the house token) and the ceremony cannot start there.
 
 > **Changed.** `KEEPER_STATUS_URL` is **gone**. The API used to read the house wallet list out of the
 > keeper's public `keeper-status.json`; that file no longer contains it, because the arena's own
@@ -207,7 +244,198 @@ them afterwards.
 
 ---
 
-## Three places this build departs from `TWITTER-CONNECT.md` §§3–7
+## The link ceremony — Stage 3
+
+`TWITTER-CONNECT.md` §3.4 held Privy as the sanctioned contingency for Stage 3 — *"if X refuses or
+delays a developer account, Privy is the Stage-3 substitute and nothing else in the plan changes"*.
+**That contingency was taken.** Almost nothing else did change; what did is recorded at the bottom of
+this section and in `src/v2/data/xLink.ts`'s Stage-3 block.
+
+### The ceremony
+
+```
+1. AUTHORISE   browser <-> privy.io <-> x.com          (the Privy React SDK; no route of ours)
+               -> an IDENTITY TOKEN: an ES256 JWT whose claims already carry the verified X account
+
+2. CHALLENGE   POST /api/x/challenge
+               { wallet, purpose: "link", proof: "<privy identity token>" }
+               -> 200 { message, nonce, expiresAt }        five minutes, single use
+               ► FACT A ESTABLISHED (the token's signature checked against Privy's JWKS)
+
+3. SIGN        wallet.signMessage(utf8(message))            one prompt, no transaction
+
+4. LINK        POST /api/x/link   { wallet, nonce, signature }
+               -> 200 { linked: true }
+               ► FACT B ESTABLISHED, BOUND TO A BY THE MESSAGE CONTENT
+
+   UNLINK      POST /api/x/challenge { wallet, purpose: "unlink" }   ← no proof; none is wanted
+               DELETE /api/x/link   { wallet, nonce, signature }
+               -> 200 { unlinked: true | false }
+```
+
+Three things about that shape are load-bearing:
+
+* **The message is composed by the server, stored verbatim, and never sent back.** `LinkRequest` has no
+  `message` field, so §4.2's "compare the submitted message byte for byte" is stronger here than it was
+  written: there is no submitted copy to compare.
+* **The nonce is consumed before the signature is checked.** A wrong signature burns the challenge —
+  §4.1's "one shot". The alternative is unlimited attempts against one nonce plus a read-check-write
+  race.
+* **`POST /api/x/link` returns nothing renderable.** No handle, no avatar, no attestation. The client's
+  next move is to re-read `GET /api/links` and verify the signature, because `verifyAttestation` is the
+  only thing allowed to mint a record a face can be drawn from.
+
+### What a client has to do
+
+Not built here — this is the server half. Whoever builds the UI needs:
+
+1. **`?links=api`.** Identity rendering is already gated on `src/v2/data/linkSource.ts`'s `?links=`
+   flag, and that is the only client-side switch; the write path's gate is a server variable because a
+   query parameter cannot gate a write.
+2. **A fresh identity token, obtained immediately before the ceremony.** `useIdentityToken()` /
+   `getIdentityToken()` from `@privy-io/react-auth`. The server refuses a token whose `iat` is more than
+   **one hour** old with `401 {"error":"stale-proof"}` — a bearer proof of somebody's X identity is an
+   impersonation vector for as long as it lives, and Privy mints a new one on link/refresh anyway, so
+   the natural flow costs nothing. On `stale-proof`, call `refreshUser()` and retry once.
+3. **The consent screen first.** `src/v2/data/xConsent.ts` already holds the copy, including the
+   deanonymisation sentence §6.1 requires **before** the redirect.
+4. **`signMessage`.** Already on `ChainIdentity` (Stage 1, done). Sign the `message` string's UTF-8
+   bytes and send base64 — the same encoding as `LinkAttestation.sig`.
+
+### Refusals, and what they mean
+
+| Status | `error` | Meaning |
+|---|---|---|
+| 503 | `disabled` | `XLINK_WRITE_ENABLED` is not `on` on this deployment. |
+| 415 / 413 / 400 | `content-type` `too-large` `malformed` | The request. `detail` says which part. |
+| 429 | `rate-limited` | With `Retry-After`. 20 per (IP /24, wallet) and 60 per IP /24, per ten minutes. |
+| 401 | `no-x-account` | Verified Privy user with no X account linked — they closed the popup. |
+| 401 | `stale-proof` | Refresh the identity token and retry once. |
+| 401 | `bad-proof` | Everything else about the token, collapsed into one answer on purpose. |
+| 400 | `expired` | The nonce is unknown, already redeemed, or past its five minutes. One answer for all three. |
+| 401 | `bad-signature` | The wallet signature does not verify against the stored message. |
+| 403 | `refused` | A reserved fixture id or a reserved handle (`api/src/reserved.ts`). |
+| 409 | `wallet-taken` | This wallet already wears a different X account. Unlink first. |
+| 503 | `unavailable` | **Ours.** A house wallet, an unreadable roster, or an unexpected fault — deliberately indistinguishable, because a refusal that named the house case would be a roster oracle. |
+
+### What the operator has to do by hand
+
+**In the Privy dashboard** (`dashboard.privy.io`, app `cmsnbbun8007m0cjxbfx762sw`) — none of this can be
+done from this repo, and the ceremony cannot work until all four are true:
+
+1. **User management → Authentication → Advanced → "Return user data in an identity token": ON.**
+   The identity token is **opt-in**. Until this is enabled Privy issues no `privy-id-token`,
+   `getIdentityToken()` returns `null`, and there is nothing for `/api/x/challenge` to verify. This is
+   the single most likely reason for a ceremony that "does nothing".
+2. **Enable Twitter/X as a login method.** Privy will use its own shared OAuth credentials unless you
+   supply your own X app's client id and secret; their own guidance is that supplying your own is best
+   practice, and it is the only way to control scopes and rate limits. Shared credentials are enough to
+   test with.
+3. **Configuration → App settings → Domains: add the origins the browser will use.** Privy checks the
+   requesting origin against this list. **`https://*.vercel.app` cannot be allowlisted** — Privy
+   explicitly refuses generic preview-host wildcards — so a preview deployment needs a stable custom
+   subdomain attached to it, or the client half must be exercised on `localhost:<port>` (allowed, port
+   mandatory) or on the production domain.
+4. **Optionally shorten the token lifetime** in the same Advanced panel. Privy's docs give 1 hour in one
+   place and 10 hours in another for the identity token; the server caps acceptance at one hour
+   regardless (`MAX_IDENTITY_TOKEN_AGE_SECONDS`), so this is defence in depth rather than a requirement.
+
+**In the Vercel dashboard:**
+
+5. **Add `KEEPER_HOUSE_TOKEN` and `VITE_PRIVY_APP_ID` to the Preview environment.** Both are Production
+   only today. Without the first, *every* route here fails its cold start on a preview; without the
+   second, the ceremony does.
+6. **`XLINK_WRITE_ENABLED=on`, Preview only**, until the flow has been exercised end to end.
+
+**Against the database:**
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f er-demo/api/migrations/0002_x_link_write.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f er-demo/api/migrations/0003_x_link_suppressed.sql
+```
+
+Additive and idempotent: three new tables, one `DROP NOT NULL`, and a backfill. Safe to apply before the
+code ships — the gate keeps the new routes inert — and both **must** be applied before the gate is turned
+on. **0003 is not optional**: without it every `link` refers to a table that does not exist, and with the
+old schema alone the kill switch can be cleared by a player (see the note below).
+
+### The CSP will need three additions before the client half works
+
+`vercel.json`'s policy is `Content-Security-Policy-Report-Only`, so nothing is blocked today and
+nothing here is urgent. But when the Privy SDK lands in the bundle it will want, at least:
+
+* `connect-src https://auth.privy.io https://api.privy.io` — the SDK's own API calls;
+* `frame-src https://auth.privy.io` — Privy renders parts of its flow in an iframe;
+* `form-action` already allows `https://x.com`; the redirect now goes via `auth.privy.io`, so that host
+  belongs there too.
+
+Enumerate what the client actually reaches from the report-only console rather than copying this list —
+that is how the existing `connect-src` was built (see the table further down).
+
+### Three defects review found in this build, and what each cost
+
+Recorded because each was invisible to the tests as written, and the shape of the mistake is more useful
+than the fix.
+
+**1. The per-wallet rate bucket was keyed on the wallet alone** — an unauthenticated body field, on a leg
+that takes no credential at all. Twenty-one `POST /api/x/challenge {"wallet":"<victim>","purpose":"unlink"}`
+from any stranger exhausted that wallet's budget and locked its owner out of **their own revocation** for
+the window. §6.2 promises revocation is immediate. The subject is now `(network, wallet)`, so an attacker
+outside the victim's /24 cannot spend their budget. `clientNetwork.ts`'s header had claimed the per-wallet
+limit was "unaffected" by a spoofed header — true of headers, and beside the point.
+
+**2. The kill switch could be cleared by the player it was aimed at.** `suppressed` was a column on
+`x_link`; a player may delete that row while suppressed (§6.2, and they must be able to); the next link
+was a fresh `INSERT` that took `DEFAULT FALSE`. Three self-service, correctly-signed steps put a
+suppressed identity back on the leaderboard. Migration **0003** moves the durable record to
+`x_link_suppressed`, keyed on the `x_id`, which `unlink` does not touch and `link` reads on insert. The
+comments asserting a relink could not clear the flag were true of the `DO UPDATE` branch and false of the
+insert branch nobody looked at.
+
+**3. The JWKS cache served a retired key indefinitely during a Privy outage** — and refetched on every
+request while doing it. Past its TTL it fell through to the last-good-set fallback, which is right for a
+transient blip inside the TTL and wrong after it: a key Privy has retired kept verifying tokens, which is
+the one event a rotation exists to end. It now refuses (`keys-unavailable` → 503) when the set is still
+stale after an attempted refresh, and the attempt is behind the ten-minute cooldown. The class header had
+promised exactly this behaviour in writing; no test moved the clock, so nothing checked it.
+
+Two smaller ones: a relink after the player deleted their X picture used to leave `avatar_hash` and the
+bytes in place with no `avatar_url` to refresh from — the old face served for ever, so the three avatar
+columns now clear together; and the expired-challenge sweep sat on the challenge *insert*, the one
+operation an abuser never reaches, so it moved onto the rate-counter statement that every write request
+runs.
+
+### Two things Stage 3 deliberately did NOT build
+
+**1. There is no token to revoke, so nothing revokes one.** §4.1 step 3 has the raw-X flow calling
+`POST /2/oauth2/revoke` immediately after reading the profile. With Privy the X access token is never
+issued to us — it exists inside Privy — and the identity token we do see is verified, read and dropped
+without being stored. §6.4's "there is no credential to leak" is now true by construction rather than by
+discipline.
+
+**2. The ceremony does not ingest the avatar.** It stores `avatar_url` and leaves `avatar_hash` NULL,
+which is §7.3's ordinary "linked + avatar in flight" rung and renders as the flat side-coloured disc.
+The picture arrives when somebody runs `scripts/xlink-ingest.ts`. That is a deliberate boundary, not a
+gap: `avatarIngest.ts`'s header argues that a native image decoder parsing hostile input should stay out
+of any function a browser can reach, and the write path is now the *most* browser-reachable function in
+the feature. Options for closing it, in order of preference: a Vercel Cron calling an authenticated
+ingest route; or `sharp` in the write function, validated on a preview, accepting ~30 MB of bundle and a
+cold start on the link path.
+
+---
+
+## Where this build departs from `TWITTER-CONNECT.md` §§3–7
+
+**0. `avatar_url` is nullable too, as of migration 0002.** An X account with no profile picture is served
+X's default egg from `abs.twimg.com` — a different host from the `pbs.twimg.com` the column's anti-SSRF
+CHECK admits, and a picture we would decline anyway, because §7.3's flat side-coloured disc is both
+better looking and more honest than a grey silhouette. Under `NOT NULL` such an account could not be
+stored at all, so the ceremony would have had to refuse a link that was otherwise perfectly proven, with
+an error the player can neither understand nor fix. NULL now means "there is no upstream picture", which
+composes with `avatar_hash` NULL and renders identically. **The CHECK is untouched**: SQL checks are
+satisfied by NULL, so the anti-SSRF guarantee is unchanged — and `scripts/xlink-seed.ts` stopped
+defaulting to a `pbs.twimg.com/sticky/default_profile_images/…` path that satisfied the pattern and 404s
+at ingest for ever.
 
 **1. `avatar_hash` is nullable (§4.3 writes `NOT NULL`).** Unsatisfiable alongside two other things
 the same document says: §7.3's failure ladder lists "linked + avatar in flight" as an ordinary rung,
