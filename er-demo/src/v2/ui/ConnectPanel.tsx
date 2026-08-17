@@ -20,7 +20,9 @@ import { useState } from "react";
 import { DEVNET_ONLY_NOTE, type PlayBlock } from "../data/playGate.ts";
 import { useArena } from "../data/useArena.ts";
 import { useLinks } from "../data/useLinks.ts";
+import { useXCeremony } from "../data/useXCeremony.ts";
 import { FAILURE_COPY, LINKED_COPY, UNLINKED_COPY } from "../data/xConsent.ts";
+import { XConsentDialog, XRevokeDialog } from "./XConsentDialog.tsx";
 import { asSentence } from "./roundPhaseCopy.ts";
 import { linkedDateText } from "./linkedDate.ts";
 import { XIdentity } from "./XIdentity.tsx";
@@ -192,19 +194,51 @@ export function ConnectPanel({ block, density }: ConnectPanelProps) {
 // somebody who is. So the FIRST fetch renders nothing at all rather than a `Connect X` button that
 // is about to be replaced by a face. Every other surface renders straight through it.
 
-// WHAT BOTH CONTROLS DO TODAY, and it is the same thing: say so. Stage 3 — the OAuth start,
-// callback, challenge and link endpoints — does not exist, so neither `Connect X` nor `Unlink` can
-// run a ceremony, and this panel does not invent one, does not fake a request it never sent, and
-// does not report a failure that did not happen. `FAILURE_COPY.notBuilt` is that sentence, and it
-// lives in `xConsent.ts` with the rest of the copy, flagged there as provisional. When the ceremony
-// lands, these two `onClick`s are where it goes and the rest of this component is unchanged.
+// WHAT BOTH CONTROLS DO, now that there is a ceremony behind them. This block used to say that Stage 3
+// did not exist and that both buttons could only report as much; it does now
+// (`data/xLinkCeremony.ts` against `/api/x/challenge` and `/api/x/link`), and the prediction that
+// "these two `onClick`s are where it goes and the rest of this component is unchanged" held — the two
+// handlers open a dialog, and everything below them renders exactly as it did.
+//
+// NEITHER CONTROL STARTS A CEREMONY DIRECTLY, AND THAT IS THE ONE ADDITION WORTH ARGUING. Both open a
+// takeover first (`XConsentDialog.tsx`):
+//
+//   Connect X -> the consent screen, because `TWITTER-CONNECT.md` §6.1 requires the deanonymisation
+//                sentence to be read BEFORE the redirect, and because that document is explicit that
+//                the copy will cost us links and that this is the correct outcome. A line under a
+//                button is read by nobody.
+//   Unlink    -> the revocation screen, because §6.2's promise is not "immediate" and the two real
+//                numbers — about a minute on the board, up to 24 hours for a cached picture — have to
+//                be said at the moment they become relevant rather than in a footnote.
+//
+// EVERY ATTEMPT SEES THE CONSENT SCREEN AGAIN, including `Try again` after a failure. Consent is per
+// redirect, not per session: a player who was shown the warning, failed, and came back an hour later
+// has not consented to the second attempt because they read something before the first.
+//
+// THE FAILURE STATE IS UNCHANGED and still comes from `xConsent.ts` — the panel resolves no sentences
+// of its own. What changed is that the sentences are now reached by things that actually happened.
 
 export function XLinkPanel() {
-  const { source, you, loading } = useLinks();
-  /** What the last press produced, or null for "nothing has been pressed". A STRING rather than a
-   *  boolean so that when the ceremony arrives this is already the shape it needs — one reason out
-   *  of `FAILURE_COPY`, rendered — instead of a flag somebody has to widen. */
-  const [failure, setFailure] = useState<string | null>(null);
+  const { source, you, loading, refresh } = useLinks();
+  // Through the arena context, like every other consumer on this page. `useWallet` is the FACTORY the
+  // provider calls once with an identity and a connection — not a hook a component may call for
+  // itself, and calling it here would build a second wallet with its own balance polling.
+  const { wallet } = useArena();
+  /** Which takeover is open, if any. `none` is not a state anybody sees — it is the absence of one. */
+  const [dialog, setDialog] = useState<"none" | "consent" | "revoke">("none");
+
+  const ceremony = useXCeremony({
+    // READ AT THE MOMENT OF THE PRESS, never remembered from earlier in the session: §4.2 — "what the
+    // user sees is what they sign is what gets linked". `useWallet` gives `""` when nothing is
+    // connected, which this normalises to the null the hook refuses on.
+    wallet: wallet.pubkey === "" ? null : wallet.pubkey,
+    signMessage: wallet.signMessage,
+    // A successful ceremony re-reads the feed immediately rather than waiting out the sixty-second
+    // poll. A face that takes a minute to appear reads as a link that did not work, and the player
+    // presses the button again.
+    onChanged: refresh,
+  });
+  const failure = ceremony.failure;
 
   // The feature is off, which is the default and the deployed state. Not "disabled", not "coming
   // soon" — absent. See this block's header.
@@ -228,7 +262,13 @@ export function XLinkPanel() {
               Linked · <span className="u--ink">{linkedOn}</span>
             </span>
           )}
-          <button type="button" className="btn btn--sm btn--ghost push" onClick={() => setFailure(FAILURE_COPY.notBuilt)}>
+          <button
+            type="button"
+            className="btn btn--sm btn--ghost push"
+            disabled={ceremony.busy}
+            aria-busy={ceremony.busy}
+            onClick={() => setDialog("revoke")}
+          >
             {failure === null ? LINKED_COPY.unlink : FAILURE_COPY.retry}
           </button>
         </div>
@@ -242,6 +282,17 @@ export function XLinkPanel() {
             {failure}
           </p>
         )}
+        {dialog === "revoke" ? (
+          <XRevokeDialog
+            onCancel={() => setDialog("none")}
+            onConfirm={() => {
+              // Closed FIRST, so the wallet prompt appears over the page rather than over a takeover
+              // the player has already answered.
+              setDialog("none");
+              ceremony.unlink();
+            }}
+          />
+        ) : null}
       </div>
     );
   }
@@ -252,7 +303,13 @@ export function XLinkPanel() {
           tidy one. Rendering a separate `Try again` control would unmount the button the reader just
           pressed and drop focus to the top of the document — the exact defect `useFocusTrap.ts` was
           written against. Same element, same position, new label. */}
-      <button type="button" className="btn btn--sm btn--wide" onClick={() => setFailure(FAILURE_COPY.notBuilt)}>
+      <button
+        type="button"
+        className="btn btn--sm btn--wide"
+        disabled={ceremony.busy}
+        aria-busy={ceremony.busy}
+        onClick={() => setDialog("consent")}
+      >
         {failure === null ? UNLINKED_COPY.action : FAILURE_COPY.retry}
       </button>
       {failure === null ? (
@@ -268,6 +325,15 @@ export function XLinkPanel() {
           {failure}
         </p>
       )}
+      {dialog === "consent" ? (
+        <XConsentDialog
+          onCancel={() => setDialog("none")}
+          onConfirm={() => {
+            setDialog("none");
+            ceremony.link();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

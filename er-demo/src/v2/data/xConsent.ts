@@ -117,27 +117,6 @@ export const PROVENANCE_NOTE =
   + "by this site, not by the chain — the chain knows only wallets.";
 
 /**
- * THE ANSWER WHILE THE CEREMONY DOES NOT EXIST YET. Provisional, and flagged as such — it is a
- * placeholder written by the wallet-panel work so the panel had no string of its own, not a
- * considered sentence, and it belongs to whoever owns the rest of this file.
- *
- * `?links=mock` and `?links=api` render the panel's `Connect X` and `Unlink` controls so that
- * `SOCIAL.md` §4.0's three states can be reviewed on a real page. `TWITTER-CONNECT.md` §10's Stage 3
- * — the OAuth start, callback, challenge and link endpoints — is not built, so neither control can
- * do anything, and pressing one has to say so.
- *
- * IT DELIBERATELY DOES NOT REUSE `FAILURE_COPY.unavailable`. That sentence ends "Try again in a
- * minute", which is true of a transient outage and false of a feature that does not exist. A page
- * whose standing rule is that nothing claims more than it can back does not get an exception for one
- * sentence in a panel nobody has shipped.
- *
- * There is no handle-entry offer here for the same reason there is none anywhere else in this file.
- */
-const NOT_BUILT_REASON =
-  "X linking is not built yet — this control is here so the linked and unlinked states can be "
-  + "reviewed. Nothing was sent and nothing was changed.";
-
-/**
  * WHAT WE SAY WHEN THE CEREMONY FAILS — and the list is short on purpose.
  *
  * THERE IS NO ENTRY HERE FOR "ENTER YOUR HANDLE INSTEAD". The old build's fallback path
@@ -145,16 +124,43 @@ const NOT_BUILT_REASON =
  * wrote the answer through the same message as a proven one, which is how typing `blknoiz06` put
  * Ansem's real name and photograph on a fighter. If the ceremony fails there is no identity, the
  * button says so, and the only offer is to try again.
+ *
+ * `notBuilt` USED TO LIVE HERE AND IS GONE, because it is no longer true: the ceremony exists
+ * (`data/xLinkCeremony.ts` against `/api/x/challenge` and `/api/x/link`). It said "X linking is not
+ * built yet — this control is here so the linked and unlinked states can be reviewed", and a sentence
+ * that outlives the condition it describes is worse than no sentence, because the panel would be
+ * telling a player nothing happened while a ceremony ran.
+ *
+ * EVERY KEY BELOW IS REACHABLE FROM EXACTLY ONE `CeremonyFailure`, and the mapping is total in both
+ * directions — a reason with no sentence renders a blank panel, and a sentence no reason produces is
+ * copy nobody can read. `xLinkCeremony.test.ts` asserts the correspondence rather than trusting it.
  */
 export const FAILURE_COPY = {
-  notBuilt: NOT_BUILT_REASON,
   cancelled: "You cancelled before X confirmed. Nothing was linked.",
   /** The one a player is most likely to hit, and the one most likely to be misread as our bug. */
   walletRefused: "Your wallet declined to sign, so nothing was linked. You can try again.",
   expired: "That took too long and the request expired. Start again and it will work.",
-  alreadyLinked:
-    "That X account is already linked to a different wallet. Unlink it there first — one X account "
-    + "belongs to one wallet.",
+  /**
+   * THIS SENTENCE DESCRIBED THE WRONG DIRECTION AND WAS CORRECTED WHEN THE SERVER SHIPPED.
+   *
+   * It read: "That X account is already linked to a different wallet. Unlink it there first — one X
+   * account belongs to one wallet." That is a refusal `/api/x/link` never makes. An X account moving
+   * to a new wallet SUCCEEDS — it is the account owner's claim to make, and refusing it would strand
+   * anybody who lost the key to the old wallet, who by construction cannot sign the unlink that would
+   * release it (`api/src/writeStore.ts`).
+   *
+   * The refusal that does happen is the other direction: this WALLET already wears a different X
+   * account. That one is refused rather than silently rebound, because whoever can sign this link can
+   * sign the unlink, so nobody is stranded — and it buys the rule that a link write never deletes a
+   * row. Hence the name and the words: the fix is one explicit step and it is theirs to take.
+   */
+  walletTaken:
+    "This wallet is already linked to a different X account. Unlink it first — one wallet belongs to "
+    + "one X account.",
+  /** Bounded attempts, per wallet and per network (`api/src/rateLimit.ts`). The number of seconds is
+   *  the server's own `Retry-After`, passed through rather than guessed, because a wait we invent is a
+   *  wait that is wrong. */
+  tooMany: "Too many attempts just now. Nothing was changed — try again in a few minutes.",
   /** THERE IS DELIBERATELY NO ENTRY HERE FOR "THIS WALLET IS ONE OF THE ARENA'S OWN", and its absence
    *  is a rule rather than a gap somebody should helpfully fill.
    *

@@ -27,7 +27,7 @@
 // on. So `rosterCast` (the caller's priority order) and `rosterKey` (that, sorted) are both computed,
 // carried side by side to `fetchLinks`, and read by different halves of it. See `rosterCast`.
 
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { linkMapFrom, MAX_WALLETS_PER_QUERY, NO_LINKS, type LinkMap, type LinkRecord } from "./xLink.ts";
 import { LINK_SOURCE, linksUrlFor, trustedKeysFor, type LinkSource } from "./linkSource.ts";
 
@@ -46,9 +46,26 @@ export interface LinksApi {
    *  at somebody who is, for one frame. Nothing on the board may wait on it: a round renders
    *  completely and correctly while this is true. */
   readonly loading: boolean;
+  /**
+   * Re-read the feed NOW, rather than at the end of the current `REFRESH_MS`.
+   *
+   * THERE IS EXACTLY ONE CALLER AND IT IS THE CEREMONY. `REFRESH_MS` is sixty seconds because that is
+   * the revocation delay this product is willing to promise strangers — but the player who just
+   * pressed `Connect X` is not a stranger to their own action, and a face that takes up to a minute to
+   * appear after a successful link reads as a link that did not work. They press it again. That is the
+   * whole reason this exists.
+   *
+   * IT IS A NUDGE, NOT A FETCH: it cannot be awaited and it returns nothing. A caller who could await a
+   * fetch would soon be gating a button on it, and `loading`'s own contract two lines up is that
+   * nothing in this program waits on this feed. The panel re-renders when the map changes, like every
+   * other consumer.
+   */
+  readonly refresh: () => void;
 }
 
-const IDLE: LinksApi = { source: "off", map: NO_LINKS, you: null, loading: false };
+/** `refresh` is a no-op here rather than absent: a component rendered outside the provider must be
+ *  able to call it without a guard, for the same reason `IDLE` exists at all. */
+const IDLE: LinksApi = { source: "off", map: NO_LINKS, you: null, loading: false, refresh: () => {} };
 
 /** How often a roster's links are re-read.
  *
@@ -200,6 +217,18 @@ export async function fetchLinks({ source, asked, cast, you, signal }: LinkQuery
 export function useLinkFeed(wallets: readonly string[], you: string | null): LinksApi {
   const [map, setMap] = useState<LinkMap>(NO_LINKS);
   const [loading, setLoading] = useState(false);
+  /**
+   * Bumped by `refresh()`. A COUNTER IN THE EFFECT'S DEPENDENCY LIST, which is the whole mechanism:
+   * incrementing it tears the effect down — aborting whatever is in flight and clearing the pending
+   * timer — and starts it again, which polls immediately and re-arms the interval from now.
+   *
+   * The alternative was to hoist `poll` out of the effect and call it directly. That means the fetch,
+   * its abort controller and its timer all have to live outside the effect too, and the cancellation
+   * discipline this file spends twenty lines getting right (`cancelled`, `abort`, the `finally`) stops
+   * being expressible in one place. One integer is cheaper than that, and it reuses the teardown that
+   * is already correct.
+   */
+  const [nudge, setNudge] = useState(0);
 
   const asked = useMemo(() => rosterKey(wallets), [wallets]);
   // The same members as `asked`, in the caller's order — see `rosterCast`. Computed on every path
@@ -270,7 +299,11 @@ export function useLinkFeed(wallets: readonly string[], you: string | null): Lin
       abort.abort();
       if (timer !== null) clearTimeout(timer);
     };
-  }, [key]);
+  }, [key, nudge]);
+
+  // Stable across renders, so a consumer can put it in its own dependency lists without re-running
+  // them every poll.
+  const refresh = useCallback(() => setNudge((n) => n + 1), []);
 
   return useMemo<LinksApi>(
     () => ({
@@ -278,8 +311,9 @@ export function useLinkFeed(wallets: readonly string[], you: string | null): Lin
       map,
       you: you === null ? null : (map.get(you) ?? null),
       loading,
+      refresh,
     }),
-    [map, you, loading],
+    [map, you, loading, refresh],
   );
 }
 
