@@ -18,6 +18,7 @@
     "@magicblock-labs/gum-react-sdk": "3.0.10",
     "@magicblock-labs/gum-sdk": "3.0.10",
     "@noble/curves": "^1.9.7",
+    "@privy-io/js-sdk-core": "0.69.0",
     "@solana/wallet-adapter-base": "^0.9.27",
     "@solana/wallet-adapter-phantom": "^0.9.29",
     "@solana/wallet-adapter-react": "^0.15.39",

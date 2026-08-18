@@ -10,12 +10,14 @@
 // was bad; a value that fails the shape check is reported as "Privy is not configured" when the truth
 // is that it was configured perfectly and this function could not read it.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   identityTokenKeys,
   IDENTITY_TOKEN_COOKIE,
   proofFromCookie,
+  proofFromOutcome,
   ProofUnavailableError,
+  tokenFromStoredValue,
 } from "./xProof.ts";
 
 /** Shaped like the real thing — three base64url segments — without being one. */
@@ -98,10 +100,104 @@ describe("identityTokenKeys", () => {
     expect(identityTokenKeys("  appid  ")[0]).toBe("privy:appid:id-token");
   });
 
-  it("scopes by app id, so two Privy apps on one origin cannot read each other's token", () => {
-    // Privy's own advice for `*.vercel.app` previews — which cannot be allowlisted — is a SEPARATE dev
-    // app. That puts two apps' tokens in one origin's storage.
+  it("scopes the first key by app id — a probe that is kept only because it is free", () => {
+    // THIS ASSERTION IS ABOUT THE FUNCTION, NOT ABOUT PRIVY, and the difference was the bug. The
+    // sentence that used to be here claimed this key isolates two Privy apps sharing an origin. It
+    // does not: the shipped SDK scopes by the Privy USER DID (`privy:<did:privy:…>:id-token`) and
+    // writes the unscoped `privy:id-token` beside it unconditionally, so this key has never matched
+    // anything and two apps on one origin DO share the unscoped one. See `xProof.ts`'s header.
     expect(identityTokenKeys("production-app")[0]).not.toBe(identityTokenKeys("preview-app")[0]);
+  });
+
+  it("always ends with the key the SDK actually writes", () => {
+    // The one that matters. If a future change reorders or drops it, the raw fallback read stops
+    // finding anything and nobody notices until the SDK path is also broken — which is the only
+    // moment the fallback is ever reached.
+    expect(identityTokenKeys("anything").at(-1)).toBe("privy:id-token");
+    expect(identityTokenKeys(undefined).at(-1)).toBe("privy:id-token");
+  });
+});
+
+describe("tokenFromStoredValue", () => {
+  it("unwraps the JSON quoting the SDK's own LocalStorage adds", () => {
+    // `LocalStorage.put` is `localStorage.setItem(k, JSON.stringify(v))`, so a stored token reads
+    // back as `"eyJ…"` — five extra bytes that fail the compact-JWS shape check. This is the exact
+    // reason the raw localStorage read never worked and the cookie fallback was silently carrying
+    // this whole module.
+    expect(tokenFromStoredValue(JSON.stringify(TOKEN))).toBe(TOKEN);
+  });
+
+  it("accepts a bare token too, because that is what the cookie and older writers hold", () => {
+    expect(tokenFromStoredValue(TOKEN)).toBe(TOKEN);
+  });
+
+  it("refuses anything that is not a token, quoted or not", () => {
+    for (const junk of ["", "not-a-token", "one.two", "a.b.c.d", "eyJ...", "a b.c.d"]) {
+      expect(tokenFromStoredValue(junk)).toBeNull();
+      expect(tokenFromStoredValue(JSON.stringify(junk))).toBeNull();
+    }
+  });
+
+  it("refuses a stored value that parses to something other than a string", () => {
+    // A key that holds an object or a number is a key that means something else. Passing it through
+    // would spend one of the player's rate-limited attempts to be told `bad-proof`.
+    expect(tokenFromStoredValue('{"token":"x"}')).toBeNull();
+    expect(tokenFromStoredValue("12345")).toBeNull();
+    expect(tokenFromStoredValue("null")).toBeNull();
+  });
+
+  it("survives a truncated JSON string rather than throwing", () => {
+    // A half-written localStorage value — a tab killed mid-write — must not surface as a chunk-load
+    // failure, which the ceremony reports as a generic outage.
+    expect(() => tokenFromStoredValue('"eyJ')).not.toThrow();
+    expect(tokenFromStoredValue('"eyJ')).toBeNull();
+  });
+
+  it("returns null for an absent value and a non-string", () => {
+    expect(tokenFromStoredValue(null)).toBeNull();
+    expect(tokenFromStoredValue(undefined as unknown as string)).toBeNull();
+  });
+});
+
+describe("proofFromOutcome", () => {
+  it("hands a proof through verbatim", () => {
+    // VERBATIM IS THE CONTRACT. Not a fragment, not a rewrapped version — the server verifies the
+    // signature over these exact bytes.
+    expect(proofFromOutcome({ kind: "proof", token: TOKEN })).toBe(TOKEN);
+  });
+
+  it("turns a closed window into null, which the ceremony reads as `cancelled`", () => {
+    expect(proofFromOutcome({ kind: "cancelled" })).toBeNull();
+  });
+
+  it("turns a fault into ProofUnavailableError, which the ceremony reads as `unavailable`", () => {
+    // THE DISTINCTION THIS WHOLE SPLIT EXISTS FOR. A configuration fault reported as `cancelled`
+    // tells a player they closed a window they never saw, and sends them to try again for ever
+    // against something that cannot succeed.
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(() => proofFromOutcome({ kind: "unavailable", why: "the toggle is off." })).toThrow(
+        ProofUnavailableError,
+      );
+      expect(logged).toHaveBeenCalledOnce();
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("never puts a token in the log line or the error", () => {
+    // `why` is built by `xPrivy.ts` from causes only, and every call it wraps runs before a token
+    // exists. This pins the property rather than trusting that it stays true.
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(() =>
+        proofFromOutcome({ kind: "unavailable", why: "Privy issued no identity token." }),
+      ).toThrow(/no identity token/);
+      const said = logged.mock.calls.flat().join(" ").toLowerCase();
+      expect(said).not.toContain("eyj");
+    } finally {
+      logged.mockRestore();
+    }
   });
 });
 

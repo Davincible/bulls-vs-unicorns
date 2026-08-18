@@ -33,7 +33,7 @@
         { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=(), payment=()" },
         {
           "key": "Content-Security-Policy-Report-Only",
-          "value": "default-src 'self'; img-src 'self' data:; connect-src 'self' https://api.devnet.solana.com wss://api.devnet.solana.com https://devnet.helius-rpc.com wss://devnet.helius-rpc.com https://*.magicblock.app wss://*.magicblock.app https://bulls-arena-keeper-devnet.fly.dev; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://x.com; object-src 'none'"
+          "value": "default-src 'self'; img-src 'self' data:; connect-src 'self' https://api.devnet.solana.com wss://api.devnet.solana.com https://devnet.helius-rpc.com wss://devnet.helius-rpc.com https://*.magicblock.app wss://*.magicblock.app https://bulls-arena-keeper-devnet.fly.dev https://auth.privy.io; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://x.com; object-src 'none'"
         }
       ]
     }

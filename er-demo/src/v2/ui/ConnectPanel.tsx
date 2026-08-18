@@ -218,6 +218,31 @@ export function ConnectPanel({ block, density }: ConnectPanelProps) {
 // THE FAILURE STATE IS UNCHANGED and still comes from `xConsent.ts` — the panel resolves no sentences
 // of its own. What changed is that the sentences are now reached by things that actually happened.
 
+/**
+ * START FETCHING THE IDENTITY CHUNK WHILE THE PLAYER READS THE CONSENT SCREEN.
+ *
+ * NOT AN OPTIMISATION — a correctness measure for the popup, and the reasoning is worth having here
+ * because the symptom appears three files away. `data/xPrivy.ts` opens the X authorisation window with
+ * `window.open`, which browsers allow only while the player's activation from the press is still live.
+ * Chrome and Firefox keep it across `await`s for a few seconds; SAFARI TIES IT TO THE GESTURE'S OWN
+ * TASK, so a network fetch in between loses it and the window is silently blocked.
+ *
+ * The fetch in between is `useXCeremony.ts`'s `await import("./xProof.ts")` — cold on the first press,
+ * which is precisely the press that needs a window. Warming it here, at the moment the consent dialog
+ * opens, means that import resolves in a microtask several seconds later and the activation survives.
+ *
+ * IT DOES NOT COST THE LAZINESS ANYTHING. This is the same dynamic `import()` the press handler makes,
+ * so the chunk stays a chunk and nothing moves into the main bundle; the only change is WHEN it is
+ * asked for. It is still asked for by nobody who has not deliberately opened the consent screen —
+ * which, per `xConsent.ts`, is a screen designed to be read and refused.
+ *
+ * FAILING IS FINE AND DELIBERATELY SILENT. If this fetch fails the press will make it again and report
+ * the failure properly through the ceremony; a warning here would be a second voice for one event.
+ */
+function warmIdentityChunk(): void {
+  void import("../data/xProof.ts").catch(() => {});
+}
+
 export function XLinkPanel() {
   const { source, you, loading, refresh } = useLinks();
   // Through the arena context, like every other consumer on this page. `useWallet` is the FACTORY the
@@ -308,7 +333,10 @@ export function XLinkPanel() {
         className="btn btn--sm btn--wide"
         disabled={ceremony.busy}
         aria-busy={ceremony.busy}
-        onClick={() => setDialog("consent")}
+        onClick={() => {
+          warmIdentityChunk();
+          setDialog("consent");
+        }}
       >
         {failure === null ? UNLINKED_COPY.action : FAILURE_COPY.retry}
       </button>

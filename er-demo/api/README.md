@@ -287,16 +287,26 @@ Three things about that shape are load-bearing:
 
 ### What a client has to do
 
-Not built here — this is the server half. Whoever builds the UI needs:
+Not built here — this is the server half. **The client half now exists**: `src/v2/data/xPrivy.ts` is
+the login trigger and `src/v2/data/xProof.ts` is the artefact contract. What follows is what it has to
+satisfy, and each item names where it is satisfied.
 
 1. **`?links=api`.** Identity rendering is already gated on `src/v2/data/linkSource.ts`'s `?links=`
    flag, and that is the only client-side switch; the write path's gate is a server variable because a
    query parameter cannot gate a write.
-2. **A fresh identity token, obtained immediately before the ceremony.** `useIdentityToken()` /
-   `getIdentityToken()` from `@privy-io/react-auth`. The server refuses a token whose `iat` is more than
-   **one hour** old with `401 {"error":"stale-proof"}` — a bearer proof of somebody's X identity is an
-   impersonation vector for as long as it lives, and Privy mints a new one on link/refresh anyway, so
-   the natural flow costs nothing. On `stale-proof`, call `refreshUser()` and retry once.
+2. **A fresh identity token, obtained immediately before the ceremony.** The server refuses a token
+   whose `iat` is more than **one hour** old with `401 {"error":"stale-proof"}` — a bearer proof of
+   somebody's X identity is an impersonation vector for as long as it lives, and Privy mints a new one
+   on link/refresh anyway, so the natural flow costs nothing. On `stale-proof`, refresh and retry once.
+
+   The SDK is **`@privy-io/js-sdk-core`, not `@privy-io/react-auth`** — the vanilla client rather than
+   the React one, pinned to `0.69.0`, and the argument (size, hard dependencies, and the fact that
+   `<PrivyProvider>` would put an identity SDK in the main bundle for every visitor) is written out in
+   `src/v2/data/xPrivy.ts`. The accessors are the same shape without the hooks: `privy.getIdentityToken()`
+   for the token and `privy.user.get()` for the refresh, which re-mints it as a side effect — which is
+   how the client satisfies the one-hour rule **without parsing the token**, since a second opinion
+   about the artefact in the browser is a second place for the two halves to disagree. The retry is
+   already implemented, once and only once, in `src/v2/data/xLinkCeremony.ts#runLink`.
 3. **The consent screen first.** `src/v2/data/xConsent.ts` already holds the copy, including the
    deanonymisation sentence §6.1 requires **before** the redirect.
 4. **`signMessage`.** Already on `ChainIdentity` (Stage 1, done). Sign the `message` string's UTF-8

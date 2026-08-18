@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="robots" content="noindex,nofollow" />
+<title>Connecting to X…</title>
+
+<!--
+  WHERE PRIVY SENDS THE X AUTHORISATION POPUP BACK TO.
+
+  This page has NO SCRIPT, and that is the point of it. `src/v2/data/xPrivy.ts` opens a popup onto
+  this file, navigates it to Privy, and then watches it: once the window comes back to this origin
+  carrying `privy_oauth_code`, the OPENER reads those two query parameters off `popup.location` and
+  closes the window. Nothing has to run here for that to work.
+
+  A `postMessage` version of this page was considered and rejected — the reasoning is written out in
+  `xPrivy.ts`'s "REJECTED ALTERNATIVES", and the short form is that the opener has to poll
+  `popup.closed` anyway to notice a player closing the window, so a second completion channel would
+  only be a race with its own origin check to get wrong.
+
+  It lives in `public/` rather than being an entry in `vite.config.ts` so that Vite copies it verbatim
+  and it never touches the chunk graph. It is not part of any bundle and costs nobody who does not
+  complete an X authorisation anything at all.
+
+  THE AUTHORISATION CODE IN THE URL IS NOT A CREDENTIAL ON ITS OWN. It is single-use and worthless
+  without the PKCE verifier, which never leaves the opener's storage.
+
+  The wording covers both moments this window is visible: the instant before X loads, and the instant
+  after it returns. In both, closing the window is a safe thing to do and says so.
+-->
+
+<style>
+  html {
+    color-scheme: light dark;
+  }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 2rem 1.5rem;
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    text-align: center;
+  }
+  h1 {
+    margin: 0 0 0.5rem;
+    font-size: 1.125rem;
+    font-weight: 600;
+  }
+  p {
+    margin: 0;
+    opacity: 0.7;
+    max-width: 26rem;
+  }
+</style>
+
+<main>
+  <h1>Connecting to X…</h1>
+  <p>You can close this window to cancel. Nothing is linked until you sign with your wallet.</p>
+</main>
