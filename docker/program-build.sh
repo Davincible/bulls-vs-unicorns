@@ -5,11 +5,22 @@
 #   program-build           build the .so and the IDL into target/docker/
 #   program-build verify    build, then compare against the DEPLOYED bytecode on devnet
 #
-# STATUS: NOT YET PRODUCING AN ARTIFACT, and that is stated here rather than discovered. Everything
-# up to and including `anchor build` works — the toolchain installs, the workspace resolves, anchor
-# runs and EXITS 0 — but no `bulls_arena.so` appears anywhere under /build afterwards (checked with
-# `find`, in both the workspace target and the program-local one). Something in the SBF step is
-# failing silently under x86 emulation.
+# STATUS: NOT YET PRODUCING AN ARTIFACT, AND THE CAUSE IS NOT DOCKER. Everything up to and including
+# `anchor build` works — the toolchain installs, the workspace resolves, anchor runs and EXITS 0 —
+# but no `bulls_arena.so` appears anywhere under /build afterwards.
+#
+# This note first blamed "the SBF step failing silently under x86 emulation". That was wrong, and it
+# would have sent the next reader hunting an emulation bug that does not exist. `anchor build` does
+# exactly the same thing NATIVELY on the host: exit 0, no output, no artifact. The container was
+# faithfully reproducing a local breakage.
+#
+# What works, and what actually built the deployed v9 binary:
+#
+#     cd programs/bulls-arena && cargo-build-sbf     # -> target/deploy/bulls_arena.so
+#
+# So the fix here is probably to call `cargo-build-sbf` directly rather than going through `anchor
+# build` at all — this image does not need anchor's IDL generation, because `scripts/idlgen.py` owns
+# the IDL in this repo and verifies it separately.
 #
 # THE LOCAL BUILD IS UNAFFECTED: `cd programs/bulls-arena && anchor build` on the host works and is
 # what the deploy uses. This image is a reproducibility nicety, not a dependency of shipping.
