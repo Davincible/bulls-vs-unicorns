@@ -39,7 +39,9 @@ set -euo pipefail
 MODE="${1:-build}"
 WORKSPACE="/build"
 OUT_DIR="/build/target/docker"
-PROGRAM_ID="ECD1dX2fUSGVY25y2cHWHWXYUQr9XzfFdTxcMzHj7zKe"
+# v9. NOT hardcoded lightly: v8 (ECD1dX2f...) was CLOSED on 2026-08-18 and a closed program id
+# can never be redeployed, so verify mode was pointing at an account that no longer exists.
+PROGRAM_ID="FcLNVuH9A354Kcjyctxn422naJ1mDm32QCJxaS7x1vQE"
 
 echo "toolchain"
 echo "  rustc   $(rustc --version)"
@@ -47,19 +49,6 @@ echo "  solana  $(solana --version)"
 echo "  anchor  $(anchor --version)"
 echo
 
-# BUILT FROM THE WORKSPACE ROOT, and this reversed once. The first version of this script built from
-# programs/bulls-arena/ because the root Anchor.toml was stale — it declared a non-member program at
-# an invalid pubkey and failed with `String is the wrong size`. That workaround then caused a SECOND
-# failure that took longer to understand: `anchor build` treats the directory holding Anchor.toml as
-# the workspace root, so building from programs/bulls-arena/ meant `[profile.release]` in the ROOT
-# Cargo.toml no longer applied, and a source-built anchor refused with
-#
-#     Error: `overflow-checks` is not enabled
-#
-# while `overflow-checks = true` sat on line 30 of the very file it was declining to read. Both
-# errors had one cause, and the root Anchor.toml is now repaired instead — see its header. The cargo
-# workspace root and the anchor workspace root are the same directory again, which is the only
-# arrangement in which a profile setting means what it says.
 # Build from the PROGRAM directory. Proven, not assumed: this is the only configuration observed
 # to compile in this container. From the workspace root, `anchor build` tries to build both members
 # and dies on `bulls-arena-session-spike`, whose keypair lives in the `.devnet/` this image refuses
@@ -84,7 +73,7 @@ cd "$WORKSPACE/programs/bulls-arena"
 # not deployed, not part of the artifact, and CANNOT be built here without importing the very
 # directory this image refuses to import. `--ignore-keys` would also silence it, and is rejected —
 # it disables the check for BOTH programs, including the one whose id must match the deployed
-# ECD1dX2f... exactly, which is the single most important thing this build could get wrong.
+# the deployed id exactly, which is the single most important thing this build could get wrong.
 anchor build
 
 mkdir -p "$OUT_DIR"
