@@ -48,9 +48,10 @@ import {
   type ConnectWait,
 } from "./connectPatience.ts";
 import { classifyWalletError, connectFailedFault, type WalletFault } from "./walletFault.ts";
+import { getWallets } from "@wallet-standard/app";
 import {
-  hasInjectedPhantom,
   injectedPhantom,
+  phantomIsPresent,
   statusForReadyState,
   type WalletStatus,
 } from "./walletConnection.ts";
@@ -129,26 +130,65 @@ const PROVIDER_POLL_LIMIT_MS = 8_000;
  * feeds (`wallet-unannounced`) is precisely the one where the round may not be polling, so there was
  * no incidental re-render to hide behind either.
  *
- * The subscription is a bounded poll because there is no injection event to listen for. It stops the
- * moment the answer becomes true: an extension cannot un-inject itself, so `true` is terminal.
+ * TWO CHANNELS, AND THE REGISTRY ONE IS EVENT-DRIVEN RATHER THAN POLLED. The legacy injection has no
+ * event to listen for, so it is a bounded poll. The Wallet Standard registry has `on("register")`,
+ * which is strictly better: a wallet that registers at second nine is still found, where the poll has
+ * already given up at eight.
+ *
+ * Both stop mattering the moment the answer becomes true — an extension cannot un-inject itself and a
+ * wallet does not un-register — so `true` is terminal and the poll clears itself.
+ *
+ * `getWallets()` IS IMPORTED LAZILY, inside the functions rather than at module scope. It reads and
+ * mutates a `window`-level registry on first call, and this module is imported by tests that run in
+ * Node; a top-level call would execute that at import time.
  */
+function standardWallets(): readonly { name?: unknown }[] | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return getWallets().get() as readonly { name?: unknown }[];
+  } catch {
+    // A registry that throws is a registry we do not have. The legacy probe still answers, and
+    // reporting "no Phantom" because a third-party shim misbehaved is the failure being fixed.
+    return undefined;
+  }
+}
+
 function subscribeToProvider(onChange: () => void): () => void {
-  if (typeof window === "undefined" || hasInjectedPhantom(window)) return () => {};
+  if (typeof window === "undefined" || phantomIsPresent(window, standardWallets())) return () => {};
+
+  const stops: (() => void)[] = [];
+
+  // The registry half. `on("register")` fires for wallets that appear after this point, which is the
+  // case the old bounded poll could not cover at all.
+  try {
+    const api = getWallets();
+    stops.push(api.on("register", () => {
+      if (phantomIsPresent(window, standardWallets())) onChange();
+    }));
+  } catch {
+    // No registry available; the poll below is the whole answer.
+  }
+
+  // The legacy half, unchanged in shape: bounded, because a page with genuinely no wallet is the
+  // common case and an unbounded interval would run for the tab's life.
   let waited = 0;
   const id = window.setInterval(() => {
     waited += PROVIDER_POLL_MS;
-    if (hasInjectedPhantom(window)) {
+    if (phantomIsPresent(window, standardWallets())) {
       onChange();
       window.clearInterval(id);
     } else if (waited >= PROVIDER_POLL_LIMIT_MS) {
       window.clearInterval(id);
     }
   }, PROVIDER_POLL_MS);
-  return () => window.clearInterval(id);
+  stops.push(() => window.clearInterval(id));
+
+  return () => { for (const stop of stops) stop(); };
 }
 
 function readProviderPresent(): boolean {
-  return typeof window === "undefined" ? false : hasInjectedPhantom(window);
+  return typeof window === "undefined" ? false : phantomIsPresent(window, standardWallets());
 }
 
 /** Server/prerender snapshot. There is no `window`, so there is no provider — and this must be a

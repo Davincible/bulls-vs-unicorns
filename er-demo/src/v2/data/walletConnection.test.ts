@@ -5,7 +5,13 @@
 
 import { describe, expect, it } from "vitest";
 import { WalletReadyState } from "@solana/wallet-adapter-base";
-import { hasInjectedPhantom, injectedPhantom, statusForReadyState } from "./walletConnection.ts";
+import {
+  hasInjectedPhantom,
+  injectedPhantom,
+  phantomFromStandardWallets,
+  phantomIsPresent,
+  statusForReadyState,
+} from "./walletConnection.ts";
 
 describe("statusForReadyState", () => {
   it("reports connected regardless of what else the adapter is claiming", () => {
@@ -96,5 +102,46 @@ describe("injectedPhantom", () => {
     const malformed = { solana: { isPhantom: true } };
     expect(hasInjectedPhantom(malformed)).toBe(true);
     expect(injectedPhantom(malformed)).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// THE OBSERVED FAILURE: Firefox, Phantom AND MetaMask installed, and the page said "install Phantom".
+//
+// MetaMask ships Solana support and injects `window.solana`, which is a single slot two extensions
+// want. These tests pin the union that fixes it, and — more importantly — pin that the union cannot
+// become a stricter false negative, which is the bug wearing a hat.
+describe("phantomIsPresent, against a browser holding two wallets", () => {
+  const metamaskOwnsWindowSolana = { solana: { isPhantom: false } };
+
+  it("finds Phantom in the registry when MetaMask has taken window.solana", () => {
+    // The reported case. Legacy probe says no — correctly, it is looking at MetaMask.
+    expect(hasInjectedPhantom(metamaskOwnsWindowSolana)).toBe(false);
+    expect(phantomIsPresent(metamaskOwnsWindowSolana, [{ name: "Phantom" }])).toBe(true);
+  });
+
+  it("does NOT read MetaMask as Phantom, which is the confusion this must not introduce", () => {
+    expect(phantomIsPresent(metamaskOwnsWindowSolana, [{ name: "MetaMask" }])).toBe(false);
+  });
+
+  it("still finds Phantom from the legacy namespace with no registry at all", () => {
+    // Older builds register nothing. Requiring the registry would break them.
+    expect(phantomIsPresent({ phantom: { solana: { isPhantom: true } } }, undefined)).toBe(true);
+    expect(phantomIsPresent({ solana: { isPhantom: true } }, [])).toBe(true);
+  });
+
+  it("says no when neither channel has it", () => {
+    expect(phantomIsPresent({}, [])).toBe(false);
+    expect(phantomIsPresent({}, undefined)).toBe(false);
+    expect(phantomIsPresent(undefined, undefined)).toBe(false);
+  });
+
+  it("matches the name exactly rather than loosely", () => {
+    // `includes("Phantom")` would match a wallet named "Phantom Clone"; a chains-based match would
+    // read every Solana wallet as Phantom. Both were rejected — see the function's comment.
+    expect(phantomFromStandardWallets([{ name: "Phantom Deceiver" }])).toBe(false);
+    expect(phantomFromStandardWallets([{ name: " Phantom " }])).toBe(true); // trimmed, deliberately
+    expect(phantomFromStandardWallets([{ name: 42 }])).toBe(false);
+    expect(phantomFromStandardWallets([{}])).toBe(false);
   });
 });

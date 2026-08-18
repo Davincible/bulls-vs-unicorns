@@ -72,8 +72,60 @@ export function statusForReadyState(
  */
 export function hasInjectedPhantom(w: unknown): boolean {
   if (w === null || w === undefined || typeof w !== "object") return false;
-  const g = w as { phantom?: { solana?: { isPhantom?: unknown } }; solana?: { isPhantom?: unknown } };
+  const g = w as {
+    phantom?: { solana?: { isPhantom?: unknown } };
+    solana?: { isPhantom?: unknown };
+  };
+  // `window.phantom.solana` FIRST, and the order is now load-bearing rather than stylistic — see
+  // `phantomFromStandardWallets` below for the observation that forced it.
   return g.phantom?.solana?.isPhantom === true || g.solana?.isPhantom === true;
+}
+
+/** THE THIRD PLACE PHANTOM CAN ANNOUNCE ITSELF, and on a multi-wallet browser the only reliable one.
+ *
+ *  WHY THIS EXISTS — AN OBSERVED FAILURE, not a defensive branch. The operator runs Firefox with both
+ *  Phantom AND MetaMask installed, and the live page told them "no Phantom wallet was detected in this
+ *  browser… Install Phantom", which is the worst copy this page can produce. Their console showed
+ *  MetaMask active on the page (`inpage.js`, `metamask-multichain-provider`), and MetaMask now ships
+ *  Solana support and injects `window.solana`.
+ *
+ *  `window.solana` IS A SINGLE SLOT AND TWO EXTENSIONS WANT IT. Whichever content script runs last
+ *  wins it. So `hasInjectedPhantom`'s second clause can be reading MetaMask's provider — where
+ *  `isPhantom` is falsy, correctly — and conclude Phantom is absent while Phantom is sitting right
+ *  there. The first clause (`window.phantom.solana`) is Phantom's own namespace and should survive,
+ *  but "should" is doing a lot of work in a race between two content scripts, and the page has one
+ *  observation saying it does not.
+ *
+ *  THE WALLET STANDARD IS THE ANSWER TO EXACTLY THIS PROBLEM. Wallets register into a shared registry
+ *  instead of fighting over one global, so coexistence is the designed case rather than an accident of
+ *  script order. `@wallet-standard/app` is already a dependency (via wallet-adapter), so this costs no
+ *  new package.
+ *
+ *  Identified by NAME, deliberately, and this is the part to be uneasy about. The registry entry
+ *  carries no `isPhantom`; a wallet's `name` is the only stable identifier it must expose. So a wallet
+ *  literally named "Phantom" is what we look for. REJECTED: matching on `chains` containing
+ *  `solana:mainnet`, which every Solana wallet satisfies and would make MetaMask read as Phantom —
+ *  the exact confusion this function exists to end.
+ *
+ *  Takes the registry's wallet list as a PARAMETER rather than calling `getWallets()`, so every branch
+ *  is reachable from a Node test and this module stays React-free and side-effect-free, per the header.
+ */
+export function phantomFromStandardWallets(wallets: readonly { name?: unknown }[] | undefined): boolean {
+  if (wallets === undefined) return false;
+  return wallets.some((wallet) => typeof wallet?.name === "string" && wallet.name.trim() === "Phantom");
+}
+
+/** The union: any of the three announcement channels is enough to stop saying "install Phantom".
+ *
+ *  DELIBERATELY A UNION AND NOT A REPLACEMENT. Older Phantom builds only do the legacy injection and
+ *  never register with the standard; newer ones may register before injecting, or inject into a
+ *  `window.solana` another extension has taken. Requiring agreement between channels would turn two
+ *  partial signals into one stricter false negative — which is the bug being fixed, wearing a hat. */
+export function phantomIsPresent(
+  w: unknown,
+  wallets: readonly { name?: unknown }[] | undefined,
+): boolean {
+  return hasInjectedPhantom(w) || phantomFromStandardWallets(wallets);
 }
 
 /** The eager-connect half of Phantom's provider — the only method we call on it directly.
