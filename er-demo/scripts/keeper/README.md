@@ -406,7 +406,7 @@ carries **two independent witnesses**, because neither subsumes the other:
 |---|---|
 | `sweepGap` | `Arena.round_counter` minus `Treasury.rounds_swept`, polled every `KEEPER_TREASURY_POLL_SECONDS` (30). A direct observation of the chain's own bookkeeping, right immediately. `pollAgeSec` beside it says how fresh. Healthy is **1** — the live round is unswept until it settles. |
 | `sweep` | what the keeper *did* about that gap: `stopAtGapRounds` is the threshold, `tripped` is the keeper's latched state, `stoppedSinceSec` is when it fired. `tripped` stays true after the gap recovers — see below. |
-| `burn` | the mean net lamports per round, measured from the operator balance at consecutive `open_round`s. Lagging, and it cannot say anything for its first 45 rounds — but a keeper that sweeps perfectly and then fails every `close_round_account` has a sweep gap of **zero** and is burning 9.96 SOL/day. The balance cannot be fooled that way. |
+| `burn` | the mean net lamports per round, measured from the operator balance at consecutive `open_round`s. Lagging, and it cannot say anything for its first 45 rounds — but a keeper that sweeps perfectly and then fails every `close_round_account` has a sweep gap of **zero** and is burning 9.96 SOL/day. The balance cannot be fooled that way. `samplingSuspended` says whether `samplesObserved` has stopped growing on purpose — see "Rounds it has already closed are not walked again" below for the one condition that does that, and why it cannot hide an outage. |
 
 Also `closer.skipped` and `closer.stranded`, each with the round numbers and the SOL they represent.
 Those lists are capped at the newest **50** per category; the counts in the shutdown banner are the
@@ -614,8 +614,8 @@ default; it is the expensive one.
 Turn it off with `--no-close-rounds` or `KEEPER_CLOSE_ROUNDS=0` — for a demo or an audit that needs
 the round log to outlive the retention window. That parks 0.023497 SOL per round for as long as it is
 off, ~9.96 SOL/day at 424 rounds/day. *Parked, not lost:* a finished round stays closeable
-indefinitely and the close cursor restarts at round #1 on every boot, so the backlog drains once it is
-switched back on.
+indefinitely and every boot re-seeds the close cursor at the oldest round that still exists, so the
+backlog drains once it is switched back on.
 
 **The retention window is what makes it safe for the UI.** `useHistory` fetches rounds by address
 with `fetchNullable` and its caller drops nulls, so a closed round leaves the log *silently* — no
@@ -630,14 +630,39 @@ and a silently-clamped keeper would be running a window its operator did not cho
 
 **How it drains a backlog.** One round per pass, oldest first, on idle passes only — never during
 `Drawing` or `Fight`, because reclaiming rent must not compete with the round somebody is playing.
-The cursor starts at round #1 on **every boot**, which is what makes it pick up rounds that were
-stranded long before this process started rather than only the ones it opened itself. It only moves
-forward, so the scan cannot loop, and the cost is one account read per second no matter how long the
-history is. A round it cannot close — wedged in `Drawing`, still delegated, or failing repeatedly —
+The cursor considers every round from #1 on **every boot**, which is what makes it pick up rounds that
+were stranded long before this process started rather than only the ones it opened itself. It only
+moves forward, so the scan cannot loop. A round it cannot close — wedged in `Drawing`, still delegated,
+or failing repeatedly —
 is logged and stepped past, because one unclosable round must never hold every older round's rent
 hostage behind it. An *unswept* round is the one case it fixes instead of skipping: it sweeps, then
 closes on a later pass, which also quietly drains the `Treasury.rounds_swept` gap listed under "Known
 holes".
+
+**Rounds it has already closed are not walked again.** The cursor is seeded at boot — and re-advanced
+on any idle pass with a full batch of candidates ahead of it — by one `getMultipleAccounts` read per
+**100** rounds, straight to the oldest round whose account still *exists*. A round whose account is
+gone has no backlog left to drain, so this reaches exactly the same rounds the one-per-pass walk
+reached; nothing is skipped on a guess, because every round below the cursor was *observed* absent in
+a reply from the chain. `closeCursor.ts` owns it, bounded by `CLOSE_CURSOR_SCAN_SECONDS` (20) and
+`CLOSE_CURSOR_SCAN_MAX_BATCHES` (200) at boot, and every failure path lands back on #1 or on the round
+after the last one it proved gone.
+
+This is a **money** fix rather than a speed one. On 2026-08-19 a restart against a healthy arena
+published `burn 23,911,960 lamports/round` (healthy is ~420,000), `solPerDay 9.52`, `runway 2.39 days`
+(it had been 128) and `reclaimed 0`, with `closer.cursor` at 315 against a `round_counter` of 636. All
+of it was true and all of it was about the walk: 612 rounds were already closed, 0.61 SOL of rent was
+standing — the expected 20-round float — and exactly one round, #295, was genuinely stranded. No rent
+comes back during that walk, so the burn samples taken across it read as COST-MODEL §4's total-failure
+figure on an arena that was fine. Left alone it would eventually have armed the brake on those samples
+and **stopped a healthy arena**, which is the false positive `reclamation.test.ts` calls worse than
+having no brake at all.
+
+Because of that, the keeper **takes no burn sample at all** while its cursor is still walking closed
+history — published as `burn.samplingSuspended` in `/reclamation.json`. The predicate is deliberately
+*not* "the cursor is behind", which is also what a stuck sweep looks like; it is "every round the
+closer has looked at was **absent**", and every failure mode puts an *existing* round under the cursor,
+so the first one clears it. The sweep-gap stop needs no samples and stays armed throughout.
 
 **Against a pre-v7 program it does nothing at all**, and says so in the boot banner
 (`rent  unavailable — this IDL has no close_round_account`). That veto is `programFeatures.ts`, and it

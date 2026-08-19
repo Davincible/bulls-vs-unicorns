@@ -101,6 +101,29 @@ export interface ChainClient {
   /** Any round by number, through the router. Used by the phase machine for the live round and by
    *  the stranded-round sweeper for older ones. */
   fetchRound(roundNo: bigint): Promise<RawRoundAccount | null>;
+  /** DOES EACH OF THESE ROUNDS STILL HAVE AN ACCOUNT? One `getMultipleAccountsInfo`, answers in the
+   *  order asked, at most `CLOSE_CURSOR_PROBE_BATCH` (100) per call — the JSON-RPC's own ceiling, and
+   *  a longer list is REFUSED rather than truncated or silently chunked, because a probe that
+   *  quietly dropped its tail would report closed rounds the chain never spoke about. `closeCursor.ts`
+   *  owns the chunking and the reason both halves of that rule are written out.
+   *
+   *  ONE READ FOR A HUNDRED ROUNDS RATHER THAN A HUNDRED READS. `fundHouseBank` and the boot banner
+   *  were both rewritten onto this same endpoint after a `getBalance` per item earned
+   *  `429 Connection rate limits exceeded` at 48 wallets and killed the process before the HTTP
+   *  server bound; this is the third caller and it walks HUNDREDS of accounts, not dozens. See
+   *  `closeCursor.ts` for what the per-round version of this cost on the live arena.
+   *
+   *  EXISTENCE, NOT CONTENTS, AND THE DIFFERENCE IS PAID FOR IN BYTES. `dataSlice` of length zero
+   *  asks the RPC to send no account data at all: a `Round` is 3,248 bytes, so a hundred of them
+   *  would be a ~325KB reply per read for a question answered entirely by whether the entry is null.
+   *  Nothing here decodes, so nothing here needs the runtime IDL either — the same argument
+   *  `accountExists` makes against going through Anchor, at a hundred accounts a time.
+   *
+   *  FROM THE BASE LAYER, like `isDelegated` and for its reason. Existence is a base-layer fact:
+   *  `close_round_account` runs there, a delegated round still HAS its account there (owned by the
+   *  Delegation Program), and a closed one is gone from there. The router routes per account and
+   *  would have to be asked one at a time, which is the whole thing this is replacing. */
+  roundsExist(roundNos: readonly bigint[]): Promise<boolean[]>;
   send(builder: TransactionBuilder, signer: TxSigner, label: string, routing?: SendRouting): Promise<SendOutcome>;
   balance(pubkey: PublicKey): Promise<number>;
   /** Does this base-layer account exist at all? Asked of the arena's `Treasury`, which is created
@@ -435,6 +458,28 @@ export async function createChainClient({ operator, dryRun, stopSignal }: ChainC
     clockOffsetSeconds: () => clockOffsetSec,
     readChainState,
     fetchRound,
+    roundsExist: async (roundNos) => {
+      if (roundNos.length === 0) return [];
+      // THE ASSERTION AND THE CHUNK SIZE ARE DELIBERATELY TWO NUMBERS. `closeCursor.ts` owns
+      // `CLOSE_CURSOR_PROBE_BATCH`; this is the guard that the chunker got it right, and a guard that
+      // imports its bound from the thing it is guarding checks only that a constant equals itself.
+      // The RPC's own answer to a longer list is `-32602 Too many inputs provided`, which arrives as
+      // a read failure naming nothing about round numbers.
+      if (roundNos.length > 100) {
+        throw new Error(
+          `roundsExist was asked about ${roundNos.length} rounds; getMultipleAccounts takes at most 100 ` +
+          `per call. Chunk the call — see CLOSE_CURSOR_PROBE_BATCH in closeCursor.ts — rather than ` +
+          `raising this, which would only move the failure into the RPC as a -32602.`,
+        );
+      }
+      const infos = await withReadRetry(`existence of ${roundNos.length} round(s) from #${roundNos[0]}`, () =>
+        base.getMultipleAccountsInfo(
+          roundNos.map((roundNo) => roundPdaForRoundNo(roundNo, arenaPda)),
+          // `dataSlice` of nothing: the question is null-or-not, and a `Round` is 3,248 bytes.
+          { commitment: "confirmed", dataSlice: { offset: 0, length: 0 } },
+        ));
+      return infos.map((info) => info !== null);
+    },
     send,
     balance: (pubkey: PublicKey) => withReadRetry("balance", () => base.getBalance(pubkey)),
     accountExists: async (pubkey: PublicKey) =>

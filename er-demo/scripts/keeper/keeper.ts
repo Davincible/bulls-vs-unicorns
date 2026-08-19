@@ -147,7 +147,8 @@ import {
   RESOLVE_RETRY_WAIT_SECONDS, RESULT_HOLD_SECONDS, STALE_AFTER_SECONDS,
   STALL_AFTER_CONSECUTIVE_FAILURES, SWEEP_RETRY_SECONDS, UNDELEGATE_WAIT_SECONDS,
   BURN_ARM_AFTER_ROUNDS, BURN_SAMPLE_ROUNDS, MAX_BURN_LAMPORTS_PER_ROUND, TREASURY_POLL_SECONDS,
-  CLOSE_ATTEMPTS_PER_ROUND, CLOSE_RETRY_SECONDS, HTTP_PORT, LOW_BALANCE_RECHECK_SECONDS,
+  CLOSE_ATTEMPTS_PER_ROUND, CLOSE_CURSOR_SCAN_MAX_BATCHES, CLOSE_CURSOR_SCAN_SECONDS,
+  CLOSE_RETRY_SECONDS, HTTP_PORT, LOW_BALANCE_RECHECK_SECONDS,
   MIN_BALANCE_LAMPORTS, ROUND_RETENTION, SCHEDULE_CLOSE_RETRY_SECONDS, SWEEP_GAP_STOP_ROUNDS,
   parseCliOptions,
   type KeeperCliOptions,
@@ -169,6 +170,9 @@ import {
 } from "./reclamation.ts";
 import { lobbyIsHeldOpen, planLobby, type LobbyPlan } from "./lobbyPolicy.ts";
 import { decideClose, housekeepingIsWelcome, isPastRetention } from "./roundCloser.ts";
+import {
+  findOldestLivingRound, probeIsWorthARead, type CloseCursorScan,
+} from "./closeCursor.ts";
 import { readProgramFeatures, type ProgramFeatures } from "./programFeatures.ts";
 import {
   NO_FRESH_VALIDATOR, createChainClient, selectWritableValidator,
@@ -341,11 +345,77 @@ interface KeeperContext {
 
   // ---- reclaiming rent — see `closeOneFinishedRound` for why this is the only memory it keeps ----
 
-  /** The oldest round that might still be closeable. Starts at #1 on EVERY boot, which is what makes
-   *  a pre-existing backlog get drained rather than only rounds this process opened. Only ever moves
-   *  forward, so the scan cannot loop; one round is examined per pass, so the cost is one account
-   *  read per second no matter how long the arena's history is. */
+  /** The oldest round that might still be closeable. Only ever moves forward, so the scan cannot
+   *  loop; one round is examined per pass, so the cost is one account read per second no matter how
+   *  long the arena's history is.
+   *
+   *  IT USED TO START AT #1 ON EVERY BOOT, "which is what makes a pre-existing backlog get drained
+   *  rather than only rounds this process opened" — THAT SENTENCE WAS RIGHT AND ITS INTENT IS
+   *  UNCHANGED. What is amended is only where the drain begins: `closeCursor.ts` fast-forwards this,
+   *  before the first round is opened, to the oldest round whose account STILL EXISTS. A round whose
+   *  account is gone has nothing to drain — `decideClose` answers `advance: "already-closed"`,
+   *  records nothing and moves on — so the same set of rounds is reached, minus the hundreds of
+   *  passes spent proving that closed rounds are closed. Every round below the seed was OBSERVED
+   *  absent by a reply from the chain in this process; nothing is skipped on a guess, and a scan that
+   *  fails or is cut short hands back #1 or the round after the last one it proved gone.
+   *
+   *  `closeCursor.ts` carries the whole argument, the live numbers, and why a bisection was rejected
+   *  (stranded rounds are HOLES below the closed run, and #295 on the live arena is one). */
   closeCursor: bigint;
+  /** THE ROUND NUMBER THE CLOSER LAST SAW AN ACCOUNT FOR, or null before it has seen one. Read only by
+   *  `probeIsWorthARead`, which compares it against `closeCursor`.
+   *
+   *  A ROUND NUMBER RATHER THAN A BOOLEAN, AND THAT IS THE WHOLE POINT OF IT. The question being asked
+   *  is "is the round under the cursor known to be there?", and a boolean answering that would have to
+   *  be cleared at all four sites that advance the cursor. Held as the round number it was true OF, it
+   *  invalidates itself the instant the cursor moves: one write, no unwrites, and no way for the
+   *  guard it feeds to be silently disabled by an advance somebody added later. `probeIsWorthARead`
+   *  argues what that guard is worth — without it, a keeper parked on an unswept round issues a
+   *  hundred-key read every second for the length of the fault. */
+  closeCursorKnownLiveAt: bigint | null;
+  /** IS THERE STILL AN UNKNOWN STRETCH OF ALREADY-CLOSED HISTORY IN FRONT OF THE CURSOR? Raised by the
+   *  boot scan and by the per-pass skip, and by each of them only when the scan PROVED a run of
+   *  consecutive rounds absent and was then cut short by its batch cap, its deadline, or a failed read.
+   *  Cleared by `closeOneFinishedRound` the moment the cursor reaches a round that exists, or the
+   *  moment there is no closeable round left.
+   *
+   *  RAISED IN TWO PLACES AND LOWERED IN ONE, deliberately. The two scans can each see evidence of a
+   *  closed run; only the closer can see the thing that ends one. A `= scan.catchUpAhead` assignment in
+   *  either raiser would let a scan that happened to find a living round lower a flag the other raised,
+   *  which is the shape of bug where two owners of one field disagree by one pass.
+   *
+   *  WHAT IT IS FOR: while it is true, `openNextRound` takes NO BURN SAMPLE. A sample is the net
+   *  lamports one round cost, and during a catch-up no `close_round_account` runs at all — so the
+   *  sample is ~23.9M lamports against a healthy 420,000 and a ceiling of 5,000,000. Feeding those to
+   *  `burnBrake` is measuring a transient and calling it a rate. Left in, they publish the 9.5
+   *  SOL/day and 2.39-day runway that started this, and — if a catch-up ever spanned the arming
+   *  moment — would STOP A HEALTHY ARENA, which `reclamation.test.ts`'s header calls worse than
+   *  having no brake at all.
+   *
+   *  WHY THIS PREDICATE AND NOT "THE CURSOR IS BEHIND", which is the obvious one and is dangerous.
+   *  "Behind" is also what a real outage looks like: a keeper whose sweeps have stopped parks the
+   *  cursor on one unswept round forever while `round_counter` climbs, and that IS the 9.96 SOL/day
+   *  failure. Suspending the brake on "behind" would disable it in exactly that case. This predicate
+   *  cannot: it requires that EVERY round the closer has looked at was ABSENT, and every failure mode
+   *  puts an EXISTING round under the cursor —
+   *    * closes failing — the cursor is sitting on the round they fail on, which exists;
+   *    * sweeps failing — `sweep-first` holds the cursor on a terminal unswept round, which exists;
+   *    * a close that succeeds and returns too little — the cursor is walking rounds that exist;
+   *    * rounds stranded or wedged — they exist, that is what stranded means.
+   *  In every one of them the first fetch clears this and sampling resumes. A run of absent rounds is
+   *  by definition not an outage; it is the record of work already done.
+   *
+   *  AND IT LEAVES NO WINDOW UNGUARDED. `sweepGapStop` needs no history — it is a subtraction over
+   *  chain state, armed on the first treasury poll — and it is untouched by any of this. This is the
+   *  same trade `reclamation.ts`'s header already made and already priced for the 2.6 hours after
+   *  every restart in which the brake's ring is refilling: the sweep gap covers the window the brake
+   *  cannot see into. Suspending sampling extends that already-argued window by the length of a
+   *  catch-up, which after the fast-forward is seconds. It does not open a new one.
+   *
+   *  IT IS PUBLISHED, as `burn.samplingSuspended` in `/reclamation.json`. `samplesObserved: 0 of 45`
+   *  with no explanation beside it is the same species of alarming-and-wrong reading this whole
+   *  change exists to delete. */
+  closeCatchUpAhead: boolean;
   /** Consecutive failures against the round the cursor is on, so one round the keeper cannot fix
    *  cannot hold every older round's rent hostage behind it. */
   closeAttempts: number;
@@ -395,7 +465,9 @@ interface KeeperContext {
    *  constants on purpose. `config.ts` explains why they are different; this is what depends on it. */
   burnSamplesLamports: number[];
   /** The operator balance read at the last `open_round` that actually LANDED, or null before the
-   *  first. The difference between two of these is one burn sample.
+   *  first — AND null after an open that landed while `closeCatchUpAhead` held, so that the first
+   *  sample taken afterwards spans an interval that was wholly clean rather than half catch-up. The
+   *  difference between two of these is one burn sample.
    *
    *  A DEDICATED FIELD RATHER THAN `timeline.operatorLamportsAtOpen`, which happens to hold the same
    *  number today. The timeline is replaced wholesale by the main loop on any round-number change, so
@@ -1399,6 +1471,170 @@ async function driveAbandoned(
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 
 /**
+ * GET THE CURSOR PAST A RUN OF ROUNDS THAT ARE ALREADY CLOSED, ONE BATCHED READ AT A TIME.
+ *
+ * ONE HUNDRED ROUNDS PER READ INSTEAD OF ONE ROUND PER PASS. `closeCursor.ts` owns the mechanism, the
+ * live numbers and the argument for why starting at the oldest EXISTING round preserves the
+ * drain-the-backlog intent exactly. This is the wiring, and the only thing decided here is WHEN to
+ * spend the read.
+ *
+ * WHY THE BOOT SCAN IS NOT ENOUGH ON ITS OWN, which is the reason this exists at all. On 2026-08-19
+ * the live arena had rounds #1-#294 closed, #295 stranded (terminal but still owned by the Delegation
+ * Program), #296-#616 closed and #617+ inside the retention window. A boot-only fast-forward lands
+ * the cursor on #295 — correctly, because that round exists and must be reported — and then leaves
+ * 321 closed rounds above it to be walked one per pass all over again: ~10 minutes of exactly the
+ * distorted burn samples the fast-forward was built to stop. Holes are what make boot-only
+ * insufficient, and holes are what this arena has.
+ *
+ * THE GUARD IS A FULL BATCH OF WORK, AND THAT IS WHAT MAKES THIS FREE IN STEADY STATE. In normal
+ * running the cursor sits within a round or two of the retention boundary, so `closeable` is 1 or 2,
+ * the condition is false, and this costs nothing whatsoever — not a read, not a branch anybody pays
+ * for. Firing on a smaller gap would spend a batched read to save at most a handful of one-second
+ * passes, which is the wrong trade on the endpoint whose rate limit already shapes this process.
+ *
+ * NOT WHILE THE CURSOR IS RESTING ON A ROUND KNOWN TO EXIST — see `probeIsWorthARead`, which owns
+ * both conditions and the incident this one was wrong about. In short: `closeOneFinishedRound` parks
+ * the cursor deliberately on a terminal UNSWEPT round and on a round whose close keeps failing, and a
+ * probe against either finds it at index zero and changes nothing. This guard started life as
+ * `closeAttempts > 0`, which covered the failing close and NOT the unswept round — so a keeper whose
+ * sweeps had broken would, once the cursor fell a hundred rounds behind, have issued a hundred-key
+ * read every second for the length of the outage.
+ *
+ * IT CANNOT MOVE THE CURSOR SOMEWHERE UNSAFE and it cannot fail loudly. `findOldestLivingRound`
+ * returns the round after the last one the chain PROVED was gone, so a rejected read leaves the
+ * cursor exactly where the last successful read put it and the ordinary one-per-pass walk carries on
+ * from there — which is the behaviour that shipped. Nothing throws.
+ */
+async function skipClosedRoundsAhead(ctx: KeeperContext, state: KeeperChainState): Promise<void> {
+  // The newest round the closer may act on. `isPastRetention` documents at length why the SUBTRACTION
+  // form is the dangerous one to write in a COMPARISON; here it is a bound, it is `bigint`, and it is
+  // allowed to come out negative on an arena younger than its own retention window —
+  // `probeIsWorthARead` says false on it either way.
+  const through = state.roundCounter - BigInt(ROUND_RETENTION);
+  if (!probeIsWorthARead(ctx.closeCursor, ctx.closeCursorKnownLiveAt, through)) return;
+
+  const scan = await findOldestLivingRound({
+    from: ctx.closeCursor,
+    through,
+    probe: (roundNos) => ctx.client.roundsExist(roundNos),
+    nowMs: () => Date.now(),
+    // ONE READ PER PASS, AND THAT COUNT IS THE ONLY BOUND THIS CALL NEEDS. The boot scan is allowed a
+    // time budget because it runs before anything else does; this one shares the pass with a keeper
+    // that has rounds to drive, and `housekeepingIsWelcome` has established only that THIS pass is
+    // idle — not that the next hundred are. A deadline on top of a cap of one would be a second
+    // ceiling that can never be the binding one, and `withReadRetry` inside `roundsExist` owns how
+    // long a single read may take in any case.
+    maxBatches: 1,
+    budgetMs: Number.POSITIVE_INFINITY,
+  });
+  if (scan.stoppedBecause === "failed") {
+    // Warned, never thrown, and never counted against anything. This is housekeeping's housekeeping:
+    // the cursor is unmoved, the next pass does the ordinary single read, and a keeper that stopped
+    // running rounds because a speed-up could not read the chain would be trading the product for its
+    // own optimisation — the same judgement `sweepHouseTake` and `closeOneFinishedRound` make.
+    warn(`the batched close-cursor probe from #${ctx.closeCursor} failed, so the cursor advances one round at a time this pass: ${describeError(scan.error)}`);
+    return;
+  }
+  // RAISED, NEVER LOWERED, HERE — see `KeeperContext.closeCatchUpAhead` on why the two raisers do not
+  // get to clear each other. This is the evidence the boot scan cannot gather: a run of a hundred
+  // consecutive absent rounds discovered mid-flight, which is what the closed stretch ABOVE a stranded
+  // round looks like. Without it, that stretch is walked with the brake's samples armed and
+  // `samplingSuspended: false` published — true on today's 321-round gap, which clears in four passes,
+  // and not true on the arena where the gap is large enough for a sample to land inside it.
+  if (scan.catchUpAhead) ctx.closeCatchUpAhead = true;
+  if (scan.cursor === ctx.closeCursor) return;
+  info(`close cursor ${ctx.closeCursor} → ${scan.cursor} — ${scan.skipped} round(s) in between are already closed, found in one batched read instead of ${scan.skipped} passes`);
+  ctx.closeCursor = scan.cursor;
+}
+
+/**
+ * WHERE THE CLOSE CURSOR STARTS — the same routine as `skipClosedRoundsAhead`, run once at boot with
+ * a budget instead of a single read.
+ *
+ * IT RUNS BEFORE THE FIRST `open_round`, and that ordering is the reason it exists as well as the
+ * per-pass version. The per-pass skip only fires on IDLE passes, so on a keeper that boots straight
+ * into a live lobby the first burn samples would be taken with the cursor still at #1. Doing the bulk
+ * of the walk here means the first sample of the run is measured against a cursor already in place.
+ *
+ * IT NEVER STOPS A BOOT. Every failure — a rejected read, an exhausted budget, an arena too young to
+ * have a closeable round, or a bug in the scan itself — lands on a cursor of #1 or on the round after
+ * the last one the chain proved was gone, which is to say on the behaviour that shipped. A keeper
+ * that will not start because a speed-up failed is worse than a slow keeper, and this is a speed-up.
+ *
+ * `roundCounter` IS THE ONE READ AT THE TOP OF BOOT AND IS ALLOWED TO BE STALE. Choosing an ER
+ * validator sits between the two and can take tens of seconds, so the arena may have opened a round
+ * or two since. The skew is in the safe direction by construction: a lower `round_counter` gives a
+ * lower retention boundary, so the scan looks at FEWER rounds and can only return a cursor at or
+ * below the one it would have returned from a fresh read. Re-reading would cost a round trip to move
+ * the boundary by one or two rounds the walk covers in as many seconds.
+ */
+async function seedCloseCursor(
+  client: ChainClient,
+  roundCounter: bigint,
+  options: KeeperCliOptions,
+  features: ProgramFeatures,
+): Promise<{ cursor: bigint; catchUpAhead: boolean; knownLiveAt: bigint | null }> {
+  // THE SAME TWO CONDITIONS `closeOneFinishedRound` OPENS WITH, and they have to be here too rather
+  // than only there. If closing is off, that function returns before it can ever observe a round —
+  // so a `catchUpAhead` set here would never be cleared and burn sampling would be suspended for the
+  // life of the process, on an arena that genuinely IS burning ~9.96 SOL/day because nothing is
+  // reclaiming rent. That is the one shape of blind spot this whole mechanism must not have.
+  if (!options.closeRounds || !features.roundAccountClose) {
+    return { cursor: 1n, catchUpAhead: false, knownLiveAt: null };
+  }
+
+  let scan: CloseCursorScan;
+  try {
+    scan = await findOldestLivingRound({
+      from: 1n,
+      // Negative on an arena younger than its own retention window, which the scan reads as
+      // "no closeable round" and answers with #1. `isPastRetention` documents why the subtraction
+      // form is the dangerous one to write in a comparison; here it is only a bound, and a bound
+      // below the start is the degenerate case the scan already names.
+      through: roundCounter - BigInt(ROUND_RETENTION),
+      probe: (roundNos) => client.roundsExist(roundNos),
+      nowMs: () => Date.now(),
+      budgetMs: CLOSE_CURSOR_SCAN_SECONDS * 1_000,
+      maxBatches: CLOSE_CURSOR_SCAN_MAX_BATCHES,
+    });
+  } catch (e) {
+    // Unreachable by design — `findOldestLivingRound` carries a failed read out in its result rather
+    // than throwing — which is exactly why it is caught. The one thing this must not do is turn a
+    // boot into an exit over an optimisation.
+    warn(`the close-cursor scan threw, so the cursor starts at #1 and the keeper walks the backlog a round at a time as it always did: ${describeError(e)}`);
+    return { cursor: 1n, catchUpAhead: false, knownLiveAt: null };
+  }
+
+  const took = `${(scan.elapsedMs / 1_000).toFixed(1)}s`;
+  const reads = `${scan.batches} batched read(s), ${took}`;
+  if (scan.stoppedBecause === "no-rounds") {
+    info(`close cursor starts at #1 — no round is past the ${ROUND_RETENTION}-round retention window yet, so there is nothing to close`);
+  } else if (scan.stoppedBecause === "found") {
+    ok(`close cursor fast-forwarded to #${scan.cursor} — rounds #1-#${scan.cursor - 1n} are already closed (${reads}). That walk used to cost ${scan.skipped} passes, and no rent comes back during it, so the burn samples taken across it read as a total reclamation outage.`);
+  } else if (scan.stoppedBecause === "caught-up") {
+    ok(`close cursor starts at #${scan.cursor} — every round through the retention boundary is already closed (${scan.skipped} of them, ${reads}). Nothing is left to reclaim until the arena opens more.`);
+  } else {
+    // `batch-cap`, `deadline` or `failed`. The cursor still holds everything the scan proved; what it
+    // does not hold is an end to the run of closed rounds, which is what `catchUpAhead` says.
+    warn(`the close-cursor scan stopped at #${scan.cursor} after ${reads} (${scan.stoppedBecause}${scan.error === null ? "" : `: ${describeError(scan.error)}`}).`);
+    warn(`  ${scan.skipped} round(s) were confirmed closed and are not walked again. The rest is drained a`);
+    warn(`  batch per idle pass, and burn sampling is SUSPENDED until the cursor reaches a round that`);
+    warn(`  still exists — see ${RECLAMATION_PATH}, burn.samplingSuspended. The sweep-gap stop is armed`);
+    warn(`  throughout and is unaffected.`);
+  }
+  // THE SCAN SAW THIS ROUND'S ACCOUNT, so the first pass need not spend a hundred-key read
+  // rediscovering that. `"found"` is the only outcome that is evidence of PRESENCE — every other one
+  // ends on a round nothing has looked at — and the marker invalidates itself the moment the cursor
+  // moves past it, so a reading that goes stale between boot and the first pass costs at most one
+  // pass of not skipping. See `probeIsWorthARead`.
+  return {
+    cursor: scan.cursor,
+    catchUpAhead: scan.catchUpAhead,
+    knownLiveAt: scan.stoppedBecause === "found" ? scan.cursor : null,
+  };
+}
+
+/**
  * CLOSE ONE FINISHED ROUND ACCOUNT PER PASS, OLDEST FIRST, AND HAND ITS RENT BACK.
  *
  * A `Round` is 3,248 bytes holding 0.023497 SOL of rent-exempt deposit, measured against v8 at
@@ -1419,11 +1655,23 @@ async function driveAbandoned(
  * THE CURSOR IS THE ONLY MEMORY, AND IT EXISTS TO BOUND THE WORK. This keeper's rule is that every
  * pass re-derives from the chain, and a literal reading would mean scanning from round #1 every
  * second — unbounded as history grows, on a 1Hz loop. So one number is kept: the oldest round that
- * might still be closeable. It starts at #1 on EVERY BOOT, which is what makes the pre-existing
- * backlog get picked up rather than only rounds this process opened — a keeper starting against an
- * arena with two hundred stranded rounds walks them from the beginning. It only ever moves forward,
- * so it cannot loop, and one round is examined per pass, so the cost is one account read per second
- * regardless of how much history there is.
+ * might still be closeable. It only ever moves forward, so it cannot loop, and one round is examined
+ * per pass, so the cost is one account read per second regardless of how much history there is.
+ *
+ * IT USED TO START AT #1 ON EVERY BOOT, "which is what makes the pre-existing backlog get picked up
+ * rather than only rounds this process opened — a keeper starting against an arena with two hundred
+ * stranded rounds walks them from the beginning". THAT INTENT IS UNCHANGED AND IS THE WHOLE POINT.
+ * What changed is that a round the chain says is GONE is no longer walked to discover it is gone: the
+ * seed comes from `closeCursor.ts`'s batched scan, and `skipClosedRoundsAhead` directly above keeps
+ * doing the same thing whenever a full batch of closeable rounds opens up in front of the cursor. A
+ * closed round has nothing to drain — the first branch below records nothing for it and steps past —
+ * so the set of rounds this function actually acts on is identical either way. Two hundred stranded
+ * rounds are still walked from the beginning; two hundred CLOSED ones are no longer walked at all.
+ *
+ * That was not a performance preference. The passes spent re-discovering closed rounds are passes in
+ * which no rent comes back, so the burn samples taken across them measure a total reclamation outage
+ * on a perfectly healthy arena — 23.9M lamports/round against a healthy 420,000, published as a
+ * 2.39-day runway on an arena with 128 days of it. `closeCursor.ts` has the incident and the numbers.
  *
  * WHEN THE CURSOR ADVANCES, which is the whole of the logic and each case is a different fact:
  *
@@ -1459,7 +1707,24 @@ async function closeOneFinishedRound(ctx: KeeperContext, state: KeeperChainState
   // pass at 1Hz forever.
   if (state.nowSec < ctx.closeRetryAfterSec) return;
 
-  if (!isPastRetention(ctx.closeCursor, state.roundCounter, ROUND_RETENTION)) return; // caught up
+  // BEFORE THE RETENTION CHECK AND NOT AFTER IT, WHICH WAS A BUG THE FIRST TIME ROUND. The skip can
+  // legitimately land the cursor exactly one past the retention boundary — `closeCursor.ts`'s
+  // `"caught-up"` — so a retention check made before it and not repeated would let this function go on
+  // to send `close_round_account` at a round inside the window, which the chain refuses with
+  // `RoundTooRecent` and which counts against `CLOSE_ATTEMPTS_PER_ROUND`. Asking in this order means
+  // ONE check, made after the cursor has finished moving. It is safe to skip first because the skip's
+  // own guard needs a full batch of closeable rounds ahead of the cursor, which a cursor at or past
+  // the boundary never has.
+  await skipClosedRoundsAhead(ctx, state);
+
+  if (!isPastRetention(ctx.closeCursor, state.roundCounter, ROUND_RETENTION)) {
+    // CAUGHT UP — and that is the other thing that ends a catch-up. There is no closeable round left
+    // at all, so there is certainly no unknown stretch of closed history in front of the cursor. See
+    // `KeeperContext.closeCatchUpAhead`; without this clear, a boot scan that was cut short on an
+    // arena which then went quiet would suspend burn sampling for the life of the process.
+    ctx.closeCatchUpAhead = false;
+    return;
+  }
 
   const roundNo = ctx.closeCursor;
   const roundPda = roundIx.roundPdaForRoundNo(roundNo, ctx.client.arenaPda);
@@ -1469,6 +1734,21 @@ async function closeOneFinishedRound(ctx: KeeperContext, state: KeeperChainState
   // names this caller. `fetchNullable` answers null for an account that no longer exists, which is
   // precisely the "already closed" case.
   const round = await ctx.client.fetchRound(roundNo);
+  // THE CATCH-UP IS OVER THE INSTANT A ROUND UNDER THE CURSOR EXISTS, and this is the only place that
+  // can say so. See `KeeperContext.closeCatchUpAhead` for why "the cursor reached something real" is
+  // the safe predicate and "the cursor is behind" is not: every failure mode this brake guards
+  // against puts an existing round right here, so this line is what makes the suspension incapable of
+  // hiding one.
+  //
+  // IT IS ALSO THE ONE PLACE `closeCursorKnownLiveAt` IS WRITTEN, and the two facts are the same
+  // observation read by two mechanisms: burn sampling wants "the catch-up is over", and
+  // `probeIsWorthARead` wants "do not spend a batched read on a round I can already see". Stamped with
+  // the ROUND NUMBER rather than a flag so it invalidates itself when the cursor moves — see the
+  // field.
+  if (round !== null) {
+    ctx.closeCatchUpAhead = false;
+    ctx.closeCursorKnownLiveAt = roundNo;
+  }
   // The delegation question is only asked when there is something to ask it about, because it is an
   // extra RPC and a missing account has no owner. `decideClose` never reads `delegated` in the
   // already-closed branch, so `false` here is not a claim, it is an unused field.
@@ -1609,6 +1889,7 @@ function reclamationStateOf(ctx: KeeperContext, observedAtSec: number): Reclamat
       strandedStillDelegatedTotal: ctx.closeStrandedStillDelegated.total,
     },
     burnSamplesLamports: ctx.burnSamplesLamports,
+    burnSamplingSuspended: ctx.closeCatchUpAhead,
     operatorLamports: ctx.operatorLamportsObserved,
     // THE LATCH, NOT A RECOMPUTED VERDICT. `summariseReclamation` derives the report's
     // `sweep.tripped` from this, so the endpoint says the keeper is stopped for as long as it is —
@@ -1937,7 +2218,27 @@ async function openNextRound(ctx: KeeperContext, roundNo: bigint): Promise<void>
   // could reach. `BURN_ARM_AFTER_ROUNDS` is the cap rather than `BURN_SAMPLE_ROUNDS` — see the field's
   // own comment on `KeeperContext` for what confusing them costs, and `reclamation.test.ts` for the
   // sweep that now holds it.
-  if (ctx.lastOpenLamports !== null) {
+  //
+  // AND NOT WHILE THE CLOSER IS STILL WALKING HISTORY IT HAS ALREADY CLOSED. During a catch-up no
+  // `close_round_account` runs, so the difference across that round is rent leaving with nothing
+  // returning — ~23.9M lamports against a healthy 420,000 and a 5,000,000 ceiling. That is a
+  // TRANSIENT, and `burnBrake` is a rate. Recording it would publish COST-MODEL §4's total-failure
+  // figure about an arena that is fine, and could arm the brake on it. The samples are NOT TAKEN
+  // rather than taken-and-filtered, because a ring that holds samples the mean is not allowed to use
+  // is a second rule somebody has to remember beside `recordBurnSample`'s cap — and `samplesObserved`
+  // in the report would then count evidence the brake will never look at.
+  //
+  // `KeeperContext.closeCatchUpAhead` carries the full argument for why this predicate cannot hide a
+  // real outage and why the obvious "the cursor is behind" can. In one line: it requires that every
+  // round the closer has looked at was ABSENT, and every failure mode puts an EXISTING round under
+  // the cursor. `sweepGapStop` is untouched and stays armed throughout.
+  //
+  // THIS GUARD AND THE ANCHOR NULLED AT THE BOTTOM OF THIS FUNCTION ARE A PAIR, and neither is dead
+  // code. Today the flag only ever goes true at boot and false afterwards, so the anchor being null
+  // already implies this — but the anchor rule is about the INTERVAL a sample spans and this one is
+  // about whether a sample may be taken at all. Deleting either because the other happens to cover it
+  // today makes the remaining one silently wrong the day the flag can be set mid-run.
+  if (ctx.lastOpenLamports !== null && !ctx.closeCatchUpAhead) {
     ctx.burnSamplesLamports = recordBurnSample(
       ctx.burnSamplesLamports,
       ctx.lastOpenLamports - lamportsBefore,
@@ -2000,7 +2301,19 @@ async function openNextRound(ctx: KeeperContext, roundNo: bigint): Promise<void>
   // failed open spends nothing and moves no round, so treating it as the start of a round would put a
   // phantom entry in the ring — the net change of a wallet across an interval in which nothing was
   // opened — and the brake averages exactly what it is given.
-  ctx.lastOpenLamports = lamportsBefore;
+  //
+  // AND NULLED RATHER THAN STAMPED WHILE SAMPLING IS SUSPENDED, which is the difference between "no
+  // distorted samples" and "almost none". A sample is a DIFFERENCE across the interval between two
+  // opens, so declining to record one (twenty lines up) is not enough on its own: stamping the anchor
+  // anyway would make the FIRST sample after the suspension lifts span an interval that was partly
+  // catch-up. Nulling it means the next open has no anchor either, and the first sample recorded is
+  // measured across an interval that was wholly clean. It costs one round of no sample, once, at the
+  // end of a catch-up.
+  //
+  // The invariant that buys is worth stating: EVERY SAMPLE IN THE RING WAS MEASURED ACROSS AN INTERVAL
+  // IN WHICH THE CLOSER WAS NOT WALKING ALREADY-CLOSED HISTORY. Without this line that reads "almost
+  // every", and an almost-invariant is one nobody can reason with at 3am.
+  ctx.lastOpenLamports = ctx.closeCatchUpAhead ? null : lamportsBefore;
   if (ctx.firstOpenAtSec === null) ctx.firstOpenAtSec = ctx.client.nowSec();
   ctx.opensObserved += 1;
 
@@ -2289,6 +2602,9 @@ async function main(): Promise<void> {
       skippedTotal: 0, strandedNeverTerminalTotal: 0, strandedStillDelegatedTotal: 0,
     },
     burnSamplesLamports: [],
+    // Boot has not run the close-cursor scan yet, so nothing is being held back — and saying "true"
+    // here would be a claim about a scan that has not happened.
+    burnSamplingSuspended: false,
     operatorLamports: null,
     sweepStoppedSinceSec: null,
   }, 0);
@@ -2546,6 +2862,17 @@ async function main(): Promise<void> {
     plain("");
   }
 
+  // WHERE THE BACKLOG ACTUALLY STARTS, ASKED ONCE, BEFORE ANY ROUND IS OPENED. Last thing before the
+  // context because it is the only part of boot that reads the chain in bulk, and `seedCloseCursor`
+  // explains why it is worth up to `CLOSE_CURSOR_SCAN_SECONDS` here rather than hours of one-round
+  // passes afterwards. It cannot fail the boot.
+  const closeCursorSeed = await seedCloseCursor(
+    client,
+    arena ? BigInt(arena.roundCounter.toString()) : 0n,
+    options,
+    features,
+  );
+
   const ctx: KeeperContext = {
     client, publisher, bank, operator, validator, options, features,
     // ONE DERIVATION OF THE POLICY, HERE, at the boundary where the operator's flag becomes the
@@ -2558,9 +2885,19 @@ async function main(): Promise<void> {
     refreshAfterStep: false,
     lastDrawLogSec: 0,
     lastHoldLogSec: 0,
-    // #1, on every boot — see the field's comment. This is the line that makes the backlog get
-    // drained rather than only the rounds this process happens to open.
-    closeCursor: 1n,
+    // THE OLDEST ROUND THAT STILL EXISTS, and #1 whenever the scan could not establish otherwise.
+    //
+    // This line used to read `closeCursor: 1n` under the comment "#1, on every boot — see the field's
+    // comment. This is the line that makes the backlog get drained rather than only the rounds this
+    // process happens to open." THAT IS STILL WHAT THIS LINE IS FOR and the comment is amended rather
+    // than deleted, because the seed is the only thing standing between a keeper and a policy of
+    // reclaiming nothing it did not open itself. A round whose account is gone has no backlog left to
+    // drain, so beginning at the oldest EXISTING round drains exactly the same set — `seedCloseCursor`
+    // above and `closeCursor.ts` carry the argument, the bounds, and why every failure lands back on
+    // the #1 this line used to be.
+    closeCursor: closeCursorSeed.cursor,
+    closeCursorKnownLiveAt: closeCursorSeed.knownLiveAt,
+    closeCatchUpAhead: closeCursorSeed.catchUpAhead,
     closeAttempts: 0,
     closeRetryAfterSec: 0,
     rentReclaimed: 0,

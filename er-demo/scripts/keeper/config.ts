@@ -375,6 +375,54 @@ export const CLOSE_RETRY_SECONDS = envNumber("KEEPER_CLOSE_RETRY_SECONDS", 30);
  *  hand, whereas a wedged cursor reclaims nothing at all. */
 export const CLOSE_ATTEMPTS_PER_ROUND = 3;
 
+/** HOW LONG THE BOOT SCAN MAY SPEND STARTING READS TO FIND WHERE THE CLOSE CURSOR BELONGS, and how
+ *  many reads it may issue doing it. Two ceilings on one piece of work because the two endpoints this
+ *  keeper runs against fail in different directions, and the scan must be bounded on BOTH.
+ *
+ *  "STARTING READS" IS THE PRECISE CLAIM AND THE LOOSE ONE WOULD BE WRONG. The deadline is checked
+ *  before each read and nothing can interrupt one already in flight — a `Connection` in
+ *  @solana/web3.js has no default HTTP timeout — so an endpoint that accepts the socket and never
+ *  answers outlasts this number. `findOldestLivingRound` in `closeCursor.ts` carries why that is left
+ *  alone rather than raced against a timer, and why the batch cap is the bound that always holds.
+ *
+ *  WHAT IS BEING BOUGHT. `closeCursor.ts` carries the defect and the live numbers; the short version
+ *  is that the cursor walked one already-closed round per pass after every restart, and the burn
+ *  samples taken across that walk read 23.9M lamports/round against a healthy 420,000 — publishing a
+ *  2.39-day runway on an arena with 128 days of it. One batched read replaces a hundred passes.
+ *
+ *  THE ARITHMETIC BEHIND THE TWO NUMBERS, AND THE SECOND TERM IN IT IS NOT THE NETWORK. A hundred-key
+ *  `getMultipleAccounts` with a zero-length `dataSlice` is a ~4.6KB request and a ~15KB reply; on
+ *  api.devnet.solana.com it settles at 200-400ms, and the scan is serial, so the request rate is the
+ *  reciprocal of that — 2.5-5/s, comfortably inside the ~10/s that endpoint allows per IP. The other
+ *  term is CPU: each key is a `PublicKey.findProgramAddressSync`, MEASURED at 131us on this machine
+ *  (2,000 derivations in 262ms), so a hundred-key batch costs ~13ms of synchronous work before a byte
+ *  is sent. Negligible against public devnet, a third of the cost against a fast endpoint, and the
+ *  reason the two ceilings below do not simply scale with latency.
+ *
+ *    * On the PUBLIC devnet RPC the DEADLINE binds first: 20s at ~263ms a read (250 network + 13 CPU)
+ *      is ~76 reads, ~7,600 rounds, which at the ~424 rounds/day of COST-MODEL §2 is about eighteen
+ *      days of history.
+ *    * On a paid endpoint (~30ms) the BATCH CAP binds first: 200 reads at ~43ms is 20,000 rounds,
+ *      ~47 days, and it takes about nine seconds.
+ *
+ *  Against the live arena's `round_counter` of 636 neither one is anywhere near binding — the scan is
+ *  three reads and under a second — so these are the bounds for an arena far older than any this
+ *  program has had, and the trade at the ceiling is 20 seconds of boot against 8,000 passes (~2.2
+ *  hours) of walking.
+ *
+ *  AND WHAT HAPPENS WHEN ONE OF THEM DOES BIND IS NOT A FALLBACK TO ZERO. The scan returns the round
+ *  after the last one it PROVED was gone, so a bounded scan keeps everything it learned; the
+ *  remainder is drained by the same routine one read per idle pass, and `KeeperContext.closeCatchUpAhead`
+ *  suspends burn sampling until the closer reaches a round that exists. Nothing about this is load-
+ *  bearing for correctness, which is why neither number is env-configurable: they buy boot time, and
+ *  being wrong about them costs boot time.
+ *
+ *  TWENTY SECONDS IS SAFE AGAINST THE WATCHDOG because it is not in the loop. `watchdog.arm()` runs
+ *  on the line above the `while`, after this; `LOOP_STALL_PUBLISH_SECONDS` is 300 in any case. */
+export const CLOSE_CURSOR_SCAN_SECONDS = 20;
+
+export const CLOSE_CURSOR_SCAN_MAX_BATCHES = 200;
+
 // ---- running rounds at nobody, on purpose ---------------------------------------------------------
 
 /** MAY THE KEEPER RUN ROUNDS WITH NOBODY REAL IN THEM? DEFAULT OFF, AND THE DEFAULT IS THE WHOLE

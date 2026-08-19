@@ -150,6 +150,25 @@ export interface ReclamationState {
    *  keeper fills in — anyone reconciling the two would shrink the keeper's ring to match this doc and
    *  disable the brake while tidying. `recordBurnSample` below owns the cap; fill this field with it. */
   burnSamplesLamports: number[];
+  /** IS THE KEEPER DELIBERATELY NOT TAKING SAMPLES RIGHT NOW? An OBSERVATION handed over like every
+   *  other field here — this module does not decide it, it reports it.
+   *
+   *  IT EXPLAINS A READING THAT OTHERWISE LOOKS BROKEN AND IS NOT. The keeper suspends sampling while
+   *  its close cursor is still walking rounds it has already closed, because across such a round no
+   *  `close_round_account` runs and the balance difference is rent leaving with nothing returning —
+   *  4.8x the brake's ceiling, on a healthy arena. `KeeperContext.closeCatchUpAhead` in keeper.ts owns
+   *  the predicate and the argument that it cannot hide a real outage.
+   *
+   *  WITHOUT IT THE REPORT WOULD SAY `armed: false, samplesObserved: 0 of 45` AND STOP, which is
+   *  indistinguishable from a young arena and from a keeper that has just restarted — and this
+   *  endpoint's entire audience is somebody reading it during an incident. `BurnVerdict.armed`'s own
+   *  doc already names that ambiguity and points at `samplesObserved` to resolve it; this is the third
+   *  state that count cannot separate on its own, so it is stated rather than left to be inferred.
+   *
+   *  IT DOES NOT DISARM ANYTHING. `sweepGapStop` needs no samples and stays armed throughout — see
+   *  this file's header on why the two witnesses are complements in TIME as well as in what they can
+   *  be fooled by. This is the window the sweep gap already covers. */
+  burnSamplingSuspended: boolean;
   operatorLamports: number | null;
   /** Chain second at which the SWEEP-GAP STOP first latched in this process, or null while it has
    *  not. An OBSERVATION the keeper hands over, exactly like every other field here — this module
@@ -527,6 +546,16 @@ export interface ReclamationReport {
      *  whether it is broken. */
     samplesObserved: number;
     armAfterSamples: number;
+    /** WHY `samplesObserved` MAY HAVE STOPPED GROWING, when it has. True while the keeper is holding
+     *  samples back on purpose — its close cursor is walking rounds it already closed, across which
+     *  no rent comes back and every sample would read as a total outage. See
+     *  `ReclamationState.burnSamplingSuspended`.
+     *
+     *  PUBLISHED BESIDE `samplesObserved` RATHER THAN INSTEAD OF ANY FIGURE, because the mean and the
+     *  daily burn below stay TRUE about the samples that exist — they are simply about a shorter
+     *  history than the reader assumes. Nulling them would hide a measurement that is correct; this
+     *  says what the measurement is of. */
+    samplingSuspended: boolean;
     /** How many the mean was taken over, against the configured window. */
     samplesInWindow: number;
     windowSamples: number;
@@ -693,6 +722,7 @@ export function summariseReclamation(
       tripped: verdict.tripped,
       samplesObserved: state.burnSamplesLamports.length,
       armAfterSamples: armAfter,
+      samplingSuspended: state.burnSamplingSuspended,
       samplesInWindow: verdict.samples,
       windowSamples,
       meanLamportsPerRound: meanLamports === null ? null : lamportString(meanLamports),

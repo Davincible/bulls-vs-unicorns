@@ -471,6 +471,7 @@ const state = (over: Partial<ReclamationState> = {}): ReclamationState => ({
   arena: { roundCounter: 412, roundsSwept: 409, polledAtSec: 1_759_999_940 },
   closer: closer(),
   burnSamplesLamports: run(HEALTHY, ARM_AFTER),
+  burnSamplingSuspended: false,
   operatorLamports: 14_950_000_000,
   sweepStoppedSinceSec: null,
   ...over,
@@ -626,6 +627,34 @@ describe("the burn, in the unit the question was asked in", () => {
     expect(report.burn.samplesInWindow).toBe(WINDOW);
     expect(report.burn.armAfterSamples).toBe(ARM_AFTER);
     expect(report.burn.windowSamples).toBe(WINDOW);
+  });
+
+  it("says when the keeper is holding samples back on purpose", () => {
+    // THE THIRD THING `samplesObserved: 0 of 45` CAN MEAN, and the reason it is published rather than
+    // inferred. A young arena, a keeper that has just restarted, and a keeper that is deliberately not
+    // sampling all render identically without this field — and this endpoint's entire audience is
+    // somebody reading it during an incident. `KeeperContext.closeCatchUpAhead` in keeper.ts owns the
+    // predicate: sampling is suspended only while the closer is walking rounds it has already closed,
+    // across which no rent comes back and every sample reads as a total outage.
+    expect(summarise(state()).burn.samplingSuspended).toBe(false);
+    const held = summarise(state({ burnSamplesLamports: [], burnSamplingSuspended: true }));
+    expect(held.burn.samplingSuspended).toBe(true);
+    expect(held.burn.samplesObserved).toBe(0);
+    expect(held.burn.armed).toBe(false);
+  });
+
+  it("does not let a suspension null out or alter a measurement that exists", () => {
+    // The suspension explains a HISTORY, not a number. Samples taken before it are still true about
+    // the rounds they were taken across, and hiding them would delete evidence at the one moment
+    // somebody is reading for it. Nothing in `summariseReclamation` may branch on this field.
+    const running = summarise(state({ burnSamplesLamports: run(HEALTHY, ARM_AFTER) }));
+    const suspended = summarise(state({
+      burnSamplesLamports: run(HEALTHY, ARM_AFTER), burnSamplingSuspended: true,
+    }));
+    expect(suspended.burn.meanLamportsPerRound).toBe(running.burn.meanLamportsPerRound);
+    expect(suspended.burn.armed).toBe(running.burn.armed);
+    expect(suspended.burn.tripped).toBe(running.burn.tripped);
+    expect(suspended.runwayDays).toBe(running.runwayDays);
   });
 
   it("carries the outage through to SOL/day at the rate that empties the wallet", () => {
