@@ -10,9 +10,12 @@
 // So there is no `error` on the value this exposes, and that is deliberate rather than lazy. A
 // timeout, a 500, a malformed body, a signature that does not verify, an expired attestation and a
 // wallet that never linked all produce the same thing: no entry in the map, the flat side-coloured
-// disc, and a `nameFor()` pseudonym — which is a complete, good rendering that most of the board is
-// showing anyway. A field for an error is a field a view will eventually render, and there is
-// nothing here a player could act on.
+// disc, and no username at all — the truncated address identifies the row, exactly as it does
+// everywhere else on this page. That is a complete, good rendering, and it is the one most of the
+// board is showing anyway. There is deliberately no placeholder in it, no "Anonymous" and no dash
+// standing where an identity would go, so there is nothing in the unlinked row for a reader to read
+// as a fault. A field for an error is a field a view will eventually render, and there is nothing
+// here a player could act on.
 //
 // The one concession is a single `console.warn` per failed poll, for whoever is holding the console.
 //

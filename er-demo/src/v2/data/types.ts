@@ -53,14 +53,20 @@ export type DataSource = "chain" | "fixture";
 export interface ArenaContextValue {
   source: DataSource;
 
-  /** THE LOCAL PLAYER. When nobody is connected, `pubkey` is `""` and the other two are `"—"`.
+  /** THE LOCAL PLAYER. When nobody is connected, `pubkey` is `""` and `short` is `"—"`.
    *
    *  The empty string is the correct value rather than a sentinel hack: every consumer uses it for
    *  equality against a fighter's wallet (`f.wallet === you.pubkey`), and no wallet is ever `""` —
    *  so "nobody is you" falls out of the comparison for free, with no consumer needing to know that
-   *  a disconnected state exists. `name` is deliberately NOT `nameFor("")`, which would invent a
-   *  stable pseudonym for nobody and print it beside a Connect button. */
-  you: { pubkey: string; short: string; name: string };
+   *  a disconnected state exists.
+   *
+   *  THERE USED TO BE A `name` HERE and it carried a caveat of its own: it was deliberately NOT
+   *  `nameFor("")`, because that is a pure hash and would happily mint a stable pseudonym for the
+   *  empty string and print an invented fighter name beside a Connect button. The pseudonym is gone
+   *  everywhere now (`data/namePlate.ts`), so the caveat has nothing left to guard and the field has
+   *  nothing left to hold — the reader is identified by their address here, exactly as everyone else
+   *  on the page is. */
+  you: { pubkey: string; short: string };
 
   status: {
     programReady: boolean;

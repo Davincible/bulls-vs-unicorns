@@ -14,7 +14,6 @@
 import { runFullFight, type HitEvent, type HitEventEntry } from "../../sim/hitEvents.ts";
 import {
   finalCursor,
-  nameFor,
   shortKey,
   usdToUnits,
   type FighterView,
@@ -57,7 +56,6 @@ export const MOCK_FIGHTER_SEEDS = ENTRIES.map((e, id) => ({
   id,
   wallet: e.wallet,
   short: shortKey(e.wallet),
-  name: nameFor(e.wallet),
   side: e.side,
   stake: e.stake,
   isYou: e.wallet === MOCK_YOU,
@@ -151,7 +149,6 @@ function mockRound(roundNo: number, r: () => number): RoundSummary {
       const player: RoundPlayer = {
         wallet,
         short: shortKey(wallet),
-        name: nameFor(wallet),
         side,
         stake,
         final,

@@ -361,7 +361,12 @@ export function DashboardView() {
       <Section
         index="02-2"
         title="Your position"
-        lede={`Every aggregate below is the ${you.name} row of the standings board, not a second calculation — the two can never disagree. Both are counted ${coverage}.`}
+        /* `you.short` — the address, where an invented pseudonym used to name the reader to
+           themselves. It reads as a duplicate of the `tools` slot beside it and is not one: this
+           sentence has to NAME the row it claims these figures come from, and "your row" would be a
+           claim this band cannot back when nobody is connected, which is exactly when both of these
+           are the same `—` the provider hands out for a wallet that does not exist yet. */
+        lede={`Every aggregate below is the ${you.short} row of the standings board, not a second calculation — the two can never disagree. Both are counted ${coverage}.`}
         tools={<span className="u">{you.short}</span>}
       >
         {/* The whole of 02-2 is `Fx` tiles in a 1fr grid, same as 02-1 — every money figure below

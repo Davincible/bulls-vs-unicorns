@@ -256,11 +256,21 @@ function lookup(src: string): Entry {
  *      loudest version of the lie this page refuses everywhere else — `TokenIcon` draws a letter
  *      rather than a logo for SOL for the same reason.
  *
- *  UNLINKED IS THE MAIN PATH, not a degraded one. Most players never link; the coin face plus a
- *  `nameFor()` pseudonym is a complete rendering of a player, and it is the rendering this field
- *  shipped with. Every rung of `TWITTER-CONNECT.md` §7.3's ladder — bytes in flight, upstream 404,
- *  operator-suppressed, never linked — lands on the same disc, and none of them is distinguishable
- *  to the painter. That indistinguishability is a feature: the absence of the identity service must
+ *      AND THE NAME HAS NOW CAUGHT UP WITH THE FACE. This refusal was for a long time only half
+ *      kept, and the half that leaked is worth naming rather than quietly fixing: `nameFor(wallet)`
+ *      hashed the same bytes this function refuses to draw from into `KESTREL_42` and printed it
+ *      beside the disc. That was an identicon made of letters — the same procedure, the same input,
+ *      the same nothing asserted, differing only in that letters read as a name a person chose and
+ *      a generated picture at least looks generated. It is deleted; an unlinked fighter carries no
+ *      username at all now. So the two halves of a fighter's rendering finally make the same claim,
+ *      instead of the face being honest while the name was invented.
+ *
+ *  UNLINKED IS THE MAIN PATH, not a degraded one. Most players never link; the coin face plus the
+ *  truncated address is a complete rendering of a player — a wallet is a real, checkable fact about
+ *  a row, which is more than the invented name beside it ever was — and the disc is the one this
+ *  field shipped with. Every rung of `TWITTER-CONNECT.md` §7.3's ladder — bytes in flight, upstream
+ *  404, operator-suppressed, never linked — lands on the same disc, and none of them is
+ *  distinguishable to the painter. That indistinguishability is a feature: the absence of the identity service must
  *  look exactly like a player who chose not to link.
  *
  *  ONCE A BODY HAS AN `avatarSrc`, ITS FACE IS THAT AVATAR OR NOTHING. `??` reads the src, not the

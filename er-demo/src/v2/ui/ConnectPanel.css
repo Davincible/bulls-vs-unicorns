@@ -38,16 +38,13 @@
 }
 
 /* THE SECONDARY EXPLANATION — subordinate to the control above it, and visibly so.
-   Separated by a hairline rather than by size alone: it answers a different question from everything
-   above it ("why does Phantom disagree with this page?"), and a rule is how the rest of this design
-   system says "different thing" without a card or a fill. Rendered only at full density. */
-.cx .cx-aside {
-  margin: 16px 0 0;
-  padding-top: 12px;
-  border-top: 1px solid var(--rule);
-  font-size: 11.5px;
-  line-height: 1.65;
-}
+
+   `.cx-aside` IS GONE AND SO IS ITS HAIRLINE. The aside used to be a permanent paragraph separated
+   from the funnel by a rule, because a rule is how this design system says "different thing" without
+   a card or a fill. It is now a closed `<details>` (see `ConnectPanel.tsx`), and a disclosure is
+   already a stronger separator than a hairline is: it says "different thing" AND "not now". Keeping
+   both would have been a rule drawn above a control that was already visibly subordinate.
+   Its margin comes from `.disc`, which owns the gap above it exactly as this rule did. */
 
 /* The always-on network statement. Deliberately the quietest thing in the panel: it is a standing
    fact about the page, not a finding about the reader, and it must never read as a warning.
@@ -91,29 +88,55 @@
 /* --- the X identity block (`XLinkPanel`) ------------------------------------------------------
    Sits directly under the wallet address inside the rail's `Account` block, so it owns the gap
    ABOVE it — the address paragraph has no bottom margin of its own to spare — and nothing else.
-   No box, no fill, no rule: this is three or four lines of the same account, not a second panel. */
+   No box, no fill, no rule: this is one row of the same account, not a second panel. */
 
 .xl {
   margin: 12px 0 14px;
 }
 
-/* The linked row: when it happened on the left, the way out on the right. `.line` and `.push` do the
-   layout; this only sets the distance from the identity above it. */
-.xl-line {
-  margin-top: 10px;
+/* ONE ROW, TWO STATES — see the block header in `ConnectPanel.tsx` for the fault this answers.
+   `.line` supplies the flex row and `.push` throws the control to the right edge; everything here
+   exists to make the two states the SAME row rather than two rows that resemble each other.
+
+   THE IDENTITY SLOT IS THE ONE THAT GIVES WAY. `.xid` (XIdentity.css) already ellipsises the handle
+   and keeps the face and the mark whole, and `.xl-status` is a single short label — so the row's
+   flexible track is the one carrying the subject, and the two things that must never be clipped (the
+   date and the control) are `flex: none`. At 375px, where the rail is the whole screen, that is the
+   difference between a truncated handle and a control pushed off the edge. */
+.xl-row {
+  min-width: 0;
+}
+
+/* The unlinked state's subject, in the slot the face occupies when there is one. `.u` gives it the
+   page's label voice and `.u--ink` the full ink that makes it the row's subject rather than its
+   metadata — the state must never be something a reader infers from an absence. */
+.xl-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* When it was linked — metadata, beside the subject, and never at the cost of it. */
+.xl-when {
+  flex: none;
+}
+
+/* The control. `flex: none` for the reason above: a `.btn--sm` handed a shrinkable track wraps its
+   own label rather than staying on the row. */
+.xl-act {
+  flex: none;
 }
 
 /* TWO CLASSES DEEP, for the reason `.cx .cx-net` above is: `.lede` sets `margin: 0` and lives in
-   base.css, which Vite emits last, so a single-class rule here loses the tie and every paragraph in
-   this block collapsed onto the one above it. `.xl .xl-note` outranks it outright — the fix rather
-   than an `!important` or an import order the next module would undo. */
+   base.css, which Vite emits last, so a single-class rule here loses the tie and the paragraph in
+   this block collapsed onto the row above it. `.xl .xl-note` outranks it outright — the fix rather
+   than an `!important` or an import order the next module would undo.
+
+   ONE CALLER LEFT: the ceremony's failure alert. The three paragraphs that used to wear this class
+   are gone — two deleted from `xConsent.ts`, one behind a `<details>` whose own stylesheet spaces
+   it — so this is no longer the block's paragraph rule, it is the alert's. */
 .xl .xl-note {
   margin: 10px 0 0;
   font-size: 12px;
-}
-
-/* The control leads in the unlinked state, so the invitation under it needs a little more air than
-   a paragraph following a paragraph does. */
-.xl > .btn + .xl-note {
-  margin-top: 12px;
 }

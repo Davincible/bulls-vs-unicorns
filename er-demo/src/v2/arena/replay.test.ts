@@ -19,17 +19,21 @@ import { MAX_FIGHTERS } from "../../sim/erSim.ts";
 import { advanceReplay, createReplay } from "./replay.ts";
 
 function fighters(n: number): FighterView[] {
-  return Array.from({ length: n }, (_, i) => ({
+  // No cast. It used to carry one, which is what let this fixture drift out of `FighterView`'s shape
+  // — it was short two fields by the time the pseudonym was removed, and the cast is why nothing said
+  // so. Every field is spelled out instead, so a change to the type breaks here loudly.
+  return Array.from({ length: n }, (_, i): FighterView => ({
     id: i,
     wallet: `w${i}`,
-    name: `F${i}`,
+    short: `w${i}`,
     side: (i % 2) as 0 | 1,
+    avatarSrc: null,
     isYou: i === 0,
     stake: 1_000_000n,
     hp: 1_000_000n,
     banked: 0n,
     dead: false,
-  })) as FighterView[];
+  }));
 }
 
 /** `count` exchanges, one per step, each moving one unit between two fighters on opposite sides. */

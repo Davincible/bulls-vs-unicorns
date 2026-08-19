@@ -46,7 +46,7 @@
 //   fail OPEN  — serve every link. Cost: a house wallet can wear a face, which is the one outcome
 //                §6.3 calls out as unacceptable. It is also silent and indefinite.
 //   fail CLOSED — serve nothing. Cost: the leaderboard renders exactly as it does for the ninety-odd
-//                percent of players who never link (§8) — the flat disc and a `nameFor()` pseudonym.
+//                percent of players who never link (§8) — the flat disc and a truncated wallet address.
 //                Nothing shows an error, nothing is blocked, and no game action depends on it.
 //
 // So it fails closed, and the cost of failing closed is *the ordinary rendering of this page*. That

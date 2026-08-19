@@ -55,18 +55,42 @@ export const CONSENT_COPY = {
   cancel: "Not now",
 } as const;
 
-/** The wallet panel, unlinked. ONE line, in one place, and no per-row nagging anywhere else. */
+/**
+ * The wallet panel, unlinked. ONE control, in one place, and no per-row nagging anywhere else.
+ *
+ * =================================================================================================
+ * THIS USED TO CARRY TWO SENTENCES AND NOW CARRIES NONE. Both are deleted rather than collapsed
+ * behind a disclosure, and the reasons are different for each — which is why they are recorded
+ * separately here rather than as one line in a commit message.
+ *
+ * `invitation` — "Your X name and picture become your fighter's face, and your handle replaces the
+ * pseudonym this page picked for you." DELETED BECAUSE ITS SECOND CLAUSE IS ABOUT TO BE FALSE. A
+ * parallel workstream is removing wallet-derived pseudonyms outright; an unlinked player will show a
+ * truncated address and nothing else, so there will be no pseudonym for a handle to replace. A
+ * sentence that outlives the condition it describes is worse than no sentence — the same argument
+ * that retired `FAILURE_COPY.notBuilt` below, and the reason that one is written up rather than
+ * quietly dropped. The first clause was true and is not worth a paragraph on its own: the linked
+ * state SHOWS the face and the handle, which is a better account of what linking does than a
+ * sentence predicting it. Nothing else imported it (grepped: `ConnectPanel.tsx` was the only reader).
+ *
+ * `optional` — "Linking is optional and changes nothing about how you play." DELETED BECAUSE THE
+ * PANEL NOW SAYS IT STRUCTURALLY. It was written when the unlinked state was a bare `Connect X`
+ * button with nothing around it, where the absence of an alternative reads as a requirement. That
+ * state is now a labelled status row — `X · NOT LINKED` — which is a fact about the account rather
+ * than a prompt, and the row is the only place on the entire page that mentions linking at all
+ * (`TWITTER-CONNECT.md` §8 forbids a per-row nag anywhere else, and nothing is gated on a link).
+ * A reader who has not linked is told what state they are in and is asked for nothing. Keeping the
+ * sentence would have meant a second paragraph under a button in the rail that operators called
+ * "a fucking mess... no one is going to read that" — and the one sentence guaranteed not to be read
+ * is the reassurance nobody asked for.
+ *
+ * IF EITHER CLAIM NEEDS SAYING AGAIN, THE CONSENT SCREEN IS WHERE IT GOES, not this panel. That
+ * screen is read before the redirect by construction, it already carries `cancel: "Not now"`, and it
+ * is designed to be refused — see the block at the top of this file.
+ * =================================================================================================
+ */
 export const UNLINKED_COPY = {
   action: "Connect X",
-  /** Why a player might want this at all — and `SOCIAL.md` §3.4's honest reason, which is that
-   *  `nameFor()` has 3,880 possible pseudonyms and therefore collides, so a handle is the only name
-   *  on this page that is actually unique. */
-  invitation:
-    "Your X name and picture become your fighter's face, and your handle replaces the pseudonym this "
-    + "page picked for you.",
-  /** Said quietly and always, because it is the thing that makes the unlinked state a choice rather
-   *  than a gap. */
-  optional: "Linking is optional and changes nothing about how you play.",
 } as const;
 
 /** The wallet panel, linked. */

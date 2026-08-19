@@ -8,7 +8,7 @@
 
 import type { FighterState, RoundState } from "../../chain/useRound.ts";
 import type { HitEventEntry } from "../../sim/hitEvents.ts";
-import { nameFor, shortKey, type FighterView, type LiveRound } from "../contract.ts";
+import { shortKey, type FighterView, type LiveRound } from "../contract.ts";
 import { extractTerms } from "./extractTerms.ts";
 import { fightPace } from "./fightPace.ts";
 import { toSide } from "./roundLog.ts";
@@ -34,7 +34,6 @@ export function toFighterViews(fighters: FighterState[], youPubkey: string): Fig
       id,
       wallet,
       short: shortKey(wallet),
-      name: nameFor(wallet),
       side: toSide(f.side),
       stake: f.stake,
       hp: f.hp,

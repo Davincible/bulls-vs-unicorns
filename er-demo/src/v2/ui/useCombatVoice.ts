@@ -28,6 +28,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usdCompact, worth, type CombatEvent, type FighterView } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
+import { useLinks } from "../data/useLinks.ts";
 import { COALESCE_MS, commentary, deathLine, resultLine, type VoiceLine } from "./combatVoice.ts";
 
 /** How long a commentary line stays on screen, in ms. Shorter than a transaction toast's 6,000:
@@ -82,6 +83,9 @@ function positionText(roundNo: bigint, you: FighterView): string {
  */
 export function useCombatVoice(enabled: boolean): CombatVoice {
   const { live, combat: feed } = useArena();
+  // READ, NEVER WAITED ON — `useLinks.ts`'s standing rule. The fight narrates itself in full while
+  // the identity feed is outstanding; an opponent is simply named by their address until it lands.
+  const { map: links } = useLinks();
 
   const [lines, setLines] = useState<VoiceItem[]>([]);
   const [announcement, setAnnouncement] = useState("");
@@ -90,6 +94,9 @@ export function useCombatVoice(enabled: boolean): CombatVoice {
   const timersRef = useRef(new Set<ReturnType<typeof setTimeout>>());
   /** Exchanges waiting for the window to close. */
   const pendingRef = useRef<CombatEvent[]>([]);
+  /** The identity map as of the last render — see the interval below for why it is a ref. */
+  const linksRef = useRef(links);
+  linksRef.current = links;
   /** The last step already collected. `HitEvent.step` is unique within a stream — `tick()` emits at
    *  most one exchange per step — which is what makes a single high-water mark sufficient, and what
    *  stops a stream recomputed after an `extract()` from re-narrating the first half of the fight. */
@@ -168,7 +175,13 @@ export function useCombatVoice(enabled: boolean): CombatVoice {
       const pending = pendingRef.current;
       if (pending.length === 0) return;
       const window = pending.splice(0, pending.length);
-      for (const line of commentary(window)) push(line);
+      // THROUGH A REF, NOT A DEPENDENCY, and for the same reason `pendingRef` is one. The identity
+      // map is replaced on every poll of the link feed; naming it in the dependency array would tear
+      // this interval down and stand a fresh one up each time, which restarts the coalescing window
+      // — so a link refresh landing mid-window would silently reset the three seconds this throttle
+      // is built on. The ref gives the line the map as it is at the moment it is spoken, which is
+      // the only reading that could matter, and costs the timer nothing.
+      for (const line of commentary(window, linksRef.current)) push(line);
     }, COALESCE_MS);
     return () => clearInterval(timer);
   }, [enabled, fighting, push]);

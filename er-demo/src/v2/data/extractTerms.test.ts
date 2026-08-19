@@ -21,7 +21,6 @@ function fighters(over: Partial<FighterView> = {}): FighterView[] {
     id,
     wallet: `w${id}`,
     short: `w${id}`,
-    name: `W${id}`,
     side: (id % 2) as 0 | 1,
     stake: 1_000_000n,
     hp: 1_000_000n,

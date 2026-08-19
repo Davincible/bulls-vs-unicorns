@@ -37,6 +37,20 @@
   animation: tick-slide 64s linear infinite;
 }
 .tick-track > span { flex: none; }
+
+/* THE ONE THING IN THIS BAR THAT MAY NOT BE UPPERCASED, AND IT IS A CORRECTNESS RULE RATHER THAN A
+   TYPOGRAPHIC ONE. `.chrome` sets `text-transform: uppercase` over the whole bar, which was harmless
+   for as long as this slot held `nameFor()`'s pseudonym — that string was already capitals, so the
+   transform had nothing to do and nobody could see it was there. The slot now holds a truncated
+   BASE58 ADDRESS or an `@handle`, and base58 is case-sensitive: `7xKq…4ab` uppercased is not a
+   shortened form of that wallet, it is a different string that matches nothing on chain. A reader who
+   tried to check it against a roster would be told, wrongly, that they were looking at someone else.
+
+   `.chrome .tick-who` OUTRANKS `.chrome` ON SPECIFICITY, which is the fix rather than `!important` or
+   a re-order that the next import would undo — the same correction, for the same reason, that
+   `ConnectPanel.css` makes for `.cx-net` against `.u`. */
+.chrome .tick-who { text-transform: none; }
+
 .tick-amt { color: #fff; }
 @keyframes tick-slide {
   from { transform: translateX(0); }
@@ -138,6 +152,19 @@
 }
 .cbtn:hover { background: var(--on-chrome); color: var(--chrome); border-color: var(--on-chrome); }
 .cbtn.on { background: var(--on-chrome); color: var(--chrome); border-color: var(--on-chrome); }
+/* A `.cbtn` MAY NOW CONTAIN A `.u` LABEL — the header's wallet cell does — and all three inverted
+   states have to answer for it. `.chrome .u` is `rgba(255, 255, 255, 0.5)`: correct on the black
+   bar, and all but invisible the moment the button fills with `--on-chrome` (#ffffff, fixed on every
+   theme — see paper.ts). Ink at 0.6 composites to #666 on that fill, which is 5.7:1 — a clear step
+   below the value beside it, and comfortably past AA.
+
+   ALL THREE SELECTORS ARE THREE CLASSES DEEP ON PURPOSE. `.chrome .u` is two, and this stylesheet is
+   emitted BEFORE base.css (main.tsx pulls App.tsx, and therefore this file, first), so anything that
+   merely ties loses. `:hover` and `.on` supply the third themselves; `.cbtn--call` does not, so it
+   is qualified by `.chrome` rather than left to an import order the next module would undo. */
+.cbtn:hover .u,
+.cbtn.on .u,
+.chrome .cbtn--call .u { color: rgba(0, 0, 0, 0.6); }
 /* THE CALL TO ACTION, while a reader is blocked from playing. It borrows `.on`'s inverted treatment
    rather than reaching for a colour: the design law reserves colour for the two sides, so "this is
    the thing to press" has to be said in VALUE on this bar. Identical to `.on` when both apply, which
@@ -211,6 +238,29 @@
   min-height: 24px;
 }
 .rail-x:hover { color: var(--ink); }
+
+/* THE FIGHTER INSPECTOR'S HEADING, WHOSE CASE IS A FACT RATHER THAN A STYLE. It wears `.h` for its
+   size and weight, and `.h` sets `text-transform: uppercase` — invisible for as long as this slot
+   held `nameFor()`'s pseudonym, because that string was capitals already.
+
+   It now holds a truncated BASE58 ADDRESS or an `@handle`, and neither may be recased. base58 is
+   case-sensitive, so `7xKq…4ab` uppercased is not a shortened form of that wallet but a different
+   string matching nothing on chain — and the full key is printed directly underneath this line, so
+   the two would visibly disagree about the same fighter. A handle is the one part of an X identity
+   that cannot be forged (`xLink.ts`); rendering it in a case its owner did not choose is a small lie
+   told about the thing this page asks readers to trust.
+
+   ONE CLASS DEEPER THAN `.h`, so it wins on specificity without `!important` and without depending on
+   which stylesheet Vite emits last — the same correction, for the same reason, that
+   `ConnectPanel.css` makes for `.cx-net` against `.u`. `.rail` is in the selector to keep the
+   exemption where it was argued rather than letting it become a general licence. */
+.rail .sr-who {
+  text-transform: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* A block inside the rail: label rule, then rows. Still not a card — a rule and whitespace. */
 .blk { margin-top: 22px; }
@@ -557,12 +607,30 @@
 
 @media (max-width: 700px) {
   /* Below this the bar has room for the ticker and one status word, and nothing else. Hiding the
-     SOL/key readouts beats letting them collide with the marquee. */
+     SOL/key readouts beats letting them collide with the marquee.
+
+     BY NAME, NOT BY POSITION. This was `.chrome-right > :nth-child(-n + 3)`, counted against the
+     CONNECTED state's five children — which meant it also hid the DISCONNECTED state's only child,
+     because one child is trivially within the first three. The outcome was right and the rule did
+     not know it: a phone reads its wallet from the bottom bar, where `.cbtn--call` is already the
+     inverted call to action and is the entry point every screen shares. But that cell is a real
+     control now, and the visibility of a control is not something to leave to a child count that
+     changes the next time anybody adds a separator. Four named decisions instead:
+       .chrome-sol / .chrome-key — the readouts that would collide with the marquee. Gone.
+       .chrome-sep               — their separators, which without them are punctuation around
+                                   nothing.
+       .chrome-wallet            — the disconnected control, whose job is done better and bigger by
+                                   the bottom bar's wallet button at this width. `display: none`
+                                   takes it out of the tab order with it, so nothing is left behind
+                                   for a keyboard to land on.
+     `Session ON/OFF` is the survivor, and it is the one with nowhere else to be read. */
   .chrome--top { gap: 10px; }
   .tick-box { max-width: none; flex: 1 1 auto; }
   .chrome-right { flex: 0 0 auto; }
   .chrome-right > .chrome-sep,
-  .chrome-right > :nth-child(-n + 3) { display: none; }
+  .chrome-right > .chrome-sol,
+  .chrome-right > .chrome-key,
+  .chrome-right > .chrome-wallet { display: none; }
   /* The nav outgrows a phone before the labels do — let it scroll rather than shrink to illegible
      or clip under the wallet button. */
   .nav { flex: 1 1 auto; overflow-x: auto; scrollbar-width: none; }

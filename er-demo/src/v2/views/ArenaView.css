@@ -214,8 +214,17 @@
    resolves against the longest name currently in the top five — which means the box would resize
    every time the ranking changed, on a surface whose neighbours are being laid out around its live
    rect once a frame (`arena/chrome.ts`). Fixed tracks make the box one width for the whole round.
-   118px holds `nameFor()`'s longest output (`KESTREL_42`, 10 glyphs of 12px mono ≈ 72px) with
-   headroom, and the headroom is history rather than a number measured for the name on its own: this
+   118px was cut to hold `nameFor()`'s longest output (`KESTREL_42`, 10 glyphs of 12px mono ≈ 72px)
+   with headroom. THAT YARDSTICK NO LONGER EXISTS — wallet-derived pseudonyms are gone and
+   `data/namePlate.ts` is what decides this slot now, so the string that lands here is `YOU`, an
+   `@handle`, or the nine glyphs of a truncated address. The address is shorter than the name this
+   track was cut for; a full-length handle is the widest thing it can now receive, and on the same
+   12px mono the line above measures it comes to ≈115px — inside 118 by three pixels. That is
+   arithmetic off this comment's own figure rather than a fresh measurement, so it is the number to
+   re-take if the type scale moves; anything that does overrun ellipsises inside the track rather
+   than widening the box, which is the whole point of a fixed track and is said again at the call
+   site.
+   The headroom was history even then, rather than a number measured for the name on its own: this
    track was sized to fit that name AND a tag beside it — a marker on fighters the keeper had seated
    — and the tag has since been removed from this overlay. The width is deliberately kept. 118px is
    what this box renders at today, and `arena/chrome.ts` lays every fighter label on the field around

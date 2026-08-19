@@ -25,7 +25,23 @@ export interface ArenaBody {
   /** Identity across a rebuild — `id` is a position in the on-chain array, the wallet is the player. */
   readonly wallet: string;
   readonly side: Side;
-  readonly name: string;
+  /** `FighterView.short` — `7xKq…4ab`, the truncated address. What `draw.ts` prints under the disc.
+   *
+   *  IT IS THE ADDRESS AND IT IS NOT THE `@handle`, AND THAT IS THE BOUNDARY RATHER THAN AN
+   *  OVERSIGHT. This field used to be `name`, carrying `contract.ts#nameFor`'s wallet-derived
+   *  pseudonym; that pseudonym is gone from the whole page (`data/namePlate.ts`), and the obvious
+   *  replacement — the linked identity, which the DOM surfaces switched to — is the one thing that
+   *  may not cross into here. `FighterView.avatarSrc` states the rule and the reason: THE ARENA
+   *  CANVAS NEVER TOUCHES DATA, so the body gets one already-validated string per fact and never an
+   *  identity object, because "handing it a whole identity object would be handing it a handle, and
+   *  a handle on the canvas is a decision about typography that belongs on the other side of the
+   *  boundary".
+   *
+   *  So every fighter on the field is labelled the same way, linked or not — which is also exactly
+   *  what the name rule asks for. A linked fighter is already distinguished here by the thing this
+   *  surface is actually good at: their FACE, resolved through `avatarSrc` below. The handle is a
+   *  glyph problem and it is solved in the DOM, on the rosters beside the field. */
+  readonly short: string;
   readonly isYou: boolean;
   /** `FighterView.avatarSrc` — a same-origin path, or null for the (majority) unlinked fighter.
    *
@@ -33,7 +49,7 @@ export interface ArenaBody {
    *  which is the boundary `SOCIAL.md` §6.3 exists to hold.
    *
    *  THE ONE MUTABLE FIELD IN THIS BLOCK, and the exception is the point rather than an oversight.
-   *  Everything above it is immutable identity: a wallet, a side, a pseudonym and a stake are all
+   *  Everything above it is immutable identity: a wallet, a side, an address and a stake are all
    *  decided before the body exists and cannot change while it does. An avatar is not identity in
    *  that sense — it is a LATE-ARRIVING NETWORK RESOURCE about an identity, and the link feed
    *  resolves its fetch after the round is already on screen essentially every time. So this field
@@ -42,7 +58,7 @@ export interface ArenaBody {
    *  is rebuilding the field to deliver one string, which throws away live physics state.
    *
    *  It is declared HERE rather than beside them because a reader asking "what is this fighter"
-   *  should find it with the wallet and the name. Grouping is for the reader; `readonly` is for the
+   *  should find it with the wallet and the label. Grouping is for the reader; `readonly` is for the
    *  compiler; they disagree in this one case and this comment is the reconciliation. */
   avatarSrc: string | null;
   /** Starting hp, i.e. net-of-fee stake — fixed for the life of the round. */
@@ -778,7 +794,7 @@ export function createField(
       id: f.id,
       wallet: f.wallet,
       side: f.side,
-      name: f.name,
+      short: f.short,
       isYou: f.isYou,
       avatarSrc: f.avatarSrc,
       stake: f.stake,

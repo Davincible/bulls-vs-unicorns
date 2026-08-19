@@ -300,7 +300,7 @@ export function drawBodies(
     const slot = slots.get(b.id);
     if (slot === undefined) continue;
     ctx.fillStyle = b.dead ? palette.ink4 : palette.ink;
-    casedText(ctx, b.name, labelX(b.x, b.name.length, NAME_SIZE, field.w), slot.top);
+    casedText(ctx, b.short, labelX(b.x, b.short.length, NAME_SIZE, field.w), slot.top);
   }
   ctx.font = monoFont(NAME_SIZE, 600);
   for (const b of bodies) {
@@ -308,7 +308,7 @@ export function drawBodies(
     const slot = slots.get(b.id);
     if (slot === undefined) continue;
     ctx.fillStyle = b.dead ? palette.ink4 : palette.ink;
-    casedText(ctx, b.name, labelX(b.x, b.name.length, NAME_SIZE, field.w), slot.top);
+    casedText(ctx, b.short, labelX(b.x, b.short.length, NAME_SIZE, field.w), slot.top);
   }
 
   // The figure, for whoever got a slot wide and tall enough to carry one — `layoutLabels` decides
@@ -589,7 +589,7 @@ function layoutLabels(bodies: ArenaBody[], field: ArenaField, ink: InkMap): Map<
     // with. "OUT" alone made a $48 corpse and a $0 one look identical.
     const value = b.dead ? `OUT · ${usdCompact(b.worth)}` : usdCompact(b.worth);
     // Two lines at two sizes sharing one centre, so the block is as wide as the wider of them.
-    const nameHalf = monoWidth(b.name.length, NAME_SIZE) / 2;
+    const nameHalf = monoWidth(b.short.length, NAME_SIZE) / 2;
     const fullHalf = Math.max(nameHalf, monoWidth(value.length, VALUE_SIZE) / 2);
 
     let slot: LabelSlot | null = null;
@@ -733,7 +733,7 @@ export function drawReadout(
     ["RING", b.dead ? "—" : usdCompact(b.hp)],
     ["BANKED", usdCompact(b.banked)],
   ];
-  const title = b.dead ? `${b.name}  OUT` : b.name;
+  const title = b.dead ? `${b.short}  OUT` : b.short;
 
   ctx.save();
   ctx.textBaseline = "top";

@@ -463,7 +463,6 @@ function rowFor(wallet: string, pnlUsd: number): RoundPlayer {
   return {
     wallet,
     short: wallet.slice(0, 4),
-    name: wallet,
     side: 0,
     stake: usdToUnits(25),
     final: usdToUnits(25 + pnlUsd),

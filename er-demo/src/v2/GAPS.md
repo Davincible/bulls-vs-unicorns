@@ -182,5 +182,15 @@ fallback beside it that wrote an indistinguishable record, so typing a handle pu
 name and photograph on your fighter. The new design's job was never to add a proof; it was to make
 the **absence** of one unrepresentable.
 
+> **2026-08-19 — the third bullet is superseded.** `nameFor(wallet)` is deleted, so it covers nothing
+> and there is no pseudonym: an unlinked row's name slot is empty, and the truncated address on the
+> row is what identifies it (`data/namePlate.ts`). The bullet's conclusion is untouched — unlinked is
+> still the main path, still a complete rendering rather than an error state, and an avatar still
+> replaces something rather than filling a hole. Only the thing carrying readability changed, from a
+> generated word to the address, which is a fact a reader can check. The rule is linked versus
+> unlinked and is applied identically to every wallet on the page. The verbatim quotation higher up
+> keeps its `nameFor(wallet)` sentence exactly as written: it is the record of what this entry once
+> said, and a corrected quotation would be no record at all.
+
 **Draggable floating panels.** Replaced by the fixed, phase-aware dock and the side rail, which are
 keyboard-reachable by construction and do not cover the field.

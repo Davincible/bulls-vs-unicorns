@@ -18,6 +18,8 @@
 // Nothing below narrates an exchange it has not first decided is worth a person's attention.
 
 import { ONE_CENT_UNITS, SIDE_TOKEN, usdCompact, type CombatEvent, type FighterView } from "../contract.ts";
+import { namePlate, plateText } from "../data/namePlate.ts";
+import type { LinkMap } from "../data/xLink.ts";
 import type { ToastKind } from "../data/types.ts";
 
 /** One thing the page says out loud, in the toast rail's own vocabulary. `kind` is `useToasts.ts`'s
@@ -73,7 +75,7 @@ function sideKind(side: 0 | 1): ToastKind {
  *  the opponent as the subject when you are not — is what made it feel like the fight was happening
  *  to somebody, and that survives verbatim. Figures are `usdCompact`: a toast is a 520px box, and
  *  the exact number is in the log two sections up. */
-export function commentary(events: CombatEvent[]): VoiceLine[] {
+export function commentary(events: CombatEvent[], links: LinkMap): VoiceLine[] {
   const out: VoiceLine[] = [];
   for (const dir of ["out", "in"] as const) {
     const slice = events.filter((e) => (dir === "out" ? e.attacker.isYou : e.defender.isYou));
@@ -94,14 +96,23 @@ export function commentary(events: CombatEvent[]): VoiceLine[] {
     const alone = others.size === 1;
     const other = dir === "out" ? biggest.defender : biggest.attacker;
     const money = usdCompact(total);
+    // THE SAME NAME SLOT AS EVERY OTHER SURFACE, resolved through the one module that decides it —
+    // `@handle` where the opponent proved one, their truncated address where they did not. It used
+    // to be `nameFor()`'s pseudonym, and a toast is the surface where an invented name is least
+    // checkable: it is gone in five seconds and there is no key beside it to check it against.
+    //
+    // `"unmarked"`, ALWAYS: this line's grammar already puts the reader in it as "you", so the
+    // opponent is never the reader and there is no orientation for the slot to do. Passing a `you`
+    // cue here would put `YOU` on both sides of a sentence about two fighters.
+    const otherName = plateText(namePlate(links, other.wallet, "unmarked"), other.short);
 
     if (dir === "out") {
       out.push({
         kind: sideKind(biggest.attacker.side),
         text: alone
           ? slice.length === 1
-            ? `You raided ${money} off ${other.name}`
-            : `You raided ${money} off ${other.name} · ${slice.length} raids`
+            ? `You raided ${money} off ${otherName}`
+            : `You raided ${money} off ${otherName} · ${slice.length} raids`
           : `You raided ${money} · ${slice.length} raids on ${others.size} fighters`,
       });
     } else {
@@ -109,8 +120,8 @@ export function commentary(events: CombatEvent[]): VoiceLine[] {
         kind: sideKind(biggest.attacker.side),
         text: alone
           ? slice.length === 1
-            ? `${other.name} hit you for ${money}`
-            : `${other.name} hit you for ${money} · ${slice.length} hits`
+            ? `${otherName} hit you for ${money}`
+            : `${otherName} hit you for ${money} · ${slice.length} hits`
           : `You took ${money} · ${slice.length} hits from ${others.size} fighters`,
       });
     }

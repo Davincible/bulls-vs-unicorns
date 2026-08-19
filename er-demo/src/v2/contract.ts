@@ -102,11 +102,15 @@ export interface FighterView {
    *  against — the canvas uses it positionally. */
   id: number;
   wallet: string;
-  /** `7xKq…4ab` — for tables where the full key won't fit. */
+  /** `7xKq…4ab` — for tables where the full key won't fit.
+   *
+   *  IT IS THE WHOLE OF WHAT THIS PAGE KNOWS ABOUT WHO THIS IS, absent a linked X account. There was
+   *  a `name` here — `nameFor(wallet)`, a hash into a forty-word table — and it is gone rather than
+   *  emptied; `data/namePlate.ts` carries the argument and is the one answer to "what goes in a
+   *  row's name slot". Leaving a `name: ""` in place would have been a hole for a future pseudonym
+   *  to fall back into, and no test catches a field being filled in again. Removing it means the
+   *  compiler does. */
   short: string;
-  /** A stable pseudonym derived from the wallet (see `nameFor`). The original game gave every
-   *  fighter a name; a column of base58 is unreadable at a glance. */
-  name: string;
   side: Side;
   /** THIS FIGHTER'S OWN FACE, as a SAME-ORIGIN PATH — `/api/avatar/<xId>/<hash>.webp` — or null.
    *
@@ -119,7 +123,7 @@ export interface FighterView {
    *  proxies the bytes is what lets an X avatar satisfy it instead of breaking it.
    *
    *  NULL IS THE ORDINARY STATE, NOT A FAILURE. Most players never link, and the unlinked path is
-   *  the MAIN path: the side's coin face plus a `nameFor()` pseudonym is a complete and good
+   *  the MAIN path: the side's coin face plus the truncated address is a complete and good
    *  rendering of a player, so an avatar REPLACES something rather than filling a hole. The same
    *  null also covers "linked, bytes still in flight" and "suppressed by the operator" — every rung
    *  of that ladder renders identically, and none of them is an error state or shows a gap.
@@ -400,7 +404,6 @@ export function grossDeposits(round: { pot: bigint; feesCollected: bigint }): bi
 export interface RoundPlayer {
   wallet: string;
   short: string;
-  name: string;
   side: Side;
   /** What they put in (net of fee). */
   stake: bigint;
@@ -417,7 +420,6 @@ export interface RoundPlayer {
 export interface StandingsRow {
   wallet: string;
   short: string;
-  name: string;
   rounds: number;
   wins: number;
   staked: bigint;
@@ -454,7 +456,11 @@ export interface SideRecord {
 export interface BigWin {
   roundNo: bigint;
   wallet: string;
-  name: string;
+  /** `7xKq…4ab`. ADDED WHEN `name` WAS REMOVED, rather than leaving the ticker to call `shortKey`
+   *  itself: every other display type in this file carries a `short` computed once in the data
+   *  layer, and a view that formats its own address is a second place that decides how an address
+   *  looks. `deriveBigWins` copies the `RoundPlayer`'s. */
+  short: string;
   side: Side;
   /** Profit, always > 0. */
   amount: bigint;
@@ -810,26 +816,21 @@ export function bpsPct(bps: number): string {
   return `${v.toFixed(Number.isInteger(v) ? 0 : 1)}%`;
 }
 
-/** `7xKq…4ab` */
+/**
+ * `7xKq…4ab` — THE ONLY THING THIS PAGE DERIVES FROM A WALLET FOR DISPLAY.
+ *
+ * There was a second: `nameFor(wallet)`, which hashed the key into `KESTREL_42` off a forty-word
+ * table so a roster read as a list of people rather than a column of base58. It is deleted, and the
+ * deletion is the point rather than a tidy-up — see `data/namePlate.ts`, which is now the one answer
+ * to what goes in a row's name slot, and which has three outcomes with no fourth. A fighter with no
+ * linked X identity shows NO username, and this is what identifies the row instead.
+ *
+ * The difference between the two is not length, it is truthfulness. This is a prefix and a suffix of
+ * a fact a reader can check against the chain; the pseudonym was an assertion about who was on the
+ * page, made by a hash function, about wallets it knew nothing about.
+ */
 export function shortKey(wallet: string): string {
   return wallet.length <= 10 ? wallet : `${wallet.slice(0, 4)}…${wallet.slice(-4)}`;
-}
-
-const NAME_HEAD = [
-  "KITE", "ONYX", "RONIN", "ASH", "VELVET", "NORI", "COBALT", "SABLE", "FLINT", "AZURE",
-  "MOTH", "IVORY", "TALON", "CINDER", "SUMI", "HOLLOW", "ORCHID", "QUARTZ", "RIFT", "VESPER",
-  "GLASS", "NOMAD", "PALE", "SIREN", "TUNDRA", "UMBER", "WICK", "YARROW", "ZEPHYR", "BRACKEN",
-  "CANDOR", "DUSK", "EMBER", "FABLE", "GRAVEL", "HALO", "INDIGO", "JUNIPER", "KESTREL", "LUMEN",
-];
-
-/** A stable, wallet-derived pseudonym: same wallet always reads the same, no lookup table, no
- *  network. The original gave every fighter a name and a column of raw base58 is unreadable in a
- *  roster — but the wallet is always shown alongside, so this is a label, never an identity claim. */
-export function nameFor(wallet: string): string {
-  let h = 0;
-  for (let i = 0; i < wallet.length; i++) h = (h * 31 + wallet.charCodeAt(i)) >>> 0;
-  const head = NAME_HEAD[h % NAME_HEAD.length];
-  return `${head}_${(h % 97).toString().padStart(2, "0")}`;
 }
 
 /**

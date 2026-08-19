@@ -166,7 +166,7 @@ function logRound(roundNo: bigint, pnlUsd: number | null): RoundSummary {
   const players: RoundPlayer[] =
     pnlUsd === null
       ? []
-      : [{ ...YOU, short: YOU.short, name: YOU.name, wallet: YOU_KEY, stake: usdToUnits(25),
+      : [{ ...YOU, short: YOU.short, wallet: YOU_KEY, stake: usdToUnits(25),
            final: usdToUnits(25 + pnlUsd), pnl: usdToUnits(pnlUsd), dead: false, isYou: true }];
   return {
     roundNo, phase: "Settled", winner: 0, pot: usdToUnits(50), fighterCount: players.length,

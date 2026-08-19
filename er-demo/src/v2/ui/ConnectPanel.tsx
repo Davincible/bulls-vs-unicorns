@@ -17,12 +17,13 @@
 // renders that route as the thing you press.
 
 import { useState } from "react";
-import { DEVNET_ONLY_NOTE, type PlayBlock } from "../data/playGate.ts";
+import { DEVNET_ONLY_NOTE, type PlayBlock, type PlayBlockCta } from "../data/playGate.ts";
 import { useArena } from "../data/useArena.ts";
 import { useLinks } from "../data/useLinks.ts";
 import { useXCeremony } from "../data/useXCeremony.ts";
 import { FAILURE_COPY, LINKED_COPY, UNLINKED_COPY } from "../data/xConsent.ts";
 import { XConsentDialog, XRevokeDialog } from "./XConsentDialog.tsx";
+import { Disclosure } from "./Disclosure.tsx";
 import { asSentence } from "./roundPhaseCopy.ts";
 import { linkedDateText } from "./linkedDate.ts";
 import { XIdentity } from "./XIdentity.tsx";
@@ -55,6 +56,81 @@ function liveRole(code: PlayBlock["code"]): "alert" | "status" | undefined {
   return undefined;
 }
 
+/**
+ * THE WORD FOR "THE WALLET HAS BEEN ASKED AND HAS NOT ANSWERED", AND THE ONLY ONE.
+ *
+ * Exported because a second surface now says it: the header's wallet cell (`Chrome.tsx`), which is
+ * pressable and must not read as dead while a connect is in flight. Two surfaces describing one
+ * state in two vocabularies is the defect `playGate.ts` exists to prevent, applied one layer down —
+ * so the string is shared rather than retyped, and the ellipsis, the tense and the wallet's name all
+ * move together or not at all.
+ */
+export const CONNECTING_LABEL = "Waiting for Phantom…";
+
+/**
+ * A `PlayBlockCta`, AS THE THING YOU PRESS — the one place on this page that knows how.
+ *
+ * IT WAS INLINE IN `ConnectPanel` AND IS NOW ITS OWN COMPONENT, because a second surface needed the
+ * same knowledge and the alternative was a second copy of this ternary. `install` and `faucet` are
+ * anchors, `retry` reloads, `connect` calls the adapter and shuts while it waits; get any one of
+ * those wrong in a copy and the divergence is silent, because both copies keep rendering a button.
+ *
+ * IT TAKES `cta` AND NOTHING ELSE. The wallet comes from the arena context, exactly as every other
+ * consumer on this page reads it — `useWallet` is the factory the provider calls once, not a hook a
+ * component may call for itself, and calling it here would build a second wallet with its own
+ * balance polling.
+ */
+export function ConnectCta({ cta }: { cta: PlayBlockCta }) {
+  const { wallet } = useArena();
+  const connecting = wallet.status === "connecting";
+
+  if (cta.kind === "connect") {
+    return (
+      <button
+        type="button"
+        className="btn btn--fill btn--wide cx-cta"
+        data-testid="connect-cta"
+        disabled={connecting}
+        onClick={() => void wallet.connect()}
+      >
+        {/* The disabled state says what it is waiting for. A greyed button labelled "Connect
+            Phantom" is indistinguishable from a broken one. */}
+        {connecting ? CONNECTING_LABEL : cta.label}
+      </button>
+    );
+  }
+
+  if (cta.kind === "retry") {
+    return (
+      <button
+        type="button"
+        className="btn btn--fill btn--wide cx-cta"
+        data-testid="connect-cta"
+        onClick={() => window.location.reload()}
+      >
+        {cta.label}
+      </button>
+    );
+  }
+
+  // `install` and `faucet` — the two that leave the page. `.btn` is worn by an `<a>` elsewhere
+  // on this page already (ReferralsView), so this is the established shape rather than a new
+  // one. The accessible name CONTAINS the visible label (WCAG 2.5.3, Label in Name) and adds
+  // the one fact the visible label cannot carry: that this opens somewhere else.
+  return (
+    <a
+      className="btn btn--fill btn--wide cx-cta"
+      data-testid="connect-cta"
+      href={cta.href}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={`${cta.label} — opens in a new tab`}
+    >
+      {cta.label}
+    </a>
+  );
+}
+
 export interface ConnectPanelProps {
   block: PlayBlock;
   /** `"full"` is the rail's column; `"compact"` is the dock's corner. Same words, tighter setting. */
@@ -62,9 +138,7 @@ export interface ConnectPanelProps {
 }
 
 export function ConnectPanel({ block, density }: ConnectPanelProps) {
-  const { wallet } = useArena();
   const { cta } = block;
-  const connecting = wallet.status === "connecting";
 
   // ONE COPY OF THE NETWORK STATEMENT PER PANEL, decided by looking rather than by remembering.
   //
@@ -88,52 +162,34 @@ export function ConnectPanel({ block, density }: ConnectPanelProps) {
       <p className="cx-now">{asSentence(block.short)}</p>
       <p className="lede cx-detail">{block.detail}</p>
 
-      {cta === null ? null : cta.kind === "connect" ? (
-        <button
-          type="button"
-          className="btn btn--fill btn--wide cx-cta"
-          data-testid="connect-cta"
-          disabled={connecting}
-          onClick={() => void wallet.connect()}
-        >
-          {/* The disabled state says what it is waiting for. A greyed button labelled "Connect
-              Phantom" is indistinguishable from a broken one. */}
-          {connecting ? "Waiting for Phantom…" : cta.label}
-        </button>
-      ) : cta.kind === "retry" ? (
-        <button
-          type="button"
-          className="btn btn--fill btn--wide cx-cta"
-          data-testid="connect-cta"
-          onClick={() => window.location.reload()}
-        >
-          {cta.label}
-        </button>
-      ) : (
-        // `install` and `faucet` — the two that leave the page. `.btn` is worn by an `<a>` elsewhere
-        // on this page already (ReferralsView), so this is the established shape rather than a new
-        // one. The accessible name CONTAINS the visible label (WCAG 2.5.3, Label in Name) and adds
-        // the one fact the visible label cannot carry: that this opens somewhere else.
-        <a
-          className="btn btn--fill btn--wide cx-cta"
-          data-testid="connect-cta"
-          href={cta.href}
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label={`${cta.label} — opens in a new tab`}
-        >
-          {cta.label}
-        </a>
-      )}
+      {cta === null ? null : <ConnectCta cta={cta} />}
 
       {/* THE ASIDE IS THE RAIL'S ALONE, and dropping it in the dock is safe BY CONTRACT: `playGate`
           guarantees everything a player must DO lives in `detail`, so an `aside` can never be the
           missing instruction (`playGate.test.ts` asserts it). The dock is a 320px corner over a live
           round — it gets the claim, the remedy and the button. The rail has the column to explain
           the thing a subset of readers are confused by, and it is set below the control because it
-          is context for a decision already made, not part of making it. */}
+          is context for a decision already made, not part of making it.
+
+          AND IN THE RAIL IT IS NOW CLOSED. Same contract, read one step further: a paragraph that is
+          safe to DROP entirely is, by construction, safe to put behind a click. Today there is
+          exactly one — `no-sol`'s explanation of why Phantom shows a healthy balance while this page
+          says zero — which is a question a subset of readers arrive holding and the rest never think
+          to ask. The summary lets that subset find it in a glance without the rest paying a
+          paragraph for it.
+
+          THE SUMMARY IS THE ASIDE'S OWN OPENING QUESTION, WORD FOR WORD, and that is the only reason
+          this component is allowed to have one at all — see this file's header: it writes no copy,
+          and a summary invented here would be copy. `playGate.ts` opens that aside "Seeing a balance
+          in Phantom? That is your Mainnet balance…" and `playGate.test.ts` asserts exactly those
+          words, so this label cannot drift away from the paragraph it opens without a red test.
+          IF A SECOND BLOCK EVER GROWS AN ASIDE about something else, this stops being true and the
+          summary has to move into `playGate.ts` beside the sentence it names. It is a one-line label
+          today because there is one aside today. */}
       {density === "full" && block.aside !== undefined ? (
-        <p className="lede cx-aside">{block.aside}</p>
+        <Disclosure summary="Seeing a balance in Phantom?">
+          <p className="lede">{block.aside}</p>
+        </Disclosure>
       ) : null}
 
       {/* THE APPENDED NETWORK STATEMENT IS THE RAIL'S, NOT THE DOCK'S — the same rule as the `aside`
@@ -178,12 +234,11 @@ export function ConnectPanel({ block, density }: ConnectPanelProps) {
 //              rendered. Stage 3 does not exist, and a `Connect X` button that cannot connect is
 //              worse than no button: this page's own account of the in-page airdrop makes the same
 //              argument, and it is right.
-//   unlinked — the control and the invitation. Once, here, and nowhere else on the page: there is no
-//              per-row nag on the leaderboard and there never may be (`TWITTER-CONNECT.md` §8).
-//   linked   — the face at 24px, the `@handle`, when it was linked, `Unlink`, and the sentence that
-//              disconnecting a wallet is NOT unlinking. That last one is not a nicety. It is the
-//              natural wrong assumption, and its consequence — your face keeps appearing on a board
-//              you think you have left — is exactly the class of surprise this page refuses.
+//   unlinked — one labelled status row: `X · NOT LINKED`, and the control. Once, here, and nowhere
+//              else on the page: there is no per-row nag on the leaderboard and there never may be
+//              (`TWITTER-CONNECT.md` §8).
+//   linked   — THE SAME ROW, in its other state: the face at 24px, the `@handle`, when it was
+//              linked, and `Unlink`.
 //   failed   — the reason and `Try again`. THERE IS NO HANDLE-ENTRY FALLBACK and there is nowhere to
 //              put one: `LinkRequest` has no `handle` field. The old build answered every OAuth
 //              failure with `prompt("Your X handle")` and wrote the answer through the same message
@@ -217,6 +272,29 @@ export function ConnectPanel({ block, density }: ConnectPanelProps) {
 //
 // THE FAILURE STATE IS UNCHANGED and still comes from `xConsent.ts` — the panel resolves no sentences
 // of its own. What changed is that the sentences are now reached by things that actually happened.
+//
+// =================================================================================================
+// ONE ROW, TWO STATES — the answer to the third operator fault, verbatim: "I don't know if twitter is
+// connected or not, I don't see the connect option in the wallet side panel now, but also don't see
+// anything to suggest its connected."
+//
+// THEY WERE TWO DIFFERENT WIDGETS AND THAT WAS THE WHOLE BUG. Unlinked rendered a wide button with
+// two paragraphs stacked under it; linked rendered an avatar, then a separate line holding a date and
+// a small ghost button, then another paragraph. Nothing shared a shape, so there was no ROW to read
+// the state off — a reader had to infer it from which widget happened to be on screen, and inferring
+// "not linked" from the absence of a face is exactly the reading that fails.
+//
+// Now both states are one `.xl-row`: an identity slot, a muted fact beside it, and the control that
+// changes it, pushed right. Unlinked the identity slot says `X · NOT LINKED` in words; linked it is
+// the face, the `@handle` and the X mark. THE STATE IS NEVER CARRIED BY THE PRESENCE OR ABSENCE OF
+// SOMETHING — it is written out in one case and shown as an identity in the other, and the control
+// beside it names the direction of travel (`Connect X` / `Unlink`) either way.
+//
+// AND THE PROSE UNDER IT IS GONE. `UNLINKED_COPY.invitation` is deleted outright (see `xConsent.ts` —
+// it made a claim about pseudonyms that is about to stop being true), `UNLINKED_COPY.optional` with
+// it, and `LINKED_COPY.disconnectIsNotUnlink` is behind a disclosure that names it. The unlinked
+// state now renders no prose at all; the linked state renders one closed line.
+// =================================================================================================
 
 /**
  * START FETCHING THE IDENTITY CHUNK WHILE THE PLAYER READS THE CONSENT SCREEN.
@@ -275,23 +353,31 @@ export function XLinkPanel() {
     const linkedOn = linkedDateText(you.linkedAt, Date.now());
     return (
       <div className="xl" data-testid="x-link-panel" data-state={failure === null ? "linked" : "failed"}>
-        {/* 24px, which is the largest an avatar may be on the DOM outside the fighter inspector.
-            `SOCIAL.md` §4.6: size is the discipline that keeps a colour photograph honest on a page
-            whose only other colour is the two sides. */}
-        <XIdentity link={you} size={24} />
-        <div className="line xl-line">
+        <div className="line xl-row">
+          {/* 24px, which is the largest an avatar may be on the DOM outside the fighter inspector.
+              `SOCIAL.md` §4.6: size is the discipline that keeps a colour photograph honest on a page
+              whose only other colour is the two sides.
+              It is the ROW'S IDENTITY SLOT, holding what `X · NOT LINKED` holds in the other state —
+              and it is the slot that gives way when the column is narrow, because `XIdentity`
+              ellipsises the handle and keeps the face and the mark whole. */}
+          <XIdentity link={you} size={24} />
           {/* Withheld rather than faked when the timestamp is unusable — `linkedDateText` returns
               null and this prints nothing, instead of asserting "linked 1 Jan 1970" as a fact. */}
           {linkedOn === null ? null : (
-            <span className="u">
+            <span className="u xl-when">
               Linked · <span className="u--ink">{linkedOn}</span>
             </span>
           )}
           <button
             type="button"
-            className="btn btn--sm btn--ghost push"
+            className="btn btn--sm btn--ghost push xl-act"
             disabled={ceremony.busy}
             aria-busy={ceremony.busy}
+            // "Unlink" alone is a verb with no object in a rail that also holds Disconnect, Stop,
+            // Revoke and Pause. The accessible name CONTAINS the visible label (WCAG 2.5.3) and adds
+            // what it acts on; `Try again` is left as it is, because the alert beside it is the
+            // object and repeating it here would announce the failure twice.
+            aria-label={failure === null ? "Unlink your X account" : undefined}
             onClick={() => setDialog("revoke")}
           >
             {failure === null ? LINKED_COPY.unlink : FAILURE_COPY.retry}
@@ -299,9 +385,28 @@ export function XLinkPanel() {
         </div>
         {/* THE IDENTITY STAYS ON SCREEN THROUGH THE FAILURE, and that is correctness rather than
             layout: the unlink did not happen, so a panel that removed the face would be showing the
-            outcome of the thing that just failed. */}
+            outcome of the thing that just failed.
+
+            THE FAILURE IS THE ONE PARAGRAPH THAT STAYS OPEN. It is the definition of actionable —
+            something the reader just did has not happened, and the control beside it now says
+            `Try again`. Everything else in this block is behind the disclosure below. */}
         {failure === null ? (
-          <p className="lede xl-note">{LINKED_COPY.disconnectIsNotUnlink}</p>
+          // `disconnectIsNotUnlink` CORRECTS A WRONG ASSUMPTION AND IS NOW BEHIND A CLICK, which is
+          // the one decision in this block worth defending. It has to stay reachable — a player who
+          // thinks disconnecting their wallet removed their face is heading for exactly the surprise
+          // this page refuses — but it is not actionable: it is true whether or not it is read, and
+          // it describes a button (`Disconnect`, in the block above) that this reader has not
+          // pressed. As a permanent paragraph under the row it was one of the ten this rail was
+          // cited for; as a named summary it is one line, and the name is the correction itself.
+          //
+          // NOT MOVED INTO THE REVOKE DIALOG, which was the other candidate. That dialog opens after
+          // someone has decided to unlink, and this sentence is for the player who is about to
+          // decide they DON'T have to — telling them there that disconnecting would not have worked
+          // is telling them about a road they are no longer on. It belongs beside the linked row,
+          // one press from the Disconnect button it is about.
+          <Disclosure summary="What disconnecting your wallet does not do">
+            <p className="lede">{LINKED_COPY.disconnectIsNotUnlink}</p>
+          </Disclosure>
         ) : (
           <p className="lede xl-note" role="alert">
             {failure}
@@ -324,31 +429,37 @@ export function XLinkPanel() {
 
   return (
     <div className="xl" data-testid="x-link-panel" data-state={failure === null ? "unlinked" : "failed"}>
-      {/* ONE BUTTON ACROSS BOTH STATES, in the same slot, and that is a focus decision rather than a
-          tidy one. Rendering a separate `Try again` control would unmount the button the reader just
-          pressed and drop focus to the top of the document — the exact defect `useFocusTrap.ts` was
-          written against. Same element, same position, new label. */}
-      <button
-        type="button"
-        className="btn btn--sm btn--wide"
-        disabled={ceremony.busy}
-        aria-busy={ceremony.busy}
-        onClick={() => {
-          warmIdentityChunk();
-          setDialog("consent");
-        }}
-      >
-        {failure === null ? UNLINKED_COPY.action : FAILURE_COPY.retry}
-      </button>
-      {failure === null ? (
-        <>
-          <p className="lede xl-note">{UNLINKED_COPY.invitation}</p>
-          {/* Said quietly and always. It is what makes not linking a CHOICE rather than a gap, and
-              it is the reason there is no nudge, no modal and no disabled control anywhere else:
-              play is never gated on this. */}
-          <p className="lede xl-note">{UNLINKED_COPY.optional}</p>
-        </>
-      ) : (
+      <div className="line xl-row">
+        {/* THE STATE, IN WORDS, IN THE SLOT THE FACE OCCUPIES WHEN THERE IS ONE. This is the whole
+            fix for "I don't see anything to suggest its connected": the unlinked state is now
+            ASSERTED rather than inferred from an absence. `.u--ink` because it is the row's subject
+            and not its metadata — the same weight the `@handle` carries in the other state. */}
+        <span className="u u--ink xl-status">X · Not linked</span>
+        {/* ONE BUTTON ACROSS BOTH STATES, in the same slot, and that is a focus decision rather than a
+            tidy one. Rendering a separate `Try again` control would unmount the button the reader just
+            pressed and drop focus to the top of the document — the exact defect `useFocusTrap.ts` was
+            written against. Same element, same position, new label.
+            `btn--sm` and pushed right, not `btn--wide`: it is now one control on a status row rather
+            than a call to action with a column to itself, which is what linking is — optional, and
+            never nagged for (`TWITTER-CONNECT.md` §8). */}
+        <button
+          type="button"
+          className="btn btn--sm push xl-act"
+          disabled={ceremony.busy}
+          aria-busy={ceremony.busy}
+          onClick={() => {
+            warmIdentityChunk();
+            setDialog("consent");
+          }}
+        >
+          {failure === null ? UNLINKED_COPY.action : FAILURE_COPY.retry}
+        </button>
+      </div>
+      {/* NO PROSE AT ALL WHEN NOTHING HAS GONE WRONG, and both sentences that used to be here are
+          gone from `xConsent.ts` rather than hidden — see that file for the argument. What replaced
+          them is the row above: a status that says which state this is, and a control that says
+          which way it moves. */}
+      {failure === null ? null : (
         <p className="lede xl-note" role="alert">
           {failure}
         </p>

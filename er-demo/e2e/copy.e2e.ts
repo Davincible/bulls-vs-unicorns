@@ -150,7 +150,14 @@ describe("what the page claims", () => {
       // THE DENOMINATOR, ESTABLISHED FROM THE PAGE'S OWN TABLE FIRST — not from a constant in this
       // file. 04-2 lists one row per logged round; that count is what every caption has to agree
       // with, and holding the captions against it is what makes this a check rather than a restating.
+      //
+      // 04-2 IS NOW CAPPED, so the table has to be OPENED before it is counted. The claim being
+      // checked is unchanged and is deliberately not weakened to the visible ten: every round in the
+      // log still has to render a row, and this presses the control that reveals them rather than
+      // lowering the number it expects. `views/rowCap.ts` owns the cap; the button's own label is
+      // what is pressed here, so a rewording of it fails as a rewording rather than as a miscount.
       await goToView(s.page, "history");
+      await expandCappedTables(s.page);
       const history = await screenText(s.page);
       const rowsInLog = [...history.matchAll(/\b\d+ PLAYED\b/gi)].length;
       expect(rowsInLog, "04-2 listed no rounds at all").toBe(LOG_ROUNDS);
@@ -335,6 +342,47 @@ describe("what the page claims", () => {
 });
 
 // ---------------------------------------------------------------------------------------------
+
+/**
+ * Press every "show more" the current screen is carrying, so a scan reads the WHOLE table rather
+ * than the page of it the cap chose.
+ *
+ * WHY THIS EXISTS RATHER THAN A SMALLER EXPECTED NUMBER. The tables on 00, 01 and 04 are capped to a
+ * few rows with a control that reveals the rest (`views/rowCap.ts`, `views/ShowMore.tsx`), and the
+ * scan above counts rows to establish what the log holds. Lowering its expectation to the cap would
+ * turn a check on the page's honesty into a check on a constant in this file — it would pass just as
+ * happily if half the log stopped rendering. Opening the table first keeps the original claim at full
+ * strength: every round in the log still has to have a row.
+ *
+ * IT PRESSES BY THE BUTTON'S OWN ACCESSIBLE NAME, which is `rowCapLabel`'s output — so a rewording
+ * of that label fails here as a rewording rather than as a silent miscount. The `[+]` glyph is
+ * `aria-hidden` and so is not part of that name; if it ever stops being, this locator is what says so.
+ *
+ * ALWAYS `.first()`, ONE PRESS AT A TIME, AND NEVER `.all()`. That is a bug this test hit and not a
+ * preference: `locator.all()` hands back `nth(0)…nth(n)` bound to the LIVE set, not stable handles on
+ * the elements it found — and a press takes its own button out of that set, because the control's
+ * accessible name flips from "Show the rest" to "Hide the rest". So the second handle in a snapshot
+ * of two resolves against a one-element set and waits thirty seconds for an `nth(1)` that is never
+ * coming. Re-asking for the first remaining one is the shape that survives the set shrinking under
+ * it — and it survives it GROWING too, which is what makes this correct for a revealed row that
+ * carries its own cap (04-2's rounds each open onto a capped player table; none is open when this
+ * runs, but a loop that assumed so would be a trap laid for whoever changes `defaultOpen`).
+ *
+ * BOUNDED RATHER THAN `while`, so a control that somehow never settles fails as a named error rather
+ * than as a hung suite. The bound is far above the handful of capped tables any one screen carries.
+ */
+async function expandCappedTables(page: Page): Promise<void> {
+  const collapsed = page.getByRole("button", { name: /^Show the rest/ });
+  for (let pressed = 0; pressed < 24; pressed++) {
+    // NO SETTLE WAIT NEEDED. A press is a discrete React event, so the rows are in the DOM by the
+    // time `click()` resolves, and this count is the re-read that proves it — a scrape further down
+    // can only miscount if this function returns, and it returns only on a screen with no collapsed
+    // table left on it.
+    if ((await collapsed.count()) === 0) return;
+    await collapsed.first().click();
+  }
+  throw new Error("e2e: pressed 24 show-more controls and the screen still had one collapsed");
+}
 
 function extractRate(text: string, pattern: RegExp, where: string): string {
   const m = text.match(pattern);

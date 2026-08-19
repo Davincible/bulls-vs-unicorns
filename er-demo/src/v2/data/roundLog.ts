@@ -13,7 +13,6 @@
 import { PHASE_NAME } from "../../chain/constants.ts";
 import { bnOr0, type RawRoundAccount } from "../../chain/program.ts";
 import {
-  nameFor,
   shortKey,
   type BigWin,
   type LogCoverage,
@@ -78,7 +77,6 @@ export function summarizeRoundAccount(raw: RawRoundAccount, youPubkey: string): 
     return {
       wallet,
       short: shortKey(wallet),
-      name: nameFor(wallet),
       side: toSide(f.side),
       stake,
       final,
@@ -120,7 +118,6 @@ export function deriveStandings(rounds: RoundSummary[]): StandingsRow[] {
       const row = by.get(p.wallet) ?? {
         wallet: p.wallet,
         short: p.short,
-        name: p.name,
         rounds: 0,
         wins: 0,
         staked: 0n,
@@ -201,7 +198,7 @@ export function deriveBigWins(rounds: RoundSummary[]): BigWin[] {
   for (const round of rounds) {
     for (const p of round.players) {
       if (p.pnl <= 0n) continue;   // it is a WINS ticker — never push a loss into it
-      wins.push({ roundNo: round.roundNo, wallet: p.wallet, name: p.name, side: p.side, amount: p.pnl });
+      wins.push({ roundNo: round.roundNo, wallet: p.wallet, short: p.short, side: p.side, amount: p.pnl });
     }
   }
   return wins.sort((a, b) => descending(a.roundNo, b.roundNo));

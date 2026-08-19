@@ -39,11 +39,12 @@
 import { useId, useMemo, useState } from "react";
 import { useArena } from "../data/useArena.ts";
 import { useLinks } from "../data/useLinks.ts";
-import { linkFor } from "../data/linkFighters.ts";
-import type { LinkRecord } from "../data/xLink.ts";
+import { namePlate } from "../data/namePlate.ts";
 import { Bar, Empty, Mark, Money, Section, TabPanel, Tabs, Tag } from "../ui/primitives.tsx";
-import { XIdentity } from "../ui/XIdentity.tsx";
+import { NameCell } from "./NameCell.tsx";
 import { ScrollBox } from "./ScrollBox.tsx";
+import { ShowMore } from "./ShowMore.tsx";
+import { capRows, ROW_CAP_BOARD } from "./rowCap.ts";
 import { coverageFigure, coverageNote, coveragePhrase } from "./coverage.ts";
 import {
   SIDE_TOKEN,
@@ -116,30 +117,6 @@ function peak(values: bigint[]): bigint {
     if (a > m) m = a;
   }
   return m;
-}
-
-/* ---------------------------------------------------------------------------------------------
-   THE NAME, WITH OR WITHOUT A FACE — one definition, used by all three boards.
-   ---------------------------------------------------------------------------------------------
-   `SOCIAL.md` §2.5's rule, and it is the whole design: AN AVATAR REPLACES SOMETHING RATHER THAN
-   FILLING A HOLE. A linked player's `@handle` and face stand in for the wallet-derived pseudonym;
-   an unlinked player renders EXACTLY what they rendered before this feature existed — the same
-   `.sc-who-n` span, the same string, no reserved column, no placeholder, no silhouette and no grey
-   person-icon. Those read as broken, and `TWITTER-CONNECT.md` §8 is emphatic that the unlinked path
-   is the MAIN path: most players never link, and the pseudonym plus the wallet key beside it is a
-   complete, good rendering of a player rather than a degraded one.
-
-   NOTHING HERE NAGS. There is no "connect X" affordance on a row and there never may be — the
-   connect control lives in the wallet panel, once (§4.0). A leaderboard that asks forty rows' worth
-   of strangers to link is the growth tactic this document explicitly refuses.
-
-   IT IS LOCAL TO THIS FILE ON PURPOSE. `.sc-who-n` is a `screens.css` class, so a `ui/` primitive
-   has no business knowing about it; what the three boards need is one answer to "how does a name
-   render on THIS screen", and that is this function. If a fourth surface wants the same pairing it
-   should lift this, not copy it. */
-function NameCell({ link, name }: { link: LinkRecord | null; name: string }) {
-  if (link === null) return <span className="sc-who-n">{name}</span>;
-  return <XIdentity link={link} />;
 }
 
 export function LeaderboardView() {
@@ -240,7 +217,14 @@ export function LeaderboardView() {
           </span>
           {/* HOW MANY ROWS THE BOARD ON SCREEN IS SHOWING — on all three tabs, and `count` already
               tracks which one is mounted. This slot was a per-tab split until 01-1 got its own
-              figure here; it is one fact again. */}
+              figure here; it is one fact again.
+
+              IT IS THE WHOLE BOARD AND IT STAYS THE WHOLE BOARD, now that each board renders at most
+              `ROW_CAP_BOARD` rows until it is asked for more. Making this the VISIBLE count is the
+              obvious next edit and it is the wrong one: it would print "Rows · 10" over a 52-wallet
+              standings board and delete the only figure on the page that says how much board there
+              is. How many the cap holds back is the control's job, under the table, and it says so
+              in the same breath as offering them. */}
           <span className="u">
             Rows · <span className="u--ink">{count}</span>
           </span>
@@ -331,88 +315,127 @@ function RoundBoard({ fighters, label }: { fighters: FighterView[]; label: strin
   // consulted: nothing on this board may wait on the identity feed (`useLinks.ts`), and a round
   // renders completely and correctly while it is still outstanding.
   const { map } = useLinks();
+  // ABOVE THE EMPTY BRANCH, because hooks are unconditional — a board that goes from rows to none
+  // and back must not change how many of these run. `useId` scopes the control's `aria-controls` to
+  // the table it opens, the same way this screen already scopes its tab/panel pairs.
+  const [expanded, setExpanded] = useState(false);
+  const rowsId = useId();
   // An empty board never renders a `ScrollBox` at all — there is no box, so there is no stop to
   // decide about. The same is true of the two boards below: the empty state is structurally
-  // excluded rather than measured away.
+  // excluded rather than measured away. It grows no control either: `capRows` of an empty list
+  // hides nothing and `ShowMore` renders nothing for a table that fits, so "no fighters in the ring"
+  // can never become "show 0 more".
   if (!fighters.length) {
     return <Empty>No fighters in the ring — the board fills the moment someone deploys.</Empty>;
   }
+  // SORTED IN `LeaderboardView`, CAPPED HERE, in that order and never the other one. `fighters` is
+  // `ranked` — already in worth order — and this is a plain top-N of it, so the rows that survive
+  // are decided by RANK and by nothing else. `rowCap.ts` carries the argument and the rule it
+  // serves; the `#` column keeps reading 1…n because a top-N of an ordered list is its own prefix.
+  const shown = capRows(fighters, ROW_CAP_BOARD, expanded);
   return (
-    <ScrollBox label={label}>
-      <div className="rows sc-tbl sc-tbl--lbr" role="table" aria-label="This round">
-        <div className="row row--head" role="row">
-          <div role="columnheader">#</div>
-          <div role="columnheader">Side</div>
-          <div role="columnheader">Fighter</div>
-          {/* `sc-hp`, not `sc-s`: health is this board's rail — the equivalent of 01-2's P/L scale —
-              and it is the one column that MOVES during a fight. It outlives the workings columns
-              beside it and is dropped only on a phone. */}
-          <div role="columnheader" className="sc-hp">
-            Health
-          </div>
-          <div role="columnheader" className="r sc-s">
-            In the ring
-          </div>
-          <div role="columnheader" className="r sc-s">
-            Banked
-          </div>
-          <div role="columnheader" className="r">
-            Worth
-          </div>
-          <div role="columnheader" className="sc-st">
-            Status
-          </div>
-        </div>
-        {fighters.map((f, i) => {
-          const st = statusOf(f);
-          return (
-            <div
-              key={f.id}
-              role="row"
-              className={`row${f.isYou ? " row--you" : ""}${st.dim ? " row--dead" : ""}`}
-            >
-              <div role="cell" className="num dim">
-                {i + 1}
-              </div>
-              <div role="cell" className="sc-side">
-                <Mark side={f.side} dead={f.dead} />
-                <span className="u">{SIDE_TOKEN[f.side].name}</span>
-              </div>
-              <div role="cell" className="sc-who" title={f.wallet}>
-                {/* `linkFor`, NEVER `map.get`, on all three boards. A `LinkRecord`'s compile-time
-                    brand does not survive a spread, so the map alone cannot answer whether the
-                    record in it is one the client actually verified — `linkFor` asks the runtime
-                    register and renders an unverified copy as unlinked. Holding that at one call
-                    site is what makes it a guard rather than a habit; `linkFighters.ts`'s header is
-                    the argument. */}
-                <NameCell link={linkFor(map, f.wallet)} name={f.name} />
-                {f.isYou ? <span className="u u--ink">you</span> : null}
-                <span className="sc-who-k">{f.short}</span>
-              </div>
-              <div role="cell" className="sc-hp">
-                <Bar value={f.hp} max={f.stake} side={f.side} />
-              </div>
-              {/* This board is the widest live table on the page (three money columns plus a health
-                  bar) against fixed 70-88px tracks — on the chain path a live fighter's ring/bank/
-                  worth are all up to twenty characters and right-aligned, so a full `usd()` here
-                  spills leftward into the column beside it. Compact. */}
-              <div role="cell" className="num r sc-s">
-                {usdCompact(f.hp)}
-              </div>
-              <div role="cell" className="num r sc-s">
-                {f.banked > 0n ? usdCompact(f.banked) : <span className="none">—</span>}
-              </div>
-              <div role="cell" className="num r">
-                {usdCompact(worth(f))}
-              </div>
-              <div role="cell" className="u sc-st">
-                {st.label}
-              </div>
+    // THE CONTROL SITS OUTSIDE THE BOX, and both reasons point the same way.
+    //
+    // `ScrollBox`'s header states the contract this keeps: a box holds ONE table for its lifetime,
+    // because `useCanScroll` observes `el.children` once when the element arrives and React never
+    // swaps that child out underneath it. A button in there would be a second observed element and a
+    // contract broken for a control that does not need to be inside anything.
+    //
+    // And a way past a cap that you must scroll the capped box to REACH is not a way past it. The
+    // box exists so a long table stops pushing the page down; putting the button at the bottom of it
+    // hands the reader back the scroll the box just saved them.
+    //
+    // Expanding still re-answers the box's own question with nothing said here: the table grows, the
+    // table is a child the observer is already watching, so the tab stop appears or disappears on
+    // its own.
+    <>
+      <ScrollBox label={label}>
+        <div id={rowsId} className="rows sc-tbl sc-tbl--lbr" role="table" aria-label="This round">
+          <div className="row row--head" role="row">
+            <div role="columnheader">#</div>
+            <div role="columnheader">Side</div>
+            <div role="columnheader">Fighter</div>
+            {/* `sc-hp`, not `sc-s`: health is this board's rail — the equivalent of 01-2's P/L scale —
+                and it is the one column that MOVES during a fight. It outlives the workings columns
+                beside it and is dropped only on a phone. */}
+            <div role="columnheader" className="sc-hp">
+              Health
             </div>
-          );
-        })}
-      </div>
-    </ScrollBox>
+            <div role="columnheader" className="r sc-s">
+              In the ring
+            </div>
+            <div role="columnheader" className="r sc-s">
+              Banked
+            </div>
+            <div role="columnheader" className="r">
+              Worth
+            </div>
+            <div role="columnheader" className="sc-st">
+              Status
+            </div>
+          </div>
+          {shown.rows.map((f, i) => {
+            const st = statusOf(f);
+            return (
+              <div
+                key={f.id}
+                role="row"
+                className={`row${f.isYou ? " row--you" : ""}${st.dim ? " row--dead" : ""}`}
+              >
+                <div role="cell" className="num dim">
+                  {i + 1}
+                </div>
+                <div role="cell" className="sc-side">
+                  <Mark side={f.side} dead={f.dead} />
+                  <span className="u">{SIDE_TOKEN[f.side].name}</span>
+                </div>
+                <div role="cell" className="sc-who" title={f.wallet}>
+                  {/* `namePlate`, NEVER `map.get`, on all three boards — and `namePlate` goes through
+                      `linkFor`, which is the one lookup that asks the runtime mint register. A
+                      `LinkRecord`'s compile-time brand does not survive a spread, so the map alone
+                      cannot answer whether the record in it is one the client actually verified; an
+                      unverified copy renders as unlinked. Holding that behind one function is what
+                      makes it a guard rather than a habit; `linkFighters.ts`'s header is the argument.
+
+                      `"beside"` because this row prints its own `you` marker on the next line, so the
+                      name slot is free to carry a linked reader's own handle rather than spending
+                      itself repeating what the marker just said. See `namePlate.ts`'s `YouCue`. */}
+                  <NameCell plate={namePlate(map, f.wallet, f.isYou ? "beside" : "unmarked")} />
+                  {f.isYou ? <span className="u u--ink">you</span> : null}
+                  <span className="sc-who-k">{f.short}</span>
+                </div>
+                <div role="cell" className="sc-hp">
+                  <Bar value={f.hp} max={f.stake} side={f.side} />
+                </div>
+                {/* This board is the widest live table on the page (three money columns plus a health
+                    bar) against fixed 70-88px tracks — on the chain path a live fighter's ring/bank/
+                    worth are all up to twenty characters and right-aligned, so a full `usd()` here
+                    spills leftward into the column beside it. Compact. */}
+                <div role="cell" className="num r sc-s">
+                  {usdCompact(f.hp)}
+                </div>
+                <div role="cell" className="num r sc-s">
+                  {f.banked > 0n ? usdCompact(f.banked) : <span className="none">—</span>}
+                </div>
+                <div role="cell" className="num r">
+                  {usdCompact(worth(f))}
+                </div>
+                <div role="cell" className="u sc-st">
+                  {st.label}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </ScrollBox>
+      <ShowMore
+        hidden={shown.hidden}
+        expanded={expanded}
+        noun="fighter"
+        controls={rowsId}
+        onToggle={() => setExpanded((v) => !v)}
+      />
+    </>
   );
 }
 
@@ -473,6 +496,21 @@ function AllTime({
 }) {
   // See `RoundBoard` — read from context here rather than threaded down, and never waited on.
   const { map } = useLinks();
+  // ABOVE THE EMPTY BRANCH, for the reason `RoundBoard` gives: hooks are unconditional.
+  //
+  // `expanded` SURVIVES A RE-SORT, and that is structural rather than lucky. `sort` lives up in
+  // `LeaderboardView` and is passed down, so pressing a column header re-renders this component in
+  // place — same element, same position, state intact — and a reader who expanded a 52-wallet board
+  // and then sorted it by ROI keeps all 52. Only the order under them changes, which is what they
+  // asked for.
+  //
+  // SWITCHING TABS DOES RESET IT, and that is accepted. Only the selected panel is mounted (see the
+  // three ternaries in `LeaderboardView`), so leaving and returning unmounts this and its state with
+  // it. A tab is a request for a different board; arriving at it collapsed is the same state every
+  // other arrival at it gives, and the alternative is a `Record<TabId, boolean>` in the parent
+  // remembering how three tables were left, for a preference a single press restores.
+  const [expanded, setExpanded] = useState(false);
+  const rowsId = useId();
   if (!rows.length) {
     return (
       <Empty>
@@ -484,108 +522,133 @@ function AllTime({
   }
   // Fixed across the whole board, not per-page: a rail whose scale changed as you sorted would make
   // two sorts of the same table disagree about how big the same wallet's P/L is.
+  //
+  // WHICH IS WHY IT IS `rows` AND NOT `shown.rows` BELOW. The cap is a second route to exactly the
+  // per-page scale this paragraph rejects: drawn against the visible ten, every rail would change
+  // length the moment the board expanded, and the top wallet would be full-width in both states
+  // while meaning two different figures. The header's tooltip prints `usd(top)` as the board's
+  // scale, and it has to stay true of the board rather than of the page of it you are on.
   const top = peak(rows.map((r) => r.pnl));
+  // SORTED IN `LeaderboardView`, CAPPED HERE. `rows` is `sorted`; this is a plain top-N of it and
+  // never a partition, so which wallets survive the cut is decided by the sort the reader chose.
+  // `rowCap.ts` states the rule and why it is not negotiable.
+  const shown = capRows(rows, ROW_CAP_BOARD, expanded);
   return (
-    <ScrollBox label={label}>
-      <div className="rows sc-tbl sc-tbl--lba" role="table" aria-label="Standings over the round log">
-        <div className="row row--head" role="row">
-          <div role="columnheader">#</div>
-          <div role="columnheader">Wallet</div>
-          {/* `usd(top)` here stays full precision on purpose: this string lives only inside a
-              `title=` tooltip, prose a reader opens deliberately to check the board's scale against
-              an exact figure — not a grid cell that has to fit a fixed track. */}
-          <div
-            role="columnheader"
-            className="sc-w"
-            title={`Each wallet's P/L drawn against the largest on this board, ${usd(top)}`}
-          >
-            P/L scale
+    // Outside the box, for the two reasons `RoundBoard` sets out above.
+    <>
+      <ScrollBox label={label}>
+        <div
+          id={rowsId}
+          className="rows sc-tbl sc-tbl--lba"
+          role="table"
+          aria-label="Standings over the round log"
+        >
+          <div className="row row--head" role="row">
+            <div role="columnheader">#</div>
+            <div role="columnheader">Wallet</div>
+            {/* `usd(top)` here stays full precision on purpose: this string lives only inside a
+                `title=` tooltip, prose a reader opens deliberately to check the board's scale against
+                an exact figure — not a grid cell that has to fit a fixed track. */}
+            <div
+              role="columnheader"
+              className="sc-w"
+              title={`Each wallet's P/L drawn against the largest on this board, ${usd(top)}`}
+            >
+              P/L scale
+            </div>
+            <SortHead label="Rounds" col="rounds" sort={sort} setSort={setSort} right className="r sc-s" />
+            <div role="columnheader" className="r">
+              W / L
+            </div>
+            {/* "NET STAKE", NOT "STAKED". `StandingsRow.staked` sums the chain's per-fighter `stake`,
+                which is recorded AFTER the arena's entry fee is taken at the door — so a column headed
+                "Staked" was reporting less than these wallets were charged. `grossDeposits()` is the
+                honest figure for that claim and it is not available per wallet: `fees_collected` is
+                written on the ROUND, not on the fighter, and splitting it by hand would be a number
+                this page invented. So the header carries the qualification instead. The ROI beside it
+                is unaffected — both sides of it are net, so it stays like-for-like. */}
+            <SortHead
+              label="Net stake"
+              col="staked"
+              sort={sort}
+              setSort={setSort}
+              right
+              className="r sc-s"
+              title="What reached the ring, net of the arena's entry fee — the fee is charged at the door and never enters the pot. Sort by it."
+            />
+            <SortHead label="Returned" col="returned" sort={sort} setSort={setSort} right className="r sc-s" />
+            <SortHead label="P/L" col="pnl" sort={sort} setSort={setSort} right className="r" />
+            <SortHead
+              label="ROI"
+              col="roi"
+              sort={sort}
+              setSort={setSort}
+              right
+              className="r"
+              title="Returned ÷ net stake, over the rounds in the log — not over this wallet's whole life, which the log is only a window on"
+            />
           </div>
-          <SortHead label="Rounds" col="rounds" sort={sort} setSort={setSort} right className="r sc-s" />
-          <div role="columnheader" className="r">
-            W / L
-          </div>
-          {/* "NET STAKE", NOT "STAKED". `StandingsRow.staked` sums the chain's per-fighter `stake`,
-              which is recorded AFTER the arena's entry fee is taken at the door — so a column headed
-              "Staked" was reporting less than these wallets were charged. `grossDeposits()` is the
-              honest figure for that claim and it is not available per wallet: `fees_collected` is
-              written on the ROUND, not on the fighter, and splitting it by hand would be a number
-              this page invented. So the header carries the qualification instead. The ROI beside it
-              is unaffected — both sides of it are net, so it stays like-for-like. */}
-          <SortHead
-            label="Net stake"
-            col="staked"
-            sort={sort}
-            setSort={setSort}
-            right
-            className="r sc-s"
-            title="What reached the ring, net of the arena's entry fee — the fee is charged at the door and never enters the pot. Sort by it."
-          />
-          <SortHead label="Returned" col="returned" sort={sort} setSort={setSort} right className="r sc-s" />
-          <SortHead label="P/L" col="pnl" sort={sort} setSort={setSort} right className="r" />
-          <SortHead
-            label="ROI"
-            col="roi"
-            sort={sort}
-            setSort={setSort}
-            right
-            className="r"
-            title="Returned ÷ net stake, over the rounds in the log — not over this wallet's whole life, which the log is only a window on"
-          />
-        </div>
-        {rows.map((r, i) => (
-          <div key={r.wallet} role="row" className={`row${r.wallet === youKey ? " row--you" : ""}`}>
-            <div role="cell" className="num dim">
-              {i + 1}
-            </div>
-            <div role="cell" className="sc-who" title={r.wallet}>
-              <NameCell link={linkFor(map, r.wallet)} name={r.name} />
-              {r.wallet === youKey ? <span className="u u--ink">you</span> : null}
-              <span className="sc-who-k">{r.short}</span>
-            </div>
-            {/* The cell is deliberately empty to a screen reader: the bar is a redrawing of the P/L
-                three columns along, and announcing it again as "graphic" on all 52 rows would cost a
-                non-sighted reader time to be told nothing new. */}
-            <div role="cell" className="sc-w">
-              <span className={`sc-scale${r.pnl < 0n ? " sc-scale--neg" : ""}`}>
-                <Bar value={abs(r.pnl)} max={top} />
-              </span>
-            </div>
-            <div role="cell" className="num r sc-s">
-              {r.rounds}
-            </div>
-            <div role="cell" className="num r">
-              {r.wins} / {r.rounds - r.wins}
-            </div>
-            {/* Staked is the DENOMINATOR of the ROI two cells along, so a zero there is not a wallet
-                that risked nothing — it is a wallet whose return has no basis, and it dashes for the
-                same reason `roi` does. `returned` never dashes: nothing coming back is a real, and
-                very common, outcome. */}
-            <div role="cell" className="num r sc-s">
-              {r.staked > 0n ? usdCompact(r.staked) : <span className="none">—</span>}
-            </div>
-            <div role="cell" className="num r sc-s">
-              {usdCompact(r.returned)}
-            </div>
-            <div role="cell" className="r">
-              <Money units={r.pnl} signed compact />
-            </div>
-            <div role="cell" className="num r" title={r.roi === null ? undefined : `${r.roi.toFixed(2)}× returned`}>
-              {/* ROI is `returned ÷ staked`; shown as the gain on that, so it reads with the same
-                  sign as the P/L column beside it instead of contradicting it at 0.98×. */}
-              {r.roi === null ? (
-                <span className="none">—</span>
-              ) : (
-                <span className={r.roi >= 1 ? "pos" : "neg"}>
-                  {r.roi >= 1 ? "+" : "−"}
-                  {Math.abs((r.roi - 1) * 100).toFixed(0)}%
+          {shown.rows.map((r, i) => (
+            <div key={r.wallet} role="row" className={`row${r.wallet === youKey ? " row--you" : ""}`}>
+              <div role="cell" className="num dim">
+                {i + 1}
+              </div>
+              <div role="cell" className="sc-who" title={r.wallet}>
+                <NameCell plate={namePlate(map, r.wallet, r.wallet === youKey ? "beside" : "unmarked")} />
+                {r.wallet === youKey ? <span className="u u--ink">you</span> : null}
+                <span className="sc-who-k">{r.short}</span>
+              </div>
+              {/* The cell is deliberately empty to a screen reader: the bar is a redrawing of the P/L
+                  three columns along, and announcing it again as "graphic" on all 52 rows would cost a
+                  non-sighted reader time to be told nothing new. */}
+              <div role="cell" className="sc-w">
+                <span className={`sc-scale${r.pnl < 0n ? " sc-scale--neg" : ""}`}>
+                  <Bar value={abs(r.pnl)} max={top} />
                 </span>
-              )}
+              </div>
+              <div role="cell" className="num r sc-s">
+                {r.rounds}
+              </div>
+              <div role="cell" className="num r">
+                {r.wins} / {r.rounds - r.wins}
+              </div>
+              {/* Staked is the DENOMINATOR of the ROI two cells along, so a zero there is not a wallet
+                  that risked nothing — it is a wallet whose return has no basis, and it dashes for the
+                  same reason `roi` does. `returned` never dashes: nothing coming back is a real, and
+                  very common, outcome. */}
+              <div role="cell" className="num r sc-s">
+                {r.staked > 0n ? usdCompact(r.staked) : <span className="none">—</span>}
+              </div>
+              <div role="cell" className="num r sc-s">
+                {usdCompact(r.returned)}
+              </div>
+              <div role="cell" className="r">
+                <Money units={r.pnl} signed compact />
+              </div>
+              <div role="cell" className="num r" title={r.roi === null ? undefined : `${r.roi.toFixed(2)}× returned`}>
+                {/* ROI is `returned ÷ staked`; shown as the gain on that, so it reads with the same
+                    sign as the P/L column beside it instead of contradicting it at 0.98×. */}
+                {r.roi === null ? (
+                  <span className="none">—</span>
+                ) : (
+                  <span className={r.roi >= 1 ? "pos" : "neg"}>
+                    {r.roi >= 1 ? "+" : "−"}
+                    {Math.abs((r.roi - 1) * 100).toFixed(0)}%
+                  </span>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
-    </ScrollBox>
+          ))}
+        </div>
+      </ScrollBox>
+      <ShowMore
+        hidden={shown.hidden}
+        expanded={expanded}
+        noun="wallet"
+        controls={rowsId}
+        onToggle={() => setExpanded((v) => !v)}
+      />
+    </>
   );
 }
 
@@ -608,6 +671,10 @@ function Hall({
 }) {
   // See `RoundBoard` — read from context here rather than threaded down, and never waited on.
   const { map } = useLinks();
+  // Above the empty branch, same rule as the two boards above. This panel is unmounted when the tab
+  // changes, so `expanded` resets on the way back — see `AllTime` for why that is accepted.
+  const [expanded, setExpanded] = useState(false);
+  const rowsId = useId();
   if (!rows.length) {
     return (
       <Empty>
@@ -618,89 +685,105 @@ function Hall({
   // `deriveHall` keeps profitable rounds only, so this peak is a plain maximum — but it is still
   // taken over the rows rather than read off `rows[0]`, because that would make the rail depend on
   // the list staying sorted by the same figure it is drawn from.
+  //
+  // `rows`, NOT `shown.rows`, for `AllTime`'s reason: a scale taken over the visible ten is a
+  // per-page scale, and the rails would redraw themselves the moment the board was expanded.
   const top = peak(rows.map((p) => p.pnl));
+  // Sorted by `deriveHall`, capped here — a plain top-N of the order it already applied, never a
+  // reordering of it. `rowCap.ts` carries the rule.
+  const shown = capRows(rows, ROW_CAP_BOARD, expanded);
   return (
-    <ScrollBox label={label}>
-      <div className="rows sc-tbl sc-tbl--lbh" role="table" aria-label="Hall of fame">
-        <div className="row row--head" role="row">
-          <div role="columnheader">#</div>
-          <div role="columnheader">Side</div>
-          <div role="columnheader">Fighter</div>
-          {/* Same rule as 01-2's scale header: `usd(top)` is tooltip prose, not a grid cell, so it
-              keeps the exact figure. */}
-          <div
-            role="columnheader"
-            className="sc-w"
-            title={`Each round's profit drawn against the best on this board, ${usd(top)}`}
-          >
-            Profit scale
-          </div>
-          <div role="columnheader" className="sc-s">
-            Round
-          </div>
-          {/* Same qualification as the standings' net-stake column, and for the same reason:
-              `RoundPlayer.stake` is what the chain stored after the entry fee. */}
-          <div
-            role="columnheader"
-            className="r sc-s"
-            title="What reached the ring — the deposit net of the arena's entry fee — and what it finished as"
-          >
-            Net deposit → final
-          </div>
-          <div role="columnheader" className="r">
-            Return
-          </div>
-          <div role="columnheader" className="r">
-            Profit
-          </div>
-        </div>
-        {rows.map((p, i) => {
-          const mult = p.stake > 0n ? Number(p.final) / Number(p.stake) : null;
-          const rno = roundOf(p);
-          return (
+    // Outside the box, for the two reasons `RoundBoard` sets out.
+    <>
+      <ScrollBox label={label}>
+        <div id={rowsId} className="rows sc-tbl sc-tbl--lbh" role="table" aria-label="Hall of fame">
+          <div className="row row--head" role="row">
+            <div role="columnheader">#</div>
+            <div role="columnheader">Side</div>
+            <div role="columnheader">Fighter</div>
+            {/* Same rule as 01-2's scale header: `usd(top)` is tooltip prose, not a grid cell, so it
+                keeps the exact figure. */}
             <div
-              key={`${p.wallet}-${i}`}
-              role="row"
-              className={`row${p.wallet === youKey ? " row--you" : ""}`}
+              role="columnheader"
+              className="sc-w"
+              title={`Each round's profit drawn against the best on this board, ${usd(top)}`}
             >
-              <div role="cell" className="num dim">
-                {i + 1}
-              </div>
-              <div role="cell" className="sc-side">
-                <Mark side={p.side} />
-                <span className="u">{SIDE_TOKEN[p.side].name}</span>
-              </div>
-              <div role="cell" className="sc-who" title={p.wallet}>
-                <NameCell link={linkFor(map, p.wallet)} name={p.name} />
-                {p.wallet === youKey ? <span className="u u--ink">you</span> : null}
-                <span className="sc-who-k">{p.short}</span>
-              </div>
-              {/* Empty to a screen reader, for the same reason as the standings rail: it redraws the
-                  profit figure at the end of its own row. */}
-              <div role="cell" className="sc-w">
-                <span className="sc-scale">
-                  <Bar value={p.pnl} max={top} />
-                </span>
-              </div>
-              <div role="cell" className="num dim sc-s">
-                {rno === null ? <span className="none">—</span> : `R${rno.toString()}`}
-              </div>
-              {/* A zero deposit has no `→` to describe — it is the same missing basis that dashes the
-                  return multiple in the next cell but one. */}
-              <div role="cell" className="num r sc-s">
-                {p.stake > 0n ? usdCompact(p.stake) : <span className="none">—</span>}{" "}
-                <span className="dim">→</span> {usdCompact(p.final)}
-              </div>
-              <div role="cell" className="num r">
-                {mult === null ? <span className="none">—</span> : `${mult.toFixed(2)}×`}
-              </div>
-              <div role="cell" className="r">
-                <Money units={p.pnl} signed compact />
-              </div>
+              Profit scale
             </div>
-          );
-        })}
-      </div>
-    </ScrollBox>
+            <div role="columnheader" className="sc-s">
+              Round
+            </div>
+            {/* Same qualification as the standings' net-stake column, and for the same reason:
+                `RoundPlayer.stake` is what the chain stored after the entry fee. */}
+            <div
+              role="columnheader"
+              className="r sc-s"
+              title="What reached the ring — the deposit net of the arena's entry fee — and what it finished as"
+            >
+              Net deposit → final
+            </div>
+            <div role="columnheader" className="r">
+              Return
+            </div>
+            <div role="columnheader" className="r">
+              Profit
+            </div>
+          </div>
+          {shown.rows.map((p, i) => {
+            const mult = p.stake > 0n ? Number(p.final) / Number(p.stake) : null;
+            const rno = roundOf(p);
+            return (
+              <div
+                key={`${p.wallet}-${i}`}
+                role="row"
+                className={`row${p.wallet === youKey ? " row--you" : ""}`}
+              >
+                <div role="cell" className="num dim">
+                  {i + 1}
+                </div>
+                <div role="cell" className="sc-side">
+                  <Mark side={p.side} />
+                  <span className="u">{SIDE_TOKEN[p.side].name}</span>
+                </div>
+                <div role="cell" className="sc-who" title={p.wallet}>
+                  <NameCell plate={namePlate(map, p.wallet, p.wallet === youKey ? "beside" : "unmarked")} />
+                  {p.wallet === youKey ? <span className="u u--ink">you</span> : null}
+                  <span className="sc-who-k">{p.short}</span>
+                </div>
+                {/* Empty to a screen reader, for the same reason as the standings rail: it redraws the
+                    profit figure at the end of its own row. */}
+                <div role="cell" className="sc-w">
+                  <span className="sc-scale">
+                    <Bar value={p.pnl} max={top} />
+                  </span>
+                </div>
+                <div role="cell" className="num dim sc-s">
+                  {rno === null ? <span className="none">—</span> : `R${rno.toString()}`}
+                </div>
+                {/* A zero deposit has no `→` to describe — it is the same missing basis that dashes the
+                    return multiple in the next cell but one. */}
+                <div role="cell" className="num r sc-s">
+                  {p.stake > 0n ? usdCompact(p.stake) : <span className="none">—</span>}{" "}
+                  <span className="dim">→</span> {usdCompact(p.final)}
+                </div>
+                <div role="cell" className="num r">
+                  {mult === null ? <span className="none">—</span> : `${mult.toFixed(2)}×`}
+                </div>
+                <div role="cell" className="r">
+                  <Money units={p.pnl} signed compact />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </ScrollBox>
+      <ShowMore
+        hidden={shown.hidden}
+        expanded={expanded}
+        noun="performance"
+        controls={rowsId}
+        onToggle={() => setExpanded((v) => !v)}
+      />
+    </>
   );
 }

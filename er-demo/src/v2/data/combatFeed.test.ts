@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { HitEvent } from "../../sim/hitEvents.ts";
-import { nameFor, shortKey, type FighterView, type Side } from "../contract.ts";
+import { shortKey, type FighterView, type Side } from "../contract.ts";
 import { COMBAT_WINDOW, NO_COMBAT, combatFeed } from "./combatFeed.ts";
 
 const YOU = "Y0urWa11etAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -20,7 +20,6 @@ function fighterAt(id: number): FighterView {
     id,
     wallet,
     short: shortKey(wallet),
-    name: nameFor(wallet),
     side: (id % 2) as Side,
     stake: 1000n,
     hp: 1000n,

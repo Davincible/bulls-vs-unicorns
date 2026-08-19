@@ -42,7 +42,7 @@ import {
   type SessionManager,
 } from "../../chain/session/useSessionKeyManager.ts";
 import { toAnchorWallet, useSigner } from "../../chain/useSigner.ts";
-import { feeRate, nameFor, shortKey, type FeeRate, type Side } from "../contract.ts";
+import { feeRate, shortKey, type FeeRate, type Side } from "../contract.ts";
 import { simBankrollUsd } from "./autoDeploy.ts";
 import { unattendedSigning, type UnattendedSigning } from "./autoPolicy.ts";
 import { signingPlan, type SessionSigning, type SessionWork } from "./autoSession.ts";
@@ -685,14 +685,13 @@ function ChainArena({
     [history.loading, history.rounds],
   );
 
-  // NOBODY IS "YOU" UNTIL SOMEBODY CONNECTS. `nameFor("")` is deliberately not called: it is a pure
-  // hash and would happily mint a stable pseudonym for the empty string, printing an invented
-  // fighter name beside a Connect button.
+  // NOBODY IS "YOU" UNTIL SOMEBODY CONNECTS, and the dash is the whole of what a disconnected reader
+  // is told about themselves. This used to carry a `name` alongside, with a note that `nameFor("")`
+  // was deliberately not called because it would mint a stable pseudonym for the empty string and
+  // print an invented fighter name beside a Connect button. The pseudonym is gone from the page
+  // entirely now (`data/namePlate.ts`), so there is no longer a hash here to decline to call.
   const you = useMemo(
-    () =>
-      youPubkey === ""
-        ? { pubkey: "", short: "—", name: "—" }
-        : { pubkey: youPubkey, short: shortKey(youPubkey), name: nameFor(youPubkey) },
+    () => (youPubkey === "" ? { pubkey: "", short: "—" } : { pubkey: youPubkey, short: shortKey(youPubkey) }),
     [youPubkey],
   );
 

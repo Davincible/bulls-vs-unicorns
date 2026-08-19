@@ -393,8 +393,9 @@ export function canonicalBytes(a: LinkAttestation): Uint8Array {
  * WHY A VERIFICATION FAILED. For a log line and for tests — never for a screen.
  *
  * Every one of these collapses to the same rendering: the player is unlinked, exactly as if they had
- * never connected X, with the flat side-coloured disc and a `nameFor()` pseudonym. That is
- * `TWITTER-CONNECT.md` §5's rule and §8's, and it is the right one: a player cannot act on "the
+ * never connected X — the flat side-coloured disc, and no username at all, with the truncated address
+ * identifying the row as it identifies every other row on the page. That is `TWITTER-CONNECT.md`
+ * §5's rule and §8's, and it is the right one: a player cannot act on "the
  * attestation signature did not verify", and a page that says so has invented an error state for
  * something that is the ordinary condition of ninety-odd percent of the board.
  */

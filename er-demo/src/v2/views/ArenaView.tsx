@@ -9,7 +9,7 @@
 // strength bar, its phase tag, the your-position HUD and the settled banner all belong to THIS file
 // — the canvas draws the fight, this file draws the instrument around it.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ARENAS,
   EXTRACT_PENALTY_START_BPS,
@@ -26,7 +26,6 @@ import {
   entriesOpen,
   feeOn,
   finalCursor,
-  nameFor,
   shortKey,
   sideTotals,
   stepsPerSecond,
@@ -40,9 +39,14 @@ import {
   type Side,
 } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
+import { useLinks } from "../data/useLinks.ts";
+import { namePlate, plateText } from "../data/namePlate.ts";
+import type { LinkMap } from "../data/xLink.ts";
 import { sessionNote } from "../data/autoSession.ts";
 import { abandonText, simBankrollUsd, type AmountRule } from "../data/autoDeploy.ts";
 import { feePhrase } from "./feeCopy.ts";
+import { ShowMore } from "./ShowMore.tsx";
+import { capRows, ROW_CAP, ROW_CAP_PROOF, ROW_CAP_RECENT } from "./rowCap.ts";
 import { ArenaCanvas } from "../arena/ArenaCanvas.tsx";
 import { CombatLog } from "../ui/CombatLog.tsx";
 import { Bar, Dash, Empty, KV, KVs, Mark, Money, Section, Seg, Tag } from "../ui/primitives.tsx";
@@ -443,7 +447,31 @@ function ErWrites() {
  *  It stays in the accessibility tree rather than being `aria-hidden` as a duplicate of 00-5: the
  *  caption immediately above it says what it is, and quietly deleting a surface for readers who
  *  cannot see the field is how a screen reader ends up on a different page from everyone else. */
+/** THE NAME SLOT ON THIS SCREEN — one definition for the three fighter lists on it.
+ *
+ *  TEXT ONLY, AND `YOU` IN PLACE OF THE NAME. Every list here is a fixed-track row on or beside the
+ *  field with no room for a face and no second cell to hold an orientation marker, so the slot is
+ *  the only thing that can say which row is the reader's — which is `namePlate.ts`'s `"name-slot"`
+ *  convention, and why a linked reader sees `YOU` here and their own `@handle` on the leaderboard.
+ *  Everyone else sees their `@handle` if they have proved one and their address if they have not.
+ *
+ *  `.trunc` IS NOT DECORATION. A handle is up to sixteen glyphs with the `@`, an address is nine,
+ *  and these tracks are fixed — see `ArenaView.css`'s note on `.lead`. The slot ellipsises rather
+ *  than widening the row or pushing a money column out of its track. */
+function FighterName({ f, links }: { f: FighterView; links: LinkMap }) {
+  return (
+    <span className="trunc">
+      {plateText(namePlate(links, f.wallet, f.isYou ? "name-slot" : "unmarked"), f.short)}
+    </span>
+  );
+}
+
 function FieldLeaders({ fighters }: { fighters: FighterView[] }) {
+  // READ, NEVER WAITED ON. `useLinks` is explicit that nothing on the board may gate on the identity
+  // feed: this overlay renders completely and correctly while that fetch is outstanding, and every
+  // fighter in it is simply unlinked until it lands. See `useLinks.ts`'s header.
+  const { map } = useLinks();
+
   // A LEADERBOARD OF ONE IS NOT A RANKING — it is the only disc on the field, restated. Two is the
   // smallest lineup that expresses an order, and it is also the smallest a fight can have at all
   // (`abandon_round` ends a lobby that reaches its deadline with fewer), so the list appears exactly
@@ -503,7 +531,7 @@ function FieldLeaders({ fighters }: { fighters: FighterView[] }) {
           {/* THE NAME GIVES WAY, NOT THE BOX. `.lead`'s name track is a fixed 118px (ArenaView.css
               explains why an overlay cannot afford a `1fr` here), so a name longer than the track
               ellipsises inside it rather than widening the panel mid-round. */}
-          <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
+          <FighterName f={f} links={map} />
           {/* Compact, like every other money figure in a fixed track on this page: 58px does not
               hold a chain figure in full, and `Money` puts the exact one on the cell's title. */}
           <Money units={worth(f)} compact className="r" />
@@ -1521,11 +1549,27 @@ function Extract() {
 
 function Roster({ side }: { side: Side }) {
   const { live } = useArena();
+  const { map } = useLinks();
   const { setRail } = useShell();
+  // ONE CAP PER SIDE, AND THE TWO ARE INDEPENDENT. `TheField` renders this component twice, so each
+  // side gets its own `expanded` and its own `useId` — which is the honest shape: these are two
+  // tables that happen to sit beside each other, not one table split down the middle. A switch
+  // shared between them would make a reader who wanted five more fighters on one side take five
+  // more on the other, and `aria-controls` would have to name two containers at once.
+  const [expanded, setExpanded] = useState(false);
+  const rowsId = useId();
   const all = live?.fighters ?? [];
   const rows = all.filter((f) => f.side === side).sort((x, y) => (y.hp > x.hp ? 1 : y.hp < x.hp ? -1 : 0));
   const total = rows.reduce((s, f) => s + worth(f), 0n);
   const alive = rows.filter((f) => !f.dead).length;
+  // SORTED ABOVE, CAPPED HERE, in that order — a plain top-N of the health order and never a
+  // reshuffle of who survives the cut; `rowCap.ts` carries the rule that keeps it one.
+  //
+  // The three figures above are derived from `rows` and stay that way: the side's worth and
+  // `{alive}/{rows.length} alive` count the WHOLE side in both states. A header that quietly meant
+  // "of the five we chose to show you" is the one thing a table with money in it may never print,
+  // and it is what the reader checks the cap against.
+  const shown = capRows(rows, ROW_CAP, expanded);
 
   return (
     // THE MARKS IN HERE ARE NOT LABELLED, AND THAT IS CORRECT: this is one side's roster, under that
@@ -1558,48 +1602,73 @@ function Roster({ side }: { side: Side }) {
       </div>
 
       {rows.length === 0 ? (
+        // UNCHANGED, AND IT COMES FIRST FOR A REASON: an empty side is not a capped side. `capRows`
+        // of nothing hides nothing and `ShowMore` renders nothing for a table that fits, so even
+        // without this branch "no fighters yet" could never become "show 0 more" — but the sentence
+        // is the thing a reader on an empty lobby is actually owed, and a cap must not cost it.
         <Empty>No fighters on this side yet</Empty>
       ) : (
-        rows.map((f, i) => (
-          <div
-            key={f.wallet}
-            className={`row row--click roster${f.isYou ? " row--you" : ""}${f.dead ? " row--dead" : ""}`}
-            role="button"
-            tabIndex={0}
-            onClick={() => setRail({ kind: "fighter", wallet: f.wallet })}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                setRail({ kind: "fighter", wallet: f.wallet });
-              }
-            }}
-          >
-            <span className="idx">{(i + 1).toString().padStart(2, "0")}</span>
-            <Mark side={f.side} dead={f.dead} />
-            {/* THE NAME IS THE ONE CELL THAT MAY GIVE WAY. `.roster`'s money tracks are fixed and
-                this one is the `minmax(70px, 1fr)` that absorbs whatever is left, so `.trunc` is
-                what keeps a long name inside its column instead of pushing the row's figures out of
-                theirs. Nothing is lost by it: the full name is on the fighter inspector this row
-                opens. */}
-            <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
-            {/* THE COLUMNS MAX REPORTED. `.roster`'s money tracks are 70px fixed (66px on a phone),
-                and a chain figure printed in full is ~133px of right-aligned text — which does not
-                widen the track, it spills backwards over the name and the column before it. Compact
-                fits the track with room to spare; the exact figure is on each cell's title. */}
-            <Money units={f.hp} compact className="r" />
-            {f.banked > 0n ? (
-              <Money units={f.banked} compact className="r col-opt" />
-            ) : (
-              <span className="num r col-opt">
-                <Dash />
-              </span>
-            )}
-            <span className="col-opt">
-              <Bar value={f.hp} max={f.stake} side={f.side} />
-            </span>
-            <span className="u r">{f.dead ? "Out" : `${healthPct(f).toFixed(0)}%`}</span>
+        // THE WRAPPER EXISTS TO BE NAMED BY `aria-controls` AND FOR NOTHING ELSE. These rows were
+        // loose siblings under the group, and a control claiming to open something has to point at
+        // the thing it opens. It takes no class: `.row` is its own grid and the column tracks live
+        // on `.roster` (ArenaView.css), so a plain block around them is layout-neutral. The header
+        // row stays OUTSIDE it — the header is not one of the rows being revealed, and a reader
+        // expanding the table is not being handed a second copy of its column names.
+        <>
+          <div id={rowsId}>
+            {shown.rows.map((f, i) => (
+              <div
+                key={f.wallet}
+                className={`row row--click roster${f.isYou ? " row--you" : ""}${f.dead ? " row--dead" : ""}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => setRail({ kind: "fighter", wallet: f.wallet })}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setRail({ kind: "fighter", wallet: f.wallet });
+                  }
+                }}
+              >
+                <span className="idx">{(i + 1).toString().padStart(2, "0")}</span>
+                <Mark side={f.side} dead={f.dead} />
+                {/* THE NAME IS THE ONE CELL THAT MAY GIVE WAY. `.roster`'s money tracks are fixed and
+                    this one is the `minmax(70px, 1fr)` that absorbs whatever is left, so `.trunc` is
+                    what keeps a long name inside its column instead of pushing the row's figures out of
+                    theirs. Nothing is lost by it: the full name is on the fighter inspector this row
+                    opens. */}
+                <FighterName f={f} links={map} />
+                {/* THE COLUMNS MAX REPORTED. `.roster`'s money tracks are 70px fixed (66px on a phone),
+                    and a chain figure printed in full is ~133px of right-aligned text — which does not
+                    widen the track, it spills backwards over the name and the column before it. Compact
+                    fits the track with room to spare; the exact figure is on each cell's title. */}
+                <Money units={f.hp} compact className="r" />
+                {f.banked > 0n ? (
+                  <Money units={f.banked} compact className="r col-opt" />
+                ) : (
+                  <span className="num r col-opt">
+                    <Dash />
+                  </span>
+                )}
+                <span className="col-opt">
+                  <Bar value={f.hp} max={f.stake} side={f.side} />
+                </span>
+                <span className="u r">{f.dead ? "Out" : `${healthPct(f).toFixed(0)}%`}</span>
+              </div>
+            ))}
           </div>
-        ))
+          {/* INSIDE THE GROUP, under the rows it opens. The `role="group"` is what makes this side's
+              roster a boundary in the accessibility tree at all (see the note at the top of this
+              component), so a control that belongs to this roster and not the other one belongs
+              inside that boundary. */}
+          <ShowMore
+            hidden={shown.hidden}
+            expanded={expanded}
+            noun="fighter"
+            controls={rowsId}
+            onToggle={() => setExpanded((v) => !v)}
+          />
+        </>
       )}
     </div>
   );
@@ -1678,12 +1747,24 @@ function Exchanges() {
 
 function RoundStandings() {
   const { live } = useArena();
+  const { map } = useLinks();
   const { setRail } = useShell();
+  const [expanded, setExpanded] = useState(false);
+  const rowsId = useId();
   const rows = [...(live?.fighters ?? [])].sort((x, y) => {
     const d = pnlOf(y) - pnlOf(x);
     return d > 0n ? 1 : d < 0n ? -1 : 0;
   });
   const alive = rows.filter((f) => !f.dead).length;
+  // THE SORT ABOVE DECIDES WHO SURVIVES THE CUT, AND NOTHING HERE DOES. This is the one table on the
+  // page that mixes both sides into one list, which makes it the one where a cap could most easily
+  // become a statement about WHICH fighters matter — so it is a bare top-N of the P/L order and
+  // never a partition, a quota per side or a reserved row. `rowCap.ts` carries the rule and the
+  // standing reason for it; `#` keeps reading 01…n because a prefix of an ordered list is its own.
+  //
+  // `alive` and `rows.length - alive` in the tools line above count every entry in the round, capped
+  // or not — same reason each roster's `{alive}/{rows.length}` does.
+  const shown = capRows(rows, ROW_CAP, expanded);
   const caption =
     live?.phase === "Lobby"
       ? "lobby · deposits open"
@@ -1727,46 +1808,59 @@ function RoundStandings() {
       {rows.length === 0 ? (
         <Empty>No entries in this round</Empty>
       ) : (
-        rows.map((f, i) => (
-          <div
-            key={f.wallet}
-            className={`row row--click standing${f.isYou ? " row--you" : ""}${f.dead ? " row--dead" : ""}`}
-            role="button"
-            tabIndex={0}
-            onClick={() => setRail({ kind: "fighter", wallet: f.wallet })}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                setRail({ kind: "fighter", wallet: f.wallet });
-              }
-            }}
-          >
-            <span className="idx">{(i + 1).toString().padStart(2, "0")}</span>
-            {/* LABELLED, unlike the rosters two sections up. This is one table with both sides mixed
-                into it, so the 7px square is the ONLY thing saying which side a row is on — side by
-                colour alone, in the one table that sorts the two together. Every row here is also a
-                button, so the reader arrives at it by Tab without passing anything that could have
-                said it for them. */}
-            <Mark side={f.side} dead={f.dead} label={SIDE_TOKEN[f.side].name} />
-            {/* Same cell as the roster's name, for the same reason — see the note there. */}
-            <span className="trunc">{f.isYou ? "YOU" : f.name}</span>
-            {/* Five money columns across 76-88px tracks — the worst case on the page, and the other
-                half of Max's report. All five compact; all five carry the exact figure on a title. */}
-            <Money units={f.stake} compact className="r col-opt" />
-            <Money units={f.hp} compact className="r col-opt" />
-            {f.banked > 0n ? (
-              <Money units={f.banked} compact className="r col-opt" />
-            ) : (
-              <span className="num r col-opt">
-                <Dash />
-              </span>
-            )}
-            <Money units={worth(f)} compact className="r" />
-            <span className="r">
-              <Pnl value={pnlOf(f)} />
-            </span>
+        // Same wrapper as the rosters', for the same one reason: `aria-controls` needs something to
+        // name. No class, header row left outside it — see the note in `Roster`.
+        <>
+          <div id={rowsId}>
+            {shown.rows.map((f, i) => (
+              <div
+                key={f.wallet}
+                className={`row row--click standing${f.isYou ? " row--you" : ""}${f.dead ? " row--dead" : ""}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => setRail({ kind: "fighter", wallet: f.wallet })}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setRail({ kind: "fighter", wallet: f.wallet });
+                  }
+                }}
+              >
+                <span className="idx">{(i + 1).toString().padStart(2, "0")}</span>
+                {/* LABELLED, unlike the rosters two sections up. This is one table with both sides mixed
+                    into it, so the 7px square is the ONLY thing saying which side a row is on — side by
+                    colour alone, in the one table that sorts the two together. Every row here is also a
+                    button, so the reader arrives at it by Tab without passing anything that could have
+                    said it for them. */}
+                <Mark side={f.side} dead={f.dead} label={SIDE_TOKEN[f.side].name} />
+                {/* Same cell as the roster's name, for the same reason — see the note there. */}
+                <FighterName f={f} links={map} />
+                {/* Five money columns across 76-88px tracks — the worst case on the page, and the other
+                    half of Max's report. All five compact; all five carry the exact figure on a title. */}
+                <Money units={f.stake} compact className="r col-opt" />
+                <Money units={f.hp} compact className="r col-opt" />
+                {f.banked > 0n ? (
+                  <Money units={f.banked} compact className="r col-opt" />
+                ) : (
+                  <span className="num r col-opt">
+                    <Dash />
+                  </span>
+                )}
+                <Money units={worth(f)} compact className="r" />
+                <span className="r">
+                  <Pnl value={pnlOf(f)} />
+                </span>
+              </div>
+            ))}
           </div>
-        ))
+          <ShowMore
+            hidden={shown.hidden}
+            expanded={expanded}
+            noun="fighter"
+            controls={rowsId}
+            onToggle={() => setExpanded((v) => !v)}
+          />
+        </>
       )}
     </Section>
   );
@@ -1779,7 +1873,19 @@ function RoundStandings() {
 function PreviousRounds() {
   const { history } = useArena();
   const { setView } = useShell();
+  const [expanded, setExpanded] = useState(false);
+  const rowsId = useId();
+  // THE 8 IS THIS SECTION'S OWN CEILING AND IT SURVIVES THE CAP UNTOUCHED. What expands below is
+  // these eight, not the log behind them — `history.rounds` runs up to 250 deep and pouring that
+  // onto the arena screen is the complaint this change answers, not a way out of it. The whole log
+  // has a screen of its own and this section already advertises it, in the `All rounds` button in
+  // the tools slot above. `rowCap.ts`'s `ROW_CAP_RECENT` argues both halves of that.
+  //
+  // Newest-first is `history.rounds`' own order — `data/historyScan.ts` walks the log strictly
+  // newest→oldest — so both slices are prefixes of it and neither is a judgement about which rounds
+  // are worth showing.
   const rows = history.rounds.slice(0, 8);
+  const shown = capRows(rows, ROW_CAP_RECENT, expanded);
 
   return (
     <Section
@@ -1803,34 +1909,48 @@ function PreviousRounds() {
         <span className="r">Your P/L</span>
       </div>
 
+      {/* BOTH EMPTY BRANCHES KEY OFF `rows`, THE PRE-CAP LIST, and must keep doing so. `shown.rows`
+          is empty in exactly the same cases plus none, but asking the capped list whether the log is
+          empty would be asking a display decision to answer a question about the data. */}
       {history.loading && rows.length === 0 ? (
         <Empty>Reading round accounts…</Empty>
       ) : rows.length === 0 ? (
         <Empty>No settled rounds in this arena yet</Empty>
       ) : (
-        rows.map((r) => {
-          const yours = r.players.find((p) => p.isYou) ?? null;
-          return (
-            <div key={r.roundNo.toString()} className="row pastround">
-              <span className="num">#{r.roundNo.toString()}</span>
-              <span className="line" style={{ gap: 7 }}>
-                {r.winner === null ? (
-                  <span className="u">{r.phase}</span>
-                ) : (
-                  <>
-                    <Mark side={r.winner} />
-                    <span className="u u--ink">{SIDE_TOKEN[r.winner].name}</span>
-                  </>
-                )}
-              </span>
-              {/* Same 76px track as the standings above it, same reason. */}
-              <Money units={r.pot} compact className="r" />
-              <span className="num r col-opt">{r.fighterCount}</span>
-              <span className="num r col-opt">{r.tickCount.toString()}</span>
-              <span className="r">{yours ? <Pnl value={yours.pnl} /> : <Dash />}</span>
-            </div>
-          );
-        })
+        <>
+          <div id={rowsId}>
+            {shown.rows.map((r) => {
+              const yours = r.players.find((p) => p.isYou) ?? null;
+              return (
+                <div key={r.roundNo.toString()} className="row pastround">
+                  <span className="num">#{r.roundNo.toString()}</span>
+                  <span className="line" style={{ gap: 7 }}>
+                    {r.winner === null ? (
+                      <span className="u">{r.phase}</span>
+                    ) : (
+                      <>
+                        <Mark side={r.winner} />
+                        <span className="u u--ink">{SIDE_TOKEN[r.winner].name}</span>
+                      </>
+                    )}
+                  </span>
+                  {/* Same 76px track as the standings above it, same reason. */}
+                  <Money units={r.pot} compact className="r" />
+                  <span className="num r col-opt">{r.fighterCount}</span>
+                  <span className="num r col-opt">{r.tickCount.toString()}</span>
+                  <span className="r">{yours ? <Pnl value={yours.pnl} /> : <Dash />}</span>
+                </div>
+              );
+            })}
+          </div>
+          <ShowMore
+            hidden={shown.hidden}
+            expanded={expanded}
+            noun="round"
+            controls={rowsId}
+            onToggle={() => setExpanded((v) => !v)}
+          />
+        </>
       )}
     </Section>
   );
@@ -1851,8 +1971,23 @@ const VERDICT_TEXT: Record<string, string> = {
 
 function ProvablyFair() {
   const { live, verify } = useArena();
+  // ABOVE EVERY BRANCH BELOW, because hooks are unconditional: this section's body swings between an
+  // `Empty` and a 48-row table every time a verification is run, and neither state may change how
+  // many hooks this component calls.
+  const [expanded, setExpanded] = useState(false);
+  const rowsId = useId();
   const settled = live?.phase === "Settled";
   const result = verify.result;
+  // NOT RE-SORTED, WHICH IS THE WHOLE REASON THE NUMBER IS WHAT IT IS. `result.fighters` is in entry
+  // order and stays in it, so a divergent row can sit below the cut — floating the disagreements to
+  // the top would be precisely the ordering decision `rowCap.ts` forbids, in the one table on the
+  // page whose subject is wallets rather than people. `ROW_CAP_PROOF`'s note argues why eight is
+  // survivable anyway: the verdict and the `Winner agrees` / `Value conserved` figures directly
+  // above already state the round's answer in full, and this table is the workings behind it.
+  //
+  // `?? []` is the unverified state only, which renders `Empty` below and grows no control — a cap
+  // over nothing hides nothing.
+  const shown = capRows(result?.fighters ?? [], ROW_CAP_PROOF, expanded);
 
   return (
     <Section
@@ -1957,32 +2092,54 @@ function ProvablyFair() {
             <span className="col-opt">Recomputed · hp / banked</span>
             <span className="r">Agrees</span>
           </div>
-          {result.fighters.map((f) => (
-            <div key={f.wallet} className="row verifyrow">
-              {/* Named, not raw base58: this is the same cast as the roster two sections up, and a
-                  column of keys nobody can match to a row proves nothing to a reader. */}
-              <span className="trunc" title={f.wallet}>
-                {nameFor(f.wallet)} <span className="dim num">{shortKey(f.wallet)}</span>
-              </span>
-              {/* The whole cell under a "Side" header is the square, so the square has to say it.
-                  The verify table is the page's proof, and a proof with a column its reader cannot
-                  read is not one. */}
-              <span className="line" style={{ gap: 6 }}>
-                <Mark side={f.side} label={SIDE_TOKEN[f.side].name} />
-              </span>
-              <span className="num">
-                {usd(f.onChain.hp)} / {usd(f.onChain.banked)}
-                {f.onChain.dead ? " · out" : ""}
-              </span>
-              <span className="num col-opt">
-                {usd(f.recomputed.hp)} / {usd(f.recomputed.banked)}
-                {f.recomputed.dead ? " · out" : ""}
-              </span>
-              <span className="u r">
-                {f.matches ? "Yes" : f.extractionSignature ? "Extract" : "No"}
-              </span>
-            </div>
-          ))}
+          {/* The wrapper is `aria-controls`' target and nothing else — the header row above it keeps
+              its own `marginTop`, and stays outside because it is not one of the rows being
+              revealed. See the note in `Roster`. */}
+          <div id={rowsId}>
+            {shown.rows.map((f) => (
+              <div key={f.wallet} className="row verifyrow">
+                {/* THE ADDRESS, AND ONLY THE ADDRESS — the one fighter list on this page that gets no
+                    name plate, deliberately. This table's whole claim is that a number the chain
+                    settled and a number this browser recomputed are the same number, and its subject
+                    is therefore the WALLET the program credited, not the person holding it. A handle
+                    here would be an identity standing where a key belongs in a proof, and there is
+                    nothing to check it against.
+
+                    This cell used to print `nameFor()`'s pseudonym in front of the key, on the
+                    argument that a column of raw base58 proves nothing to a reader who cannot match it
+                    to a row. The key is truncated and the full one is on the row's title, so that job
+                    was already being done by the thing beside it; what the pseudonym added was a
+                    second string that looked like a name and was not one. */}
+                <span className="trunc num" title={f.wallet}>
+                  {shortKey(f.wallet)}
+                </span>
+                {/* The whole cell under a "Side" header is the square, so the square has to say it.
+                    The verify table is the page's proof, and a proof with a column its reader cannot
+                    read is not one. */}
+                <span className="line" style={{ gap: 6 }}>
+                  <Mark side={f.side} label={SIDE_TOKEN[f.side].name} />
+                </span>
+                <span className="num">
+                  {usd(f.onChain.hp)} / {usd(f.onChain.banked)}
+                  {f.onChain.dead ? " · out" : ""}
+                </span>
+                <span className="num col-opt">
+                  {usd(f.recomputed.hp)} / {usd(f.recomputed.banked)}
+                  {f.recomputed.dead ? " · out" : ""}
+                </span>
+                <span className="u r">
+                  {f.matches ? "Yes" : f.extractionSignature ? "Extract" : "No"}
+                </span>
+              </div>
+            ))}
+          </div>
+          <ShowMore
+            hidden={shown.hidden}
+            expanded={expanded}
+            noun="fighter"
+            controls={rowsId}
+            onToggle={() => setExpanded((v) => !v)}
+          />
         </>
       )}
     </Section>

@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import {
   SIDE_TOKEN,
   STAKE_PRESETS,
+  shortKey,
   TOKENS,
   usd,
   usdCompact,
@@ -16,6 +17,8 @@ import {
   type TokenKey,
 } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
+import { useLinks } from "../data/useLinks.ts";
+import { namePlate, plateText } from "../data/namePlate.ts";
 import { ASSUMED_SESSION_TOP_UP_SOL, sessionPanelNote, sessionStatus } from "../data/autoSession.ts";
 import { runwayNote, type AutoLimits } from "../data/autoPolicy.ts";
 import type { HoldReason } from "../data/autoDeploy.ts";
@@ -23,6 +26,7 @@ import type { ToastKind } from "../data/types.ts";
 import { ASSUMED_SESSION_MINUTES, type SessionLife } from "../data/sessionExpiry.ts";
 import { CombatLog } from "./CombatLog.tsx";
 import { ConnectPanel, XLinkPanel } from "./ConnectPanel.tsx";
+import { Disclosure } from "./Disclosure.tsx";
 import { PaperTheme } from "./PaperTheme.tsx";
 import { Bar, Dash, Mark, Seg, Tag } from "./primitives.tsx";
 import { feeNote } from "../views/feeCopy.ts";
@@ -301,6 +305,23 @@ function AutoDeployBlock() {
         ? "Already revoked — play sessions are stopped, so nothing can sign for you without your wallet. Start, in the block above, turns them back on."
         : null;
 
+  /** WHY ONE OF THE TWO STOPS CANNOT BE PRESSED, or null when both can — the block's only other line
+   *  of visible prose, and the one class of sentence this rail will not put behind a disclosure.
+   *
+   *  REVOKE'S REASON WINS WHEN BOTH ARE BLOCKED, which is the order the old expression had and is
+   *  worth keeping deliberately: `revokeBlocked` describes a state that is about to CHANGE on its own
+   *  (a session mid-open) or that the reader just caused (already revoked), while Pause being dark is
+   *  a standing condition. The transient one is the one a reader is holding a question about.
+   *
+   *  NULL IS THE COMMON CASE AND IT RENDERS NOTHING. It used to render a sentence explaining why the
+   *  Revoke control appears on two blocks — see the note at the call site for why that is now a code
+   *  comment instead. */
+  const disabledWhy =
+    revokeBlocked ??
+    (armed
+      ? null
+      : "Nothing is armed, so there is nothing to pause — the Repeat every round box in 00-3 Deploy is what arms one. Revoke still works, and stops this page signing anything without your wallet.");
+
   return (
     <Block title="Auto-deploy">
       <Fact name="Status">{standing.word}</Fact>
@@ -317,18 +338,25 @@ function AutoDeployBlock() {
         )}
       </Fact>
 
-      {/* THE SENTENCE, FROM THE RULE. `holdText`/`abandonText` are written beside the state machine
-          and covered by its tests, so this renders them and adds nothing — one wording per outcome,
-          everywhere it appears. It is here armed or not: a rule that can spend money is owed a status
-          line that never reads as nothing. */}
+      {/* THE SENTENCE, FROM THE RULE, AND IT IS THIS BLOCK'S ACTIONABLE LINE.
+          `holdText`/`abandonText` are written beside the state machine and covered by its tests, so
+          this renders them and adds nothing — one wording per outcome, everywhere it appears. It is
+          here armed or not: a rule that can spend money is owed a status line that never reads as
+          nothing, and it is the line that names the one press that would unhold the rule.
+
+          THIS BLOCK IS THE RAIL'S ONE EXCEPTION TO "ONE PARAGRAPH VISIBLE", and it keeps three at
+          most, each earning its place under a different clause of the rule: this one is actionable,
+          the stop distinction below is the safety claim `SOCIAL.md` §5.4 requires be made honestly
+          before a choice is made rather than after, and `disabledWhy` appears only while a control on
+          screen is dark. It is the only block here that spends money with nobody in the room.
+
+          THE SESSION POINTER IS THE SAME PARAGRAPH NOW, not a second one under it. It was a `<p>` of
+          its own, which made a one-clause aside look like a second finding; it is one sentence
+          completing the sentence above it, so it is set as one. No words changed. */}
       <p className="lede" style={{ marginTop: 10, fontSize: 12 }}>
         {status}
+        {standing.sessionHold ? " That is the Play session block directly above this one." : ""}
       </p>
-      {standing.sessionHold ? (
-        <p className="lede" style={{ marginTop: 6, fontSize: 12 }}>
-          That is the Play session block directly above this one.
-        </p>
-      ) : null}
 
       {/* THE TWO KILL SWITCHES — `SOCIAL.md` §5.4, and the distinction between them is the most
           important thing on this surface.
@@ -367,22 +395,54 @@ function AutoDeployBlock() {
           and that it "must be described honestly as the real one". Pause is this page choosing to
           stop; revoking removes the key's ability to act. A player picking between two stop buttons
           is entitled to know which one survives us being wrong, and there is no wording of Pause that
-          earns the word "guarantee". */}
+          earns the word "guarantee".
+
+          SPLIT IN TWO, AND THE SPLIT IS THE MOST CAREFUL DECISION IN THIS WHOLE PASS. Ninety words
+          under two buttons is a paragraph nobody reads, and an unread safety claim is not a safety
+          claim — it is a compliance artefact. But collapsing the whole thing behind a click would
+          mean the choice between two stop buttons gets made, by default, by a reader with no idea
+          which one holds. So the DISTINCTION stays open, in one sentence, naming both controls by
+          the labels the reader can see; the full account of what each one costs and what it does not
+          promise is one press away, under a summary that names exactly that. Nothing is deleted.
+          §5.4's requirement is that revoke "must be described honestly as the real one" — the
+          visible sentence is where that is done, and it is the shortest true form of it. It is also
+          the ONLY sentence this pass added to the screen; everything else here moved or went. */}
       <p className="lede" style={{ marginTop: 10, fontSize: 12 }}>
-        Two stops, and only one of them holds if this page is wrong. Pause is this page deciding not
-        to send the next deposit: instant, no transaction, no approval, and it takes effect before the
-        next round. It is worth exactly as much as our code being correct. Revoke closes the session
-        key on chain, so the key that has been signing for you cannot enter another round at all —
-        that one still works if this client is wrong, our server is compromised, or we are
-        unreachable, which is why it is the real one. It costs one approval in Phantom and sends the
-        key&apos;s unspent SOL back. Neither asks you to confirm.
+        Revoke is the one that holds if this page is wrong — it closes the key on chain. Pause is
+        this page choosing not to send the next deposit.
       </p>
-      <p className="lede" style={{ marginTop: 8, fontSize: 12 }}>
-        {revokeBlocked ??
-          (armed
-            ? "Revoke is the same control as Stop in the block above; it is repeated here because this is where the choice between the two gets made."
-            : "Nothing is armed, so there is nothing to pause — the Repeat every round box in 00-3 Deploy is what arms one. Revoke still works, and stops this page signing anything without your wallet.")}
-      </p>
+      <Disclosure summary="What Pause and Revoke actually do">
+        <p className="lede">
+          Pause is instant: no transaction, no approval, and it takes effect before the next round.
+          It is worth exactly as much as our code being correct. Revoke closes the session key on
+          chain, so the key that has been signing for you cannot enter another round at all — that
+          one still works if this client is wrong, our server is compromised, or we are unreachable,
+          which is why it is the real one. It costs one approval in Phantom and sends the key&apos;s
+          unspent SOL back. Neither asks you to confirm.
+        </p>
+      </Disclosure>
+
+      {/* WHY A CONTROL CANNOT BE PRESSED — SPEC.md's rule, and the one class of sentence that is NOT
+          allowed behind a disclosure anywhere in this rail. A disabled button whose explanation is
+          one click away is a disabled button with no explanation.
+
+          WHAT WAS DELETED HERE, AND WHY IT IS NOT HIDING SOMEWHERE. The armed branch used to read
+          "Revoke is the same control as Stop in the block above; it is repeated here because this is
+          where the choice between the two gets made." That sentence explains a RENDERING decision —
+          why one control appears on two blocks — to a reader who has not asked and cannot act on the
+          answer. It is not a claim about the system, nothing in SPEC or SOCIAL requires it, and the
+          argument it makes is exactly the argument the `AutoDeployBlock` header comment already makes
+          to the next engineer, which is who it was really written for. So it moved from the screen
+          into this file, and nothing on screen replaces it: when everything is pressable, this
+          paragraph is absent entirely.
+
+          The unarmed branch stays, verbatim and visible, because it is the other kind of sentence: it
+          says why `Pause` is greyed and names the one control that would make it pressable. */}
+      {disabledWhy === null ? null : (
+        <p className="lede" style={{ marginTop: 8, fontSize: 12 }}>
+          {disabledWhy}
+        </p>
+      )}
 
       {/* SAID ONCE, PLAINLY, AND NOWHERE ELSE ON THE PAGE. Somebody leaving this running overnight is
           entitled to know what their deposit actually does to a round, and it is not what the phrase
@@ -401,43 +461,52 @@ function AutoDeployBlock() {
           NO OPPONENT COUNT, AND THAT IS THE POINT OF THE LAST SENTENCE. At lobby time the board is
           not drawn, so any figure for "who you would be fighting" would be invented — which SPEC
           forbids outright. The honest version is the mechanism in words, and that closing sentence is
-          more true now than when it was written, not less. */}
-      <p className="lede" style={{ marginTop: 14, fontSize: 12 }}>
-        Worth knowing before you leave one running: the keeper holds a lobby open for a person rather
-        than a clock, so your deposit is what closes entries and starts the fight — and the rest of
-        the board is filled in around you, after you are in. Who that turns out to be is not knowable
-        at lobby time, so this page will not put a number on it.
-      </p>
+          more true now than when it was written, not less.
 
-      {/* THE STATEMENT. The only copy on this page written for somebody who was not present for any
-          of what it describes, which is why it is rendered whether or not anything has happened —
-          `tallyReport` says something true before the first round as well as after the hundredth. */}
-      <div className="line" style={{ marginTop: 18 }}>
-        <span className="u">What it has done</span>
-      </div>
-      <p className="lede" style={{ marginTop: 8, fontSize: 12 }}>
-        {autoDeploy.report}
-      </p>
+          CLOSED, BECAUSE ITS OWN FIRST THREE WORDS SAY WHEN IT MATTERS. "Worth knowing before you
+          leave one running" is a sentence for somebody about to walk away, not for somebody reading
+          a status row — so the summary names the subject and the paragraph waits for the reader who
+          wants it. The summary must NOT be softer than the paragraph, which is why it says what the
+          deposit does rather than "about auto-deploy". */}
+      <Disclosure summary="What an automatic entry does to a round">
+        <p className="lede">
+          Worth knowing before you leave one running: the keeper holds a lobby open for a person
+          rather than a clock, so your deposit is what closes entries and starts the fight — and the
+          rest of the board is filled in around you, after you are in. Who that turns out to be is
+          not knowable at lobby time, so this page will not put a number on it.
+        </p>
+      </Disclosure>
 
-      {/* HOW FAR IT CAN GO, and which bound gets there first. `runwayNote` computes both money bounds
-          off the live `FeeRate` and names whichever of the money, the session and the ceiling
-          actually binds — which is the half that matters now: at the old session length the SESSION
-          was what ended an unattended run, and at the length it is now the budget or the drawdown
-          stop almost always gets there first. Rendering `runway.binding`'s own sentence rather than
-          asserting either one is what keeps this true the next time the constant moves. */}
-      <div className="line" style={{ marginTop: 18 }}>
-        <span className="u">How far it can go</span>
-      </div>
-      <p className="lede" style={{ marginTop: 8, fontSize: 12 }} title={feeNote(fee)}>
-        {/* A RUNWAY PRICED AT NOTHING IS NOT A PROJECTION, IT IS AN ARTEFACT. `runway` is computed
-            from `nextAmountUsd ?? 0`, so a rule that resolves to no sendable amount produces "funds 0
-            rounds if every fight is lost" — a figure with nothing behind it, in a sentence a player
-            would size a night's budget against. SPEC's rule is that we never invent a number, so the
-            projection is withheld and the reason for withholding it is what prints instead. */}
-        {nextAmountUsd === null
-          ? "Nothing to project yet: the rule does not currently resolve to an amount worth sending, and a runway priced at nothing would be a made-up number. The status above says what would change that."
-          : runwayNote(autoDeploy.runway)}
-      </p>
+      {/* THE ACCOUNT OF THE RUN — what it did, and how far it can still go. Two headed paragraphs
+          that are now one disclosure, and merging them is deliberate rather than tidy: they answer
+          the same question from either side of now, and a reader who opens one wants the other.
+          Neither is actionable — `report` describes what already happened and `runwayNote` projects
+          what has not — so under this rail's rule neither may sit open. Both are kept in full.
+
+          `tallyReport` says something true before the first round as well as after the hundredth,
+          which is why the disclosure is rendered unconditionally rather than only once something has
+          happened: a run that has done nothing yet is a fact somebody is entitled to read.
+
+          `runwayNote` computes both money bounds off the live `FeeRate` and names whichever of the
+          money, the session and the ceiling actually binds — which is the half that matters now: at
+          the old session length the SESSION was what ended an unattended run, and at the length it is
+          now the budget or the drawdown stop almost always gets there first. Rendering
+          `runway.binding`'s own sentence rather than asserting either one is what keeps this true the
+          next time the constant moves. */}
+      <Disclosure summary="What this run has done, and how far it can go">
+        <p className="lede">{autoDeploy.report}</p>
+        <p className="lede" title={feeNote(fee)}>
+          {/* A RUNWAY PRICED AT NOTHING IS NOT A PROJECTION, IT IS AN ARTEFACT. `runway` is computed
+              from `nextAmountUsd ?? 0`, so a rule that resolves to no sendable amount produces "funds
+              0 rounds if every fight is lost" — a figure with nothing behind it, in a sentence a
+              player would size a night's budget against. SPEC's rule is that we never invent a
+              number, so the projection is withheld and the reason for withholding it is what prints
+              instead. */}
+          {nextAmountUsd === null
+            ? "Nothing to project yet: the rule does not currently resolve to an amount worth sending, and a runway priced at nothing would be a made-up number. The status above says what would change that."
+            : runwayNote(autoDeploy.runway)}
+        </p>
+      </Disclosure>
 
       {/* THE BOUNDS, AS PRESETS. `Seg` because that is this page's control for a choice among a few
           named values (the cashier's token picker above, 00-3's stake presets, the repeat sizing) —
@@ -502,13 +571,23 @@ function AutoDeployBlock() {
           offering both the budget and the drawdown stop is owed it. The stop is a percentage of what
           is committed, so raising the budget raises the dollar loss it tolerates, in proportion —
           which is what "half of what I put in" means when somebody puts more in, and is not what a
-          player pressing one control necessarily has in mind. */}
-      <p className="lede" style={{ marginTop: 12, fontSize: 12 }}>
-        These bounds are enforced by this tab, not by the program — the arena custodies no tokens, so
-        nothing on chain knows a budget exists, and closing this tab ends the run rather than settling
-        it. The drawdown stop is a share of the budget, so raising the budget also raises the loss it
-        will sit through, in proportion.
-      </p>
+          player pressing one control necessarily has in mind.
+
+          CLOSED, AND THE `sim` MARKER ABOVE IS WHAT MAKES THAT SAFE. The paragraph is required to
+          EXIST — it is the only place the page says who enforces these numbers — but it is not
+          required to be the last thing under four segmented controls, unread. The marker beside the
+          `Limits` heading already carries the headline in one glyph, everywhere on this page it
+          appears; the summary names precisely which question the paragraph answers, and a reader who
+          wants to know who is holding these bounds is one press from the full answer rather than
+          nought presses from a wall. */}
+      <Disclosure summary="Who enforces these limits, and what the drawdown stop is a share of">
+        <p className="lede">
+          These bounds are enforced by this tab, not by the program — the arena custodies no tokens,
+          so nothing on chain knows a budget exists, and closing this tab ends the run rather than
+          settling it. The drawdown stop is a share of the budget, so raising the budget also raises
+          the loss it will sit through, in proportion.
+        </p>
+      </Disclosure>
     </Block>
   );
 }
@@ -550,6 +629,41 @@ function pressSession(
   };
 }
 
+/**
+ * THE WALLET RAIL, AND THE RULE THAT NOW GOVERNS EVERY WORD IN IT.
+ *
+ * THE COMPLAINT, verbatim: "The wallet side panel is a fucking mess. Wayyyy too much text. Very
+ * unnecessary. No one is going to read that, bad UX." It was right, and it was right about something
+ * this file did to itself honestly: every paragraph in here was added for a good reason, argued for
+ * in the comment above it, and correct. Eleven of them, stacked in one 420px column. Each was worth
+ * its place against the paragraph before it and none was worth its place against all ten others.
+ *
+ * ================================================================================================
+ * THE RULE: IN THIS RAIL, AT MOST ONE PARAGRAPH OF PROSE IS VISIBLE BY DEFAULT PER BLOCK, AND ONLY
+ * WHEN IT IS ACTIONABLE — it tells the player what to do next, or it says why a control they can see
+ * is disabled. Everything else goes behind a `<Disclosure>` or is deleted.
+ * ================================================================================================
+ *
+ * WHAT "ACTIONABLE" BUYS, AND WHY IT IS NOT "IMPORTANT". Importance is the test that produced eleven
+ * paragraphs — every one of them is important, which is why every one of them was written. Actionable
+ * is a test a sentence can fail: `autoDeploy.status` names the press that would unhold the rule, so it
+ * stays open; the custody paragraph under Simulated balances is true whether or not anyone reads it
+ * and changes nothing about what a reader does next, so it closes. SPEC.md's rule about disabled
+ * controls falls out of this rather than being an exception to it: "Can't start one yet — {short}" and
+ * `revokeBlocked` explain a control the reader can SEE and cannot press, so they are always open.
+ * A disabled button whose explanation is one click away is a disabled button with no explanation.
+ *
+ * NOTHING LOAD-BEARING WAS DELETED. Every honesty claim this repo argues for is still rendered, in
+ * full, in the same words — the pause/revoke distinction (`SOCIAL.md` §5.4), what an unattended entry
+ * does to a lobby, who enforces the auto-deploy bounds, what the simulated balances are. They are one
+ * press away instead of nought presses away, under summaries that name them. Two sentences WERE
+ * deleted, both in the X block, and both are written up where they used to live (`data/xConsent.ts`)
+ * rather than in a commit message: one was about to become false, one is now said by the layout.
+ *
+ * THE COUNT, in the steady state (wallet connected, no gate, session active, `?links=` off):
+ * eleven paragraphs before, three after — `autoDeploy.status`, the one-sentence stop distinction,
+ * and, only while something is actually disabled, the sentence saying why.
+ */
 function WalletTenant() {
   const { wallet, session, sim, toasts, gate } = useArena();
   const [amount, setAmount] = useState(50);
@@ -637,22 +751,30 @@ function WalletTenant() {
                 </button>
               )}
             </div>
-            <p className="lede" style={{ marginTop: 12, fontSize: 12 }}>
-              {/* IT USED TO ASSERT A NEGATIVE THAT THE BUTTON EIGHT LINES BELOW DISPROVES: "this page
-                  never asks it for anything else". Starting a session signs a transfer of 0.02 SOL
-                  out of the wallet and into the session key (`SESSION_TOP_UP_LAMPORTS`) — twenty
-                  times a typical fee, and a transfer rather than a fee. Naming it is cheap; the
-                  alternative was the same class of claim this codebase refuses everywhere else.
+            {/* WHAT THIS WALLET IS EVER ASKED FOR — kept in full, and closed.
+                Nothing in it is actionable: it is a standing description of what the page will and
+                will not do with a key that is already connected, true whether or not it is read, and
+                unchanged by anything the reader might press. Under this rail's rule that is exactly
+                the shape that goes behind a summary, and the summary is the question it answers.
 
-                  IT ALSO USED TO SAY "once an hour at most", WHICH WAS A DURATION STATED AS A FACT.
-                  How often that top-up is asked for is exactly how long a session lasts, which is a
-                  private const this workstream does not own and which has already moved (see
-                  `spanOfMinutes`). The honest and change-proof form is the RULE — once per session,
-                  and only when there isn't one — which stays true at every length. */}
-              {burner
-                ? "Devnet only. This key is generated in your browser and pays the fees for your own entries."
-                : `Devnet only. Your wallet pays the devnet fees for your own entries. The only other thing it is ever asked for is ${ASSUMED_SESSION_TOP_UP_SOL} SOL to fund a play session key — once per session, and only when there isn't one — and revoking a session sends the unspent part back.`}
-            </p>
+                IT USED TO ASSERT A NEGATIVE THAT THE BUTTON EIGHT LINES BELOW DISPROVES: "this page
+                never asks it for anything else". Starting a session signs a transfer of 0.02 SOL
+                out of the wallet and into the session key (`SESSION_TOP_UP_LAMPORTS`) — twenty
+                times a typical fee, and a transfer rather than a fee. Naming it is cheap; the
+                alternative was the same class of claim this codebase refuses everywhere else.
+
+                IT ALSO USED TO SAY "once an hour at most", WHICH WAS A DURATION STATED AS A FACT.
+                How often that top-up is asked for is exactly how long a session lasts, which is a
+                private const this workstream does not own and which has already moved (see
+                `spanOfMinutes`). The honest and change-proof form is the RULE — once per session,
+                and only when there isn't one — which stays true at every length. */}
+            <Disclosure summary="What this wallet pays for">
+              <p className="lede">
+                {burner
+                  ? "Devnet only. This key is generated in your browser and pays the fees for your own entries."
+                  : `Devnet only. Your wallet pays the devnet fees for your own entries. The only other thing it is ever asked for is ${ASSUMED_SESSION_TOP_UP_SOL} SOL to fund a play session key — once per session, and only when there isn't one — and revoking a session sends the unspent part back.`}
+              </p>
+            </Disclosure>
           </>
         ) : null}
 
@@ -671,11 +793,6 @@ function WalletTenant() {
           for the one who wants to see what is signing for them. */}
       <Block title="Play session">
         <Fact name="Status">{sessionStatus(session.plan)}</Fact>
-        {session.active ? (
-          <p className="lede" style={{ marginTop: 10, fontSize: 12 }}>
-            {sessionAge(session.life)}
-          </p>
-        ) : null}
         {session.error ? (
           <p className="key" style={{ color: "var(--hot)", margin: "10px 0 0" }}>
             {session.error}
@@ -722,13 +839,29 @@ function WalletTenant() {
             Can&apos;t start one yet — {gate.short}.
           </p>
         ) : null}
-        {/* FROM THE PLAN, exactly like the Status row four lines above it. Branching on `auto` alone
-            put "the first move you make opens it" under a status line reading NOT NEEDED — THE
-            BURNER KEY SIGNS SILENTLY, and under NOT USED IN FIXTURE MODE, and under NEEDS ABOUT
-            0.021 SOL. One input, one story. */}
-        <p className="lede" style={{ marginTop: 12, fontSize: 12 }}>
-          {sessionPanelNote(session.plan)}
-        </p>
+        {/* FROM THE PLAN, exactly like the Status row above it. Branching on `auto` alone put "the
+            first move you make opens it" under a status line reading NOT NEEDED — THE BURNER KEY
+            SIGNS SILENTLY, and under NOT USED IN FIXTURE MODE, and under NEEDS ABOUT 0.021 SOL. One
+            input, one story.
+
+            CLOSED, AND THE `Status` ROW IS WHY IT CAN BE. Every actionable word in `sessionPanelNote`
+            is already in the Fact row above it in the form a glance can take: `NEEDS ABOUT 0.021 SOL`
+            is the whole of the unaffordable branch's instruction, `STOPPED` and `OPENS ON YOUR NEXT
+            MOVE` are the whole of theirs. What the paragraph adds is the ARGUMENT — why a session key
+            exists, what it costs to open, and why a wallet popup mid-extract costs you the round —
+            which is worth having and is not worth having unasked, four times a visit, in the column
+            an operator called a mess.
+
+            `sessionAge` MOVED IN HERE TOO, and it belongs beside this rather than above it. Both
+            answer "what is signing for me, and for how long", it is an INFERENCE from a mirrored
+            constant rather than a deadline (see the function), and its own copy says outright that a
+            lapsed session needs nothing from the reader — "you do not have to do anything" is the
+            definition of a line that does not need to be open. It renders only with a session in
+            hand, exactly as it did. */}
+        <Disclosure summary="What a play session is signing for you">
+          {session.active ? <p className="lede">{sessionAge(session.life)}</p> : null}
+          <p className="lede">{sessionPanelNote(session.plan)}</p>
+        </Disclosure>
       </Block>
 
       {/* DIRECTLY UNDER THE SESSION, and above the money. The session is what makes unattended play
@@ -745,11 +878,21 @@ function WalletTenant() {
             {simUsd(sim.ledger.balances[k])}
           </Fact>
         ))}
-        <p className="lede" style={{ marginTop: 12, fontSize: 12 }}>
-          The arena program custodies no tokens: there are no deposits, no withdrawals and no house
-          balance on chain. These are localStorage numbers modelling the original game's cashier, and
-          they buy nothing.
-        </p>
+        {/* CLOSED, AND THE `sim` MARKER IN THE BLOCK HEAD IS WHY. The paragraph is a custody claim
+            and stays in full — "the arena program custodies no tokens" is the fact the whole `sim`
+            vocabulary exists to carry, and SPEC forbids a money-shaped figure without it. But the
+            marker is ALREADY BESIDE THE HEADING, in the same glyph this page uses on every simulated
+            figure it prints, and the three rows under it are the least surprising numbers in the
+            rail. Restating the marker in forty words, permanently, under three balances that nobody
+            can spend is precisely the kind of paragraph the operator was looking at. The summary
+            names what is inside, and the marker keeps doing what it has always done at a glance. */}
+        <Disclosure summary="What these balances are">
+          <p className="lede">
+            The arena program custodies no tokens: there are no deposits, no withdrawals and no house
+            balance on chain. These are localStorage numbers modelling the original game&apos;s
+            cashier, and they buy nothing.
+          </p>
+        </Disclosure>
       </Block>
 
       <Block title="Simulated cashier" tools={<Tag kind="sim" />}>
@@ -847,6 +990,9 @@ function FighterTenant({ wallet }: { wallet: string }) {
   const prov = source === "chain" ? "live" : "fixture";
   const f = live?.fighters.find((x) => x.wallet === wallet) ?? null;
   const record = standings.find((s) => s.wallet === wallet) ?? null;
+  // READ, NEVER WAITED ON — `useLinks.ts`'s standing rule. The inspector opens and fills immediately;
+  // an identity, where there is one, arrives when the feed does.
+  const { map } = useLinks();
 
   if (!f && !record) {
     return (
@@ -856,6 +1002,11 @@ function FighterTenant({ wallet }: { wallet: string }) {
     );
   }
 
+  // One of the two is non-null: the early return above is the case where neither is. The final
+  // fallback is unreachable and exists because that is a fact about control flow the compiler cannot
+  // see; it is `shortKey` rather than a literal so an unreachable branch cannot render as a lie.
+  const short = f?.short ?? record?.short ?? shortKey(wallet);
+
   const pnl = f ? worth(f) - f.stake : null;
   const status = f ? (f.dead ? (f.banked > 0n ? "OUT — BANKED" : "DEAD") : "ALIVE") : "NOT IN THIS ROUND";
 
@@ -863,7 +1014,17 @@ function FighterTenant({ wallet }: { wallet: string }) {
     <>
       <div className="line" style={{ gap: 8, marginBottom: 4 }}>
         {f ? <Mark side={f.side} dead={f.dead} /> : null}
-        <span className="h">{f?.name ?? record?.name ?? "—"}</span>
+        {/* THE HEADING IS THE PANEL'S ONE IDENTITY SLOT, so an unlinked fighter is named here by
+            their truncated address rather than by nothing — a titleless panel reads as a panel that
+            failed to load. The full key on the line below is not a duplicate of it: this is the
+            LABEL, at heading weight, and that is the checkable fact, at key weight, which is the
+            same pairing `.h` and `.key` have everywhere else on this rail.
+
+            `"beside"`, because `· you` is printed immediately to the right — so a linked reader sees
+            their own `@handle` here, exactly as they do on the leaderboards. See `namePlate.ts`. */}
+        <span className="h sr-who">
+          {plateText(namePlate(map, wallet, f?.isYou === true ? "beside" : "unmarked"), short)}
+        </span>
         {f?.isYou ? <span className="u u--ink">· you</span> : null}
       </div>
       <p className="key" style={{ margin: "0 0 4px" }}>

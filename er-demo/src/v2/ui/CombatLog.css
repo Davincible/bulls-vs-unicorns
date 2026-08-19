@@ -27,7 +27,12 @@
 .hitrow { grid-template-columns: 46px 1fr 1fr 72px; }
 
 /* IN THE RAIL, THE STEP GOES. The rail is 420px with 20px of gutter either side, and four tracks
-   plus three 12px gaps leaves the two names ~120px each — enough for `KESTREL_12` and nothing more.
+   plus three 12px gaps leaves the two names ~120px each — which was measured against `KESTREL_12`,
+   the wallet-derived pseudonym every fighter used to carry, and was enough for that and nothing more.
+   There is no such name any more (`data/namePlate.ts`): a name track now holds `YOU`, an `@handle`, or
+   the nine glyphs of a truncated address. The address is the common case and is shorter than the
+   string this budget was cut for, so the rule is safe as it stands; a full-length handle is the case
+   that could exceed it, and it is the one to measure against before these tracks are narrowed.
    The step number is a position in a replay: useful on the arena screen beside a clock that is also
    counting steps, and meaningless in a panel that shows no clock. `display: none` rather than a
    narrower track, because a 20px step column is a number nobody can read taking width from two

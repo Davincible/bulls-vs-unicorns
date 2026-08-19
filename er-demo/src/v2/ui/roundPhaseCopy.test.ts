@@ -37,7 +37,6 @@ function fighter(over: Partial<FighterView> = {}): FighterView {
     id: 0,
     wallet: "w0",
     short: "w0",
-    name: "W0",
     side: 0,
     stake: 1_000_000n,
     hp: 1_000_000n,

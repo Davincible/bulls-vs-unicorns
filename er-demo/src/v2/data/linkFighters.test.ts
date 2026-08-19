@@ -30,7 +30,7 @@
 
 import { describe, expect, it } from "vitest";
 import { sha256 } from "@noble/hashes/sha256";
-import { nameFor, shortKey, type FighterView, type LiveRound, type Side } from "../contract.ts";
+import { shortKey, type FighterView, type LiveRound, type Side } from "../contract.ts";
 import { linkFor, markLinkedFighters, withLinks } from "./linkFighters.ts";
 import { avatarPathFor, linkMapFrom, NO_LINKS, type LinkMap } from "./xLink.ts";
 import { attestationKeyFrom, signAttestation } from "./xLinkSign.ts";
@@ -127,7 +127,6 @@ function fighterAt(id: number, w: string, over: Partial<FighterView> = {}): Figh
     id,
     wallet: w,
     short: shortKey(w),
-    name: nameFor(w),
     side: (id % 2) as Side,
     stake: 100n,
     hp: 100n,

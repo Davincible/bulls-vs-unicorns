@@ -5,6 +5,10 @@
 import { SIDE_TOKEN, finalCursor, usdCompactSigned, type ViewId } from "../contract.ts";
 import type { PlayBlock } from "../data/playGate.ts";
 import { useArena } from "../data/useArena.ts";
+import { useLinks } from "../data/useLinks.ts";
+import { namePlate, plateText } from "../data/namePlate.ts";
+import { CONNECTING_LABEL } from "./ConnectPanel.tsx";
+import { headerWalletAction } from "./headerWalletAction.ts";
 import { RoundClockSlot } from "./RoundClockSlot.tsx";
 import { useShell } from "./shell.ts";
 import { TokenIcon } from "./TokenIcon.tsx";
@@ -25,6 +29,9 @@ const NAV: { id: ViewId; index: string; label: string }[] = [
  *  hears the list once. */
 function WinsTicker() {
   const { bigWins } = useArena();
+  // READ, NEVER WAITED ON — `useLinks.ts`'s standing rule. The marquee runs while the identity feed
+  // is outstanding; every winner in it is simply unlinked until it lands.
+  const { map } = useLinks();
   const items = bigWins.slice(0, 24);
 
   if (items.length === 0) {
@@ -45,7 +52,16 @@ function WinsTicker() {
     >
       {items.map((w, i) => (
         <span key={`${dup ? "d" : "o"}-${i}`}>
-          <TokenIcon token={SIDE_TOKEN[w.side]} /> {w.name}{" "}
+          {/* THE ADDRESS TAKES THE SLOT THE PSEUDONYM HAD. Unlike the boards, a marquee entry has no
+              second cell to put a key in — it is one line of a looping strip — so an unlinked winner
+              is named by their truncated address right here rather than by nothing.
+
+              `"unmarked"`, ALWAYS, even for the reader's own win. This strip has never distinguished
+              the reader's rows and `BigWin` carries no `isYou` to distinguish them with; passing a
+              cue it cannot honour would be inventing a fact rather than reading one. See
+              `namePlate.ts`'s `YouCue`, whose first case exists for exactly this surface. */}
+          <TokenIcon token={SIDE_TOKEN[w.side]} />{" "}
+          <span className="tick-who">{plateText(namePlate(map, w.wallet, "unmarked"), w.short)}</span>{" "}
           {/* The marquee is a one-line strip repeated 24-wide and looping — the widest surface on
               the page for this kind of overflow risk, and the one furthest from any table where a
               reader could ask for the exact figure anyway. `usdCompactSigned` also retires the
@@ -85,6 +101,69 @@ function StepBlocks({ steps, fighterCount }: { steps: number; fighterCount: numb
   );
 }
 
+/**
+ * THE HEADER'S WALLET CELL, WHICH IS NOW A CONTROL.
+ *
+ * THE FAULT, verbatim: "Wallet not connected at the top in the header should be clickable, it should
+ * connect the wallet". It was a `<span>` — the one cell on the page that never scrolls away, naming
+ * the one thing standing between a visitor and playing, inert.
+ *
+ * IT ROUTES, IT DOES NOT DUPLICATE. `headerWalletAction` decides which of two things a press does,
+ * and the reasoning for the split is written there. The short version: `connect` is the only cta
+ * kind a single press finishes, so it is the only one this strip performs; everything else opens the
+ * rail, where `ConnectCta` — the page's one renderer of a `PlayBlockCta` — is already waiting with a
+ * destination or an explanation. There is no second copy of the connect flow anywhere in this file.
+ *
+ * THE PRINTED TEXT DOES NOT GROW. "Wallet NOT CONNECTED" is what the cell said and what it still
+ * says; the bar is 30px of instrument chrome and every character here is taken off the ticker beside
+ * it. The verb lives in the accessible name instead, which is where WCAG 2.5.3 wants it anyway: the
+ * name CONTAINS the visible text and adds what pressing it does. Voice control ("click wallet not
+ * connected") therefore still reaches it.
+ *
+ * IT IS NEVER DISABLED, INCLUDING WHILE A CONNECT IS IN FLIGHT. `ConnectCta` shuts its own button
+ * then, because pressing it again would be a second `connect()` against an adapter that ignores it.
+ * This one has somewhere useful to go in that state — the rail, which explains the wait and offers
+ * the reload once it has gone on too long — so shutting it would remove the only thing a stuck
+ * reader can press. It says `CONNECTING_LABEL`, which is `ConnectPanel`'s own word for the state
+ * rather than a second vocabulary for it.
+ */
+function HeaderWalletCell() {
+  const { wallet, gate } = useArena();
+  const { setRail } = useShell();
+  const connecting = wallet.status === "connecting";
+  // The gate's own cta, or nothing — `gate` is null once the player can act, and `connecting` and
+  // `no-program` carry no cta at all. Both reach the verdict as `undefined`/`null` and both mean the
+  // same thing to it.
+  const action = headerWalletAction(gate?.cta);
+  const state = connecting ? CONNECTING_LABEL : "NOT CONNECTED";
+
+  return (
+    <button
+      type="button"
+      className="cbtn nowrap chrome-wallet"
+      data-testid="chrome-top-wallet-btn"
+      // NO `aria-expanded`, DELIBERATELY, EVEN THOUGH ONE VERDICT OPENS A PANEL. The bottom bar's
+      // wallet button is the rail's disclosure and carries the attribute honestly, because it
+      // TOGGLES. This one does not: it always lands the reader on the wallet panel, which is the
+      // right behaviour for a cell whose job is "take me to my wallet" and the wrong behaviour for
+      // something advertising itself as expandable — `aria-expanded="true"` on a control that will
+      // not collapse it is a promise the press does not keep. Two verdicts, one attribute, and no
+      // reading of it that is true in both: so it is a plain command button in both.
+      aria-label={
+        action === "connect"
+          ? `Wallet ${state} — connect your wallet`
+          : `Wallet ${state} — open the wallet panel`
+      }
+      onClick={() => {
+        if (action === "connect") void wallet.connect();
+        else setRail({ kind: "wallet" });
+      }}
+    >
+      <span className="u">Wallet</span> <b>{state}</b>
+    </button>
+  );
+}
+
 export function TopChrome() {
   const { live, status, session, wallet } = useArena();
 
@@ -114,16 +193,24 @@ export function TopChrome() {
       {/* THREE DASHES ARE NOT A STATE. With no wallet connected these cells read `— / — / OFF`,
           which is what a bar full of figures that failed to load looks like — and this strip's whole
           job is to be the thing a player does not have to hunt for. An absent wallet is one fact, so
-          it is one cell, and it says the fact rather than leaving three blanks to be interpreted. */}
+          it is one cell, and it says the fact rather than leaving three blanks to be interpreted.
+
+          EACH CELL NOW CARRIES ITS OWN CLASS, which is a correction rather than a decoration. The
+          narrow block in shell.css hid these by POSITION (`:nth-child(-n + 3)`) — a rule written for
+          the connected state's five children, which on the disconnected state's ONE child hid that
+          child too. It happened to land on the right answer (a phone reads the wallet from the
+          bottom bar, where the button is already the inverted call to action), but by accident, and
+          the accident was about to start governing the visibility of a CONTROL. Named cells make
+          each of those four decisions say what it is. */}
       <div className="chrome-right">
         {wallet.status === "connected" ? (
           <>
-            <span className="nowrap">
+            <span className="nowrap chrome-sol">
               <span className="u">Sol</span>{" "}
               <b>{wallet.solBalance === null ? "—" : wallet.solBalance.toFixed(3)}</b>
             </span>
             <span className="chrome-sep">/</span>
-            <span className="nowrap">
+            <span className="nowrap chrome-key">
               <span className="u">Key</span> <b>{wallet.short}</b>
             </span>
             <span className="chrome-sep">/</span>
@@ -132,9 +219,7 @@ export function TopChrome() {
             </span>
           </>
         ) : (
-          <span className="nowrap">
-            <span className="u">Wallet</span> <b>NOT CONNECTED</b>
-          </span>
+          <HeaderWalletCell />
         )}
       </div>
     </header>

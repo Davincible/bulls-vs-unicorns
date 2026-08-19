@@ -68,9 +68,9 @@ describe("the live fixture round", () => {
     for (const step of [0, 50, 200, 600, 1_200, 2_600, finalCursor(MOCK_FIGHTER_SEEDS.length)]) {
       const now = mockFightersAt(step);
       for (const f of now) {
-        expect(f.hp, `${f.name} hp at ${step}`).toBeGreaterThanOrEqual(0n);
-        expect(f.banked, `${f.name} banked at ${step}`).toBeGreaterThanOrEqual(0n);
-        if (f.dead) expect(f.hp, `${f.name} dead but holding ring at ${step}`).toBe(0n);
+        expect(f.hp, `${f.short} hp at ${step}`).toBeGreaterThanOrEqual(0n);
+        expect(f.banked, `${f.short} banked at ${step}`).toBeGreaterThanOrEqual(0n);
+        if (f.dead) expect(f.hp, `${f.short} dead but holding ring at ${step}`).toBe(0n);
       }
       // Death is monotonic: `advance_fight` sets `dead` and nothing clears it.
       const deadNow = new Set(now.filter((f) => f.dead).map((f) => f.wallet));
@@ -164,8 +164,8 @@ describe("the fixture's past rounds", () => {
   it("reports P/L as `final - stake` on every row, and death as exactly `final === 0`", () => {
     for (const round of MOCK_HISTORY) {
       for (const p of round.players) {
-        expect(p.pnl, `${p.name} in round ${round.roundNo}`).toBe(p.final - p.stake);
-        expect(p.dead, `${p.name} in round ${round.roundNo}`).toBe(p.final === 0n);
+        expect(p.pnl, `${p.short} in round ${round.roundNo}`).toBe(p.final - p.stake);
+        expect(p.dead, `${p.short} in round ${round.roundNo}`).toBe(p.final === 0n);
         expect(p.stake).toBeGreaterThan(0n);
         expect(p.final).toBeGreaterThanOrEqual(0n);
       }

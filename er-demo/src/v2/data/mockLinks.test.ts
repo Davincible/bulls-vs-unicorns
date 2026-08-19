@@ -232,9 +232,15 @@ describe("assignMockIdentities", () => {
 
   it("produces a genuine mix — not everybody, not nobody", () => {
     // §8.3: "the mix is where a row layout that silently assumed an avatar column falls apart", and a
-    // rate of 1 (everybody) or 20 (nobody) would quietly stop producing the one board worth
-    // reviewing. The band is deliberately wide because the hash is `contract.ts#nameFor`'s and may
+    // stride of 1 (everybody) or 60 (nobody) would quietly stop producing the one board worth
+    // reviewing. The band is deliberately wide because `MOCK_LINK_STRIDE` is a review knob and may
     // legitimately change; what must not change is that both kinds of fighter are on screen.
+    //
+    // IT USED TO SAY THE BAND WAS WIDE BECAUSE "the hash is `contract.ts#nameFor`'s", which was
+    // wrong twice over and is corrected rather than deleted so the next reader does not re-derive
+    // it. The selection has not been a hash since `MOCK_LINK_STRIDE` replaced `hash32(wallet) % 3`
+    // (see `mockLinks.ts` — a hash filter approximated its rate and picked nobody at nine fighters),
+    // and it was never `nameFor`'s hash even when it was one. `nameFor` is now deleted outright.
     const wallets = roster(60);
     const pool = identities(60);
     const assigned = assignMockIdentities(pool, wallets, null);

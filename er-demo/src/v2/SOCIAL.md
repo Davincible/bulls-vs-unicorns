@@ -291,6 +291,14 @@ filling a hole**. Every unlinked state already exists, is already designed, and 
 | Table name column | 16px square `TokenIcon` for the side | 16px square avatar |
 | No side in context (all-time standings) | lettered mark in `--ink-3`, `TokenIcon`'s own `tico--letter` pattern | 16px square avatar |
 
+> **2026-08-19 — the "Name anywhere" row is superseded.** `nameFor(wallet)` is deleted and there is
+> no pseudonym on this page. Unlinked, the name slot holds **nothing at all** — no placeholder, no
+> "Anonymous", no dash — and the truncated address already on the row is what identifies it. Linked
+> is unchanged: the `@handle`. The rule deciding it is linked versus unlinked and nothing else,
+> applied identically to every wallet on the page (`data/namePlate.ts`). The section's argument is
+> untouched and reads more strongly for it: a handle, like an avatar, replaces something rather than
+> filling a hole.
+
 A board of fourteen coins and two faces does not read as broken. It reads as *two people I recognise
 in a crowd*, which is the exact emotion this feature is for. The coin faces are not a placeholder for
 avatars; they are the house style, and an avatar is a person stepping out of it.
@@ -389,6 +397,18 @@ goes completely or it lies. So the arena's own fighters now render as every unli
 — the side's coin, circle-clipped, and a `nameFor()` pseudonym — which asserts nothing about anybody,
 and is the honest state rather than a degraded one.
 
+> **2026-08-19 — what "the unlinked rendering" now is, twice in this section.** Both the fail-closed
+> paragraph above and the paragraph directly over this note describe it as including a `nameFor()`
+> pseudonym. `nameFor()` is deleted: the unlinked rendering is the flat side-coloured disc and the
+> truncated address, with no username in it at all. Nothing in either argument moves. A worker that
+> has never read the roster, a link withheld by either guard, and a player who simply never linked
+> still all land on the same rendering, it is still what the great majority of the board shows, and it
+> still asserts nothing about anybody. **The rule producing it is linked versus unlinked**, read off
+> the link map alone and applied identically to every wallet (`data/namePlate.ts`, and
+> `data/linkFighters.ts` for why the module takes a wallet and nothing else). It is not a rule about
+> which wallets are the arena's own and must never be written down as one — the browser has no such
+> list to apply, which is the whole of this section.
+
 **Be honest about what is left.** Both guards run on the keeper's own account of which wallets are
 its own. That was always the ceiling — `keeperStatus.ts` used to call it "disclosure on the keeper's
 word" — and what changed is only that the word is now handed to our API over a channel the browser
@@ -481,6 +501,25 @@ connect.
 This is the link-rate lever, and link rate is the multiplier on everything above. Ship it in the same
 release as identity, not after.
 
+> **2026-08-19 — the collision argument's premise is gone; the section's conclusion is not.**
+> `nameFor()` is deleted, so "unlinked players are `KESTREL_42`" no longer describes anything, and the
+> arithmetic this section leans on — 40 heads × 97 suffixes = 3,880 possible names, therefore
+> collisions — has nothing left to count. **That premise is invalid, not merely stale.** There is no
+> pseudonym to collide with: an unlinked row shows no username at all, and the truncated address on it
+> is what identifies it.
+>
+> The conclusion survives, on plainer grounds and rather more forcefully. It was "a handle is the only
+> name on this page that is actually unique"; it is now that **a handle is the only name on this page
+> at all** — the heading above turns out to be literally true rather than comparatively so. What an
+> unlinked player has is an address: unique in full, checkable, and not a name. So the thing worth
+> saying to a player is no longer "your pseudonym may be somebody else's too" but "you have no name
+> here until you link one", which needs no arithmetic to defend.
+>
+> One correction to carry with it: the truncated form is a display of the wallet, not a proof of
+> distinctness — the full key underneath it is the unique thing, and it is what every surface holds.
+> The rule deciding all of this is linked versus unlinked, applied identically to every wallet on the
+> page (`data/namePlate.ts`).
+
 --- **build the four above before anything below** ---
 
 ### 3.5 — The rivalry receipt. *High retention, low virality, medium cost.*
@@ -559,6 +598,13 @@ stay put). The all-time tab's retention-window caption is unaffected and stays.
   (§2.7), and a *stated* exclusion would be worse than none: "the arena's own fighters are not shown
   here" is a count of them by subtraction, which is the disclosure we removed arriving through a
   caption. A rival with no link is a `nameFor()` pseudonym, exactly as everywhere else on the page.
+
+> **2026-08-19.** The last sentence is superseded in its detail and strengthened in its point.
+> Pseudonyms are deleted: a rival with no link shows no username at all, and the truncated address in
+> the row is what identifies them. "Exactly as everywhere else on the page" is the load-bearing half
+> and it holds more strictly than before — the slot is decided from the link map alone, identically
+> for every wallet (`data/namePlate.ts`), so this ledger still says nothing about which counterparties
+> are people and still has nothing to say it with.
 
 ### 4.4 — 03 REFERRALS
 

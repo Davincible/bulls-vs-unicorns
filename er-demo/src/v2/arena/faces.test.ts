@@ -259,7 +259,7 @@ function body(over: Partial<ArenaBody> = {}): ArenaBody {
     id: 0,
     wallet: "w0",
     side: 0,
-    name: "KITE_01",
+    short: "w0",
     isYou: false,
     avatarSrc: null,
     stake: 1_000_000n,

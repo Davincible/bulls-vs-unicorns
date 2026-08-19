@@ -1,0 +1,81 @@
+/* Disclosure — layout only, and deliberately almost nothing. base.css's header is the law: no
+   radius, no shadow, no fill, no colour outside the two sides. A disclosure that drew a box would be
+   a card, and the design forbids cards; what marks it out is the bracket in front of it and the
+   indent behind it, both of which the page already uses elsewhere. */
+
+.disc {
+  /* Owns the gap ABOVE it, like `.xl` and `.blk` do — whatever it follows in the rail has no bottom
+     margin to spare. */
+  margin: 12px 0 0;
+}
+
+/* The handle. `.u` (10px tracked mono, `--ink-3`, 4.54:1 on paper) supplies the type; this supplies
+   the box and the affordance.
+
+   THE SUMMARY IS LEFT AS A `list-item` AND THE MARKER IS SWITCHED OFF, rather than being taken to
+   `display: flex` — which is the tidier way to write this and the one with a history. WebKit tied a
+   `<summary>`'s toggling to its default display for years (bug 190065, fixed in Safari 15.4), and a
+   disclosure that silently stops opening on one engine is the worst possible failure for a component
+   whose entire job is holding paragraphs a reader is entitled to. `list-style: none` clears the
+   marker in Blink and Gecko, the `-webkit-` pseudo below clears it in Safari, and nothing here
+   changes what kind of box a `<summary>` is. The bracket is an inline `::before`, which is all the
+   layout a one-line label needs. */
+.disc > .disc-s {
+  list-style: none;
+  cursor: pointer;
+  padding: 4px 0;
+  /* base.css's floor for a pressable target (WCAG 2.2 SC 2.5.8), the same one `.rail-x` takes. A
+     10px line of type with 4px either side is 18px on its own. */
+  min-height: 24px;
+  box-sizing: border-box;
+}
+.disc > .disc-s::-webkit-details-marker {
+  display: none;
+}
+
+/* THE STATE, AS A SHAPE. `+` and `-` differ in form, not in colour — the page's own rule, and the
+   reason this is not a rotating chevron either: a transform says nothing to a reader who has
+   `prefers-reduced-motion` on and nothing at all to one who is not looking at the page. */
+.disc > .disc-s::before {
+  content: "[+]";
+  margin-right: 8px;
+}
+.disc[open] > .disc-s::before {
+  content: "[-]";
+}
+
+/* The hover state has to be visible without being a second colour: the whole label steps from
+   `--ink-3` to full ink, which is the same "quiet thing wakes up" move `.rail-x:hover` makes. */
+.disc > .disc-s:hover {
+  color: var(--ink);
+}
+
+/* The body. Indented past the bracket so an open disclosure reads as belonging to its summary rather
+   than as the next paragraph in the block — the one thing that has to be visually true of it, since
+   an open `<details>` is otherwise indistinguishable from the wall it was built to replace.
+
+   20px IS THE BRACKET, MEASURED IN ITS OWN FACE AND THEN FIXED. `[+]` is three glyphs of `.u`'s
+   10px mono plus its 0.14em tracking — about 22px with the margin. It is NOT written as `3ch`,
+   because `ch` here would resolve against `.disc-b`'s 12px sans rather than the summary's 10px mono
+   and would drift every time either size moved. A round number that is deliberately a shade under
+   the bracket is better than a computed one measured off the wrong font. */
+.disc-b {
+  margin: 8px 0 2px;
+  padding-left: 20px;
+}
+
+/* `.lede` sets `margin: 0` and lives in base.css, which Vite emits after this file (main.tsx pulls
+   App.tsx, and therefore every component stylesheet, before `styles/base.css`) — so a single-class
+   rule here would lose the tie at equal specificity and every paragraph in an open disclosure would
+   collapse onto the one above it. `.disc-b > p` outranks `.lede` outright, which is the fix rather
+   than an `!important` or an import order the next module would undo. Same trap, same answer, as
+   `.xl .xl-note` and `.cx .cx-net`. */
+.disc-b > p {
+  margin: 0 0 8px;
+  /* The rail's paragraph size. It was an inline `fontSize: 12` on every `<p>` in SideRail.tsx; the
+     ones that moved in here get it from the stylesheet instead. */
+  font-size: 12px;
+}
+.disc-b > p:last-child {
+  margin-bottom: 0;
+}

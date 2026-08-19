@@ -18,14 +18,23 @@
 
 import { SIDE_TOKEN, usdCompact, type CombatEvent } from "../contract.ts";
 import { useArena } from "../data/useArena.ts";
+import { useLinks } from "../data/useLinks.ts";
+import { namePlate, plateText } from "../data/namePlate.ts";
+import type { LinkMap } from "../data/xLink.ts";
 import { Empty, Mark } from "./primitives.tsx";
 import "./CombatLog.css";
 
-/** A name as this reader should see it. `YOU` rather than the pseudonym, exactly as the rosters and
+/** A name as this reader should see it. `YOU` in place of the identity, exactly as the rosters and
  *  the standings already do — a player scanning for their own row should find the same word in every
- *  table on the page. */
-function who(f: CombatEvent["attacker"]): string {
-  return f.isYou ? "YOU" : f.name;
+ *  table on the page.
+ *
+ *  THIS TABLE IS ONE OF THE SURFACES WHERE THE NAME SLOT IS THE ONLY THING THAT COULD SAY SO, which
+ *  is `data/namePlate.ts`'s `"name-slot"` cue and why `YOU` outranks a handle here and not on the
+ *  leaderboards. Everybody else is their `@handle` where they have proved one and their truncated
+ *  address where they have not — there is no invented name on this page any more, in this cell or in
+ *  any other. */
+function who(f: CombatEvent["attacker"], links: LinkMap): string {
+  return plateText(namePlate(links, f.wallet, f.isYou ? "name-slot" : "unmarked"), f.short);
 }
 
 export function CombatLog({
@@ -38,6 +47,9 @@ export function CombatLog({
   limit: number;
 }) {
   const { live, combat } = useArena();
+  // READ, NEVER WAITED ON — `useLinks.ts`'s standing rule. The log narrates the fight in full while
+  // the identity feed is outstanding; every fighter in it is simply unlinked until it lands.
+  const { map } = useLinks();
 
   const phase = live?.phase ?? null;
   // `combat.recent` is ascending by step, which is the order the fight happened in. The filter is
@@ -87,16 +99,16 @@ export function CombatLog({
           // The exact figure, and the pair, on the row — `usdCompact` rounds and a late-fight
           // exchange is often under a cent, so the cell alone cannot always be checked against
           // anything. Same discipline as every other compacted figure on this page.
-          title={`Step ${e.step.toLocaleString("en-US")} — ${who(e.attacker)} (${SIDE_TOKEN[e.attacker.side].name}) took ${usdCompact(e.amount)} off ${who(e.defender)} (${SIDE_TOKEN[e.defender.side].name})`}
+          title={`Step ${e.step.toLocaleString("en-US")} — ${who(e.attacker, map)} (${SIDE_TOKEN[e.attacker.side].name}) took ${usdCompact(e.amount)} off ${who(e.defender, map)} (${SIDE_TOKEN[e.defender.side].name})`}
         >
           <span className="idx">{e.step.toLocaleString("en-US")}</span>
           <span className="line" style={{ gap: 7, minWidth: 0 }}>
             <Mark side={e.attacker.side} label={SIDE_TOKEN[e.attacker.side].name} />
-            <span className="trunc">{who(e.attacker)}</span>
+            <span className="trunc">{who(e.attacker, map)}</span>
           </span>
           <span className="line" style={{ gap: 7, minWidth: 0 }}>
             <Mark side={e.defender.side} label={SIDE_TOKEN[e.defender.side].name} />
-            <span className="trunc">{who(e.defender)}</span>
+            <span className="trunc">{who(e.defender, map)}</span>
           </span>
           <span className="num r">{usdCompact(e.amount)}</span>
         </div>

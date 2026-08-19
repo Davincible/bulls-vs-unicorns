@@ -6,7 +6,7 @@
 // being a second, less-maintained fixture that drifts from the first.
 
 import { useCallback, useMemo, useState } from "react";
-import { bpsPct, finalCursor, nameFor, shortKey, sideTotals, usd, type Side } from "../contract.ts";
+import { bpsPct, finalCursor, shortKey, sideTotals, usd, type Side } from "../contract.ts";
 import type { VerifyResult } from "../../ui/verifyRound.ts";
 import type { ArenaContextValue, ToastKind } from "./types.ts";
 import { combatFeed } from "./combatFeed.ts";
@@ -59,10 +59,7 @@ export function useFixtureArena({ active, push, recordDeploy }: FixtureArenaPara
   const { live, hitEvents } = useFixtureRound(active);
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
 
-  const you = useMemo(
-    () => ({ pubkey: MOCK_YOU, short: shortKey(MOCK_YOU), name: nameFor(MOCK_YOU) }),
-    [],
-  );
+  const you = useMemo(() => ({ pubkey: MOCK_YOU, short: shortKey(MOCK_YOU) }), []);
 
   const standings = useMemo(() => deriveStandings(MOCK_HISTORY), []);
   const bigWins = useMemo(() => deriveBigWins(MOCK_HISTORY), []);

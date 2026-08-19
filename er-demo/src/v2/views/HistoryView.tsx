@@ -30,10 +30,15 @@
 //   recorded on the round, not on the fighter, so those columns carry the qualification in their
 //   label instead of a number this page would have had to invent.
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useArena } from "../data/useArena.ts";
+import { useLinks } from "../data/useLinks.ts";
+import { namePlate } from "../data/namePlate.ts";
+import { NameCell } from "./NameCell.tsx";
 import { Empty, Mark, Money, Section, Tag } from "../ui/primitives.tsx";
 import { ScrollBox } from "./ScrollBox.tsx";
+import { ShowMore } from "./ShowMore.tsx";
+import { capRows, ROW_CAP_BOARD, ROW_CAP_NESTED } from "./rowCap.ts";
 import { coverageFigure, coverageNote } from "./coverage.ts";
 import {
   SIDE_TOKEN,
@@ -86,6 +91,32 @@ export function HistoryView() {
     }
     return { staked, back, pnl: back - staked, won };
   }, [mine]);
+
+  // THE TWO CAPS ON THIS SCREEN, both collapsed on arrival. `useId` scopes each control's
+  // `aria-controls` to the table it opens, so this screen can be rendered twice on one page without
+  // the two wiring into each other.
+  //
+  // SORT FIRST, CAP SECOND, at both call sites: `mine` is built newest-first out of `history.rounds`
+  // and `history.rounds` is already newest-first, so each `capRows` is a plain top-N of an order
+  // that was decided before it ran. `rowCap.ts` states why that has to stay a bare prefix.
+  //
+  // WHAT A CAP COSTS, DECIDED HERE. `MyRow` and `RoundRow` each own their disclosure state, so a row
+  // the cap hides is UNMOUNTED and its open/closed state goes with it: open round #41, collapse the
+  // list back over it, expand again, and it returns at `defaultOpen`. Rows INSIDE the cap are never
+  // affected — a reader who opens a row that is on screen and leaves it open finds it open. That is
+  // accepted.
+  //
+  // The alternative was to keep every row mounted and hide the surplus in CSS, which preserves the
+  // state by rendering all 250 rounds — the length of these lists is the complaint this whole change
+  // answers, and a fix that still builds the list has fixed nothing but the scrollbar. Lifting each
+  // row's `open` into a set held up here also works and was rejected more narrowly: it is a second
+  // source of truth for a fact one row owns, and it grows a memory of rows nobody can see.
+  const [mineExpanded, setMineExpanded] = useState(false);
+  const mineRowsId = useId();
+  const [roundsExpanded, setRoundsExpanded] = useState(false);
+  const roundsRowsId = useId();
+  const mineShown = capRows(mine, ROW_CAP_BOARD, mineExpanded);
+  const roundsShown = capRows(history.rounds, ROW_CAP_BOARD, roundsExpanded);
 
   // THE WINDOW THIS SCREEN IS. `logCoverage` knows both what was read back and what the arena has
   // actually opened, which is the difference between "every round" (a claim) and "the newest 250 of
@@ -157,39 +188,58 @@ export function HistoryView() {
               : "No settled rounds for this wallet yet. Deploy once and the first row lands here when it resolves."}
           </Empty>
         ) : (
-          <div className="rows sc-tbl sc-tbl--mine">
-            <div className="row row--head">
-              <div>Round</div>
-              <div>Side</div>
-              {/* NOT "result": whether your SIDE won and whether YOU made money are different
-                  questions, and this column answers the first one. A row can read "no" beside a
-                  positive P/L, and that is the game working as designed. */}
-              <div title="Did the side you deployed on win the round?">Side won</div>
-              {/* "NET DEPOSIT": `stake` is stored after the entry fee. See the head of this file for
-                  why the gross cannot be given per player. */}
-              <div
-                className="r sc-s"
-                title="What reached the ring — your deposit net of the arena's entry fee, which is charged at the door and never enters the pot"
-              >
-                Net deposit
+          // THE CONTROL GOES UNDER THE WHOLE TABLE, below the total. That row is this table's
+          // closing line and where a reader's eye already stops, so the way past the cap is the next
+          // thing under it rather than something they have to find. Inside `.rows` it would have to
+          // be a row of the grid, and it is not one.
+          <>
+            <div id={mineRowsId} className="rows sc-tbl sc-tbl--mine">
+              <div className="row row--head">
+                <div>Round</div>
+                <div>Side</div>
+                {/* NOT "result": whether your SIDE won and whether YOU made money are different
+                    questions, and this column answers the first one. A row can read "no" beside a
+                    positive P/L, and that is the game working as designed. */}
+                <div title="Did the side you deployed on win the round?">Side won</div>
+                {/* "NET DEPOSIT": `stake` is stored after the entry fee. See the head of this file for
+                    why the gross cannot be given per player. */}
+                <div
+                  className="r sc-s"
+                  title="What reached the ring — your deposit net of the arena's entry fee, which is charged at the door and never enters the pot"
+                >
+                  Net deposit
+                </div>
+                <div className="r sc-s">Got back</div>
+                <div className="r">P/L</div>
+                <div />
               </div>
-              <div className="r sc-s">Got back</div>
-              <div className="r">P/L</div>
-              <div />
+              {mineShown.rows.map((e) => (
+                <MyRow key={e.round.roundNo.toString()} entry={e} />
+              ))}
+              {/* EVERY FIGURE IN THIS ROW COUNTS THE WHOLE LIST, not the rows above it. `totals` is
+                  derived from `mine` and `mine.length` is the length of `mine`, and the cap does not
+                  enter either — a "Total" that quietly meant "the ten rows this page chose to show
+                  you" is the one thing a money screen may never print. The header's `Yours` and the
+                  section's own round count are the same fact from the same source for the same
+                  reason. What is being held back is stated directly below, by the control. */}
+              <div className="row sc-total">
+                <div className="u u--ink">Total</div>
+                <div />
+                <div className="u">{totals.won} of {mine.length}</div>
+                <div className="r sc-s num">{usdCompact(totals.staked)}</div>
+                <div className="r sc-s num">{usdCompact(totals.back)}</div>
+                <div className={`r num ${totals.pnl >= 0n ? "pos" : "neg"}`}>{usdCompactSigned(totals.pnl)}</div>
+                <div />
+              </div>
             </div>
-            {mine.map((e) => (
-              <MyRow key={e.round.roundNo.toString()} entry={e} />
-            ))}
-            <div className="row sc-total">
-              <div className="u u--ink">Total</div>
-              <div />
-              <div className="u">{totals.won} of {mine.length}</div>
-              <div className="r sc-s num">{usdCompact(totals.staked)}</div>
-              <div className="r sc-s num">{usdCompact(totals.back)}</div>
-              <div className={`r num ${totals.pnl >= 0n ? "pos" : "neg"}`}>{usdCompactSigned(totals.pnl)}</div>
-              <div />
-            </div>
-          </div>
+            <ShowMore
+              hidden={mineShown.hidden}
+              expanded={mineExpanded}
+              noun="round"
+              controls={mineRowsId}
+              onToggle={() => setMineExpanded((v) => !v)}
+            />
+          </>
         )}
       </Section>
 
@@ -214,26 +264,46 @@ export function HistoryView() {
           // on "and has nothing focusable inside" would silently retune itself the day someone adds a
           // sort control to a leaderboard or takes the disclosure off a round — a behaviour that
           // moves for reasons unrelated to itself. One rule, one gesture, everywhere `.sc-wrap` is.
-          <ScrollBox label={EVERY_ROUND}>
-            <div className="rows sc-tbl sc-tbl--rnd">
-              <div className="row row--head">
-                <div>Round</div>
-                <div>Winner</div>
-                <div className="r sc-s">Played</div>
-                <div className="r">Pot</div>
-                <div className="r sc-s">Steps</div>
-                <div />
+          //
+          // AND THE CONTROL SITS OUTSIDE THE BOX. `ScrollBox`'s header states the contract that
+          // keeps: a box holds ONE table for its lifetime, because its ResizeObserver is handed
+          // `el.children` once and React never swaps that child out underneath it. A button in there
+          // would be a second observed element — and a way past the cap that you must scroll the
+          // capped box to REACH is not a way past it. Expanding still re-answers the box's own
+          // question for free: the table grows, the observer is already watching that table, so the
+          // tab stop appears or disappears on its own.
+          <>
+            <ScrollBox label={EVERY_ROUND}>
+              <div id={roundsRowsId} className="rows sc-tbl sc-tbl--rnd">
+                <div className="row row--head">
+                  <div>Round</div>
+                  <div>Winner</div>
+                  <div className="r sc-s">Played</div>
+                  <div className="r">Pot</div>
+                  <div className="r sc-s">Steps</div>
+                  <div />
+                </div>
+                {/* `i` INDEXES THE CAPPED LIST, and `defaultOpen={i === 0}` is still right because
+                    of it: a top-N of a newest-first log always keeps index 0, so the round that opens
+                    on arrival is the newest one whether the list is capped or not. */}
+                {roundsShown.rows.map((r, i) => (
+                  <RoundRow
+                    key={r.roundNo.toString()}
+                    round={r}
+                    youKey={you.pubkey}
+                    defaultOpen={i === 0}
+                  />
+                ))}
               </div>
-              {history.rounds.map((r, i) => (
-                <RoundRow
-                  key={r.roundNo.toString()}
-                  round={r}
-                  youKey={you.pubkey}
-                  defaultOpen={i === 0}
-                />
-              ))}
-            </div>
-          </ScrollBox>
+            </ScrollBox>
+            <ShowMore
+              hidden={roundsShown.hidden}
+              expanded={roundsExpanded}
+              noun="round"
+              controls={roundsRowsId}
+              onToggle={() => setRoundsExpanded((v) => !v)}
+            />
+          </>
         )}
       </Section>
     </div>
@@ -384,11 +454,23 @@ function RoundRow({
   defaultOpen: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  // READ, NEVER WAITED ON — `useLinks.ts`'s standing rule. A settled round's player table renders
+  // completely while the identity feed is outstanding; everyone in it is simply unlinked until it
+  // lands, which is the state most of the table is in permanently anyway.
+  const { map } = useLinks();
+  const [fieldExpanded, setFieldExpanded] = useState(false);
+  const fieldId = useId();
   // Best round first, so the row that opens reads as a result rather than as a database dump.
   const players = useMemo(
     () => [...round.players].sort((a, b) => (b.pnl > a.pnl ? 1 : b.pnl < a.pnl ? -1 : 0)),
     [round.players],
   );
+  // THE MEMO SORTS, THIS CAPS ITS OUTPUT, and the memo is left exactly as it was — capping inside it
+  // would tie the sorted list's identity to a piece of view state and rebuild it on every press.
+  // `ROW_CAP_NESTED` rather than the board cap because this table is two levels down but 04-2 opens
+  // its first round on arrival, so its rows are on screen without anyone asking; `rowCap.ts` argues
+  // the number. A plain top-N of the P/L order above, never a reshuffle of who survives the cut.
+  const field = capRows(players, ROW_CAP_NESTED, fieldExpanded);
   return (
     <>
       <button
@@ -443,7 +525,12 @@ function RoundRow({
                   : " in entry fees"}
             </p>
           ) : null}
-          <div className="rows sc-tbl sc-tbl--plr" role="table" aria-label={`Round ${round.roundNo} players`}>
+          <div
+            id={fieldId}
+            className="rows sc-tbl sc-tbl--plr"
+            role="table"
+            aria-label={`Round ${round.roundNo} players`}
+          >
             <div className="row row--head" role="row">
               <div role="columnheader">Fighter</div>
               <div role="columnheader">Side</div>
@@ -461,14 +548,19 @@ function RoundRow({
                 P/L
               </div>
             </div>
-            {players.map((p, i) => (
+            {field.rows.map((p, i) => (
               <div
                 key={`${p.wallet}-${i}`}
                 role="row"
                 className={`row${p.wallet === youKey ? " row--you" : ""}${p.dead ? " row--dead" : ""}`}
               >
                 <div role="cell" className="sc-who" title={p.wallet}>
-                  <span className="sc-who-n">{p.name}</span>
+                  {/* THE SAME THREE-WAY DECISION AS THE LEADERBOARDS, and the same layout, so the
+                      same convention: `"beside"`, because the `you` marker on the next line has
+                      already oriented the reader and `.sc-who-k` on the line after that is already
+                      showing the address. An unlinked player therefore renders NOTHING here rather
+                      than the address a second time. `namePlate.ts` carries the rule. */}
+                  <NameCell plate={namePlate(map, p.wallet, p.wallet === youKey ? "beside" : "unmarked")} />
                   {p.wallet === youKey ? <span className="u u--ink">you</span> : null}
                   <span className="sc-who-k">{p.short}</span>
                 </div>
@@ -490,6 +582,17 @@ function RoundRow({
               </div>
             ))}
           </div>
+          {/* INSIDE `.sc-det`, under the field it opens — this table is not in a `ScrollBox`, so
+              there is no box to sit outside of, and the panel is exactly the scope the control
+              belongs to. `fieldExpanded` lives and dies with this round's disclosure, which is the
+              same lifetime as the table it caps. */}
+          <ShowMore
+            hidden={field.hidden}
+            expanded={fieldExpanded}
+            noun="player"
+            controls={fieldId}
+            onToggle={() => setFieldExpanded((v) => !v)}
+          />
         </div>
       ) : null}
     </>

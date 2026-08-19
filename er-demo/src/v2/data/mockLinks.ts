@@ -11,7 +11,8 @@
 // So the things this catches on day one, before any server exists: a canonical-encoding mistake, a
 // display name that shifts a field boundary, an avatar path that is not same-origin, a branded type
 // that turns out to be constructible from outside, and every layout question the DOM has about a
-// board that is part faces and part pseudonyms.
+// board that is part faces and part unnamed rows — a handle and a picture in some cells, and in the
+// rest a truncated address and no username at all.
 //
 // WHY IT SIGNS AT LOAD RATHER THAN SHIPPING SIGNATURES. Attestations expire after seven days
 // (`ATTESTATION_TTL_SECONDS`). A committed signature would rot, and the failure would be silent and

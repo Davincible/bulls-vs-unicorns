@@ -1,0 +1,26 @@
+/* ShowMore — placement and one glyph. Everything else is `.btn--sm .btn--ghost` from base.css, on
+   purpose: the box, the hover, the disabled look, the 44px phone target and the focus ring are all
+   the page's existing answers and this file may not grow a second set of them. */
+
+.showmore {
+  /* A BLOCK, SO IT SITS UNDER THE TABLE RATHER THAN BESIDE IT. An inline-level control after a run of
+     full-width rows would float against whatever the section put next to it; the tables this belongs
+     to end on a hairline and the button belongs on its own line under that hairline. */
+  display: block;
+  /* 10px clears the last row's `border-bottom` without reading as a new section. `.sec` owns the gap
+     BELOW, the way `.disc` does, so a table that is the last thing in a section does not end on a
+     margin nothing follows. */
+  margin: 10px 0 0;
+}
+
+/* THE STATE, AS A SHAPE — `[+]` closed, `[-]` open, the same two glyphs `Disclosure.css` uses and the
+   same reason: they differ in FORM, not in colour, so the open/closed state survives a reader who
+   cannot tell the page's two colours apart and one who is not looking at it at all. Not a rotating
+   chevron either — a transform says nothing under `prefers-reduced-motion`.
+
+   The 8px is `Disclosure.css`'s gap, measured in the same 10px tracked mono this button already sets
+   through `.btn--sm`. It is a margin rather than a `gap` because the button is not a flex container
+   and does not need to become one for a single inline span. */
+.showmore > .showmore-k {
+  margin-right: 8px;
+}
