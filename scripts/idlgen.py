@@ -159,6 +159,12 @@ def round_layout(idl):
 # is the difference between a tool the next person can run and one that silently rewrites nothing.
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "programs/bulls-arena/src/lib.rs"
+# THE OTHER HALF OF THE SOURCE, since ARENA-VAULT.md §8.1 S1. `Round`, `Fighter`, `Phase` and
+# `MAX_FIGHTERS` live here now; `declare_id!`, `#[program]`, the events and the errors do not, and
+# never will — that crate's header says so and it is the whole point of it. So this file is where the
+# ACCOUNT LAYOUT is read from and `SRC` is where the PROGRAM is, and the two lists below say which
+# scan looks at which.
+STATE_SRC = ROOT / "crates/arena-state/src/lib.rs"
 IDL_JSON = ROOT / "programs/bulls-arena/idl/bulls_arena.json"
 IDL_TS = ROOT / "programs/bulls-arena/idl/bulls_arena.ts"
 PUBLIC_JSON = ROOT / "er-demo/public/idl/bulls_arena.json"
@@ -177,6 +183,8 @@ def disc(prefix, name):
 
 # ---- doc extraction ----------------------------------------------------------------------------
 class Source:
+    """One source FILE, as a list of lines. See `Revision` for how the two files are held together."""
+
     def __init__(self, text):
         self.lines = text.splitlines()
 
@@ -238,7 +246,27 @@ class Source:
         return None if at is None else self.docs_above(at)
 
     def struct_field_docs(self, struct, field):
-        i = self.find(rf"^pub struct {struct} \{{") + 1
+        """The doc block on one field, or `None` if there isn't one — INCLUDING when the struct
+        itself is not in this file.
+
+        THE MISSING-STRUCT CASE USED TO BE A `TypeError`, from `None + 1`, and it was harmless right
+        up until it wasn't. Every struct the IDL documents was in one file and `verify` only ever
+        asked about structs that existed, so the crash was unreachable. Two things made it reachable
+        at once: the layout moved to `crates/arena-state` (§8.1 S1), and `verify` reads HEAD — so on
+        the commit that CREATES that file, `HEAD.layout` is empty and every `Round` field asks a file
+        with no `Round` in it. A traceback in place of "no docs here" would have taken
+        `the_idl_generator_still_reproduces_the_committed_idl` red on the extraction commit and
+        locked the regenerate path behind it, which is precisely the trap REGENERATED_FNS is four
+        instances deep in already.
+
+        `None` is the RIGHT answer rather than a papered-over one, and `verify`'s `got is not None`
+        guard already means what it needs to mean: a file that does not declare the struct carries no
+        prose the committed IDL could have drifted from. Same reasoning REGENERATED_ROUND_FIELDS
+        gives for `Round.padding`, one level up."""
+        at = self.find(rf"^pub struct {struct} \{{")
+        if at is None:
+            return None
+        i = at + 1
         while i < len(self.lines) and not self.lines[i].startswith("}"):
             if re.match(rf"^\s*pub {field}:", self.lines[i]):
                 return self.docs_above(i, extra_ends=(",",))
@@ -297,10 +325,117 @@ class Source:
         return out
 
 
-HEAD = Source(subprocess.run(
-    ["git", "-C", str(ROOT), "show", "HEAD:programs/bulls-arena/src/lib.rs"],
-    check=True, capture_output=True, text=True).stdout)
-NOW = Source(SRC.read_text(encoding="utf-8"))
+def at_head(relative):
+    """A file's contents at HEAD, or "" if HEAD has never heard of it.
+
+    THE EMPTY STRING IS THE POINT, not a swallowed error. `verify` reads HEAD deliberately (see
+    REGENERATED_FNS for the trap that design exists to avoid), and `crates/arena-state/src/lib.rs`
+    does not exist at HEAD on the commit that CREATES it. Refusing there would mean the extraction
+    could not be committed without first committing a broken `cargo test`, which is the same
+    chicken-and-egg REGENERATED_ROUND_FIELDS records for `Round.padding` — "HEAD's lib.rs has never
+    heard of it at all". A file that does not exist yet contributes no doc blocks, which is exactly
+    right: there is nothing there for the committed IDL to have drifted from.
+
+    Anything else — a broken repo, a bad object, `git` missing — still raises: only the two message
+    shapes git uses for "that path is not in that tree" are treated as absence, and every other
+    non-zero exit is re-raised with git's own stderr attached."""
+    out = subprocess.run(["git", "-C", str(ROOT), "show", f"HEAD:{relative}"],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        if "exists on disk, but not in" in out.stderr or "does not exist in" in out.stderr:
+            return ""
+        raise SystemExit(f"git show HEAD:{relative} failed: {out.stderr.strip()}")
+    return out.stdout
+
+
+class Revision:
+    """One revision of the program's source, which is TWO FILES since ARENA-VAULT.md §8.1 S1.
+
+    `Round`, `Fighter`, `Phase` and `MAX_FIGHTERS` are declared in `crates/arena-state` now, so that
+    `arena-vault` can decode a round and check its solvency with the game program's own struct rather
+    than a second copy of it (§3.4). The IDL still describes ONE program; the prose it carries simply
+    comes from two places, and this class is the routing.
+
+    IT IS AN EXPLICIT LIST AND NOT A SEARCH, AND THAT IS THE WHOLE POINT OF THE CLASS. Concatenating
+    the files and scanning for `^pub struct Round {` was tried and is WRONG in a way that passes
+    quietly: `bulls-arena` still declares a `pub struct Round`, a one-field wrapper that exists only
+    to carry the `Owner` impl a shared crate may not have (see that struct's doc comment, and
+    `arena-state`'s header, for why coherence forces it). A first-match scan finds the wrapper, walks
+    its single field, and reports every documented field of the real `Round` as UNDOCUMENTED — which
+    `verify` reads as "the committed IDL has drifted" and `patch` would read as "delete this prose".
+    Naming the file per struct makes that unrepresentable.
+    """
+
+    # THE IDL'S NAME FOR A STRUCT -> THE IDENT THAT DECLARES IT IN THE LAYOUT CRATE. A mapping and
+    # not a set, because for `Round` the two differ: the IDL (and the chain, and every client) call
+    # the account `Round`, while the struct holding its bytes is `arena_state::RoundState`. Anchor
+    # forces that — two types of one name in a program's graph make `anchor build` exit 1 with
+    # "Conflicting accounts names are not allowed" — and `bulls-arena`'s one-field wrapper is the one
+    # that keeps the name, because the on-chain discriminator is derived from it. Read that struct's
+    # doc comment; it is the whole story.
+    #
+    # Everything else the IDL documents — `Treasury`, the events, the instructions, the errors — is
+    # declared in the program, and none of it may ever move here: `arena-state` holds layout and
+    # arithmetic only.
+    LAYOUT_STRUCTS = {"Round": "RoundState", "Fighter": "Fighter"}
+
+    def __init__(self, program_text, layout_text):
+        self.program = Source(program_text)
+        self.layout = Source(layout_text)
+
+    def _declares(self, struct):
+        """(the file that declares `struct`, the ident it is declared under).
+
+        RAISES IF THE ROUTING IS WRONG, which is the point of doing this here rather than letting
+        `struct_field_docs` return `None`. A `None` from a mis-routed lookup is indistinguishable
+        from "this field has no doc comment", and the two are treated very differently: `verify`
+        SKIPS an undocumented field, and `patch` writes `"docs": null` straight into the three IDL
+        artefacts — including `er-demo/public/idl/bulls_arena.json`, which the live page fetches. The
+        layout guard would not object, because it only compares field names and sizes. So a typo in
+        the map above, or a documented struct moved between the two files without updating it, has to
+        stop the tool rather than quietly strip prose out of a served contract.
+
+        The one legitimate absence is an EMPTY file: `verify` reads HEAD, and on the commit that
+        creates `crates/arena-state/src/lib.rs` there is nothing at HEAD to read. That case is a file
+        with no structs at all, and it is let through — see `at_head`."""
+        ident = self.LAYOUT_STRUCTS.get(struct, struct)
+        source = self.layout if struct in self.LAYOUT_STRUCTS else self.program
+        if source.lines and source.find(rf"^pub struct {ident} \{{") is None:
+            raise SystemExit(
+                f"idlgen cannot find `pub struct {ident} {{` for the IDL's `{struct}` in the file "
+                f"`Revision.LAYOUT_STRUCTS` routes it to. Either the map is wrong or the struct "
+                f"moved between programs/bulls-arena/src/lib.rs and crates/arena-state/src/lib.rs."
+            )
+        return source, ident
+
+    def struct_field_docs(self, struct, field):
+        source, ident = self._declares(struct)
+        return source.struct_field_docs(ident, field)
+
+    def struct_docs(self, name):
+        source, ident = self._declares(name)
+        return source.struct_docs(ident)
+
+    # The rest are program-only by construction — a layout crate has no instructions and no events,
+    # and the day it does, this file is not the thing that should be quietly made to cope.
+    def fn_docs(self, name):
+        return self.program.fn_docs(name)
+
+    def event_docs(self, name):
+        return self.program.event_docs(name)
+
+    def instruction_names(self):
+        return self.program.instruction_names()
+
+    def event_names(self):
+        return self.program.event_names()
+
+    def error_names(self):
+        return self.program.error_names()
+
+
+HEAD = Revision(at_head("programs/bulls-arena/src/lib.rs"), at_head("crates/arena-state/src/lib.rs"))
+NOW = Revision(SRC.read_text(encoding="utf-8"), STATE_SRC.read_text(encoding="utf-8"))
 fn_docs = NOW.fn_docs
 struct_field_docs = NOW.struct_field_docs
 struct_docs = NOW.struct_docs
@@ -359,6 +494,11 @@ REGENERATED_ROUND_FIELDS = {"lobby_opened_at", "fees_collected", "house_swept",
 def declared_id():
     """The `declare_id!` in the CURRENT lib.rs — the one place a program id is written by hand.
 
+    `SRC` ONLY, AND THAT IS A RULE RATHER THAN AN OMISSION. `crates/arena-state` must never learn a
+    program id (its header argues that at length: the vault depends on it and must not churn when
+    `bulls-arena` burns its eighth id). Searching both files would make an id there WORK, which is
+    the first step towards one being written.
+
     The IDL's `address` is derived from it rather than carried forward from the committed file, so a
     new deployment's id reaches all three IDL artefacts by editing `declare_id!` alone. `idl.ts`
     asserts it at runtime against `constants.ts`, so a half-propagated id fails loudly at import."""
@@ -369,18 +509,28 @@ def declared_id():
 
 
 def declared_usize(name):
-    """A `pub const NAME: usize = N;` out of the CURRENT lib.rs.
+    """A `pub const NAME: usize = N;` out of the CURRENT source — either file.
 
     Read rather than copied, for the same reason `declare_id!` is. `MAX_FIGHTERS` has already moved
     once (16 -> 48) and is the length of the `fighters` array in the IDL — i.e. it is most of the
     account's size, and therefore most of what every client's decoder does. A copy of it in this file
     would be a second place for it to be true, and the day the two disagreed nothing would say so:
     the IDL would simply describe a round of the wrong length and borsh would walk off the end of a
-    real account, which is the exact failure `round_layout`'s guard was built after."""
-    m = re.search(rf"pub const {name}: usize = ([\d_]+);", SRC.read_text(encoding="utf-8"))
-    if not m:
-        raise SystemExit(f"no `pub const {name}: usize = ...;` in lib.rs — the IDL's layout needs it")
-    return int(m.group(1).replace("_", ""))
+    real account, which is the exact failure `round_layout`'s guard was built after.
+
+    IT HAS SINCE MOVED A SECOND TIME, and that is why this searches both files. `MAX_FIGHTERS` is
+    declared in `crates/arena-state` now (it is the length of `Round.fighters`, so it is layout) and
+    `bulls-arena` re-exports it. Searching both is what keeps this function reading a DECLARATION
+    rather than a re-export — `pub use arena_state::MAX_FIGHTERS;` carries no number, so a scan
+    limited to `SRC` would find nothing and a scan that accepted the re-export would find no value.
+    Both files, one declaration, first match wins."""
+    pattern = rf"pub const {name}: usize = ([\d_]+);"
+    for path in (SRC, STATE_SRC):
+        m = re.search(pattern, path.read_text(encoding="utf-8"))
+        if m:
+            return int(m.group(1).replace("_", ""))
+    raise SystemExit(f"no `pub const {name}: usize = ...;` in {SRC.name} or {STATE_SRC.name} — "
+                     "the IDL's layout needs it")
 
 
 # ---- verification against the committed file ---------------------------------------------------

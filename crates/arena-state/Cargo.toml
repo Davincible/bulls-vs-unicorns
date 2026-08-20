@@ -1,0 +1,54 @@
+[package]
+name = "arena-state"
+version = "0.1.0"
+description = "Bulls vs Unicorns — the on-chain Round layout and its book-keeping, shared by every program that has to agree about them"
+edition = "2021"
+
+# NO `crate-type` AND NO `[lib] name`, DELIBERATELY. This is an rlib and nothing else: it has no
+# entrypoint, no `declare_id!`, and nothing here is deployable. A `cdylib` would say it could be
+# built into a program, which is exactly the misunderstanding the crate header argues against.
+
+[features]
+default = []
+# THE ITEMS A DEPENDENT'S TESTS NEED, and they exist as a feature for one reason: `cfg(test)` is
+# true only while compiling THE CRATE UNDER TEST, so it covers this crate's own tests and cannot
+# cover a dependent's. Two things are behind it:
+#
+#   * `Debug`/`PartialEq`/`Eq` on `Fighter` — `bulls-arena`'s cursor-invariance tests compare whole
+#     `[Fighter; 48]` arrays and a failure there is worth reading.
+#   * `assert_the_account_layout_is_exactly_what_the_clients_decode` — the offsets, as ONE body that
+#     both this crate's tests and `bulls-arena`'s call. See its comment for why the single most
+#     consequential check in the repo could not be left as a private `#[test]` here.
+#
+# IT IS NOT `default`, AND THAT IS THE POINT. The program that ships this crate is size-constrained
+# on devnet (see `MAX_FIGHTERS`), and none of this belongs in a deployed binary. Dependents turn it
+# on from `[dev-dependencies]`, which resolver 2 keeps out of a release build — so `cargo build-sbf`
+# never sees it.
+test-support = []
+
+[dependencies]
+# EXACT, MATCHING `programs/bulls-arena/Cargo.toml`, and for the reason recorded there at length: the
+# unpinned caret range once resolved anchor-lang 1.1.2, whose syn 1.x -> 2.0 migration broke
+# session-signed instructions ON DEVNET without ever failing to compile. A shared crate is the worst
+# possible place to reopen that range — it would let this crate resolve a different anchor from the
+# programs that depend on it, and `Pubkey` would quietly become two types (see the `use` in lib.rs).
+#
+# DEFAULT FEATURES, i.e. no `idl-build`, no `init-if-needed`. Both programs already resolve
+# `anchor-lang =1.0.2` with default features, so this line adds no crate, no version and no feature to
+# the workspace's dependency graph — it names one that is already there. That is the property worth
+# having, and it is narrower than "the lockfile does not move": `Cargo.lock` DOES gain a
+# `[[package]] arena-state` entry and a line under `bulls-arena`'s dependencies, because a new
+# workspace member is a new package. What it does not gain is a single third-party crate, version or
+# feature. The zeroize/curve25519-dalek conflict the root manifest opens with is untouched.
+anchor-lang = "=1.0.2"
+# Required HERE rather than inherited, exactly as in `bulls-arena` and for the identical reason:
+# `#[zero_copy]` expands to `#[derive(::bytemuck::Pod)]` — an ABSOLUTE path, resolved in THIS crate's
+# graph — so anchor-lang having bytemuck is not enough. `derive` is the feature that carries the
+# Pod/Zeroable derives. Already in the lockfile at 1.25.2 transitively, so this adds no download.
+bytemuck = { version = "1", features = ["derive"] }
+
+# NO `[profile.*]` BLOCK. `bulls-arena` carries one only because `anchor build` refuses to start
+# without seeing it in the program's own manifest (its comment explains that at length, including
+# that cargo ignores it). Nothing runs `anchor build` against this crate — it is not a program — so
+# copying the block here would be cargo-cult: a warning-generating stanza justified by an error
+# message that can never be produced.

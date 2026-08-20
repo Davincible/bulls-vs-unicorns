@@ -10,8 +10,10 @@
 services:
   # ----------------------------------------------------------------------------------------------
   # The Solana program. See docker/program-build.Dockerfile for why the toolchain is pinned, and
-  # docker/program-build.sh for why the build runs from the WORKSPACE ROOT — an earlier version of
-  # this file said the opposite, which was true only while the root Anchor.toml was broken.
+  # docker/program-build.sh for why the build runs `cargo-build-sbf` FROM THE PROGRAM DIRECTORY
+  # rather than `anchor build` from anywhere. This comment previously claimed the workspace root,
+  # which had stopped being true when the `cd` moved; with anchor out of the picture the working
+  # directory no longer selects a config at all — cargo finds the workspace root from any member.
   program-build:
     build:
       context: .
@@ -24,9 +26,15 @@ services:
       # withhold, and the protection would read as complete while being half of one. The build needs
       # four paths; it gets four paths.
       - ./programs:/build/programs
+      # `crates/arena-state` is a workspace member. Cargo loads EVERY member's manifest to resolve
+      # one dependency graph, so leaving it out is not a smaller build, it is `failed to load
+      # manifest for workspace member` before a line compiles. Source only — no keys, no artifacts.
+      - ./crates:/build/crates
       - ./Cargo.toml:/build/Cargo.toml:ro
-      # The workspace-root Anchor.toml, now that the build runs from the root. Without it anchor
-      # walks up, finds nothing, and there is no workspace at all.
+      # The workspace-root Anchor.toml. The BUILD no longer reads it — that is cargo-build-sbf's
+      # whole advantage — but the image still ships the pinned anchor CLI for reproducing host
+      # anchor problems, and without this it would have no workspace to look at. Read-only, and
+      # cheap enough that removing it would only buy a surprise later.
       - ./Anchor.toml:/build/Anchor.toml:ro
       - ./Cargo.lock:/build/Cargo.lock:ro
       # Where the artifact lands, and the only writable host path.

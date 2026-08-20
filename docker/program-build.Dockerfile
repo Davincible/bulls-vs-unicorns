@@ -1,8 +1,13 @@
 # REPRODUCIBLE BUILD OF programs/bulls-arena — the toolchain pinned in an image instead of assumed
 # on a laptop.
 #
-#   docker compose run --rm program-build          # build the .so + IDL into target/docker/
+#   docker compose run --rm program-build          # build the .so into target/docker/
 #   docker compose run --rm program-build verify   # build, then diff against the deployed bytecode
+#
+# THE .so ONLY — no IDL. `scripts/idlgen.py` owns the IDL in this repo and verifies it separately,
+# so the build calls `cargo-build-sbf` directly and never asks anchor to generate one. See
+# docker/program-build.sh's header for why that stopped being a nicety: anchor's IDL step compiles
+# the crate a SECOND time for the host target, and a failure there discards a perfectly good `.so`.
 #
 # WHY THIS EXISTS, AND IT IS NOT "because Docker is nice". Three separate things went wrong that a
 # pinned image makes impossible:
@@ -16,11 +21,12 @@
 #      differing toolchains, so "local build != deployed bytecode" answered a question nobody asked.
 #      COST-MODEL.md §7 records it. With the toolchain pinned, that comparison becomes meaningful,
 #      which is what the `verify` mode below is for.
-#   3. THE REPO-ROOT Anchor.toml IS A TRAP. It declares `bulls_vault` at a placeholder id that is not
-#      a valid 32-byte pubkey, and `programs/vault` is not even a workspace member — so `anchor build`
-#      at the root dies with `String is the wrong size`, which names neither the file nor the field.
-#      The real config is programs/bulls-arena/Anchor.toml. This image builds from that directory and
-#      cannot be run from the wrong one.
+#   3. THE REPO-ROOT Anchor.toml WAS A TRAP, AND THIS IMAGE IS WHY IT ISN'T. It declared
+#      `bulls_vault` at a placeholder id that is not a valid 32-byte pubkey, for a program that is
+#      not a workspace member, so `anchor build` at the root died with `String is the wrong size` —
+#      naming neither the file nor the field. That entry is gone, and the root Anchor.toml now
+#      scopes `[workspace] members` to the one program this repo builds, because anchor's default is
+#      to glob `programs/*` and walk into the dormant vault and the Phase 0 session spike as well.
 #
 # PINNED, and every version here is the one this program is known to compile under. Cargo.toml pins
 # `anchor-lang = "=1.0.2"` with an exact-equals for the reason its own comment gives — an unpinned
@@ -95,13 +101,27 @@ ENV PATH="/root/.avm/bin:${PATH}"
 # The registry index is the slow half of a cold build and it does not change between source edits.
 # Warming it here means an edit-rebuild cycle pays for compilation only. The compose file mounts
 # named volumes over ~/.cargo/registry and target/ so that survives container restarts too.
+#
+# EVERY WORKSPACE MEMBER'S MANIFEST HAS TO BE LISTED HERE, and that coupling is the price of the
+# trick rather than an oversight. Cargo resolves one graph across all members, so it refuses to read
+# a workspace whose members are not on disk. Copying whole source trees instead would work and would
+# also defeat the point — any source edit would bust this layer, which is exactly what it exists to
+# avoid. So: manifests only, one line per member of `[workspace] members` in the root Cargo.toml,
+# and it must be updated when that list is. `crates/arena-state` is here because it joined that list.
 WORKDIR /build
 COPY programs/bulls-arena/Cargo.toml programs/bulls-arena/Cargo.toml
+COPY crates/arena-state/Cargo.toml crates/arena-state/Cargo.toml
 COPY Cargo.toml Cargo.lock* ./
-RUN mkdir -p programs/bulls-arena/src \
+# `|| true` KEPT, and it is not hiding a broken fetch. This layer is an optimisation whose failure
+# costs time and nothing else — the real build re-fetches whatever is missing. Letting a cold
+# registry or a momentarily unresolvable graph fail the whole IMAGE would trade a slow build for no
+# build. What it must not do is silently skip when it could have succeeded, which is why the member
+# list above is maintained rather than left to `|| true` to paper over.
+RUN mkdir -p programs/bulls-arena/src crates/arena-state/src \
     && echo "// placeholder for dependency warming" > programs/bulls-arena/src/lib.rs \
+    && echo "// placeholder for dependency warming" > crates/arena-state/src/lib.rs \
     && (cargo fetch --locked || cargo fetch || true) \
-    && rm -rf programs/bulls-arena/src
+    && rm -rf programs/bulls-arena/src crates/arena-state/src
 
 COPY docker/program-build.sh /usr/local/bin/program-build
 RUN chmod +x /usr/local/bin/program-build

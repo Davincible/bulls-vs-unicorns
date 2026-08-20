@@ -1,3 +1,30 @@
+# THIS PACKAGE IS ITS OWN WORKSPACE ROOT, and that is a deliberate demotion rather than an oversight.
+#
+# It used to be a member of the repo-root workspace. As a member it broke `anchor build` for the
+# ENTIRE repo — including for the proven program — because anchor compares `declare_id!` against
+# `target/deploy/bulls_arena_session_spike-keypair.json`, a keypair it invents whenever the real one
+# is absent, and the real one lives in `.devnet/`, which the reproducible build image refuses to
+# import by design. The root Cargo.toml's `exclude` entry carries the full argument.
+#
+# What that costs, stated rather than discovered later: this package no longer shares the root
+# workspace's `target/`, `Cargo.lock`, or `[profile.release]`. A spike that cannot be rebuilt is not
+# a reference, it is a fossil, so all three are accounted for rather than left to be discovered:
+#
+#   target/       grows here on first build. Nothing to do.
+#   Cargo.lock    NOW EXISTS IN THIS DIRECTORY, and it is not a fresh resolution. It is the repo-root
+#                 lockfile from the commit where this package was still a member, copied verbatim.
+#                 That matters: re-resolving from scratch does not work — every `arrayref` version
+#                 satisfying blake3's `^0.3.5` has since been YANKED, so a clean resolve dies at
+#                 `failed to select a version for the requirement arrayref = "^0.3.5"` while an
+#                 existing lock entry for 0.3.9 is honoured. Beyond merely working, this is the
+#                 resolution the spike's on-chain result was actually proven under, which is the only
+#                 one a spike has any business being rebuilt with.
+#   [profile]     copied below, at the bottom of this file.
+#
+# Build it from THIS directory:
+#
+#     cd programs/bulls-arena-session-spike && cargo-build-sbf   # -> target/deploy/, 310072 bytes
+#
 [package]
 name = "bulls-arena-session-spike"
 version = "0.1.0"
@@ -43,3 +70,18 @@ solana-sha256-hasher = "3.1.0"
 # in exclusively by "no-entrypoint"). We only ever want to CALL the deployed gpl_session program's
 # accounts/macros from inside our own program, never embed a second copy of it.
 session-keys = { version = "3.1.1", features = ["no-entrypoint"] }
+
+# Copied verbatim from the repo-root Cargo.toml, and only because this package left that workspace
+# (see the header). `[profile.*]` is honoured in a workspace ROOT manifest only — as a member this
+# block would have been ignored with a warning, which is exactly why it did not exist here before.
+#
+# Not decoration: anchor 1.0.2 REFUSES to build without seeing `overflow-checks = true`, and the
+# spike's whole value is being byte-comparable to the program it forked from. Different optimisation
+# settings would make any comparison between the two meaningless.
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
+opt-level = "z"
+panic = "abort"
+strip = true

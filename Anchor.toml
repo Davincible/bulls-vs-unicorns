@@ -21,6 +21,28 @@
 [toolchain]
 anchor_version = "1.0.2"
 
+# ANCHOR HAS ITS OWN MEMBER LIST AND IT IS NOT CARGO'S. Omitting this block does not mean "use the
+# [workspace] members in Cargo.toml"; it means "glob `programs/*`", and this repo has three
+# directories there. Removing the session spike from Cargo.toml's members therefore fixes nothing on
+# its own — anchor still walks into it, still generates a throwaway keypair for it, and still fails
+# the whole build on the mismatch it just created.
+#
+# The other two are worth naming, because both are traps a bare glob walks into:
+#
+#   programs/bulls-arena-session-spike — throwaway Phase 0 scratch, see Cargo.toml's exclude entry
+#     for the full argument. Its keypair lives in `.devnet/`, which the reproducible build image
+#     refuses to import on purpose, so it can never build there.
+#   programs/vault — dormant, Anchor 0.30.1, `declare_id!("VauLt111...")` is a placeholder marked
+#     "replaced at deploy" and is NOT a valid 32-byte pubkey. This is the same value that produced
+#     `Error: String is the wrong size` from the old `[programs.devnet]` entry (see this file's
+#     header). Deleting that entry stopped anchor reading the bad pubkey from HERE; the glob still
+#     reads it from the vault's own source. It is only unreached today because anchor fails on the
+#     spike first, alphabetically — a fix for the spike alone would have surfaced it next.
+#
+# One program is built from this workspace root. Saying so is what makes both go away.
+[workspace]
+members = ["programs/bulls-arena"]
+
 [features]
 resolution = true
 skip-lint = false

@@ -5,10 +5,15 @@ name: build solana program
 # only the `solana` CLI and a funded keypair — no compiler.
 #
 # Trigger manually from the Actions tab (Run workflow) or by pushing a change under programs/.
+#
+# `crates/**` IS IN THE FILTER FOR A REASON THAT IS EASY TO MISS: `crates/arena-state` holds the
+# `Round` account layout and the conservation arithmetic (ARENA-VAULT.md §3.4), so a change there
+# changes the on-chain account without touching a single file under `programs/`. Left out, the one
+# kind of edit that most needs a build would be the one kind that does not trigger it.
 on:
   workflow_dispatch:
   push:
-    paths: ["programs/**", "Anchor.toml", ".github/workflows/anchor-build.yml"]
+    paths: ["programs/**", "crates/**", "Cargo.toml", "Cargo.lock", "Anchor.toml", ".github/workflows/anchor-build.yml"]
 
 jobs:
   build:

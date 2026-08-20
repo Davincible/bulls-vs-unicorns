@@ -28,12 +28,20 @@
 # Ignore everything.
 *
 
-# The program sources and the workspace manifests. `anchor build` needs the whole workspace because
-# Cargo.toml's [workspace] members list resolves relative to the root.
+# The program sources and the workspace manifests. Cargo needs the WHOLE workspace, not just the
+# package being built: it loads every member's manifest to resolve one dependency graph, so a member
+# that is merely absent is a hard error and not a smaller build.
 !programs/
 !Cargo.toml
 !Cargo.lock
 !Anchor.toml
+
+# ONE ADDED PATH, AND THE REASON IS THAT SENTENCE ABOVE. `crates/arena-state` became a workspace
+# member (it holds the `Round` layout and conservation arithmetic that `programs/arena-vault` must
+# agree with byte for byte — see the root Cargo.toml). Without it here, `cargo-build-sbf` fails
+# before it compiles anything, with `failed to load manifest for workspace member`. It is source
+# only: no keys, no build output, nothing under it that the re-exclusions below do not already cover.
+!crates/
 
 # The entrypoint script the Dockerfile installs.
 !docker/program-build.sh
@@ -46,6 +54,7 @@
 # toolchain — precisely the contamination this image exists to prevent, and it would do it silently
 # because Cargo would treat them as a warm cache rather than rejecting them.
 programs/**/target/
+crates/**/target/
 target/
 
 # Anchor's local state, including any program keypair it has generated. `anchor build` writes

@@ -10,13 +10,54 @@
 # Upgrading the vault to anchor 1.x is a separate piece of work with its own risk. It is not a
 # prerequisite for the ER migration, so it does not get to block it.
 #
-# programs/bulls-arena-session-spike is Phase 0 of snug-floating-mitten.md — a throwaway fork that
-# adds session-keys 3.1.1 to `enter` only, deployed under its own fresh devnet keypair, to answer one
-# question (does a session key authorize an action on an ER-delegated account) before any UI gets
-# built on the assumption that it does. It shares this workspace's dependency graph deliberately —
-# session-keys pins anchor-lang to a wide range for exactly this reason (see its own Cargo.toml).
+# programs/bulls-arena-session-spike WAS a member and is now EXCLUDED. It is Phase 0 of
+# snug-floating-mitten.md — a throwaway fork that added session-keys 3.1.1 to `enter` only, under its
+# own fresh devnet keypair, to answer one question: does a session key authorize an action on an
+# ER-delegated account? It answered it. Phase 6 landed session-keys on the real program (see
+# programs/bulls-arena/Cargo.toml's session-keys entry, and er-demo/scripts/verify-session-real.mjs,
+# which re-proves the same property against the REAL redeployed program). The spike's own lib.rs
+# header says "do not build on top of this program id"; its Cargo.toml description says "DEVNET ONLY,
+# throwaway". Its reason to share this dependency graph expired when the real program took the
+# dependency itself.
+#
+# IT IS EXCLUDED RATHER THAN DELETED, AND EXCLUDED RATHER THAN LEFT AS A MEMBER, because as a member
+# it broke `anchor build` for the whole repo — including for the proven program:
+#
+#     Error: Program ID mismatch detected for program 'bulls_arena_session_spike':
+#       Keypair file has: B3THbf14CcssKHcDuwANbphifJCRptm4yczUS5jU5zDH
+#       Source code has:  EJ8dAm3HnBY9UL4mYBUyDzLTvgkDGAp8cT3e2mgaLxQP
+#
+# The two ids had not "drifted". `declare_id!` is correct and matches the spike's real keypair,
+# `.devnet/session-spike-keypair.json`. What anchor compares it against is
+# `target/deploy/bulls_arena_session_spike-keypair.json` — a keypair anchor GENERATES when it cannot
+# find one, in a gitignored build directory. It is a different random id on every clean checkout (the
+# bug report for this named a third value again, 6wEoxaBj...). "Syncing the id" would mean pinning
+# the source of a deployed program to whatever anchor last invented, so it is not a fix in any
+# direction. And the real keypair can never be supplied inside the reproducible build image:
+# `docker/program-build.Dockerfile.dockerignore` exists to keep `.devnet/` — the arena authority and
+# forty-eight house wallet secret keys — out of that context, so the spike is structurally unbuildable
+# there by design.
+#
+# `exclude` and not merely a shortened `members`: cargo refuses to operate on a package that sits
+# under a workspace root without being named in one list or the other ("current package believes it's
+# in a workspace when it's not"). Excluding it keeps the directory on disk and standalone-buildable
+# for reference — it becomes its own workspace root, which is why its Cargo.toml now carries its own
+# [profile.release].
+#
+# `crates/arena-state` IS THE FIRST MEMBER THAT IS NOT A PROGRAM, and it sits outside `programs/` to
+# say exactly that: no entrypoint, no `declare_id!`, nothing deployable. It holds the `Round` layout
+# and the conservation arithmetic that `programs/arena-vault` will have to agree with byte for byte
+# (ARENA-VAULT.md §3.4), and it exists so that the agreement is structural rather than a promise two
+# source files make to each other.
+#
+# It costs the resolution above NOTHING, which is the property that made it safe to add here rather
+# than as its own workspace: it pins the same `anchor-lang = "=1.0.2"` and the same `bytemuck 1` that
+# `programs/bulls-arena` already resolves, so it introduces no crate, no version and no feature. The
+# zeroize/curve25519-dalek conflict this comment opens with is untouched by it — and would not have
+# been, had it needed an anchor of its own.
 [workspace]
-members = ["programs/bulls-arena", "programs/bulls-arena-session-spike"]
+members = ["programs/bulls-arena", "crates/arena-state"]
+exclude = ["programs/bulls-arena-session-spike"]
 resolver = "2"
 
 [profile.release]
