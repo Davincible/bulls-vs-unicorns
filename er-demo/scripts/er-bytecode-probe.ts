@@ -95,7 +95,15 @@ console.log(`\nfresh ${fresh} · stale ${stale} · not-cloned ${absent}`);
 if (stale > 0) {
   console.log(
     "\nSTALE VALIDATORS CONFIRM THE CACHE TRAP: an in-place upgrade does NOT reach the rollup, so a\n" +
-    "program change ships only behind a new program id — and a round delegated to a stale validator\n" +
-    "is exactly ARENA-VAULT.md §5.1's unsettleable round.",
+    "program change ships only behind a new program id.\n" +
+    "\n" +
+    "WHAT THIS DOES *NOT* MEAN, corrected 2026-08-20. This line used to end \"and a round delegated to\n" +
+    "a stale validator is exactly ARENA-VAULT.md §5.1's unsettleable round\". THAT IS FALSE AND THIS\n" +
+    "SCRIPT DISPROVED IT: on 2026-08-17 all four validators went stale and the arena kept running —\n" +
+    "round 743 fought 39 fighters, settled, swept and closed. A stale clone is a COMPLETE, previously\n" +
+    "working build; it wedges only if it disagrees with the account about LAYOUT, or lacks an\n" +
+    "instruction the round needs, or its owner program cannot execute on the base layer. An upgrade\n" +
+    "that changes behaviour inside a fixed layout satisfies none of those — which is a safety property\n" +
+    "worth knowing: an accidental in-place upgrade does not strand rounds. See ARENA-VAULT.md §7 E1.",
   );
 }

@@ -531,8 +531,25 @@ changes is that the multiple is smaller than it looks. Custody adds ~0.04-0.19 S
 of a 0.178 base, i.e. **~1.2x to ~2.1x**, not the 2.3x-7.4x this section claimed when it was measuring
 against a base that was six times too small.
 
-**So custody costs between ~1.2× and ~2.1× the current operating burn** (it read 2.3×-7.4× when the
-base was mis-measured at 0.030 SOL/day; see the correction above), and the whole of the
+**So custody costs between ~1.11x and ~1.25x the current operating burn.**
+
+**AMENDED after §7 E3 — the guessed band was 0.070-0.22 SOL/day of added fees and the real band is
+0.023-0.048.** The old figures rested on guessed batching factors (3 entries per transaction, 7
+claims). The correct question was never a measurement: *how many entries fit in 1,232 bytes* is
+transaction-encoding arithmetic. The answer is **4** on a legacy transaction — bounded by the 64-byte
+signature each entrant contributes, which caps any signed-entry design near 19 — and **~22** on a v0
+transaction with an address lookup table, because in the delegated path every per-entry account is a
+non-signer and therefore lookup-eligible. Claims go from a guessed 7 to **10** legacy and **~43** with
+a table.
+
+    enter    4 per tx legacy   ~22 with an ALT
+    claim   10 per tx legacy   ~43 with an ALT
+    total   107 unbatched  ->  28 legacy  ->  16 with an ALT
+    added fees/day          0.213  ->  0.048  ->  0.023 SOL
+
+The number narrowed twice, both times downward, and both times because a guess was replaced with
+arithmetic (it read 2.3x-7.4x when the base was mis-measured at 0.030 SOL/day; see the correction
+above), and the whole of the
 increase is house bots entering and being claimed for on the base layer. Two facts make that worse
 than the table looks:
 
@@ -847,22 +864,117 @@ approval.** Whether that composes cleanly is **unverified** — §7 E4.
 
 Four. Two are gates. None needs the vault to exist.
 
-**E1 — Manufacture a dead delegation and prove the rescue path. THE ONE THAT MATTERS.**
+**E1 — Produce a round that can never be undelegated, and run the rescue against it.**
 
-Nobody can kill a MagicBlock validator on request. But this repo can produce the operational
-equivalent **at will, and has done so seven times by accident**: a round delegated to a validator
-whose bytecode clone cannot execute the program. Upgrade `bulls-arena` in place on the base layer,
-confirm all four validators report STALE via `er-demo/scripts/erValidator.ts`'s byte comparison,
-delegate a round to one of them, and observe: the round cannot `resolve`, cannot `abandon`, cannot
-undelegate, and cannot be closed. **That is a dead delegation, reproducible, on demand, for the cost
-of one deploy.**
+**THE METHOD THIS SECTION USED TO PRESCRIBE DOES NOT WORK, AND IT WAS TESTED.** It said: upgrade
+`bulls-arena` in place, confirm the validators go STALE, delegate a round to one, and the round
+wedges. Measured 2026-08-17 with `er-demo/scripts/er-bytecode-probe.ts`:
 
-Then run the rescue against it. Until this has been done once, §5.1 is a design and not a fact, and
-**G1 is the gate that should hold up the whole programme** — because if the base-layer refund path
-turns out to have an obstacle nobody anticipated, this design is wrong in its load-bearing member.
+```text
+before upgrade   BASE 4d38b52b -> 4/4 validators FRESH 4d38b52b
+after  upgrade   BASE 80f30c9f -> 4/4 validators STALE 4d38b52b
+```
 
-Cost: one program id. Value: the answer to the question §4.5 calls the single largest unknown, on
-the infrastructure we actually run on, without asking anyone.
+All four went stale **and the arena kept running.** Round 743 fought 39 fighters, settled, swept and
+closed. See §11 for why the reasoning failed. The principle that replaces it:
+
+**A STALE ER VALIDATOR IS NOT A BROKEN ONE.** It is executing a complete, self-consistent,
+previously-working build against an account the base layer produced. It wedges only if:
+
+1. the old bytecode and the account **disagree about layout**, so the decode fails;
+2. the round needs an instruction the old build **does not have**;
+3. the owner program **cannot execute on the base layer**, so undelegation's callback CPI cannot land.
+
+An upgrade that changes behaviour *inside a fixed layout* satisfies none of them. That is a **safety
+property, not merely a null result**: an accidental in-place upgrade of the live program does not
+strand rounds. §3.1's conclusion survives; only its stated reason needs narrowing.
+
+### E1-M1 — Kill a local ephemeral validator. RECOMMENDED. Zero SOL, zero program ids, repeatable.
+
+MagicBlock ships a local ER validator (`docs.magicblock.gg`, verified 2026-08-20). **This program can
+already pin it**: `delegate_round` passes `DelegateConfig { validator: ctx.remaining_accounts.first()
+.map(|a| a.key()), .. }` — `lib.rs:1804`, the mechanism `MAGICBLOCK_FEEDBACK.md`'s 2026-08-09 entry
+found and never retired.
+
+```text
+1. solana-test-validator, cloning DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh
+2. deploy bulls-arena + arena-vault locally; init_arena, init_treasury, open_escrow
+3. arena_vault::enter x n            <- real deposits into a real escrow ATA
+4. delegate_round with remaining_accounts[0] = the LOCAL validator's identity
+5. confirm the round is live in the rollup: tick it once
+6. SIGKILL the ephemeral-validator. Never restart it.
+7. base layer: round.owner == DELeGGvXpW... forever
+8. advance past rescue_after_secs; arena_vault::open_refund, then refund x n
+```
+
+**Why step 6 is permanent.** A delegation names a validator, and the pinned identity is the only key
+that may commit or undelegate that account. When it never runs again, nothing can. `round.owner` is
+`DELeGG...`, which is exactly and only what §5.1's rescue reads.
+
+- **Proves:** all of §5.1 — that the refund executes against a round nothing can undelegate, reading
+  only vault-owned bytes, with no operator, validator or delegation-program cooperation. This is G1.
+- **Costs:** nothing. No devnet SOL, no program id, no contact with the live arena.
+- **Cleanup:** `solana-test-validator --reset`. **The wedge is disposable** — the property no devnet
+  method has.
+- **UNVERIFIED, and it is M1's only failure mode:** whether a locally-run `ephemeral-validator`
+  accepts a delegation naming its identity. Thirty minutes to find out — run steps 1-5 and read
+  `round.owner`. If it refuses, fall to M2.
+
+**G1 SHOULD NOT BE AN EXPERIMENT. IT SHOULD BE A TEST.** `tests/compute.rs`'s header states the
+doctrine: *"a measurement nothing re-runs is a rumour with a number in it."* A rescue path proven
+once and never re-run is `bench_fight` wearing a rescue's clothes. M1 is cheap enough for CI.
+
+### E1-M2 — Layout divergence on a sacrificial program id.
+
+Deploy `bulls-arena` unchanged on a fresh id S, play a round to warm the cache, then upgrade S in
+place with `MAX_FIGHTERS = 49` (`Round` 3,248 -> 3,312 B). Open a round: the base layer allocates
+3,312 bytes; the ER serves the 48-fighter clone. `AccountLoader::load*` ends in
+`bytemuck::from_bytes`, which **requires the slice length to equal `size_of::<Round>()` exactly and
+panics otherwise** — `lib.rs`'s own `declare_id!` note, lines 115-123. Every instruction aborts.
+
+- **Proves** what M1 does, plus that the wedge survives on real public devnet infrastructure.
+- **Costs less than this document assumed:** the ~2.4 SOL is a **deposit, not a burn** — v4 returned
+  2.43720408 SOL and v5 returned 2.28341592 SOL on closing, signatures on record. Irrecoverable: the
+  wedged round's 0.023497 SOL rent and 405,000 lamports of delegation escrow — **precisely the
+  residual §5.1 predicts**, so M2 measures it rather than deriving it.
+- **A sacrificial id is required, not optional.** `ARENA_SEED` is a singleton, so wedging a round on
+  the live id would permanently halt the live keeper's reclamation.
+
+### E1-M4 — Close the owner program while a round is delegated.
+
+Delegate on the sacrificial id, then `solana program close` it. A closed id has no executable and can
+never be redeployed, so the undelegation callback CPI can never land.
+
+- **Cheapest of the three on devnet** — closing is the act that reclaims the ~2.4 SOL.
+- **Wedges from the base-layer side**, so the rollup can keep committing. It is the only method that
+  produces a round **committed with ER-authored bytes visible on the base layer while still
+  delegated** — the §10 row marked *believed, unverified*, settled as a by-product.
+- **Risk:** rests on a documentation claim about the undelegation CPI. A negative result would be
+  *more* valuable — it would mean a closed program does not strand its delegated accounts, changing
+  §5.5.
+
+### Is a dead delegation even reachable here? Yes — and §5.1 names the wrong cause.
+
+**The terminal state is trivially reachable** — three constructions above, one free.
+
+**But none is the cause §5.1 names.** §5.1 models a MagicBlock validator dying. Nothing here can
+cause that and nobody can measure its probability: `MAGICBLOCK_FEEDBACK.md` asks MagicBlock for that
+guarantee and records no answer. The single datum is 3,600 seconds of continuous delegation.
+
+**The empirically dominant cause is not MagicBlock. It is this repo:**
+
+- **Nine program ids**, at least two closed permanently — `solana program close` with a delegated
+  round outstanding is E1-M4, performed by accident.
+- **Two permanently stuck rounds** already, from `1,399,850 of 1,399,850 CUs consumed`.
+- **A layout migration that could not be deployed in place** — E1-M2, by accident.
+- **`Phase::Drawing` has no exit** (§5.2). A round whose VRF callback never lands reaches the
+  identical terminal state **with no infrastructure failure at all.**
+
+**RECOMMENDED AMENDMENT: retitle §5.1 from "A dead or unreachable ER validator" to "A round that can
+never be undelegated", with four causes — validator death, layout divergence, a closed owner program,
+and `Phase::Drawing`.** Three of the four are operator error, and operator error has a track record
+here. That is a more defensible reason to build a permissionless refund than an outage distribution
+nobody has.
 
 **E2 — Re-probe forced undelegation.** `COST-MODEL.md`'s two probes are ~1 day old at the time of
 writing but the underlying ProgramData was already ~4 months stale, so this will not change often.
@@ -1130,7 +1242,12 @@ per-fighter payout ever has to happen mid-round.**
 
 | Claim | Status | What would settle it |
 |---|---|---|
-| The base-layer refund path works against a genuinely dead delegation | **the load-bearing unknown** | §7 E1 — manufacture one with a stale-bytecode validator |
+| A stale ER bytecode clone is by itself enough to wedge a round | **MEASURED FALSE, 2026-08-17** | Settled. `er-bytecode-probe.ts`: `BASE 80f30c9f` against `4/4 STALE 4d38b52b`, and round 743 fought, settled, swept and closed. See §11 |
+| The base-layer refund path works against a round that can never be undelegated | **the load-bearing unknown — and now runnable for nothing** | §7 E1-M1: delegate to a local `ephemeral-validator` pinned through `delegate_round`'s existing `DelegateConfig.validator` (`lib.rs:1804`), kill it, run the refund. Zero SOL, and it belongs in CI |
+| A local `ephemeral-validator` accepts a delegation pinned to its own identity | **unverified — the single step E1-M1 can fail on** | Thirty minutes: run it, delegate, read `round.owner`. Falls back to E1-M2 |
+| A closed owner program permanently strands its delegated accounts | **derived** from the undelegation callback being a validator CPI into the `#[ephemeral]`-injected processor | §7 E1-M4. A negative result would be more valuable — it would change §5.5 |
+| How many `enter`s fit one 1,232-byte transaction | **derived arithmetic, no longer a guess: 4 legacy, ~22 with an ALT.** The binding term is one 64-byte signature per entrant | §7 E3-a — build the instruction from the program's own `to_account_metas` and serialize it, so an added account fails the test |
+| 48 seats is still the right cap once a seat costs a transaction and an inventory position | **half-settled: the transaction half is answered and is negligible.** The inventory half is now the whole question | price the ~$480 revolving float and the 48 wallets' SOL |
 | Forced undelegation is absent on our devnet | **inherited** from `COST-MODEL.md` §4.3's two probes; I confirmed only that the delegation program exposes `Delegate`/`CommitState`/`Finalize`/`Undelegate` | §7 E2 |
 | `enter_delegated` + CPI fits, and 3 fit in one transaction | **guess** | §7 E3, LiteSVM, calling the real instruction |
 | Two session tokens, one signer, one transaction | **unverified** | §7 E4, ten lines against devnet |
@@ -1152,6 +1269,32 @@ deploy** — E3, which is measurable on a local validator for no SOL. That is th
 ## 11. What this document got wrong on the way
 
 Kept because the corrections are the useful part, per `COST-MODEL.md` §7.
+
+**E1's METHOD WAS WRONG, and the way it was wrong is the useful part.** The first draft said a dead
+delegation could be manufactured by upgrading `bulls-arena` in place so the validators serve stale
+bytecode. Tested 2026-08-17: all four went STALE **and the arena kept running** — round 743 fought 39
+fighters, settled, swept and closed.
+
+The error was treating *"the validator is serving different bytes"* as equivalent to *"the validator
+cannot run the program."* A stale clone is a complete, previously-working build. It wedges only on a
+layout disagreement, a missing instruction, or an owner program that cannot execute. The upgrade
+changed only behaviour inside a fixed layout.
+
+**The method was wrong before the answer was.** The document had a real mechanism — bytecode caching,
+four `MAGICBLOCK_FEEDBACK.md` entries, seven forced ids — and reasoned from it to a consequence
+without checking that the mechanism produced that consequence. **That is the same shape as the
+`bench_fight` failure `tests/compute.rs` exists to indict:** a claim derived from a probe that had
+drifted from the thing it described.
+
+**§4.3's BATCHING FACTORS WERE GUESSES, AND THE GUESS WAS NOT THE REAL ERROR.** The band rested on "3
+entries per transaction" and "7 claims", both marked as guesses and both scheduled for measurement
+under E3. But how many instructions fit in a 1,232-byte packet is not measurable — it is arithmetic,
+and asking for a measurement where arithmetic was needed deferred the answer for no reason. **The
+document asked for a measurement where it needed a design decision.** The finding the guess hid: an
+address lookup table takes entries to ~22 per transaction, collapsing the band to 0.023-0.048
+SOL/day. The consequence is that §2.2's seat-cap re-take **can no longer be argued on transaction
+cost at all** — only on working capital, which §4.3 had already called *"a bigger practical obstacle
+than any line of the vault program"* and which is now the only obstacle left.
 
 **The first draft had `enter` transferring the fee straight to the treasury, copying §4.2.** It
 survived until `refund_abandoned_entry` was read, at which point the design had a fee it had already

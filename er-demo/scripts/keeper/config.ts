@@ -715,16 +715,22 @@ export const TREASURY_POLL_SECONDS = envNumber("KEEPER_TREASURY_POLL_SECONDS", 3
  *  keeper acts. The stop's value is that it fires while the loss is still float; 40 spends most of
  *  that. The operator chose 25 knowing both numbers.
  *
- *  WHAT IT CANNOT SURVIVE, STATED HERE BECAUSE IT IS THE ONE WAY THIS NUMBER GOES WRONG. The gap has a
- *  permanent floor equal to the number of rounds that never reached a terminal phase: sweeping needs
- *  `Settled` or `Abandoned`, so a round wedged in `Lobby` or in the `Drawing` hole can never be swept
- *  and its unit of gap never returns. Each one permanently spends a round of the 24 between healthy
- *  (a gap of 1 — the live round is unswept until it settles) and this stop. COST-MODEL §4.2 records 19
- *  such rounds on the PREVIOUS program, which against this threshold would have left five. The arena
- *  this ships to is a fresh program — `round_counter` 4, `sweepGap` 1, zero stranded rounds, read off
- *  the live endpoint — so the floor is zero today and this is a warning rather than a defect. Watch
- *  `closer.stranded.neverTerminal` in `/reclamation.json`: it is the count of headroom spent, and if it
- *  climbs this constant has to climb with it or the stop starts firing on a healthy arena.
+ *  WHAT IT COULD NOT SURVIVE, AND WHAT NOW CARRIES IT. The raw gap has a permanent floor equal to the
+ *  number of rounds nothing can ever sweep: sweeping needs `Settled` or `Abandoned` and an account the
+ *  program can read, so a round wedged in `Lobby` or in the `Drawing` hole, and a terminal round the
+ *  Delegation Program still owns, can never be swept and their units of gap never return. Each one
+ *  permanently spent a round of the 24 between healthy (a gap of 1 — the live round is unswept until
+ *  it settles) and this stop. COST-MODEL §4.2 records 19 such rounds on the PREVIOUS program, which
+ *  against this threshold would have left five; the live arena has spent one already, on #295, and
+ *  reads a gap of 2 that will never be a 1 again.
+ *
+ *  THIS THRESHOLD IS UNCHANGED AND IS NO LONGER COMPARED AGAINST THE RAW GAP. `sweepGapStop` subtracts
+ *  a bounded allowance for exactly those rounds and compares the remainder — `STRANDED_ALLOWANCE_ROUNDS`
+ *  directly below owns that number and the whole argument. What is worth keeping HERE is that the 25
+ *  was never the problem: it is derived from the chain's retention window and stays derived from it.
+ *  Raising this constant was the OLD answer to a floor that climbs, and it is the wrong one — it buys
+ *  headroom by making the stop slower on the outage it exists for, in a direction that has to be paid
+ *  for again every time another round strands.
  *
  *  ENV-OVERRIDABLE ON `KEEPER_MAX_BURN_SOL_PER_ROUND`'S ARGUMENT, and refused below the retention
  *  window rather than clamped — see the check under it. */
@@ -745,6 +751,94 @@ if (!Number.isInteger(SWEEP_GAP_STOP_ROUNDS) || SWEEP_GAP_STOP_ROUNDS <= ROUND_R
     `close_round_account refuses every round in it with RoundTooRecent regardless of sweeping, so the ` +
     `keeper would stop opening rounds over rent that was not due back — an alarm indistinguishable ` +
     `from the outage it exists to catch, on an arena that was working. Raise it or unset it.`,
+  );
+}
+
+/** HOW MANY PERMANENTLY UNSWEEPABLE ROUNDS THE SWEEP-GAP STOP WILL EXCUSE before it starts counting
+ *  them against itself again — the ceiling on the allowance, and the only number in this mechanism
+ *  that is a judgement rather than a derivation.
+ *
+ *  WHAT IT IS FOR, IN ONE OBSERVED FACT. Round #295 of the live arena is terminal and still owned by
+ *  the Delegation Program. Nothing can sweep it, nothing can close it, and `Treasury.rounds_swept` can
+ *  therefore never catch `Arena.round_counter` again: the endpoint reads `roundCounter 669,
+ *  roundsSwept 667` — a gap of 2 where healthy is 1, permanently. Twenty-three rounds of headroom are
+ *  left against the stop above, every future stranded round takes one more, and when they are gone a
+ *  perfectly healthy arena latches its own brake and needs a human to clear it. ARENA-VAULT.md §5.1
+ *  calls that a custody prerequisite and §8.1 files it as S0. `sweepGapStop` in `reclamation.ts`
+ *  subtracts the rounds the closer has PROVED unsweepable; this is the ceiling on that subtraction.
+ *
+ *  ─────────────────────────────────────────────────────────────────────────────────────────────
+ *  WHY THERE IS A CEILING AT ALL, WHICH IS THE WHOLE DANGER OF THIS MECHANISM
+ *  ─────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ *  A MagicBlock validator that stops returning rounds strands EVERY round in flight — ARENA-VAULT
+ *  §5.1's own outage — so a total failure arrives as a pile of stranded rounds growing at one per
+ *  round, which is the same shape as the legitimate history this allowance exists to forgive. With no
+ *  ceiling the gap and the excuse grow together and their difference never moves: worked through, the
+ *  closer cannot record a round until its cursor reaches it and the cursor never looks inside
+ *  `ROUND_RETENTION`, so the allowance trails the gap by exactly 20 and the effective gap PLATEAUS AT
+ *  21 — four short of the stop, for as long as the outage lasts, while the arena strands 0.023497 SOL
+ *  a round at ~430 rounds/day. COST-MODEL §4's ~10 SOL/day, published as a healthy-looking 21. The
+ *  ceiling is what turns that plateau back into a climb.
+ *
+ *  ─────────────────────────────────────────────────────────────────────────────────────────────
+ *  WHY 25, WITH BOTH PRICES
+ *  ─────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ *  WHAT IT BUYS. A healthy arena now needs `SWEEP_GAP_STOP_ROUNDS + this - 1` = 49 permanently dead
+ *  rounds before this stop latches on it, against 24 before. At the rate the live arena has actually
+ *  stranded rounds — one in 669, ~0.64/day at ~430 rounds/day — that is roughly 77 days of running
+ *  rather than 37, and it is more than double the 19 rounds COST-MODEL §4.2 recorded across the whole
+ *  of the previous program.
+ *
+ *  WHAT IT COSTS, STATED AS MONEY BECAUSE THAT IS WHAT IT IS. In the worst case — a total stranding
+ *  outage — the allowance delays this stop from ~25 rounds to ~50: from ~1.4 hours and ~0.59 SOL
+ *  stranded to ~2.8 hours and ~1.17 SOL. The extra ~0.59 SOL, about 4% of the 14.9 SOL the operator
+ *  runs on, is the price of not stopping a healthy arena, paid only in an outage that has already
+ *  happened.
+ *
+ *  THE CHECK THAT MAKES 25 THE LARGEST DEFENSIBLE NUMBER RATHER THAN A ROUND ONE. 25 + 25 = 50 rounds
+ *  is inside `BURN_ARM_AFTER_ROUNDS` (45) to within a rounding of the cadence, so even in its worst
+ *  case this stop still forms its opinion at about the moment the burn brake forms its first one. A
+ *  bigger allowance would make the sweep gap the SLOWER of the two witnesses in the exact window it
+ *  was built to cover — the ~2.6 hours after every restart in which the brake has no samples — and a
+ *  stop that arrives after the other stop is a stop with no reason to exist.
+ *
+ *  REJECTED: 50. `stopAtGapRounds + 50` = 75 rounds is ~4.2 hours and ~1.76 SOL, past the brake's
+ *  arming window on both counts, for headroom the arena would take five months to spend.
+ *  REJECTED: 10. It moves the healthy arena's ceiling from 24 dead rounds to 34 — about two weeks at
+ *  the observed rate — for a mechanism whose entire point is to stop needing a person on a schedule.
+ *  REJECTED: no ceiling, argued above. REJECTED: a per-DAY rate. The rate that matters is per round of
+ *  history, and a wall-clock rate breaks on the one event this has to survive — a keeper that has just
+ *  restarted re-walks and re-discovers months of legitimate stranding in a couple of minutes, which
+ *  any per-day limiter reads as a flood and refuses at exactly the moment the allowance is needed.
+ *  REJECTED: a share of history ("5% of the rounds walked"). Restart-safe, and it GROWS: 5% of a
+ *  10,000-round history is a 500-round budget, so a long healthy run would buy a licence for an 11.7
+ *  SOL outage. A bound that grows with good behaviour is not a bound.
+ *
+ *  ZERO IS LEGAL AND MEANS OFF — the stop compares the raw gap, exactly as it did before this existed.
+ *  It is the one setting an operator can reach for if the allowance is ever suspected of hiding
+ *  something, and it must not need a code change. Negative and fractional values are refused below
+ *  rather than clamped, on `SWEEP_GAP_STOP_ROUNDS`' argument.
+ *
+ *  WHERE TO WATCH IT: `sweep.allowance` in `/reclamation.json` carries the rounds excused, this cap,
+ *  and `capped` — which goes true the moment the closer has found more unsweepable rounds than this
+ *  will forgive. That is the field to alert on: from there the arena is back on the old treadmill and
+ *  somebody has a decision to make about the program rather than about a keeper knob. */
+export const STRANDED_ALLOWANCE_ROUNDS = envNumber("KEEPER_STRANDED_ALLOWANCE_ROUNDS", 25);
+
+// REFUSED RATHER THAN CLAMPED, on the argument the sweep stop's own check makes directly above, with
+// one difference worth naming: this knob WEAKENS a safety device rather than being one. A value
+// nobody can read must therefore not be guessed generously — but it must not silently become zero
+// either, because "the allowance you configured is not the allowance you got" is how a keeper ends up
+// stopping a healthy arena while its operator believes the fix is deployed. So it throws, at boot,
+// with the number in the message.
+if (!Number.isInteger(STRANDED_ALLOWANCE_ROUNDS) || STRANDED_ALLOWANCE_ROUNDS < 0) {
+  throw new Error(
+    `KEEPER_STRANDED_ALLOWANCE_ROUNDS=${STRANDED_ALLOWANCE_ROUNDS} is not a whole number of rounds ` +
+    `at or above zero. It is a count of permanently unsweepable rounds the sweep-gap stop will ` +
+    `excuse, so a fraction of a round has no meaning and a negative one would make the stop fire ` +
+    `EARLIER than the raw gap it was built to relax. Set 0 to turn the allowance off.`,
   );
 }
 
