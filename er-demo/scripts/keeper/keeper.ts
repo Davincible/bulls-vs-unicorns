@@ -1786,6 +1786,49 @@ async function closeOneFinishedRound(ctx: KeeperContext, state: KeeperChainState
   // and an undelegated round routes to the base layer on its own. `fetchRound`'s own doc comment
   // names this caller. `fetchNullable` answers null for an account that no longer exists, which is
   // precisely the "already closed" case.
+  //
+  // ── A DISPROVEN CONCERN, RECORDED SO IT IS NOT RE-OPENED FROM FIRST PRINCIPLES ──────────────────
+  //
+  // THE WORRY, AND IT IS A REASONABLE ONE TO HAVE. This read goes through the ROUTER
+  // (chainClient.ts:350) while `isDelegated` two lines below reads the BASE LAYER
+  // (chainClient.ts:345) — and chainClient.ts:122 states the governing rule outright: EXISTENCE IS A
+  // BASE-LAYER FACT. The router routes a delegated round's read to its ER validator. So IF an ER
+  // that no longer holds a round answered "account not found", a round that still exists would read
+  // as null here, be filed as already-closed by the branch below, record nothing in the stranded
+  // ledger, and be stepped past forever. It would then stay in the raw `round_counter - rounds_swept`
+  // gap while dropping out of the ledger that excuses rounds from it — and once the cursor passes the
+  // retention boundary, `closeCursorCaughtUp` latches, `strandedLedgerIsComplete` goes true, the
+  // provisional whole-cap allowance is withdrawn, and `sweepGapStop` compares the raw gap against a
+  // ledger short by however many rounds were mis-read. THAT ERROR IS NOT BOUNDED BY
+  // `STRANDED_ALLOWANCE_ROUNDS` — the cap bounds what the ledger may excuse, not how wrong the ledger
+  // may be — and `/reclamation.json` would publish `ledgerComplete: true` beside it. `closeCursor.ts`
+  // already refuses this inference one layer up, at its `answered === 0` guard: "treating it as a
+  // failed read rather than as N closed rounds".
+  //
+  // THE PREMISE IS FALSE ON THIS PLATFORM, and `scripts/probe-router-null.ts` is the committed,
+  // re-runnable proof. Measured against the live arena on 2026-08-20, round #1053 delegated and
+  // round #295 permanently stuck delegated:
+  //
+  //   * an ER validator does NOT answer "not found" for a delegated account it no longer holds. It
+  //     serves the BASE LAYER'S COPY. Round #295 came back from `devnet-us.magicblock.app` owned by
+  //     the DELEGATION PROGRAM — which is the base layer's owner for a delegated account, and not
+  //     the `bulls-arena` ownership a round genuinely live in the rollup has. The live round #1053
+  //     returned `bulls-arena` from that same endpoint on the same run, so the contrast is the proof.
+  //   * the same validator served the ARENA account, which is never delegated and exists only on the
+  //     base layer — the fallback confirmed directly rather than inferred.
+  //   * and it is a CHOICE, not an incapacity: it answered null for a pda that exists nowhere.
+  //
+  // So both hops end at the base layer, and a round that exists on the base layer cannot read null
+  // here. Every existing round in that run — closed, settled, delegated, live — agreed across both
+  // layers. THE EXTRA `getAccountInfo` ON THE NULL BRANCH WAS THEREFORE NOT ADDED: it would buy
+  // nothing against a router that already cannot produce the input it guards against, and the honest
+  // record of a disproven concern is this comment rather than a guard nobody can explain.
+  //
+  // WHAT WOULD REOPEN IT. This is MagicBlock's behaviour, not ours, and no contract obliges them to
+  // keep it. A validator or router that served only its own rollup state would make the finding live
+  // again with nothing in this file having changed — which is exactly why the probe is committed.
+  // Re-run `bun run scripts/probe-router-null.ts` after any MagicBlock platform upgrade; it is
+  // read-only and safe beside this keeper.
   const round = await ctx.client.fetchRound(roundNo);
   // THE CATCH-UP IS OVER THE INSTANT A ROUND UNDER THE CURSOR EXISTS, and this is the only place that
   // can say so. See `KeeperContext.closeCatchUpAhead` for why "the cursor reached something real" is
@@ -1988,10 +2031,24 @@ const RECLAMATION_THRESHOLDS: ReclamationThresholds = {
 
 /** The report as the bytes `GET /reclamation.json` serves. One place builds it, so the boot seed and
  *  every later render are the same code — see `StatusServerDeps.reclamation` for why the handler is
- *  handed a string rather than allowed to build one. */
-function renderReclamation(state: ReclamationState, roundsPerDay: number): string {
+ *  handed a string rather than allowed to build one.
+ *
+ *  `renderedAtSec` IS A PARAMETER AND NOT `client.nowSec()` READ IN HERE, which is the same shape
+ *  `reclamationStateOf` takes its instant in and is what keeps this function a pure rendering of
+ *  values. It also makes the two call sites say which instant they mean: the boot seed stamps the
+ *  moment the seed was built, and the loop stamps the moment the PASS FINISHED, which is deliberately
+ *  a later sample than the `state.nowSec` inside the report. See `ReclamationRender` for why the two
+ *  are different facts and why publishing this one is the whole point. */
+function renderReclamation(state: ReclamationState, roundsPerDay: number, renderedAtSec: number): string {
   return serializeReclamationReport(
-    summariseReclamation(state, RECLAMATION_THRESHOLDS, roundsPerDay),
+    summariseReclamation(state, RECLAMATION_THRESHOLDS, roundsPerDay, {
+      atSec: renderedAtSec,
+      // THE LOOP'S OWN INTERVAL, NOT A SECOND CONSTANT DESCRIBING IT. This is what makes the stamp
+      // interpretable — `ReclamationRender.everySec` argues why an instant without a budget cannot be
+      // judged — and reading it from the same place the loop sleeps on means an operator who raises
+      // `KEEPER_LOOP_INTERVAL_SECONDS` cannot end up with a report that still advertises the old one.
+      everySec: LOOP_INTERVAL_SECONDS,
+    }),
   );
 }
 
@@ -2731,7 +2788,10 @@ async function main(): Promise<void> {
     burnSamplingSuspended: false,
     operatorLamports: null,
     sweepStoppedSinceSec: null,
-  }, 0);
+    // The seed's `render.atSec`, which is the same instant as its `observedAtSec` above and honestly
+    // so: nothing has been observed and nothing has been worked, so there is no pass for the two to
+    // straddle. From the first real pass on they are separate samples — see `renderReclamation`.
+  }, 0, client.nowSec());
   const statusServer = startStatusServer({
     port: HTTP_PORT,
     policy: originPolicy,
@@ -3168,6 +3228,20 @@ async function main(): Promise<void> {
       reclamationBody = renderReclamation(
         reclamationStateOf(ctx, state.nowSec),
         measuredRoundsPerDay(ctx, state.nowSec) ?? 0,
+        // A FRESH SAMPLE, NOT `state.nowSec`, AND THAT IS THE FIELD'S ENTIRE VALUE. `state.nowSec` was
+        // taken at the top of this pass, before `driveOneStep`, `pollTreasury` and
+        // `closeOneFinishedRound` spent their round trips; this is taken now that the pass's work is
+        // done. It costs nothing — `nowSec()` is arithmetic on a cached offset, not an RPC (see
+        // chainClient.ts's clock section) — and it is what makes `render.atSec` an answer to "is this
+        // report still being written" rather than a restatement of `observedAtSec`.
+        //
+        // AND IT IS THE LAST LINE OF THE PASS'S WORK RATHER THAN THE FIRST, which is what gives it
+        // teeth. Anything that throws earlier in this `try` — including `closeOneFinishedRound`'s
+        // `fetchRound`/`isDelegated`, which sit outside every `try` of their own — skips this
+        // assignment, so `reclamationBody` keeps the last stamp that got here. That is exactly the
+        // condition this field exists to make visible, and it is visible precisely BECAUSE the stamp
+        // is not refreshed on the error path.
+        ctx.client.nowSec(),
       );
       publisher.publish();
 

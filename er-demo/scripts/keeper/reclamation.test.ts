@@ -136,7 +136,14 @@ const THRESHOLDS = {
 
 const ROUNDS_PER_DAY = 424;
 
-const summarise = (s: ReclamationState) => summariseReclamation(s, THRESHOLDS, ROUNDS_PER_DAY);
+/** The keeper's render stamp, and DELIBERATELY LATER THAN `state.observedAtSec` — the loop samples
+ *  the clock again once the pass's work is done, which is the whole reason the field is not a
+ *  restatement of `observedAtSec`. Four seconds is a plausible pass: a chain read, a treasury poll
+ *  and a close attempt. See `ReclamationRender`. */
+const RENDER = { atSec: 1_760_000_004, everySec: 1 };
+
+const summarise = (s: ReclamationState, render = RENDER) =>
+  summariseReclamation(s, THRESHOLDS, ROUNDS_PER_DAY, render);
 
 /** The ring the keeper builds, built the way the keeper builds it: one sample at a time, through the
  *  function under test, folding its own return value back in. Never by constructing the array
@@ -1282,5 +1289,53 @@ describe("how the payload writes numbers", () => {
     const report = summarise(s);
     s.closer.skipped.push(999);
     expect(report.closer.skipped.rounds).toEqual([]);
+  });
+});
+
+describe("is the report itself still being written?", () => {
+  // THE FAILURE THESE ARE ABOUT. `/reclamation.json` serves a string the keeper rendered on its last
+  // SUCCESSFUL pass, and the render is the last thing a pass does. `closeOneFinishedRound` awaits
+  // `fetchRound` and `isDelegated` outside every `try`, so one round the chain will not answer for —
+  // a round below the retention boundary, which is a permanent position — throws out of the pass
+  // before the render on every pass, and this endpoint serves the same bytes until a restart. The
+  // stops are unaffected; they read live state in the keeper, not this string. The REPORT is what
+  // breaks, and it breaks looking healthy. See `ReclamationRender`.
+
+  it("stamps when the report was built, not only when the chain was read", () => {
+    const report = summarise(state({ observedAtSec: 1_760_000_000 }), { atSec: 1_760_000_004, everySec: 1 });
+    // The two are DIFFERENT INSTANTS and the gap is the pass's own work. A reader who wanted "is
+    // this report fresh" and reached for `observedAtSec` would be answering a question about the
+    // chain sample, which is entitled to lag — `arena.pollAgeSec` exists because parts of this
+    // report are legitimately older than the report.
+    expect(report.observedAtSec).toBe(1_760_000_000);
+    expect(report.render.atSec).toBe(1_760_000_004);
+  });
+
+  it("publishes the render interval beside the stamp, so the age can be judged", () => {
+    // An instant without a budget cannot be read: 40 seconds of age is routine at `everySec: 30` and
+    // an emergency at `everySec: 1`. This is the same pairing `samplesObserved`/`armAfterSamples` and
+    // `allowance.rounds`/`capRounds` already make, and it is this report's standing rule.
+    expect(summarise(state(), { atSec: 1_760_000_004, everySec: 30 }).render.everySec).toBe(30);
+  });
+
+  it("reaches the wire as plain JSON numbers a reader can subtract from `date +%s`", () => {
+    // ABSOLUTE, NOT AN AGE. An age would have to be computed when the request is served, and
+    // `StatusServerDeps.reclamation` forbids the route computing anything — but more importantly an
+    // age would FREEZE with the rest of the body, so a stopped keeper would keep serving "4 seconds
+    // old" forever. Only the reader's own clock can detect a keeper that has stopped rendering.
+    const parsed = JSON.parse(serializeReclamationReport(summarise(state())));
+    expect(typeof parsed.render.atSec).toBe("number");
+    expect(typeof parsed.render.everySec).toBe("number");
+  });
+
+  it("never lets the render stamp change any figure in the report", () => {
+    // The stamp is METADATA ABOUT THE REPORT and must decide nothing in it. If a threshold, an
+    // allowance or a burn figure could move with it, this field would have turned an observation
+    // into an input — and the stop that reads those figures is the one that stops the arena
+    // spending. Asserted by rendering the same state an hour apart and comparing everything else.
+    const s = state();
+    const fresh = summarise(s, { atSec: 1_760_000_004, everySec: 1 });
+    const hourStale = summarise(s, { atSec: 1_760_003_604, everySec: 1 });
+    expect({ ...hourStale, render: fresh.render }).toEqual(fresh);
   });
 });

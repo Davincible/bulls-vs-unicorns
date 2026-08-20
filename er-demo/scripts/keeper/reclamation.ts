@@ -844,8 +844,54 @@ function strandedLedgerIsComplete(closer: ReclamationState["closer"]): boolean {
  * only one list, on the same uniformity argument as the two number formats above — a rule with an
  * exception in it is a rule somebody applies wrongly to the next field.
  */
+/** WHEN THIS REPORT WAS BUILT, AND HOW OFTEN A HEALTHY KEEPER BUILDS ONE.
+ *
+ *  THE FAILURE THIS EXISTS FOR, WHICH IS SILENT WITHOUT IT. `/reclamation.json` serves a STRING the
+ *  keeper rendered on its last successful pass — `StatusServerDeps.reclamation` argues at length why
+ *  the route must not compute, and that argument stands. But the render happens at the END of the
+ *  pass, after `pollTreasury` and `closeOneFinishedRound`, and `closeOneFinishedRound` awaits
+ *  `fetchRound` and `isDelegated` OUTSIDE any `try` (see the comment above `pollTreasury`'s call site
+ *  in keeper.ts, which is about this same ordering). So one round the chain will not answer for —
+ *  a deterministic case, since such a round sits below the retention boundary forever — throws out
+ *  of the pass BEFORE the render, on every pass, and this endpoint serves the same bytes until the
+ *  process is restarted. The main loop catches, backs off and retries correctly; the STOPS are
+ *  unaffected, because they are decided in the keeper from live state and not from this string. What
+ *  breaks is only the report, and it breaks by looking perfectly healthy.
+ *
+ *  WHY NOT `observedAtSec`, WHICH IS ALREADY A TIMESTAMP. Because it answers a different question and
+ *  a reader who used it for this one would be right by luck. `observedAtSec` is when the CHAIN STATE
+ *  every figure below is derived from was sampled, and a reader is entitled to expect it to lag —
+ *  `arena.pollAgeSec` exists precisely because parts of this report are older than the report. This
+ *  one is when the REPORT was made, sampled after the pass's work rather than before it, and its
+ *  contract is much tighter: a healthy keeper renders one every `everySec`, so anything more than a
+ *  few multiples of that older than the reader's own clock means passes are failing.
+ *
+ *  `everySec` IS BESIDE IT BECAUSE AN INSTANT WITHOUT A BUDGET CANNOT BE JUDGED. This report's
+ *  standing rule is that no number is published a reader cannot calibrate — `samplesObserved` has
+ *  `armAfterSamples`, `samplesInWindow` has `windowSamples`, `allowance.rounds` has `capRounds`. An
+ *  age of 40 seconds is fine on a keeper that renders every 30 and an emergency on one that renders
+ *  every second, and the reader has no way to know which this is.
+ *
+ *  IT IS AN ABSOLUTE INSTANT AND NOT AN AGE, deliberately. An age would have to be computed when the
+ *  request is served, and that is the one thing this route may not do. An absolute stamp is computed
+ *  once, where the state already is, and the subtraction is done by the reader against their own
+ *  clock — which is also the only clock that can detect a keeper whose loop has stopped entirely,
+ *  since a self-computed age would freeze along with everything else. */
+export interface ReclamationRender {
+  /** Unix seconds on the CHAIN's clock — `chainClient.ts`'s `nowSec()`, the same clock every other
+   *  instant in this report is stamped with. Within a second or two of any correct wall clock; see
+   *  that file's header for why the keeper does not trust its host's. */
+  atSec: number;
+  /** `LOOP_INTERVAL_SECONDS` — one render per pass of the main loop, on the success path only. */
+  everySec: number;
+}
+
 export interface ReclamationReport {
   observedAtSec: number;
+  /** IS THIS REPORT ITSELF FRESH? — see `ReclamationRender`. Every other field describes the arena;
+   *  this one describes the report, and it is the only field that can tell a reader the rest of them
+   *  stopped being refreshed hours ago. */
+  render: ReclamationRender;
   /** `round_counter - rounds_swept`. COST-MODEL §4 names this, in as many words, as the thing to
    *  watch for the first day of continuous running: if the gap grows, the burn is 330x the headline
    *  and the balance is gone in a day and a half. Null when the treasury has not been read — see
@@ -1081,6 +1127,13 @@ export function summariseReclamation(
   state: ReclamationState,
   thresholds: ReclamationThresholds,
   roundsPerDay: number,
+  // AN ARGUMENT, LIKE EVERY OTHER INSTANT IN THIS FILE, and for the reason the header gives: no clock
+  // is READ anywhere in here, so every judgement can be run on its own. It is passed alongside
+  // `state` rather than folded into it because it is not a fact about the arena — `ReclamationState`
+  // is what the keeper OBSERVED, and this is a fact about the act of reporting it. Folding it in
+  // would also have put it behind `reclamationStateOf`, which is built from `state.nowSec` taken at
+  // the TOP of the pass, and the whole point of this stamp is that it is taken at the bottom.
+  render: ReclamationRender,
 ): ReclamationReport {
   // Renamed on the way in only where this function's own prose already had a name for the thing —
   // `thresholdLamports` and `armAfter` appear in the arithmetic and the doc comment below, and
@@ -1114,6 +1167,9 @@ export function summariseReclamation(
 
   return {
     observedAtSec: state.observedAtSec,
+    // COPIED THROUGH RATHER THAN REBUILT, so the only place this pair of numbers is decided is the
+    // caller. A `{ ...render }` here would be the same object with a second author.
+    render,
     sweepGap: sweepGapOf(state.arena),
     arena: state.arena === null ? null : {
       roundCounter: state.arena.roundCounter,

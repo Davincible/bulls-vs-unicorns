@@ -351,6 +351,16 @@ export async function createChainClient({ operator, dryRun, stopSignal }: ChainC
     // THROUGH THE ROUTER, always. It routes per account, so a delegated round comes back as the ER
     // sees it — which for a live lobby or a live fight is every field that decides anything. Reading
     // it from the base layer would return the state the round had when it was delegated.
+    //
+    // AND YES, THIS SITS BESIDE AN `isDelegated` THAT READS THE BASE LAYER, AND BESIDE A
+    // `roundsExist` WHOSE COMMENT SAYS "EXISTENCE IS A BASE-LAYER FACT". A reader who notices that
+    // asymmetry and worries that a `null` from here might therefore mean "the ER lost it" rather
+    // than "the account is gone" — which would make `closeOneFinishedRound` file a live round as
+    // closed — has spotted something real and already investigated. It was probed against the live
+    // arena and DISPROVEN: an ER serves the base layer's copy for an account it no longer holds
+    // rather than answering "not found", so both hops end at the base layer. The argument, the
+    // measurement and what would reopen it are at `closeOneFinishedRound`'s `fetchRound` call in
+    // keeper.ts; the re-runnable proof is `scripts/probe-router-null.ts`.
     const pda = roundPdaForRoundNo(roundNo, arenaPda);
     return withReadRetry(`round #${roundNo}`, () => program.account.round.fetchNullable(pda));
   }

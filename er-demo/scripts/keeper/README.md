@@ -412,6 +412,27 @@ Also `closer.skipped` and `closer.stranded`, each with the round numbers and the
 Those lists are capped at the newest **50** per category; the counts in the shutdown banner are the
 authoritative totals, and every individual loss is logged uncapped when it happens.
 
+**Check `render` first, before you believe anything else on this endpoint.**
+
+```bash
+curl -s .../reclamation.json | jq '(now | floor) - .render.atSec'   # seconds since it was last built
+```
+
+This body is a **string the keeper rendered on its last successful pass**, not something computed
+when you asked for it — `StatusServerDeps.reclamation` argues why the route must not compute. The
+render is the *last* thing a pass does, so a pass that throws serves you the previous one, and the
+main loop catching and retrying correctly (which it does) looks identical from here to a keeper that
+is fine. `render.atSec` is when it was built and `render.everySec` is how often a healthy keeper
+builds one, so anything more than a few multiples of `everySec` old means **passes are failing** —
+go and read `/keeper-status.json` (`lastError`, `stalledSince`) and `/health` (`loop.stalled`),
+which are refreshed on the error path and will say what went wrong.
+
+The one thing this does *not* mean is that the arena is unprotected: the burn brake and the
+sweep-gap stop are decided inside the keeper from live state and never from this string, so they
+keep working while the report is frozen. Do not use `observedAtSec` for this — that is when the
+chain was sampled, and it is entitled to lag on its own (`arena.pollAgeSec` exists for exactly that
+reason).
+
 ### The brake, and how to clear it
 
 The keeper **stops opening rounds** when the mean net cost of the last `BURN_SAMPLE_ROUNDS` (20) rounds
@@ -704,6 +725,21 @@ reached; nothing is skipped on a guess, because every round below the cursor was
 a reply from the chain. `closeCursor.ts` owns it, bounded by `CLOSE_CURSOR_SCAN_SECONDS` (20) and
 `CLOSE_CURSOR_SCAN_MAX_BATCHES` (200) at boot, and every failure path lands back on #1 or on the round
 after the last one it proved gone.
+
+**"Observed absent" through the router — a concern raised, probed, and disproven.** The batched scan
+above reads the **base layer**, but the one-per-pass walk reaches its round through `fetchRound`,
+which goes through the **Magic Router** — and the router routes a delegated round's read to its ER
+validator. If an ER that no longer held a round answered *account not found*, a round that still
+exists would read as `null`, be filed as already-closed, drop out of `closer.stranded` permanently
+while staying in the raw sweep gap, and the error would not be bounded by
+`KEEPER_STRANDED_ALLOWANCE_ROUNDS`. **Measured 2026-08-20 against the live arena,
+`scripts/probe-router-null.ts`:** an ER does *not* answer not-found for an account it no longer
+holds — it serves the base layer's copy. Round #295 (permanently stuck delegated) came back from
+`devnet-us.magicblock.app` owned by the **delegation program**, where the live round #1053 came back
+from that same endpoint owned by **bulls-arena**; the validator also served the never-delegated arena
+account, and it *can* say null, since it did so for a pda that exists nowhere. Both hops end at the
+base layer, so an existing round cannot read as null. This is MagicBlock's behaviour and not ours —
+**re-run the probe after any platform upgrade.** It is read-only and safe beside a running keeper.
 
 This is a **money** fix rather than a speed one. On 2026-08-19 a restart against a healthy arena
 published `burn 23,911,960 lamports/round` (healthy is ~420,000), `solPerDay 9.52`, `runway 2.39 days`
