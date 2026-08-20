@@ -405,7 +405,7 @@ carries **two independent witnesses**, because neither subsumes the other:
 | | |
 |---|---|
 | `sweepGap` | `Arena.round_counter` minus `Treasury.rounds_swept`, polled every `KEEPER_TREASURY_POLL_SECONDS` (30). A direct observation of the chain's own bookkeeping, right immediately. `pollAgeSec` beside it says how fresh. Healthy is **1** — the live round is unswept until it settles. |
-| `sweep` | what the keeper *made of* that gap and *did* about it. `allowance.rounds` is how much of the raw gap is rounds nothing can ever sweep; `effectiveGap` is what is left, and it is the number compared against `stopAtGapRounds`. `allowance.capped` says the allowance has hit its ceiling — the field to alert on. `allowance.ledgerComplete` says whether the closer has finished finding those rounds; while it is `false` — the first minutes after a restart — `allowance.rounds` is the whole cap granted provisionally rather than a count of anything found. `tripped` is the keeper's latched state and `stoppedSinceSec` is when it fired; `tripped` stays true after the gap recovers — see below. |
+| `sweep` | what the keeper *made of* that gap and *did* about it. `allowance.rounds` is how much of the raw gap is rounds nothing can ever sweep; `effectiveGap` is what is left, and it is the number compared against `stopAtGapRounds`. `allowance.capped` says the allowance has hit its ceiling — the field to alert on. `allowance.ledgerComplete` says whether this process's close cursor has reached the retention boundary at least once; while it is `false` — the first seconds of a run, or indefinitely if the cursor is wedged — `allowance.rounds` is the whole cap granted provisionally rather than a count of anything found. `tripped` is the keeper's latched state and `stoppedSinceSec` is when it fired; `tripped` stays true after the gap recovers — see below. |
 | `burn` | the mean net lamports per round, measured from the operator balance at consecutive `open_round`s. Lagging, and it cannot say anything for its first 45 rounds — but a keeper that sweeps perfectly and then fails every `close_round_account` has a sweep gap of **zero** and is burning 9.96 SOL/day. The balance cannot be fooled that way. `samplingSuspended` says whether `samplesObserved` has stopped growing on purpose — see "Rounds it has already closed are not walked again" below for the one condition that does that, and why it cannot hide an outage. |
 
 Also `closer.skipped` and `closer.stranded`, each with the round numbers and the SOL they represent.
@@ -517,8 +517,22 @@ two dozen dead rounds would latch its stop on the first `open_round`. While
 `sweep.allowance.ledgerComplete` is `false`, the stop therefore grants **the whole cap** instead of
 the little it has counted, and **goes on deciding**: the cap is the most the ledger could ever add, so
 a gap still past the threshold after granting all of it is a gap no amount of further looking can
-excuse. The worst case comes out the same ~50 rounds either way, which is the number
-`KEEPER_STRANDED_ALLOWANCE_ROUNDS` was chosen against.
+excuse. Nothing can cost more than the cap, in any state.
+
+`ledgerComplete` is a **latch** — set the first time this process's close cursor reaches the retention
+boundary, never cleared — and not the live question "is the cursor past the boundary now". That
+distinction is worth its one bit of state twice over. The live question is the exact complement of
+`isPastRetention`, so it answers "not finished" whenever the cursor is behind *for any reason* — and a
+wedged cursor is the **steady state of a sweep outage**: sweeps fail, the cursor reaches the oldest
+unswept round, takes `sweep-first`, the sweep is refused, and it sits there while `round_counter`
+climbs away. Read live, that keeper is "still rebuilding" for the whole outage, is granted the full
+allowance throughout, and stops at a raw gap of 50 instead of the 25 the threshold is derived for —
+~85 minutes and ~0.587 SOL overdue, in the precise fault the stop exists for. The live question also
+flaps every single round on a healthy arena, since each new round pushes one more past the boundary
+before an idle pass can dispose of it. The latch does neither. The one case it does not rescue — a
+keeper that *restarts into* an outage already running, and so never reaches the boundary at all — is
+argued under `KEEPER_STRANDED_ALLOWANCE_ROUNDS` in `config.ts`: 50 rounds, deliberately, because a
+process that has never read this arena's history cannot tell fifty dead rounds from stopped sweeps.
 
 > **It deliberately does not wait for the closer, and that was a correction.** The first version
 > refused to fire at all until the walk finished. That reads as the careful choice and is not one: the

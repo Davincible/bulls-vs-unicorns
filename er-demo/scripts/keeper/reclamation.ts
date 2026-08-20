@@ -95,10 +95,11 @@
 // but arithmetic — the false positive that is worse than no brake, arriving on a schedule.
 //
 // So the stop compares `gap - allowance`, where the allowance is the rounds the CLOSER HAS PROVED are
-// unsweepable, capped, and ignored entirely until the closer has finished looking. `sweepGapStop`
-// below owns all three of those and argues each; `STRANDED_ALLOWANCE_ROUNDS` in `config.ts` owns the
-// cap's number. The one thing worth carrying up here is the shape of the mistake being avoided: an
-// allowance with no ceiling would file a total stranding outage as an excuse and never fire at all.
+// unsweepable, capped — and, until the closer has walked this arena's history once, replaced by a
+// provisional grant of that same cap rather than waited for. `sweepGapStop` below owns all three and
+// argues each; `STRANDED_ALLOWANCE_ROUNDS` in `config.ts` owns the cap's number. The one thing worth
+// carrying up here is the shape of the mistake being avoided: an allowance with no ceiling would file
+// a total stranding outage as an excuse and never fire at all.
 
 /** WHAT ONE ROUND'S `Round` PDA HOLDS, in lamports — 0.023497 SOL, measured against v8 at
  *  `MAX_FIGHTERS = 48` (COST-MODEL.md §1, from a real 44-fighter round).
@@ -151,11 +152,21 @@ export interface ReclamationState {
      *
      *  IT IS HERE BECAUSE THE SWEEP-GAP STOP'S ALLOWANCE IS BUILT OUT OF WHAT THE CLOSER FOUND, and a
      *  keeper with no closer finds nothing — forever, on a healthy arena and on a broken one alike.
-     *  Without this field `strandedLedgerIsComplete` would read "the cursor has not caught up yet"
-     *  about a cursor that is never going to move, and would suspend the stop for the life of the
-     *  process. See that function; this is the first of its three terms and the only one that is a
+     *  Without this field `strandedLedgerIsComplete` would read "this process has never caught up"
+     *  about a cursor that is never going to move, and would provision the full allowance for the life
+     *  of the process — 25 rounds of headroom handed to the one keeper that is reclaiming nothing at
+     *  all. See that function; this is the first of its two terms and the only one that is a
      *  configuration rather than an observation. */
     closing: boolean;
+    /** HAS THE CLOSE CURSOR REACHED THE RETENTION BOUNDARY AT LEAST ONCE IN THIS PROCESS? A LATCH the
+     *  keeper sets and never clears, not a live comparison — `KeeperContext.closeCursorCaughtUp` owns
+     *  the argument, and it is the whole reason this crosses the boundary as an observation rather
+     *  than being derived here from `cursor` and a retention window.
+     *
+     *  IN ONE LINE: asking "is the cursor past the boundary NOW" is the exact complement of
+     *  `isPastRetention`, and a cursor wedged below the boundary is the STEADY STATE OF A SWEEP
+     *  OUTAGE — so the live question calls the fault "still rebuilding" for the length of the fault. */
+    caughtUpOnce: boolean;
     /** HOW MANY ROUNDS EACH LIST ABOVE HAS RECORDED, INCLUDING THE ONES IT NO LONGER HOLDS. Each list
      *  is a BOUNDED SAMPLE and the total beside it is the truth; the pairing is the suffix, so the
      *  reader of one is never far from the other.
@@ -384,17 +395,18 @@ export interface SweepGapVerdict {
   /** HOW MANY ROUNDS OF THE GAP WERE EXCUSED as structurally unsweepable — already capped at
    *  `strandedAllowanceRounds`, so this is what was actually subtracted and never what was claimed.
    *
-   *  IT IS THE WHOLE CAP, NOT THE RECORDED LEDGER, WHILE `ledgerComplete` IS FALSE. The keeper has not
-   *  finished finding the rounds this is made of, so it grants the most it could ever owe rather than
-   *  the little it has counted so far. See `sweepGapStop`. */
+   *  IT IS THE WHOLE CAP — CLAMPED BY THE GAP — RATHER THAN THE RECORDED LEDGER WHILE `ledgerComplete`
+   *  IS FALSE. The keeper has not finished finding the rounds this is made of, so it grants the most
+   *  it could ever owe instead of the little it has counted. See `sweepGapStop`. */
   allowance: number;
   /** Did the closer record MORE unsweepable rounds than the cap allows? The allowance is pinned at the
    *  cap from here on, so every further stranded round spends a round of this stop's headroom exactly
    *  as it did before the allowance existed. It is the operator's warning that the arena is walking
    *  back toward the defect this mechanism removed — see `sweepGapStop` on why the cap has to exist. */
   allowanceCapped: boolean;
-  /** HAS THE CLOSER FINISHED FINDING THE ROUNDS THE ALLOWANCE IS MADE OF? False while a freshly
-   *  started process is still re-walking history.
+  /** HAS THE CLOSER FINISHED FINDING THE ROUNDS THE ALLOWANCE IS MADE OF? False until this process's
+   *  close cursor has reached the retention boundary at least once — normally the first seconds of a
+   *  run, and indefinitely for a keeper whose cursor is wedged on a round it cannot get past.
    *
    *  IT CHANGES WHAT `allowance` IS, AND NOTHING ELSE. The stop keeps deciding on every pass in either
    *  state — this is not a suspension, for the reason `strandedLedgerIsComplete` gives at length: the
@@ -618,7 +630,7 @@ export interface SweepGapVerdict {
  * the argument `ReclamationThresholds` already makes about positional numbers.
  */
 export function sweepGapStop(state: ReclamationState, thresholds: ReclamationThresholds): SweepGapVerdict {
-  const { stopAtGapRounds, strandedAllowanceRounds, retentionRounds } = thresholds;
+  const { stopAtGapRounds, strandedAllowanceRounds } = thresholds;
   const gap = sweepGapOf(state.arena);
 
   // PRICED OFF THE TOTALS, NEVER OFF THE LIST LENGTHS — `ReclamationState.closer` argues it for the
@@ -636,7 +648,7 @@ export function sweepGapStop(state: ReclamationState, thresholds: ReclamationThr
   const cap = Number.isFinite(strandedAllowanceRounds) && strandedAllowanceRounds > 0
     ? Math.floor(strandedAllowanceRounds)
     : 0;
-  const ledgerComplete = strandedLedgerIsComplete(state.closer, state.arena, retentionRounds);
+  const ledgerComplete = strandedLedgerIsComplete(state.closer);
   // WHILE THE CLOSER IS STILL LOOKING, THE ARENA GETS THE BENEFIT OF EVERY DOUBT THAT IS STILL OPEN —
   // AND NOT ONE ROUND MORE. See `strandedLedgerIsComplete` for the window and why it exists; this
   // line is what the keeper DOES about it, and the choice of what to do here is the whole design.
@@ -736,76 +748,67 @@ function wholeCount(total: number): number {
  *
  * WHAT THIS IS AND — MORE IMPORTANTLY — WHAT IT IS NOT. It is a statement about the KEEPER'S
  * KNOWLEDGE, and the only thing that turns on it is HOW MUCH ALLOWANCE THE STOP GRANTS: the recorded
- * ledger when this is true, the whole cap when it is false. IT IS NOT A VETO OVER THE STOP. That was
- * the first design and it was wrong in a way worth recording, because it is the more cautious-looking
- * of the two:
+ * ledger when true, a bounded provision when false. IT IS NOT A VETO OVER THE STOP. That was the
+ * first design and it was wrong in a way worth recording, because it is the more cautious-looking of
+ * the two:
  *
  *   A SUSPENSION NEEDS SOMETHING TO END IT, AND THE THING THAT WOULD HAVE ENDED THIS ONE IS THE
  *   CLOSER — the same component whose failure this stop exists to catch. `closeOneFinishedRound`
  *   awaits `fetchRound` and `isDelegated` outside any `try`; `withReadRetry` rethrows once its
- *   attempts are gone. One round below the retention boundary that cannot be read — an account that
- *   no longer decodes against the current IDL is the deterministic case — wedges the cursor there
- *   permanently, with no advance and no stamp of any kind. Under a veto that keeper's sweep-gap stop
- *   is disabled for the life of the process, silently, on the instrument whose whole reason for
- *   existing is that the burn brake has no opinion for its first 2.6 hours. A safety device that a
- *   read failure can switch off is not a safety device.
+ *   attempts are gone. One round below the retention boundary that cannot be read wedges the cursor
+ *   there permanently. Under a veto that keeper's sweep-gap stop is disabled for the life of the
+ *   process, silently, on the instrument whose whole reason for existing is that the burn brake has
+ *   no opinion for its first 2.6 hours. A safety device that a read failure can switch off is not a
+ *   safety device.
  *
- * So this predicate is allowed to be wrong in both directions and cost only a bounded number of
- * rounds either way, and `sweepGapStop` is where that bound is applied. Which in turn means the
- * predicate can be the SIMPLE, CHEAP, CONSERVATIVE one — two terms, both of them facts the keeper
- * already holds, neither of them a heuristic about what the closer is "really" doing:
+ * SO THE PREDICATE IS ALLOWED TO BE WRONG IN EITHER DIRECTION AND COST ONLY A BOUNDED NUMBER OF
+ * ROUNDS, and `sweepGapStop` is where that bound is applied. Which lets it be the simplest thing that
+ * is actually true — two facts the keeper already holds, no arithmetic:
  *
  *   * THE CLOSER IS NOT RUNNING. No `--close-rounds`, or an IDL with no `close_round_account`. The
  *     cursor will never move and the ledger will never fill, so there is nothing to wait for. The
  *     allowance is permanently zero in this configuration and this stop is exactly the stop that
- *     shipped before the allowance existed — which is correct rather than a regression: a keeper that
- *     closes nothing is not reclaiming rent at all, and is the one keeper that should be easiest to
- *     stop.
- *   * THE CURSOR HAS CAUGHT UP — past the retention boundary, which is the newest round
- *     `closeOneFinishedRound` will ever look at, so every round that could be stranded has been
- *     decided about. This is where a healthy keeper's cursor sits essentially all of the time, so on
- *     a healthy arena this reads true within seconds of boot and stays true.
+ *     shipped before the allowance existed — correct rather than a regression: a keeper that closes
+ *     nothing is not reclaiming rent at all, and is the one keeper that should be easiest to stop.
+ *   * THE CURSOR HAS REACHED THE RETENTION BOUNDARY AT LEAST ONCE IN THIS PROCESS. Not "is past it
+ *     now" — HAS BEEN, ever, as a latch the keeper sets and never clears
+ *     (`KeeperContext.closeCursorCaughtUp`). The boundary is the newest round the closer will ever
+ *     look at, so reaching it once means every round that could be stranded has been decided about.
  *
- * WHAT IS DELIBERATELY NOT A TERM, AND THIS IS THE ONE THAT WAS A GENUINE MISTAKE: "the cursor is
- * parked on a round the closer examined and could not get past". It sounds like the signature of an
- * outage and it is not — it is the signature of ORDINARY HOUSEKEEPING. `closeOneFinishedRound` holds
- * the cursor in exactly two places and BOTH of them are routine: the `sweep-first` branch, which its
- * own comment calls "one pass of housekeeping" on a healthy arena because the round is swept now and
- * closed next pass; and a close that failed once, which `CLOSE_ATTEMPTS_PER_ROUND` exists precisely
- * to ride out ("enough to ride out a devnet wobble", `config.ts`). Either one, landing in the middle
- * of a post-restart rebuild, would have declared the ledger finished while it was still empty — and
- * handed the raw gap straight to the threshold on an arena with two dozen dead rounds. That is the
- * exact false positive this whole mechanism exists to delete, reintroduced through the gate meant to
- * prevent it. The lesson is narrow and worth keeping: "the cursor did not advance this pass" and "the
- * closer is stuck" are different facts, and no single-pass observation separates them.
+ * WHY THE LATCH AND NOT THE LIVE COMPARISON, WHICH IS THE MISTAKE THIS REPLACED AND THE MOST
+ * EXPENSIVE ONE IN THIS FILE'S HISTORY. `cursor + retention > roundCounter` needs no state, reads as
+ * obviously correct, and is the exact complement of `isPastRetention` — so it answers "not finished"
+ * whenever the cursor is behind, FOR ANY REASON. And a cursor wedged below the boundary is the steady
+ * state of a sweep outage: sweeps start failing, the cursor reaches the oldest unswept round, takes
+ * `sweep-first`, the sweep is refused, and it sits there for the length of the fault while
+ * `round_counter` climbs away from it. Read live, that keeper is "still rebuilding" for as long as it
+ * is broken — granted the full provision throughout, tripping at a raw gap of 50 instead of the 25
+ * `SWEEP_GAP_STOP_ROUNDS` is derived for. ~85 extra minutes and ~0.587 SOL of rent overdue, in the
+ * precise fault this stop exists to catch, arrived at by a predicate that looked like a tidy
+ * one-liner. The latch separates "below the boundary having never been past it" (a keeper that has
+ * genuinely not read this arena's history) from "below the boundary having already been past it" (a
+ * keeper that walked everything and is now stuck, which is an OUTAGE and must be judged on the ledger
+ * it built).
+ *
+ * IT ALSO STOPS THE PUBLISHED ALLOWANCE FLAPPING, which the live comparison did every single round:
+ * the instant `round_counter` increments, one more round falls past the boundary and the cursor is
+ * behind again until an idle pass disposes of it — never during `Drawing` or `Fight`. A healthy arena
+ * would show `allowance.rounds` toggling forever, and a field that changes for no reason is a field
+ * nobody reads on the day it means something.
+ *
+ * ALSO NOT A TERM: "the cursor did not advance this pass". It sounds like the signature of an outage
+ * and it is the signature of ORDINARY HOUSEKEEPING — `sweep-first` is one pass on a healthy arena
+ * (swept now, closed next), and one close failure is what `CLOSE_ATTEMPTS_PER_ROUND` exists to ride
+ * out. Either, landing mid-rebuild, would have declared an empty ledger finished. No single-pass
+ * observation separates "did not advance" from "is stuck"; the latch above does it with what the
+ * process has already ACHIEVED instead.
  *
  * ALSO NOT A TERM: a deadline. "Complete after N seconds of uptime, whatever the cursor says" grants
- * the real allowance on the strength of having waited, which is not evidence — and it is the same
- * wall-clock reasoning `STRANDED_ALLOWANCE_ROUNDS` rejects for the rate bound.
- *
- * `roundCounter` COMES FROM THE TREASURY POLL rather than from the live pass, so it can be up to
- * `TREASURY_POLL_SECONDS` old — one third of a round. That makes "caught up" very slightly easier to
- * satisfy, which moves the allowance from the cap toward the ledger's true value, and it keeps both
- * terms of every comparison in this file inside one snapshot. During the window this exists for the
- * cursor is hundreds of rounds behind and thirty seconds of round counter cannot reach it.
+ * the real allowance on the strength of having waited, which is not evidence — the same wall-clock
+ * reasoning `STRANDED_ALLOWANCE_ROUNDS` rejects for the rate bound.
  */
-function strandedLedgerIsComplete(
-  closer: ReclamationState["closer"],
-  arena: ReclamationState["arena"],
-  retentionRounds: number,
-): boolean {
-  if (!closer.closing) return true;
-  // Without a poll there is no boundary to compare against, so the cursor cannot be shown to have
-  // caught up with anything. The gap is null in that state too and nothing can trip either way.
-  if (arena === null) return false;
-  // `config.ts` refuses a retention that is not a positive whole number, so the clamp is unreachable;
-  // written because it is the strictest honest reading of "the closer has walked everything" and the
-  // alternative — trusting a NaN into a `>` — is a comparison that is silently always false.
-  const retention = Number.isFinite(retentionRounds) && retentionRounds > 0 ? retentionRounds : 0;
-  // `isPastRetention` in `roundCloser.ts`, rearranged to addition for the reason it gives: the
-  // subtraction form goes negative on an arena younger than its own window. A young arena has no
-  // history to re-walk and reads complete immediately, which is correct.
-  return closer.cursor + retention > arena.roundCounter;
+function strandedLedgerIsComplete(closer: ReclamationState["closer"]): boolean {
+  return !closer.closing || closer.caughtUpOnce;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -983,8 +986,10 @@ export interface ReclamationReport {
      *  same rounds for a different purpose (money lost, not headroom spent) and is capped differently
      *  (a 50-round SAMPLE, against a total). */
     allowance: {
-      /** Rounds excused, after the cap. Never more than `capRounds`, never more than the closer has
-       *  actually recorded. */
+      /** Rounds excused, after the cap. Never more than `capRounds` — and never more than the closer
+       *  has actually recorded ONLY WHEN `ledgerComplete` IS TRUE. While it is false this is a
+       *  provision rather than a count: the whole cap, clamped by the gap, granted because the keeper
+       *  has not yet walked this arena's history and is assuming the worst case for itself. */
       rounds: number;
       /** `STRANDED_ALLOWANCE_ROUNDS`, published for `stopAtGapRounds`' reason: the keeper is the only
        *  party that knows what it excuses, and a reader inventing the number would read a saturated
@@ -995,8 +1000,10 @@ export interface ReclamationReport {
        *  from here on every further stranded round spends a round of real headroom. It is the field
        *  to alert on. */
       capped: boolean;
-      /** FALSE WHILE THE CLOSER IS STILL RE-WALKING HISTORY after a restart — during which `rounds`
-       *  above is the whole cap, granted provisionally, rather than a count of anything.
+      /** FALSE UNTIL THIS PROCESS'S CLOSE CURSOR HAS REACHED THE RETENTION BOUNDARY ONCE — the first
+       *  seconds of an ordinary run, and indefinitely for a keeper whose cursor is wedged on a round
+       *  it cannot get past. While it is false, `rounds` above is the whole cap granted provisionally
+       *  rather than a count of anything found.
        *
        *  PUBLISHED FOR `burn.samplingSuspended`'s REASON: it is why a published number is not what a
        *  reader expects. Here it says that `allowance.rounds` is a PROVISION and not an observation,
@@ -1042,18 +1049,6 @@ export interface ReclamationThresholds {
    *  why an allowance without a ceiling is a total outage filed as an excuse, and `config.ts` for the
    *  number and what it costs in both directions. */
   strandedAllowanceRounds: number;
-  /** `ROUND_RETENTION` — the chain's own `MIN_RETAINED_ROUNDS`, and the only chain fact this module
-   *  is given.
-   *
-   *  PASSED IN RATHER THAN HELD, WHICH IS THE SAME POSITION THIS FILE TAKES ON IT ELSEWHERE.
-   *  `burnBrake`'s doc block states the `armAfter - windowSamples >= ROUND_RETENTION` relation and
-   *  then refuses to check it, because holding a copy of the chain's retention window here would be a
-   *  second source of truth for a number `src/chain/constants.ts` owns and `config.ts` validates.
-   *  Arriving as a threshold is not the same thing as being held: it is a value the caller measured
-   *  out, exactly like `stopAtGapRounds`, and this module still asserts nothing about what it should
-   *  be. `strandedLedgerIsComplete` needs it to know where the closer's walk ENDS — the cursor never
-   *  looks at a round newer than this — and there is no other way to ask that question. */
-  retentionRounds: number;
 }
 
 /**

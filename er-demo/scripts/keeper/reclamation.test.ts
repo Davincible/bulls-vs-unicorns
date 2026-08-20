@@ -110,6 +110,7 @@ const closer = (over: Partial<ReclamationState["closer"]> = {}): ReclamationStat
     strandedNeverTerminalTotal: neverTerminal.length,
     strandedStillDelegatedTotal: stillDelegated.length,
     closing: true,
+    caughtUpOnce: true,
     ...over,
   };
 };
@@ -131,7 +132,6 @@ const THRESHOLDS = {
   windowSamples: WINDOW,
   stopAtGapRounds: STOP_AT_GAP,
   strandedAllowanceRounds: STRANDED_ALLOWANCE,
-  retentionRounds: RETENTION,
 };
 
 const ROUNDS_PER_DAY = 424;
@@ -377,19 +377,18 @@ describe("the window is bounded", () => {
 //   FALSE POSITIVE   the stop LATCHES a healthy arena shut, and a latched stop needs a person and a
 //                    restart to clear. There is no second chance in that direction.
 
-/** A CLOSER THAT HAS CAUGHT UP WITH WHATEVER ARENA IT IS HANDED — its cursor one round past the
- *  retention boundary, which is where a healthy keeper's cursor actually sits and is the position
- *  that makes its stranded ledger COMPLETE.
+/** A CLOSER THAT HAS WALKED THIS ARENA'S HISTORY — the latch set, and the cursor parked at the
+ *  retention boundary where a healthy keeper's actually sits.
  *
- *  DERIVED FROM THE ARENA RATHER THAN A LARGE CONSTANT, because the tests below move `round_counter`
- *  from 400 to 900 and a fixed cursor would silently fall behind partway through the table — turning
- *  a test about the THRESHOLD into a test about a rebuild, and passing for the wrong reason. */
+ *  THE CURSOR IS DERIVED FROM THE ARENA AND DECIDES NOTHING, which is the point after the correction:
+ *  the stop reads the LATCH, so these tests keep the cursor realistic without letting it be the thing
+ *  under test. The rebuild block below drives the latch directly. */
 const caughtUp = (arena: ReclamationState["arena"], over: Partial<ReclamationState["closer"]> = {}) =>
-  closer({ cursor: (arena?.roundCounter ?? 1) - RETENTION + 1, ...over });
+  closer({ cursor: (arena?.roundCounter ?? 1) - RETENTION + 1, caughtUpOnce: true, ...over });
 
-/** ONE CALL OF THE STOP against a closer that has caught up with the arena it is given, so that a
- *  test which says nothing about the rebuild is not silently testing one. `ledger` is the stranded
- *  bookkeeping under test; `over` is anything else about the keeper (the latch, mostly). */
+/** ONE CALL OF THE STOP against a closer that has walked this arena's history, so that a test which
+ *  says nothing about the rebuild is not silently testing one. `ledger` is the stranded bookkeeping
+ *  under test; `over` is anything else about the keeper (the latch, mostly). */
 const stop = (
   arena: ReclamationState["arena"],
   ledger: Partial<ReclamationState["closer"]> = {},
@@ -479,7 +478,7 @@ describe("the sweep-gap stop latches, because its input recovers on its own and 
     // exactly what must never CAUSE a trip (see the block below). The latch is what makes those two
     // positions consistent rather than contradictory.
     expect(stop(null, {}, LATCHED)).toEqual(verdict({
-      gap: null, effectiveGap: null, ledgerComplete: false, tripped: true,
+      gap: null, effectiveGap: null, tripped: true,
     }));
     expect(stop(polled(412, null), {}, LATCHED).tripped).toBe(true);
   });
@@ -499,10 +498,7 @@ describe("what a missing or stale poll is allowed to do, which is nothing", () =
     // NOT COMPUTED IS NOT ZERO AND IT IS CERTAINLY NOT A LEAK. This is the state every process is in
     // for its first `TREASURY_POLL_SECONDS`, and a stop that fired here would stop every keeper on
     // every boot.
-    // `ledgerComplete: false` — with no poll there is no boundary to show the cursor has caught up
-    // with — but the allowance is ZERO rather than the provisional cap, because there is no gap to
-    // provision against. A keeper that has not looked publishes nothing it has not claimed.
-    expect(stop(null)).toEqual(verdict({ gap: null, effectiveGap: null, ledgerComplete: false }));
+    expect(stop(null)).toEqual(verdict({ gap: null, effectiveGap: null }));
   });
 
   it("does not trip on a program with no Treasury account", () => {
@@ -510,9 +506,6 @@ describe("what a missing or stale poll is allowed to do, which is nothing", () =
     // before there is anything to read. A null `roundsSwept` differenced as zero would publish a gap
     // equal to the whole of that arena's history and stop it instantly — which is why `sweepGapOf`
     // answers null rather than defaulting, and why that null is checked here as well as there.
-    // The allowance reads 0 rather than the provisional cap here, unlike the never-polled case above:
-    // the poll LANDED, so the cursor can be compared against a boundary and the ledger is complete.
-    // Only the treasury account is missing, which is what nulls the gap.
     expect(stop(polled(412, null))).toEqual(verdict({ gap: null, effectiveGap: null }));
     // Including at a round count far past the threshold, which is the case that would have fired.
     expect(stop(polled(9_999, null)).tripped).toBe(false);
@@ -751,9 +744,9 @@ describe("the stranded ledger is process state, and a restart must not read as a
   // argument: while it has not finished looking it grants the WHOLE CAP rather than the little it has
   // counted, and goes on deciding. It does not wait for the closer. The last two are why.
 
-  /** A keeper that has just booted: cursor at #1, nothing recorded, nothing walked yet. */
+  /** A keeper that has just booted: cursor at #1, nothing recorded, and the history latch unset. */
   const rebuilding = (over: Partial<ReclamationState["closer"]> = {}) =>
-    closer({ cursor: 1, closing: true, ...over });
+    closer({ cursor: 1, closing: true, caughtUpOnce: false, ...over });
 
   const midRebuild = (arena: ReclamationState["arena"], over: Partial<ReclamationState> = {}) =>
     sweepGapStop(state({ arena, closer: rebuilding(), ...over }), THRESHOLDS);
@@ -809,13 +802,13 @@ describe("the stranded ledger is process state, and a restart must not read as a
   });
 
   it("cannot be switched off by a closer that has stopped walking, which was the first design", () => {
-    // THE DEFECT IN THE VERSION THIS REPLACED, PINNED SO IT CANNOT COME BACK. That version refused to
-    // trip at all while the ledger was incomplete — and "incomplete" is a state a BROKEN keeper sits
-    // in permanently: `closeOneFinishedRound` awaits `fetchRound` and `isDelegated` outside any
-    // `try`, and `withReadRetry` rethrows, so one round below the retention boundary that cannot be
-    // read wedges the cursor there for the life of the process. Under a veto that arena's stop was
-    // disabled while it went on spending. Here the cursor is stuck at #300 with an empty ledger and a
-    // runaway gap, and the stop fires.
+    // THE DEFECT IN THE FIRST VERSION, PINNED SO IT CANNOT COME BACK. That version refused to trip at
+    // all while the ledger was incomplete — and "incomplete" is a state a BROKEN keeper sits in
+    // permanently: `closeOneFinishedRound` awaits `fetchRound` and `isDelegated` outside any `try`,
+    // and `withReadRetry` rethrows, so one round below the retention boundary that cannot be read
+    // wedges the cursor there for the life of the process. Under a veto that arena's stop was disabled
+    // while it went on spending. Here the keeper has never caught up, the gap has run away, and the
+    // stop fires anyway.
     const wedged = sweepGapStop(state({
       arena: atGap(500), closer: rebuilding({ cursor: 300 }),
     }), THRESHOLDS);
@@ -823,14 +816,65 @@ describe("the stranded ledger is process state, and a restart must not read as a
     expect(wedged.tripped).toBe(true);
   });
 
+  it("fires at the DERIVED threshold on a keeper that walked history and then got wedged", () => {
+    // THE DEFECT IN THE SECOND VERSION, AND THE REASON `caughtUpOnce` IS A LATCH RATHER THAN THE LIVE
+    // COMPARISON `cursor + retention > roundCounter`. That comparison is the exact complement of
+    // `isPastRetention`, so it says "not finished" whenever the cursor is behind FOR ANY REASON — and
+    // a wedged cursor is the STEADY STATE OF A SWEEP OUTAGE. Sweeps start failing, the cursor reaches
+    // the oldest unswept round, takes `sweep-first`, the sweep is refused, and it sits there while
+    // `round_counter` climbs away from it.
+    //
+    // Read live, that keeper is "still rebuilding" for the whole outage: provisioned the full cap, and
+    // tripping at a raw gap of 50 instead of 25 — ~85 minutes and ~0.587 SOL of rent overdue, in the
+    // precise fault this stop exists for, and DOUBLE the latency of the veto design it replaced. The
+    // latch says what actually happened: this process walked the history, so judge it on the ledger it
+    // built. Cursor at 300 against a counter of 425 — a long way behind — and the stop fires at the 25
+    // `SWEEP_GAP_STOP_ROUNDS` is derived for.
+    const wedgedAfterWalking = sweepGapStop(state({
+      arena: atGap(STOP_AT_GAP), closer: closer({ cursor: 300, caughtUpOnce: true }),
+    }), THRESHOLDS);
+    expect(wedgedAfterWalking.ledgerComplete).toBe(true);
+    expect(wedgedAfterWalking.allowance).toBe(0);          // judged on what it found, not provisioned
+    expect(wedgedAfterWalking.effectiveGap).toBe(STOP_AT_GAP);
+    expect(wedgedAfterWalking.tripped).toBe(true);
+
+    // And one round below it, so the boundary is the claim rather than the direction.
+    expect(sweepGapStop(state({
+      arena: atGap(STOP_AT_GAP - 1), closer: closer({ cursor: 300, caughtUpOnce: true }),
+    }), THRESHOLDS).tripped).toBe(false);
+  });
+
+  it("does not flap on a healthy arena every time round_counter moves", () => {
+    // THE OTHER COST OF THE LIVE COMPARISON, and the reason it would have been noise as well as slow.
+    // The instant `round_counter` increments, one more round falls past the retention boundary and the
+    // cursor is behind again until an idle pass disposes of it — which cannot happen during `Drawing`
+    // or `Fight`. So `cursor + retention > roundCounter` toggles EVERY ROUND on a perfectly healthy
+    // arena, and `/reclamation.json` would show `allowance.rounds` toggling with it forever. A field
+    // that changes for no reason is a field nobody reads on the day it means something — the same
+    // argument that put the gap clamp on the provision.
+    //
+    // The latch is stable across the increment: the ledger, the allowance and the verdict are
+    // identical either side of it.
+    const before = sweepGapStop(state({
+      arena: polled(669, 667), closer: closer({ cursor: 650, strandedStillDelegatedTotal: 1 }),
+    }), THRESHOLDS);
+    const after = sweepGapStop(state({
+      arena: polled(670, 667), closer: closer({ cursor: 650, strandedStillDelegatedTotal: 1 }),
+    }), THRESHOLDS);
+    expect(before.ledgerComplete).toBe(true);
+    expect(after.ledgerComplete).toBe(true);
+    expect(after.allowance).toBe(before.allowance);
+    expect(after.tripped).toBe(before.tripped);
+  });
+
   it("is not fooled by one pass of ordinary housekeeping in the middle of a rebuild", () => {
-    // THE OTHER HALF OF THE SAME MISTAKE. The rejected design also treated "the cursor did not advance
+    // THE OTHER HALF OF THE SAME MISTAKE. The first design also treated "the cursor did not advance
     // this pass" as proof the closer had finished — so a `sweep-first` (which is one pass of
     // housekeeping on a healthy arena: swept now, closed next pass) or a single close failure (which
     // CLOSE_ATTEMPTS_PER_ROUND exists to ride out) would have declared an EMPTY ledger complete and
     // handed the raw gap of 26 straight to the threshold. Nothing about a single pass is an input to
-    // this any more: what the closer is doing right now cannot change the verdict, only how far it has
-    // WALKED can.
+    // this any more: what the closer is doing right now cannot change the verdict, only whether this
+    // process has ever WALKED to the boundary can.
     const stalled = sweepGapStop(state({
       arena: atGap(26), closer: rebuilding({ cursor: 300 }),
     }), THRESHOLDS);
@@ -851,15 +895,21 @@ describe("the stranded ledger is process state, and a restart must not read as a
     expect(noCloser.tripped).toBe(true);
   });
 
-  it("is complete immediately on an arena younger than its own retention window", () => {
-    // There is no history to re-walk. `isPastRetention`'s underflow argument in `roundCloser.ts`, in
-    // this file's terms: a cursor at #1 against a `round_counter` of 4 has already seen everything
-    // there is, and the comparison is written as addition so it says so rather than going negative.
-    const young = sweepGapStop(state({
-      arena: polled(4, 3), closer: closer({ cursor: 1 }),
+  it("is complete on a young arena as soon as the keeper says so, and not before", () => {
+    // A cursor at #1 against a `round_counter` of 4 has already seen everything there is, so the
+    // keeper's own `isPastRetention` check sets the latch on its first idle pass and this reads
+    // complete. THE ARITHMETIC IS THE KEEPER'S, NOT THIS MODULE'S, and that is the change: this file
+    // used to re-derive "has the cursor caught up" from `cursor`, `round_counter` and a retention
+    // window it had to be handed. It reads one bit instead. Before that first idle pass the latch is
+    // false and a young arena is provisioned like any other — which costs nothing, because its gap
+    // cannot reach the threshold in the first place.
+    const young = (caughtUpOnce: boolean) => sweepGapStop(state({
+      arena: polled(4, 3), closer: closer({ cursor: 1, caughtUpOnce }),
     }), THRESHOLDS);
-    expect(young.ledgerComplete).toBe(true);
-    expect(young.gap).toBe(1);
+    expect(young(true).ledgerComplete).toBe(true);
+    expect(young(true).gap).toBe(1);
+    expect(young(false).ledgerComplete).toBe(false);
+    expect(young(false).tripped).toBe(false);
   });
 
   it("turns the allowance off completely at a cap of zero, in BOTH ledger states", () => {
@@ -1008,7 +1058,7 @@ describe("the sweep gap, which COST-MODEL names as the health metric", () => {
     // this endpoint's whole audience is somebody reading it during an incident minutes after a
     // restart.
     const report = summarise(state({
-      arena: atGap(30), closer: closer({ cursor: 1, strandedNeverTerminalTotal: 0 }),
+      arena: atGap(30), closer: closer({ cursor: 1, caughtUpOnce: false, strandedNeverTerminalTotal: 0 }),
     }));
     expect(report.sweep.allowance.ledgerComplete).toBe(false);
     expect(report.sweep.allowance.rounds).toBe(STRANDED_ALLOWANCE);

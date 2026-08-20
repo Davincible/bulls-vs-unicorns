@@ -421,6 +421,41 @@ interface KeeperContext {
    *  with no explanation beside it is the same species of alarming-and-wrong reading this whole
    *  change exists to delete. */
   closeCatchUpAhead: boolean;
+  /** HAS THE CLOSE CURSOR REACHED THE RETENTION BOUNDARY AT LEAST ONCE IN THIS PROCESS? False at boot,
+   *  set the first time `closeOneFinishedRound` finds nothing left to close, and NEVER CLEARED.
+   *
+   *  WHAT READS IT: `strandedLedgerIsComplete` in `reclamation.ts`, which decides whether the sweep-gap
+   *  stop's allowance is the rounds the closer has RECORDED or a provisional grant of the whole cap.
+   *
+   *  A LATCH RATHER THAN THE LIVE COMPARISON, AND THIS IS THE WHOLE POINT OF THE FIELD. The obvious
+   *  implementation asks `is the cursor past the boundary right now`, needs no state at all, and is
+   *  wrong in the one regime that matters. That question is the exact complement of `isPastRetention`,
+   *  so it answers "no" whenever the cursor is behind — and A WEDGED CURSOR IS THE STEADY STATE OF A
+   *  SWEEP OUTAGE. Sweeps start failing, the cursor reaches the oldest unswept round, takes
+   *  `sweep-first`, the sweep is refused, and it sits there for the length of the fault while
+   *  `round_counter` climbs. Read live, that keeper is "still rebuilding" forever: it would be granted
+   *  the full allowance for the whole outage and the stop would fire at a raw gap of 50 instead of the
+   *  25 `SWEEP_GAP_STOP_ROUNDS` is derived for — ~85 minutes and ~0.587 SOL of rent overdue, in the
+   *  precise fault the stop exists to catch.
+   *
+   *  THE LATCH SEPARATES THE TWO CASES THAT LOOK IDENTICAL FROM THE CURSOR'S POSITION. Below the
+   *  boundary having NEVER been past it is a keeper that has genuinely not read this arena's history —
+   *  the post-restart window the allowance exists for. Below the boundary having ALREADY been past it
+   *  is a keeper that walked everything and is now stuck, which is an outage and must be judged on the
+   *  ledger it built. One bit of monotonic state buys that distinction; nothing derivable from the
+   *  cursor alone can.
+   *
+   *  IT ALSO STOPS THE PUBLISHED ALLOWANCE FLAPPING. The live comparison goes false for a moment every
+   *  single round — the instant `round_counter` increments, one more round falls past the boundary and
+   *  the cursor is behind again until an idle pass disposes of it, which cannot happen during `Drawing`
+   *  or `Fight`. `/reclamation.json` would show `allowance.rounds` toggling forever on a healthy arena,
+   *  and a field that changes for no reason is a field nobody reads on the day it means something.
+   *
+   *  NEVER CLEARED, on `closeCursorKnownLiveAt`'s argument turned inside out. That field is a round
+   *  number so it self-invalidates as the cursor moves; this one must NOT invalidate, because what it
+   *  records is not where the cursor is but what this process has already done. There is one writer
+   *  and there is deliberately no unwriter. */
+  closeCursorCaughtUp: boolean;
   /** Consecutive failures against the round the cursor is on, so one round the keeper cannot fix
    *  cannot hold every older round's rent hostage behind it. */
   closeAttempts: number;
@@ -1735,6 +1770,12 @@ async function closeOneFinishedRound(ctx: KeeperContext, state: KeeperChainState
     // `KeeperContext.closeCatchUpAhead`; without this clear, a boot scan that was cut short on an
     // arena which then went quiet would suspend burn sampling for the life of the process.
     ctx.closeCatchUpAhead = false;
+    // AND THE ONE PLACE THE HISTORY LATCH IS SET. Reaching here means the cursor has walked every
+    // round this closer will ever look at — `isPastRetention` above is the boundary — so the stranded
+    // ledger now holds everything this process is going to find. It is set once and never cleared:
+    // see `KeeperContext.closeCursorCaughtUp` for why the LATCH rather than the live comparison is
+    // what the sweep-gap stop's allowance is allowed to read.
+    ctx.closeCursorCaughtUp = true;
     return;
   }
 
@@ -1907,12 +1948,21 @@ function reclamationStateOf(ctx: KeeperContext, observedAtSec: number): Reclamat
       skippedTotal: ctx.closeSkipped.total,
       strandedNeverTerminalTotal: ctx.closeStrandedNeverTerminal.total,
       strandedStillDelegatedTotal: ctx.closeStrandedStillDelegated.total,
-      // THE TWO FIELDS THE SWEEP-GAP STOP'S ALLOWANCE IS GATED ON, and the same conjunction
-      // `closeOneFinishedRound` opens with — one place decides whether the closer is running, and this
-      // is a copy of that decision rather than a second opinion about it. A keeper that closes nothing
-      // never fills the stranded ledger, so `strandedLedgerIsComplete` has to know the difference
-      // between "still looking" and "never going to look".
+      // THE TWO FIELDS THE SWEEP-GAP STOP'S ALLOWANCE IS SIZED FROM, and between them they answer one
+      // question: is the stranded ledger everything this keeper is ever going to know?
+      //
+      // `closing` is the same conjunction `closeOneFinishedRound` opens with — one place decides
+      // whether the closer runs, and this is a copy of that decision rather than a second opinion
+      // about it. A keeper that closes nothing never fills the ledger at all, which is a different
+      // fact from not having filled it YET.
+      //
+      // `caughtUpOnce` is the latch, handed over as the bit it is rather than as the three numbers it
+      // could be re-derived from. `reclamation.ts` deliberately does not hold a retention window — see
+      // `burnBrake`'s doc block on why a second copy of a chain constant is a defect waiting — and, far
+      // more importantly, re-deriving it there would recompute the LIVE comparison, which is the
+      // predicate `KeeperContext.closeCursorCaughtUp` exists to replace.
       closing: ctx.options.closeRounds && ctx.features.roundAccountClose,
+      caughtUpOnce: ctx.closeCursorCaughtUp,
     },
     burnSamplesLamports: ctx.burnSamplesLamports,
     burnSamplingSuspended: ctx.closeCatchUpAhead,
@@ -1934,11 +1984,6 @@ const RECLAMATION_THRESHOLDS: ReclamationThresholds = {
   windowSamples: BURN_SAMPLE_ROUNDS,
   stopAtGapRounds: SWEEP_GAP_STOP_ROUNDS,
   strandedAllowanceRounds: STRANDED_ALLOWANCE_ROUNDS,
-  // THE CHAIN'S OWN WINDOW, HANDED OVER RATHER THAN RE-DERIVED THERE. `reclamation.ts` needs it to
-  // know where the close cursor's walk ends and refuses to hold a copy of it — see the field's
-  // comment on `ReclamationThresholds`, and `burnBrake`'s doc block for the same position taken about
-  // the same number.
-  retentionRounds: ROUND_RETENTION,
 };
 
 /** The report as the bytes `GET /reclamation.json` serves. One place builds it, so the boot seed and
@@ -2176,10 +2221,20 @@ function sweepIsKeepingUp(ctx: KeeperContext, roundNo: bigint): boolean {
     // wrong number this file keeps deleting.
     error(verdict.ledgerComplete
       ? `  ${verdict.allowance} of those can never be swept by anything (rounds the closer found stranded${verdict.allowanceCapped ? `, CAPPED at ${STRANDED_ALLOWANCE_ROUNDS}` : ""}),`
-      : `  ${verdict.allowance} were allowed for rounds nothing can sweep — the FULL allowance, granted because the closer`);
+      : `  ${verdict.allowance} were allowed for rounds nothing can sweep — an ASSUMPTION, not a count: this keeper's`);
     if (!verdict.ledgerComplete) {
-      error(`  has not finished walking this arena's history yet, so this stop assumed the most it could ever`);
-      error(`  owe rather than the ${ctx.closeStrandedNeverTerminal.total + ctx.closeStrandedStillDelegated.total} it has actually found so far —`);
+      // WHAT `!ledgerComplete` ACTUALLY MEANS HERE, WHICH IS NOT "IT IS STILL EARLY". The latch is set
+      // the first time the close cursor reaches the retention boundary, so a keeper reporting false
+      // has NEVER got there — either it booted moments ago, or its cursor is stuck on a round it
+      // cannot get past and never will. On a process that has been up for six days the second reading
+      // is the true one, and a line saying "still walking, give it a minute" would send an operator
+      // away from the actual fault at three in the morning. Both are named, in that order, because
+      // the uptime on the line above already tells the reader which one they are looking at.
+      error(`  close cursor has never once reached the retention boundary, so the stop granted the most it`);
+      error(`  could ever owe (${STRANDED_ALLOWANCE_ROUNDS}) rather than the ${ctx.closeStrandedNeverTerminal.total + ctx.closeStrandedStillDelegated.total} rounds it has actually found. Either this keeper`);
+      error(`  started moments ago, or ITS CLOSER IS STUCK — check closer.cursor against round_counter on`);
+      error(`  ${RECLAMATION_PATH}: a cursor that is not moving between reads is a round it cannot get past,`);
+      error(`  and that round is the thing to look at first —`);
     }
     error(`  leaving ${verdict.effectiveGap === null ? "an unknown number" : verdict.effectiveGap} that should have been swept and were not — at or past the stop of`);
     error(`  ${SWEEP_GAP_STOP_ROUNDS} (KEEPER_SWEEP_GAP_STOP_ROUNDS). A round cannot be closed until it has been swept —`);
@@ -2665,6 +2720,10 @@ async function main(): Promise<void> {
       // `allowance.ledgerComplete: false` (a closer that has not started walking) or `true` (a keeper
       // that will never walk, and whose allowance is therefore permanently zero).
       closing: options.closeRounds && features.roundAccountClose,
+      // Nothing has been walked yet. The boot scan may have moved the cursor a long way, but moving
+      // past rounds the chain says are GONE is not the same as having reached the boundary, and this
+      // seed is rendered before even that has run.
+      caughtUpOnce: false,
     },
     burnSamplesLamports: [],
     // Boot has not run the close-cursor scan yet, so nothing is being held back — and saying "true"
@@ -2970,6 +3029,11 @@ async function main(): Promise<void> {
     closeCursor: closeCursorSeed.cursor,
     closeCursorKnownLiveAt: closeCursorSeed.knownLiveAt,
     closeCatchUpAhead: closeCursorSeed.catchUpAhead,
+    // FALSE EVEN WHEN THE BOOT SCAN RAN CLEAN, and the distinction is the one this field exists for.
+    // `seedCloseCursor` proves rounds ABSENT; it does not decide about the living ones, and the
+    // stranded ledger behind it is empty. Only `closeOneFinishedRound` reaching the retention boundary
+    // means "there is nothing left for me to find", and that is the one place this is set.
+    closeCursorCaughtUp: false,
     closeAttempts: 0,
     closeRetryAfterSec: 0,
     rentReclaimed: 0,

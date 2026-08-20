@@ -798,7 +798,9 @@ if (!Number.isInteger(SWEEP_GAP_STOP_ROUNDS) || SWEEP_GAP_STOP_ROUNDS <= ROUND_R
  *  outage — the allowance delays this stop from ~25 rounds to ~50: from ~1.4 hours and ~0.59 SOL
  *  stranded to ~2.8 hours and ~1.17 SOL. The extra ~0.59 SOL, about 4% of the 14.9 SOL the operator
  *  runs on, is the price of not stopping a healthy arena, paid only in an outage that has already
- *  happened.
+ *  happened. The same 25 rounds are the ceiling on every other way this can be slow, including the
+ *  restart-into-an-outage case at the bottom of this comment — nothing here can cost more than the
+ *  cap, which is the property that makes one number enough.
  *
  *  THE CHECK THAT MAKES 25 THE LARGEST DEFENSIBLE NUMBER RATHER THAN A ROUND ONE. 25 + 25 = 50 rounds
  *  against `BURN_ARM_AFTER_ROUNDS` = 45: in this stop's WORST case the two witnesses form their
@@ -828,6 +830,38 @@ if (!Number.isInteger(SWEEP_GAP_STOP_ROUNDS) || SWEEP_GAP_STOP_ROUNDS <= ROUND_R
  *  a special case — `sweepGapStop` grants `min(recorded, cap)` or `cap`, and both are zero here.
  *  Negative and fractional values are refused below rather than clamped, on `SWEEP_GAP_STOP_ROUNDS`'
  *  argument.
+ *
+ *  ─────────────────────────────────────────────────────────────────────────────────────────────
+ *  WHERE 25 IS NOT THE NUMBER, STATED BECAUSE IT IS THE ONE REGIME THAT DOES NOT GET THE DERIVATION
+ *  ─────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ *  `SWEEP_GAP_STOP_ROUNDS`' own derivation above — the retention boundary plus five rounds, ~17
+ *  minutes, ~0.117 SOL — is what a sweep outage gets on a keeper that has been up long enough to have
+ *  walked this arena's history once. That is the ordinary case and it is unaffected by anything here:
+ *  `strandedLedgerIsComplete` latches on the first time the close cursor reaches the boundary, so a
+ *  long-running keeper is judged on the ledger it actually built and the allowance is whatever it
+ *  found — nothing on an arena with no stranded rounds.
+ *
+ *  THE EXCEPTION IS A KEEPER THAT RESTARTS INTO AN OUTAGE THAT IS ALREADY RUNNING. Its cursor walks
+ *  history, reaches the oldest unswept round, and wedges there on `sweep-first` — so it never reaches
+ *  the boundary, the latch never sets, and it is provisioned this full cap for as long as the fault
+ *  lasts. That keeper stops at a raw gap of `SWEEP_GAP_STOP_ROUNDS + this` = 50 rather than 25: ~85
+ *  minutes and ~0.587 SOL of rent overdue rather than ~17 minutes and ~0.117.
+ *
+ *  IT IS THE RIGHT ANSWER FOR THAT CASE AND NOT MERELY THE PRICE OF ONE. A process that has never once
+ *  reached the boundary has genuinely never read this arena's history: it cannot tell an arena with
+ *  fifty dead rounds from an arena whose sweeps have stopped, because the evidence that separates them
+ *  is exactly the evidence it has not gathered yet. Being cautious there is what the allowance IS. The
+ *  rent in question is also OVERDUE rather than lost — sweeping is not destructive and a swept round
+ *  stays closeable forever — so every lamport of that 0.587 comes back when the cause is fixed, which
+ *  is not true of the stranded rounds this cap is sized against.
+ *
+ *  WHAT IT WOULD COST TO CLOSE THE GAP, AND WHY IT IS NOT WORTH IT: the keeper would have to
+ *  distinguish "wedged" from "still walking" WITHIN a single process that has never caught up, and
+ *  `strandedLedgerIsComplete` records at length why no single-pass observation does that — `sweep-first`
+ *  and a lone close failure are ordinary housekeeping, and treating either as an outage signature
+ *  latches healthy arenas. The remaining option is a timer, which is the wall-clock reasoning rejected
+ *  twice already on this page.
  *
  *  WHERE TO WATCH IT: `sweep.allowance` in `/reclamation.json` carries the rounds excused, this cap,
  *  and `capped` — which goes true the moment the closer has found more unsweepable rounds than this
