@@ -23,6 +23,11 @@ has ever attempted.**
 **The first thing to build is not code. It is two experiments (§7, E1 and E2), and E1 costs
 nothing but a program id this repo has burned seven times already.**
 
+**E2 is done — 2026-08-20, and it did not change the recommendation.** Forced undelegation is still
+absent from our devnet, so the rescue still cannot wait for MagicBlock and §5.1's base-layer refund is
+still the only path. That leaves **E1 as the one experiment holding up the programme**, which is where
+§7 always said the weight was. (§7 E4 is also done and §6.3 holds; it was never a gate.)
+
 ### 0.1 What must be true before the first real dollar
 
 Eleven gates. Nine are work; two are measurements that could come back "no", and if either does,
@@ -579,14 +584,35 @@ that there isn't one.
 **What happens.** The round is delegated. The Delegation Program owns the `Round`. Nothing
 undelegates it. `lock_settlement` can never run because `round.owner != game_program`, forever.
 
-**What the repo believes about the platform, inherited and flagged as such.** `COST-MODEL.md` §4.3
-records that forced undelegation exists in the delegation program's v3.1.0 API but is **not
-deployed on the devnet we run on**, verified twice — a ProgramData write slot ~112–140 days stale,
-and a `simulateTransaction` probe with a control. **I did not re-run either probe.** I confirmed
-independently only that the delegation program's public instruction set includes `Delegate`,
-`CommitState`, `Finalize` and `Undelegate`; I could not confirm the v3.1.0 forced/timeout variant
-or its deployment status from public sources. Treat the repo's two probes as the evidence and §7 E2
-as the re-check.
+**What the platform does, MEASURED — 2026-08-20, `er-demo/scripts/probe-forced-undelegation.ts`.**
+This paragraph used to say "inherited and flagged as such" and to admit "I did not re-run either
+probe". Both probes have now been re-run, they are a committed script, and the answer is unchanged:
+**forced undelegation is NOT deployed on the devnet we run on.** Three independent lines agree.
+
+| line | what it found |
+|---|---|
+| ProgramData age | last written at slot 458,511,904 = **2026-04-27T20:38:44Z**, **114.4 days** ago. Upstream tagged v3.1.0 on 2026-07-08 — **71 days after this bytecode was deployed**, so the running program cannot contain the release |
+| discriminator census | the deployed program implements exactly **0–3 and 5–25**. Indices **26 (`RequestUndelegation`) and 27 (`UndelegateWithRollbackAfterTimeout`) are rejected by the dispatcher itself.** That is exactly v3.0.0's instruction set |
+| ELF byte scan | the `undelegation-request` PDA seed tag — introduced with the feature and present in no earlier version — is **not in the executable**, while `delegation-metadata`, `state-diff`, `commit-state-record` and `undelegate-buffer` all are |
+
+All five of the probe's controls held, which is the only reason the negative means anything: a
+positive control (index 0 `Delegate` reads PRESENT), two negative controls (index 255, and index 4 —
+a real hole in the upstream enum, so absence is detected *inside* the populated range), an addressing
+control (dispatch is on the low byte alone, so every index probes what it claims to), and a
+malformed-data control (three bytes of instruction data returns the same `InvalidInstructionData`
+code as an unknown discriminator **without** the marker log — which is precisely the confusion a
+probe with no control cannot resolve).
+
+**What the feature actually is, from upstream source and NOT from measurement — graded lower on
+purpose.** `COST-MODEL.md` §4.3 and this document both wrote "forced undelegation" as though it were
+one instruction. It is **two**, added together in v3.1.0 (PR #183, tagged 2026-07-08):
+`RequestUndelegation` stamps an `UndelegationRequest` PDA with `expires_at_slot = slot + 9,000`
+(~60 minutes), and only after that slot passes is `UndelegateWithRollbackAfterTimeout`
+permissionless. **Only the second half is permissionless.** Upstream source also reports that the
+request's payer must equal `delegation_metadata.rent_payer` and the delegated account must be
+off-curve — conditions our `Round` may or may not meet. None of that is measured here and it cannot
+be: the instructions are absent, so there is nothing on this cluster to measure them against. Re-run
+the probe after any MagicBlock devnet upgrade; arm A's write slot is the cheap thing to watch.
 
 **The rescue path, and it does not wait for MagicBlock.**
 
@@ -856,7 +882,39 @@ renewal path that is already known to be awkward.
 The fix is available and this repo has already done the hard part: it reimplemented session creation
 directly against `@coral-xyz/anchor` and the `gpl_session` IDL. **Both tokens should be created for
 the same session signer keypair in one transaction, two `create_session` instructions, one wallet
-approval.** Whether that composes cleanly is **unverified** — §7 E4.
+approval.**
+
+**MEASURED — 2026-08-20, `er-demo/scripts/probe-two-session-tokens.ts`. It composes.** One
+transaction, two `create_session` instructions, one session signer keypair, two distinct
+`target_program`s, landed on devnet in one signature
+(`4RMEqKjwhT5Q6DrX85ZKoaP3T5qwvp3u7YUvJc2sBJwPWWpeVmvPKNC7SWxCWv4jGLsQoYzawEDDM1P8fQyXJs8Z`). Read
+off the compiled message rather than asserted: **`numRequiredSignatures = 2`** — the player's wallet
+and the session key the app generates and holds. **One human approval.** Both tokens fetched back and
+decoded through the `gpl_session` IDL carry the same `authority` and the same `session_signer` and
+differ only in `target_program`, which is the property the whole fix rests on. Cost of the run: 40,000
+lamports of fees; both tokens' rent and both top-ups came back.
+
+`arena-vault` does not exist yet, so the vault's target was stood in for by bulls-arena **v1**
+(`F59NksP2…`) — still deployed, still executable, used by nothing. The substitution is sound because
+`create_session`'s *only* check on `target_program` is that the account is executable; the pubkey is
+then a PDA seed and nothing else. No CPI, no owner check, no data read.
+
+**Three things the run added that this section did not anticipate.**
+
+1. **Renewal is now all-or-nothing across both tokens.** The negative control re-sent the identical
+   transaction and it failed exactly as `MAGICBLOCK_FEEDBACK.md` records — `custom program error:
+   0x0`, from `Allocate: account … already in use` — but it failed on the **first** instruction, so
+   the whole transaction reverts. There is no partial refresh of one scope. A renewal is
+   revoke-**both**-then-create-**both**. `useSessionKeyManager.ts`'s 24-hour lifetime argument was
+   written against one token; it should be re-read against two before S3 ships.
+2. **A `SessionToken` is 1,670,400 lamports of rent (0.001670 SOL), so a custody player carries
+   0.003341 SOL in session rent** for the life of a session, paid by the player and refunded on
+   revoke. That number was not in §4.3's cost table because nobody had measured it.
+3. **`revoke_session`'s IDL marks `authority` writable but NOT a signer** — read off
+   `gum-sdk`'s `gpl_session.json`, *not* measured, and graded accordingly. If it behaves as the IDL
+   declares, anyone can revoke anyone's session token; the rent still goes home to the authority, so
+   it is denial-of-service and not theft. Cheap to settle with a `simulateTransaction` probe and
+   worth settling before custody makes a mid-round session revocation cost a player a fight.
 
 ---
 
@@ -976,13 +1034,23 @@ and `Phase::Drawing`.** Three of the four are operator error, and operator error
 here. That is a more defensible reason to build a permissionless refund than an outage distribution
 nobody has.
 
-**E2 — Re-probe forced undelegation.** `COST-MODEL.md`'s two probes are ~1 day old at the time of
-writing but the underlying ProgramData was already ~4 months stale, so this will not change often.
-Re-run both (ProgramData write slot; `simulateTransaction` with a control) before the vault ships,
-and file `MAGICBLOCK_FEEDBACK.md`'s open question — the 2026-08-10 entry asking for a delegation
-lifetime guarantee is the right vehicle and this is sharper than anything currently in it. **If it
-lands, it becomes a second rescue that also recovers the `Round`'s rent. It is not a prerequisite
-under this design, and that is the point.**
+**E2 — Re-probe forced undelegation. RUN 2026-08-20. Answer: still NOT deployed.** It is now
+`er-demo/scripts/probe-forced-undelegation.ts` and re-runnable in one command, which was the actual
+problem — a claim this load-bearing had no script behind it, only a sentence citing a session nobody
+could replay. Read-only: it signs nothing, sends nothing, never touches the arena, and is safe beside
+the live keeper. Full result and its three lines of evidence are in §5.1. Headline: the running
+bytecode is **114.4 days old and predates upstream's v3.1.0 tag by 71 days**, discriminators 26 and 27
+are rejected by the dispatcher itself, and the feature's PDA seed tag is absent from the executable.
+**It did not land, so §5.1's residuals stand unchanged: the `Round`'s 0.023497 SOL is stranded
+permanently and the base-layer refund is the only rescue.** Still worth filing against
+`MAGICBLOCK_FEEDBACK.md`'s 2026-08-10 delegation-lifetime entry — the ask is now specific ("deploy
+v3.1.0 to devnet") rather than general, which is sharper than anything currently in it.
+
+*Two things worth keeping from how the answer was reached.* The probe was widened from "ask about one
+discriminator, with a control" to **a census of the whole discriminator space with five controls**,
+and that widening earned its keep immediately — see §11. And the enum's shape means "forced
+undelegation" is **two** instructions, not one, with only the second permissionless; §5.1 records
+that and grades it as upstream-source rather than measured.
 
 **E3 — Measure the entry path.** CU and transaction size for `arena_vault::enter_delegated` with
 its vault→game CPI (~14 accounts), and how many fit in one 1,232-byte transaction. This decides
@@ -991,8 +1059,23 @@ existing discipline of calling the real instruction rather than a stand-in — t
 repo earned the hard way when a hand-copied `bench_fight` drifted enough to make a real `resolve`
 exceed 1.4 M CU.
 
-**E4 — Two session tokens, one transaction, one signer keypair.** Devnet, against the deployed
-`gpl_session` program. Ten lines.
+**E4 — Two session tokens, one transaction, one signer keypair. RUN 2026-08-20. Answer: it works.**
+`er-demo/scripts/probe-two-session-tokens.ts`, devnet, against the deployed `gpl_session` program.
+Two `create_session` instructions in one transaction, one session signer, two `target_program`s,
+**`numRequiredSignatures = 2` — the wallet and the app's own session key, i.e. one human approval.**
+Full result, and the three things it turned up that §6.3 had not anticipated (renewal is all-or-
+nothing across both tokens; a token costs 0.001670 SOL of rent so a pair is 0.003341; `revoke_session`
+appears to need no signature from the authority), are in §6.3.
+
+It was not ten lines. "Ten lines" was an estimate of the *mechanism*, and it was right about that —
+the composition itself is two builder calls and a `.add()`. What it under-costed is the part that
+makes a green run mean something: the controls. A run that mints two tokens and prints "it worked"
+cannot distinguish success from two instructions that quietly wrote the same token twice, so the
+script asserts both targets are real, executable and distinct *before* the test, decodes both tokens
+back off chain through the IDL *after* it, reads the signature count off the compiled message rather
+than inferring it, re-sends the identical transaction as a negative control, and returns every
+lamport it borrowed. **That is the difference between an experiment and a demo**, and it is the same
+lesson §11 records for E2 one paragraph later.
 
 **And one observation that is not an experiment: G9.** `COST-MODEL.md` §4 is explicit that rent
 reclamation **has never run at 48 fighters** — v8's counter is at 4 against a twenty-round retention
@@ -1007,7 +1090,11 @@ size. Continuous mode reaches round 20 in about seventy minutes.
 ### 8.1 Order
 
 **S0 — No program code. Independently valuable. Start here.**
-- E1, E2, E3, E4.
+- ~~E2~~ **DONE 2026-08-20** — `er-demo/scripts/probe-forced-undelegation.ts`. Forced undelegation is
+  still not deployed; §5.1's residuals stand. Re-runnable in one command, which it was not before.
+- ~~E4~~ **DONE 2026-08-20** — `er-demo/scripts/probe-two-session-tokens.ts`. Two tokens, one signer,
+  one transaction, one wallet approval. §6.3 holds, with three amendments recorded there.
+- E1, E3.
 - Observe one full day of rent reclamation at 48 fighters (G9). Watch `Treasury.rounds_swept`
   against `Arena.round_counter`.
 - `reclamation.ts`: a known-stranded-rounds allowance in the sweep-gap stop, so one wedged round
@@ -1248,9 +1335,12 @@ per-fighter payout ever has to happen mid-round.**
 | A closed owner program permanently strands its delegated accounts | **derived** from the undelegation callback being a validator CPI into the `#[ephemeral]`-injected processor | §7 E1-M4. A negative result would be more valuable — it would change §5.5 |
 | How many `enter`s fit one 1,232-byte transaction | **derived arithmetic, no longer a guess: 4 legacy, ~22 with an ALT.** The binding term is one 64-byte signature per entrant | §7 E3-a — build the instruction from the program's own `to_account_metas` and serialize it, so an added account fails the test |
 | 48 seats is still the right cap once a seat costs a transaction and an inventory position | **half-settled: the transaction half is answered and is negligible.** The inventory half is now the whole question | price the ~$480 revolving float and the 48 wallets' SOL |
-| Forced undelegation is absent on our devnet | **inherited** from `COST-MODEL.md` §4.3's two probes; I confirmed only that the delegation program exposes `Delegate`/`CommitState`/`Finalize`/`Undelegate` | §7 E2 |
+| Forced undelegation is absent on our devnet | **MEASURED 2026-08-20** — `er-demo/scripts/probe-forced-undelegation.ts`. Deployed bytecode is 114.4 days old and predates upstream's v3.1.0 tag by 71 days; the discriminator census (five controls, all held) shows exactly v3.0.0's set 0–3 and 5–25, with 26 `RequestUndelegation` and 27 `UndelegateWithRollbackAfterTimeout` rejected by the dispatcher; the `undelegation-request` seed tag is absent from the ELF | settled. Re-run the script after any MagicBlock devnet upgrade — arm A's ProgramData write slot is the cheap watch |
+| What forced undelegation *would* be if deployed — two instructions, only the second permissionless, 9,000-slot (~60 min) timeout, request payer must be `delegation_metadata.rent_payer`, delegated account must be off-curve | **upstream source, NOT measured** — and unmeasurable here, because the instructions are absent from this cluster | re-run §7 E2 after a devnet upgrade; only then is there anything to measure |
 | `enter_delegated` + CPI fits, and 3 fit in one transaction | **guess** | §7 E3, LiteSVM, calling the real instruction |
-| Two session tokens, one signer, one transaction | **unverified** | §7 E4, ten lines against devnet |
+| Two session tokens, one signer, one transaction | **MEASURED 2026-08-20** — `er-demo/scripts/probe-two-session-tokens.ts`. Both minted in one devnet transaction; `numRequiredSignatures = 2` (wallet + app-held session key) read off the compiled message; both tokens decoded back off chain agree on `authority` and `session_signer` and differ only in `target_program` | settled. §6.3 |
+| Renewing the pair costs one revoke-both + one create-both, not a per-token refresh | **MEASURED 2026-08-20**, as E4's negative control — `Allocate: account … already in use` fires on the *first* instruction and the transaction reverts whole | settled, and `useSessionKeyManager.ts`'s 24-hour lifetime argument should be re-read against two tokens before S3 |
+| `revoke_session` needs no signature from the token's authority — anyone can revoke anyone's | **IDL reading, NOT measured** — `gum-sdk`'s `gpl_session.json` marks `authority` writable but not a signer. Rent still returns to the authority, so DoS and not theft | a `simulateTransaction` probe against a live token. Cheap, and worth doing before custody makes a mid-round revocation cost a player a fight |
 | 33 base-layer transactions per round, 0.070 SOL/day | **derived** from a measured 5-tx round and guessed batching | count what the keeper actually produces, as `COST-MODEL.md` §8 does for round cadence |
 | `RoundEscrow` at ~2,844 B → 0.020685 SOL | **derived** arithmetic on a formula that reproduces `Round`'s measured rent exactly | borsh/`size_of` it in the size test |
 | A committed-but-still-delegated `Round` can have ER-authored bytes visible on the base layer | **believed, unverified** — it is why §5.1 refuses to read them. The owner check makes the design safe either way | read a round's base-layer bytes immediately after `resolve` and before `close_round` |
@@ -1285,6 +1375,42 @@ four `MAGICBLOCK_FEEDBACK.md` entries, seven forced ids — and reasoned from it
 without checking that the mechanism produced that consequence. **That is the same shape as the
 `bench_fight` failure `tests/compute.rs` exists to indict:** a claim derived from a probe that had
 drifted from the thing it described.
+
+**E2's ANSWER WAS RIGHT AND ITS PROBE WAS ONE COINCIDENCE AWAY FROM BEING WRONG.** §5.1 and
+`COST-MODEL.md` §4.3 both described the evidence as "a `simulateTransaction` probe with a control" —
+i.e. ask about the forced-undelegation discriminator, ask about a control, compare. Re-running it
+2026-08-20 as a **census of the whole discriminator space** found the thing a single-index probe
+cannot see: **the upstream enum has a hole at index 4.** No variant, never was one, and index 4 in the
+naive numbering everyone writes down first is `Undelegate` — the instruction this arena uses
+successfully every single round. A probe that had asked about index 4 and matched on
+`InvalidInstructionData` would have concluded that ordinary undelegation was absent from a cluster
+that was undelegating a round every three minutes, and it would have looked exactly as convincing as
+the run that got the right answer.
+
+Nothing in the old probe's *description* rules that out. It got the right answer because whoever ran
+it happened to pick the right index — and neither document records which index, so nobody could have
+checked. **The correction is not to the conclusion, which stands. It is that "verified twice" was
+resting on an unrecorded choice, and a probe whose critical input is not written down has not really
+been recorded at all.** The census fixes it structurally: it does not need to know which index to ask
+about, because it asks about all of them and prints the answer. Its two negative controls are index
+255 (absurd, outside any enum) *and* index 4 (real, inside the populated range) precisely so the
+failure above is one the probe now detects rather than one it can commit.
+
+The second-order lesson is the one worth carrying: **this document graded that claim "inherited" and
+was right to, and the grade did its job.** §5.1 said "I did not re-run either probe" and §7 scheduled
+the re-run. The grade is what made the re-run happen, and the re-run is what turned a correct
+conclusion into a defensible one. That is the register earning its keep, not a formality.
+
+**"E4 is ten lines" WAS AN ESTIMATE OF THE WRONG THING, and the same mistake twice in one section.**
+It sized the mechanism — two builder calls and an `.add()`, and it was right about that. It did not
+size the controls, and the controls are the whole difference between a green run and a measurement.
+Two `create_session` instructions that quietly wrote the *same* token twice would also print "it
+worked". Ruling that out means asserting both targets are executable and distinct before the test,
+decoding both tokens back off chain after it, reading `numRequiredSignatures` off the compiled message
+rather than counting instructions, and re-sending the identical transaction as a negative control.
+**Every experiment in §7 is estimated at the cost of its happy path.** E1 was under-costed because its
+mechanism did not do what it was supposed to; E4 because its mechanism did exactly what it was
+supposed to and that was never the expensive part.
 
 **§4.3's BATCHING FACTORS WERE GUESSES, AND THE GUESS WAS NOT THE REAL ERROR.** The band rested on "3
 entries per transaction" and "7 claims", both marked as guesses and both scheduled for measurement
