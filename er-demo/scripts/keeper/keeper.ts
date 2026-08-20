@@ -149,7 +149,8 @@ import {
   BURN_ARM_AFTER_ROUNDS, BURN_SAMPLE_ROUNDS, MAX_BURN_LAMPORTS_PER_ROUND, TREASURY_POLL_SECONDS,
   CLOSE_ATTEMPTS_PER_ROUND, CLOSE_CURSOR_SCAN_MAX_BATCHES, CLOSE_CURSOR_SCAN_SECONDS,
   CLOSE_RETRY_SECONDS, HTTP_PORT, LOW_BALANCE_RECHECK_SECONDS,
-  MIN_BALANCE_LAMPORTS, ROUND_RETENTION, SCHEDULE_CLOSE_RETRY_SECONDS, SWEEP_GAP_STOP_ROUNDS,
+  MIN_BALANCE_LAMPORTS, ROUND_RETENTION, SCHEDULE_CLOSE_RETRY_SECONDS, STRANDED_ALLOWANCE_ROUNDS,
+  SWEEP_GAP_STOP_ROUNDS,
   parseCliOptions,
   type KeeperCliOptions,
 } from "./config.ts";
@@ -405,8 +406,12 @@ interface KeeperContext {
    *  In every one of them the first fetch clears this and sampling resumes. A run of absent rounds is
    *  by definition not an outage; it is the record of work already done.
    *
-   *  AND IT LEAVES NO WINDOW UNGUARDED. `sweepGapStop` needs no history — it is a subtraction over
-   *  chain state, armed on the first treasury poll — and it is untouched by any of this. This is the
+   *  AND IT LEAVES NO WINDOW UNGUARDED. `sweepGapStop`'s measurement is a subtraction over chain
+   *  state, right on the first treasury poll, and this flag does not enter it. (That stop has a
+   *  bounded ALLOWANCE while the closer's stranded ledger is being rebuilt, which is a different
+   *  mechanism and deliberately not a suspension — `strandedLedgerIsComplete` argues why a stop that
+   *  waited for the closer would be a stop the closer could switch off. Nothing there disarms
+   *  anything, and this flag is not an input to it.) This is the
    *  same trade `reclamation.ts`'s header already made and already priced for the 2.6 hours after
    *  every restart in which the brake's ring is refilling: the sweep gap covers the window the brake
    *  cannot see into. Suspending sampling extends that already-argued window by the length of a
@@ -490,8 +495,15 @@ interface KeeperContext {
    *  as the closer sweeps what it can reach — so the gap falls back toward healthy on its own. A
    *  verdict recomputed from the gap alone would clear the stop, reopen the arena, and let the gap
    *  climb to the threshold again: an arena flapping between stopped and spending, which is the leak
-   *  with a duty cycle rather than a brake. So this is handed to `sweepGapStop` as `latched` and the
-   *  answer comes back tripped regardless. Nothing in this process ever sets it back to null. */
+   *  with a duty cycle rather than a brake. So this is handed to `sweepGapStop` — through
+   *  `reclamationStateOf`, in the same record as everything else it reads — and the answer comes back
+   *  tripped regardless. Nothing in this process ever sets it back to null.
+   *
+   *  IT NOW OUTRANKS A SECOND MOVING INPUT AS WELL AS THE GAP. The stop subtracts a stranded-round
+   *  allowance that keeps GROWING after it fires, because the closer goes on walking while the keeper
+   *  is stopped. Without the latch, an allowance that arrived a minute too late would release a stop
+   *  that had already fired — the same flap, from the other direction. `sweepGapStop` takes this
+   *  first, before the allowance can have an opinion. */
   sweepStopSince: number | null;
   /** The most recent operator balance ANY part of this process has read. The reclamation report is
    *  rendered once per pass and must not add a chain call to do it, so it reads this rather than the
@@ -1785,6 +1797,14 @@ async function closeOneFinishedRound(ctx: KeeperContext, state: KeeperChainState
   if (decision.kind === "sweep-first") {
     // The cursor deliberately does NOT move: this is the one case the keeper can fix, and it comes
     // back to the same round next pass to finish the job.
+    //
+    // AND IT IS NOT EVIDENCE OF ANYTHING BEYOND THIS PASS. This branch was briefly stamped onto the
+    // context as "the closer is stuck", for `strandedLedgerIsComplete` to read — which was wrong in
+    // the expensive direction. On a healthy arena this IS one pass of housekeeping: the round is swept
+    // here and closed on the next pass. Read as an outage signature in the middle of a post-restart
+    // rebuild it would have declared the stranded ledger complete while it was still empty, and handed
+    // the raw gap to a stop that latches. That predicate now asks a question no single pass can answer
+    // wrongly; see it for the full argument.
     info(`round #${roundNo} is unswept, so it cannot be closed yet — sweeping it first`);
     await sweepHouseTake(ctx, state, round!, roundPda);
     return;
@@ -1887,6 +1907,12 @@ function reclamationStateOf(ctx: KeeperContext, observedAtSec: number): Reclamat
       skippedTotal: ctx.closeSkipped.total,
       strandedNeverTerminalTotal: ctx.closeStrandedNeverTerminal.total,
       strandedStillDelegatedTotal: ctx.closeStrandedStillDelegated.total,
+      // THE TWO FIELDS THE SWEEP-GAP STOP'S ALLOWANCE IS GATED ON, and the same conjunction
+      // `closeOneFinishedRound` opens with — one place decides whether the closer is running, and this
+      // is a copy of that decision rather than a second opinion about it. A keeper that closes nothing
+      // never fills the stranded ledger, so `strandedLedgerIsComplete` has to know the difference
+      // between "still looking" and "never going to look".
+      closing: ctx.options.closeRounds && ctx.features.roundAccountClose,
     },
     burnSamplesLamports: ctx.burnSamplesLamports,
     burnSamplingSuspended: ctx.closeCatchUpAhead,
@@ -1907,6 +1933,12 @@ const RECLAMATION_THRESHOLDS: ReclamationThresholds = {
   armAfterSamples: BURN_ARM_AFTER_ROUNDS,
   windowSamples: BURN_SAMPLE_ROUNDS,
   stopAtGapRounds: SWEEP_GAP_STOP_ROUNDS,
+  strandedAllowanceRounds: STRANDED_ALLOWANCE_ROUNDS,
+  // THE CHAIN'S OWN WINDOW, HANDED OVER RATHER THAN RE-DERIVED THERE. `reclamation.ts` needs it to
+  // know where the close cursor's walk ends and refuses to hold a copy of it — see the field's
+  // comment on `ReclamationThresholds`, and `burnBrake`'s doc block for the same position taken about
+  // the same number.
+  retentionRounds: ROUND_RETENTION,
 };
 
 /** The report as the bytes `GET /reclamation.json` serves. One place builds it, so the boot seed and
@@ -2104,7 +2136,13 @@ function rentIsComingBack(ctx: KeeperContext, roundNo: bigint): boolean {
  *
  *  LOGGED ONCE PER STRETCH, exactly as the two guards above are, and for their reason. */
 function sweepIsKeepingUp(ctx: KeeperContext, roundNo: bigint): boolean {
-  const verdict = sweepGapStop(ctx.treasury, SWEEP_GAP_STOP_ROUNDS, ctx.sweepStopSince !== null);
+  // THROUGH `reclamationStateOf`, WHICH IS THE SAME FUNCTION THE ENDPOINT RENDERS FROM. The stop now
+  // reads the closer's stranded ledger as well as the treasury poll, and the one thing that must
+  // never happen is the decision and the report it points at being computed from different pictures of
+  // the same keeper — an operator sent to `/reclamation.json` to find out why the arena stopped would
+  // be reading a page that disagrees with the stop. One builder, one shape, no second assembly here.
+  // It reads only fields this process already holds; there is no chain call in it.
+  const verdict = sweepGapStop(reclamationStateOf(ctx, ctx.client.nowSec()), RECLAMATION_THRESHOLDS);
 
   // NO `else` BRANCH CLEARING ANYTHING, and that is the one place this departs from
   // `rentIsComingBack`'s shape rather than copying it. That function clears its own reason when its
@@ -2125,16 +2163,38 @@ function sweepIsKeepingUp(ctx: KeeperContext, roundNo: bigint): boolean {
     ctx.sweepStopSince = ctx.client.nowSec();
     const gap = verdict.gap;
     error(`RENT IS NOT BEING SWEPT — the keeper has STOPPED opening rounds.`);
-    error(`  Arena.round_counter is ${gap === null ? "an unknown number of" : gap} round(s) ahead of Treasury.rounds_swept,`);
-    error(`  at or past the stop of ${SWEEP_GAP_STOP_ROUNDS} (KEEPER_SWEEP_GAP_STOP_ROUNDS). A round cannot be closed until it`);
-    error(`  has been swept — close_round_account answers RoundNotSwept — so every round in that gap is`);
-    error(`  past the ${ROUND_RETENTION}-round retention window with its ~${fmtSol(ROUND_RENT_LAMPORTS)} of rent NOT coming back.`);
+    error(`  Arena.round_counter is ${gap === null ? "an unknown number of" : gap} round(s) ahead of Treasury.rounds_swept.`);
+    // THE THREE NUMBERS, NOT THE ONE, because the decision was made on the third and an operator
+    // reading only the first would go looking for a backlog that is partly not there. The allowance
+    // is a deliberate weakening of this stop and the line that reports the stop is the line that has
+    // to admit it.
+    // AND THE ALLOWANCE LINE SAYS WHICH KIND OF ALLOWANCE IT WAS. `verdict.allowance` is a COUNT of
+    // rounds the closer found when the ledger is complete and a PROVISION of the whole cap when it is
+    // not — see `strandedLedgerIsComplete`. Printing "25 rounds the closer found stranded" about a
+    // keeper that has found none would send an operator hunting through `closer.stranded` for
+    // twenty-five entries that are not there, during an incident, which is exactly the confidently
+    // wrong number this file keeps deleting.
+    error(verdict.ledgerComplete
+      ? `  ${verdict.allowance} of those can never be swept by anything (rounds the closer found stranded${verdict.allowanceCapped ? `, CAPPED at ${STRANDED_ALLOWANCE_ROUNDS}` : ""}),`
+      : `  ${verdict.allowance} were allowed for rounds nothing can sweep — the FULL allowance, granted because the closer`);
+    if (!verdict.ledgerComplete) {
+      error(`  has not finished walking this arena's history yet, so this stop assumed the most it could ever`);
+      error(`  owe rather than the ${ctx.closeStrandedNeverTerminal.total + ctx.closeStrandedStillDelegated.total} it has actually found so far —`);
+    }
+    error(`  leaving ${verdict.effectiveGap === null ? "an unknown number" : verdict.effectiveGap} that should have been swept and were not — at or past the stop of`);
+    error(`  ${SWEEP_GAP_STOP_ROUNDS} (KEEPER_SWEEP_GAP_STOP_ROUNDS). A round cannot be closed until it has been swept —`);
+    error(`  close_round_account answers RoundNotSwept — so every round in that remainder is past the`);
+    error(`  ${ROUND_RETENTION}-round retention window with its ~${fmtSol(ROUND_RENT_LAMPORTS)} of rent NOT coming back.`);
     error(`  Round #${roundNo} was NOT opened. Any round already running is still being driven to a`);
     error(`  terminal state, and the status file now says no next lobby is coming.`);
     error(`  THIS STOP DOES NOT CLEAR ITSELF. The gap will fall on its own once the arena stops opening`);
     error(`  rounds, which is why it must not be read as the problem being fixed. Read ${RECLAMATION_PATH} —`);
-    error(`  closer.stranded.neverTerminal is the count of rounds that can NEVER be swept, and if that is`);
-    error(`  what grew, the threshold is what needs raising rather than the sweep that needs fixing.`);
+    error(`  sweep.allowance says how much of the gap was excused and whether that allowance is CAPPED.`);
+    if (verdict.allowanceCapped) {
+      error(`  IT IS CAPPED, so rounds beyond ${STRANDED_ALLOWANCE_ROUNDS} are counting against this stop again — check whether`);
+      error(`  closer.stranded grew recently (an outage stranding live rounds) or has simply accumulated`);
+      error(`  over the life of the program (in which case KEEPER_STRANDED_ALLOWANCE_ROUNDS is the knob).`);
+    }
     error(`  Fix the cause, then restart the keeper. To run knowingly at this gap, raise`);
     error(`  KEEPER_SWEEP_GAP_STOP_ROUNDS.`);
   }
@@ -2231,7 +2291,7 @@ async function openNextRound(ctx: KeeperContext, roundNo: bigint): Promise<void>
   // `KeeperContext.closeCatchUpAhead` carries the full argument for why this predicate cannot hide a
   // real outage and why the obvious "the cursor is behind" can. In one line: it requires that every
   // round the closer has looked at was ABSENT, and every failure mode puts an EXISTING round under
-  // the cursor. `sweepGapStop` is untouched and stays armed throughout.
+  // the cursor. `sweepGapStop` does not read this flag at all.
   //
   // THIS GUARD AND THE ANCHOR NULLED AT THE BOTTOM OF THIS FUNCTION ARE A PAIR, and neither is dead
   // code. Today the flag only ever goes true at boot and false afterwards, so the anchor being null
@@ -2600,6 +2660,11 @@ async function main(): Promise<void> {
       cursor: 1, reclaimed: 0,
       skipped: [], strandedNeverTerminal: [], strandedStillDelegated: [],
       skippedTotal: 0, strandedNeverTerminalTotal: 0, strandedStillDelegatedTotal: 0,
+      // The close policy is already resolved at this point, so this is the truth rather than a
+      // placeholder — and it is the field that decides whether the seed renders
+      // `allowance.ledgerComplete: false` (a closer that has not started walking) or `true` (a keeper
+      // that will never walk, and whose allowance is therefore permanently zero).
+      closing: options.closeRounds && features.roundAccountClose,
     },
     burnSamplesLamports: [],
     // Boot has not run the close-cursor scan yet, so nothing is being held back — and saying "true"
@@ -2798,7 +2863,13 @@ async function main(): Promise<void> {
   // that can fire in the first minute of a run, on chain state, with no samples and no warm-up, so it
   // is the one that must not be a surprise. Its threshold is env-overridable, and this file's standing
   // rule for those is that the honest way to say "I accept this" is a number the boot banner prints.
-  plain(`  sweep stop     ${SWEEP_GAP_STOP_ROUNDS} round(s) — if round_counter runs this far ahead of Treasury.rounds_swept the keeper opens no more ${c.d}(past the ${ROUND_RETENTION}-round retention window, where an unswept round's rent has stopped coming back; armed on the first treasury poll, and it LATCHES)${c.x}`);
+  plain(`  sweep stop     ${SWEEP_GAP_STOP_ROUNDS} round(s) — if round_counter runs this far ahead of Treasury.rounds_swept the keeper opens no more ${c.d}(past the ${ROUND_RETENTION}-round retention window, where an unswept round's rent has stopped coming back; right on the first treasury poll, and it LATCHES)${c.x}`);
+  // PRINTED BESIDE THE STOP IT WEAKENS, NEVER ON ITS OWN LINE ELSEWHERE. The allowance is the reason
+  // the number above is not compared against the raw gap, and an operator reading `sweep stop 25`
+  // against a `/reclamation.json` showing a gap of 27 and a running keeper would otherwise conclude
+  // the stop was broken. Same rule as the line above it: the honest way to say "I accept this" is a
+  // number the boot banner prints.
+  plain(`  stranded allow ${STRANDED_ALLOWANCE_ROUNDS === 0 ? "off — the stop compares the raw gap" : `up to ${STRANDED_ALLOWANCE_ROUNDS} round(s)`} ${c.d}(rounds the closer proves NOTHING can ever sweep — wedged before a terminal phase, or still owned by the Delegation Program — come out of the gap before the stop above looks at it, up to this many. Watch sweep.allowance.capped on ${RECLAMATION_PATH})${c.x}`);
   plain(`  stop after     ${options.rounds === null ? "never — runs until stopped" : `${options.rounds} completed round(s)`}`);
   plain("");
 
@@ -2852,9 +2923,10 @@ async function main(): Promise<void> {
     warn(`  first ${ROUND_RETENTION}). That stop DOES NOT CLEAR ITSELF — fix the cause and restart the keeper.`);
     warn(`  THE SWEEP-GAP STOP covers the hours the brake cannot: its ${BURN_ARM_AFTER_ROUNDS} samples live in process`);
     warn(`  memory and start empty on EVERY boot, so a restart buys ~${(BURN_ARM_AFTER_ROUNDS * 204 / 3600).toFixed(1)}h with no brake at all. This`);
-    warn(`  one is a subtraction over chain state and is armed on the first treasury poll: the keeper`);
+    warn(`  one is a subtraction over chain state and is right on the first treasury poll: the keeper`);
     warn(`  stops opening rounds once round_counter is ${SWEEP_GAP_STOP_ROUNDS} or more ahead of rounds_swept (past the`);
-    warn(`  ${ROUND_RETENTION}-round retention window, where the rent was due back). It latches for the same reason.`);
+    warn(`  ${ROUND_RETENTION}-round retention window, where the rent was due back), NOT counting up to ${STRANDED_ALLOWANCE_ROUNDS} round(s) that`);
+    warn(`  nothing can ever sweep. It latches for the same reason.`);
     warn(``);
     warn(`  DEVNET ONLY. Every endpoint this mode will touch — base RPC, Magic Router and the ER`);
     warn(`  validator's own fqdn — was re-asserted against the devnet allowlist above, naming this`);
@@ -2994,11 +3066,35 @@ async function main(): Promise<void> {
         // It is also why this sits outside `driveOneStep`: that function is the PHASE machine, and
         // closing an ancient round is not a phase of the current one. Putting it there would have
         // meant a branch in every case, or a case that is not a phase.
-        await closeOneFinishedRound(ctx, state);
-        // The second witness, on the same idle passes and for the same reason: it is one account read
-        // on its own slow interval, and it must never be what makes a fight tick late. See
-        // `pollTreasury`.
+        // THE SECOND WITNESS FIRST, AND THE ORDER IS A SAFETY PROPERTY RATHER THAN A PREFERENCE.
+        // Both live here for the same reason — one account read on a slow interval, never allowed to
+        // make a fight tick late (see `pollTreasury`) — but they are not equally safe to put second.
+        //
+        // `closeOneFinishedRound` awaits `fetchRound` and `isDelegated` OUTSIDE any `try`, and
+        // `withReadRetry` rethrows once its attempts are gone. So one round the chain will not answer
+        // for — an account that no longer decodes against the current IDL is the deterministic case,
+        // and it sits below the retention boundary forever — makes this whole branch throw on every
+        // idle pass. Written the other way round, that took the treasury poll with it: `ctx.treasury`
+        // would freeze at its last reading, `sweepGapOf` would keep returning a number that had
+        // stopped moving, and the SWEEP-GAP STOP COULD NEVER FIRE AGAIN — the instrument that exists
+        // precisely because the burn brake has no opinion for its first 2.6 hours, disabled for the
+        // life of the process by a housekeeping read, silently, while the arena went on spending.
+        //
+        // Reversed, the poll cannot be starved: it swallows its own failures and warns (see its
+        // `catch`), so it can never prevent the closer from running either. The one that cannot throw
+        // goes first. This is the same asymmetry `strandedLedgerIsComplete` is built on — nothing a
+        // safety stop depends on may be gated behind the component it is watching.
+        //
+        // WHAT THE REORDER COSTS, STATED RATHER THAN GLOSSED: a poll landing on the same pass as a
+        // FALLBACK sweep now misses it, so that reading is one round wider than it would have been.
+        // It is bounded at one round, it self-corrects at the next poll 30 seconds later, and it can
+        // only happen on the ~1-in-30 idle passes that poll at all — against a threshold of 25, on a
+        // quantity re-read seven times per round. The prompt sweeper (`driveSettled`) is unaffected
+        // either way: it runs in `driveOneStep`, on passes where neither of these two is reached.
+        // Both terms of the gap still come from one snapshot, which is the property that actually
+        // matters and which `sweepGapStop`'s staleness argument rests on.
         await pollTreasury(ctx, state);
+        await closeOneFinishedRound(ctx, state);
       }
       // ONE RENDER PER PASS, BESIDE THE PUBLISH IT MIRRORS. Both channels are refreshed at the one
       // point in the loop where the pass's work is finished and its observations are complete, so a
@@ -3119,11 +3215,18 @@ async function main(): Promise<void> {
   // exactly the fields it was written for. A sweep gap of 0 from a treasury nobody read and a burn of
   // 0.000000 SOL from a run with one sample are both numbers that would be believed.
   const treasury = ctx.treasury;
+  // THE STOP'S OWN VERDICT RATHER THAN A SECOND SUBTRACTION WRITTEN OUT HERE. This line used to
+  // compute the gap itself, which was safe while the gap WAS the decision; it is not any more. An
+  // exit banner that re-derived the arithmetic would drift from `sweepGapStop` the first time the
+  // allowance changed, and it would drift silently, in the one summary an operator reads after the
+  // process is gone. Asked, not reconstructed — the same rule the report follows.
+  const finalSweep = sweepGapStop(reclamationStateOf(ctx, ctx.client.nowSec()), RECLAMATION_THRESHOLDS);
   plain(`  sweep gap         ${treasury === null
     ? "unknown — the treasury was never polled"
     : treasury.roundsSwept === null
       ? "unknown — this program has no Treasury account"
-      : `${treasury.roundCounter - treasury.roundsSwept} round(s) ${c.d}(round_counter minus rounds_swept, as of ${ctx.client.nowSec() - treasury.polledAtSec}s ago; ` +
+      : `${finalSweep.gap} round(s) ${c.d}(round_counter minus rounds_swept, as of ${ctx.client.nowSec() - treasury.polledAtSec}s ago; ` +
+        `${finalSweep.allowance} of them can never be swept, leaving ${finalSweep.effectiveGap} overdue; ` +
         `the stop ${ctx.sweepStopSince === null ? `is at ${SWEEP_GAP_STOP_ROUNDS} and did not fire` : "FIRED"})${c.x}`}`);
   const finalBurn = burnBrake(
     ctx.burnSamplesLamports, MAX_BURN_LAMPORTS_PER_ROUND, BURN_ARM_AFTER_ROUNDS, BURN_SAMPLE_ROUNDS,

@@ -660,7 +660,10 @@ export const TREASURY_POLL_SECONDS = envNumber("KEEPER_TREASURY_POLL_SECONDS", 3
  *  ran ~430 rounds/day, which is the window in which COST-MODEL §0's failure costs ~9.96 SOL/day
  *  against a 14.9 SOL balance — thirty-six hours, end to end. A stop derived from CHAIN STATE has no
  *  such window: `Arena.round_counter - Treasury.rounds_swept` is right on the first successful poll,
- *  so this one is armed `TREASURY_POLL_SECONDS` after boot instead of 2.6 hours after it.
+ *  so this one is right `TREASURY_POLL_SECONDS` after boot instead of 2.6 hours after it — and it
+ *  keeps deciding from that moment on, including while the closer is still re-walking history, for
+ *  which see `strandedLedgerIsComplete` in `reclamation.ts`. Nothing about the allowance below
+ *  reintroduces a warm-up.
  *
  *  WHY 25, DERIVED RATHER THAN PICKED. The floor of the derivation is `MIN_RETAINED_ROUNDS` = 20, the
  *  chain's own retention window, imported into `ROUND_RETENTION` above:
@@ -798,11 +801,12 @@ if (!Number.isInteger(SWEEP_GAP_STOP_ROUNDS) || SWEEP_GAP_STOP_ROUNDS <= ROUND_R
  *  happened.
  *
  *  THE CHECK THAT MAKES 25 THE LARGEST DEFENSIBLE NUMBER RATHER THAN A ROUND ONE. 25 + 25 = 50 rounds
- *  is inside `BURN_ARM_AFTER_ROUNDS` (45) to within a rounding of the cadence, so even in its worst
- *  case this stop still forms its opinion at about the moment the burn brake forms its first one. A
- *  bigger allowance would make the sweep gap the SLOWER of the two witnesses in the exact window it
- *  was built to cover — the ~2.6 hours after every restart in which the brake has no samples — and a
- *  stop that arrives after the other stop is a stop with no reason to exist.
+ *  against `BURN_ARM_AFTER_ROUNDS` = 45: in this stop's WORST case the two witnesses form their
+ *  opinions at essentially the same moment. That is the line, and it is a comparison rather than an
+ *  inequality on purpose — 50 is not under 45, it is beside it. A materially bigger allowance would
+ *  make the sweep gap the SLOWER of the two in the exact window it was built to cover — the ~2.6
+ *  hours after every restart in which the brake has no samples — and a stop that arrives after the
+ *  other stop is a stop with no reason to exist.
  *
  *  REJECTED: 50. `stopAtGapRounds + 50` = 75 rounds is ~4.2 hours and ~1.76 SOL, past the brake's
  *  arming window on both counts, for headroom the arena would take five months to spend.
@@ -816,10 +820,14 @@ if (!Number.isInteger(SWEEP_GAP_STOP_ROUNDS) || SWEEP_GAP_STOP_ROUNDS <= ROUND_R
  *  10,000-round history is a 500-round budget, so a long healthy run would buy a licence for an 11.7
  *  SOL outage. A bound that grows with good behaviour is not a bound.
  *
- *  ZERO IS LEGAL AND MEANS OFF — the stop compares the raw gap, exactly as it did before this existed.
- *  It is the one setting an operator can reach for if the allowance is ever suspected of hiding
- *  something, and it must not need a code change. Negative and fractional values are refused below
- *  rather than clamped, on `SWEEP_GAP_STOP_ROUNDS`' argument.
+ *  ZERO IS LEGAL AND MEANS OFF, AND IT MEANS OFF IN EVERY STATE — with no allowance to grant, the
+ *  stop compares the raw gap whether or not the closer has finished walking, which is exactly the
+ *  behaviour that shipped before any of this existed. That completeness matters: it is the one setting
+ *  an operator can reach for if the allowance is ever suspected of hiding something, and a kill switch
+ *  that leaves half the mechanism running is not one. It follows from the arithmetic rather than from
+ *  a special case — `sweepGapStop` grants `min(recorded, cap)` or `cap`, and both are zero here.
+ *  Negative and fractional values are refused below rather than clamped, on `SWEEP_GAP_STOP_ROUNDS`'
+ *  argument.
  *
  *  WHERE TO WATCH IT: `sweep.allowance` in `/reclamation.json` carries the rounds excused, this cap,
  *  and `capped` — which goes true the moment the closer has found more unsweepable rounds than this

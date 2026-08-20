@@ -405,7 +405,7 @@ carries **two independent witnesses**, because neither subsumes the other:
 | | |
 |---|---|
 | `sweepGap` | `Arena.round_counter` minus `Treasury.rounds_swept`, polled every `KEEPER_TREASURY_POLL_SECONDS` (30). A direct observation of the chain's own bookkeeping, right immediately. `pollAgeSec` beside it says how fresh. Healthy is **1** — the live round is unswept until it settles. |
-| `sweep` | what the keeper *did* about that gap: `stopAtGapRounds` is the threshold, `tripped` is the keeper's latched state, `stoppedSinceSec` is when it fired. `tripped` stays true after the gap recovers — see below. |
+| `sweep` | what the keeper *made of* that gap and *did* about it. `allowance.rounds` is how much of the raw gap is rounds nothing can ever sweep; `effectiveGap` is what is left, and it is the number compared against `stopAtGapRounds`. `allowance.capped` says the allowance has hit its ceiling — the field to alert on. `allowance.ledgerComplete` says whether the closer has finished finding those rounds; while it is `false` — the first minutes after a restart — `allowance.rounds` is the whole cap granted provisionally rather than a count of anything found. `tripped` is the keeper's latched state and `stoppedSinceSec` is when it fired; `tripped` stays true after the gap recovers — see below. |
 | `burn` | the mean net lamports per round, measured from the operator balance at consecutive `open_round`s. Lagging, and it cannot say anything for its first 45 rounds — but a keeper that sweeps perfectly and then fails every `close_round_account` has a sweep gap of **zero** and is burning 9.96 SOL/day. The balance cannot be fooled that way. `samplingSuspended` says whether `samplesObserved` has stopped growing on purpose — see "Rounds it has already closed are not walked again" below for the one condition that does that, and why it cannot hide an outage. |
 
 Also `closer.skipped` and `closer.stranded`, each with the round numbers and the SOL they represent.
@@ -440,10 +440,10 @@ after two restarts in one day the live endpoint read `armed: false, samplesObser
 the arena ran ~430 rounds/day — the window in which a reclamation outage costs ~9.96 SOL/day against a
 14.9 SOL balance.
 
-So there is a second stop that needs **no history**. The keeper stops opening rounds once `sweepGap`
-reaches `KEEPER_SWEEP_GAP_STOP_ROUNDS` (**25**), and it is armed on the first successful treasury
-poll — seconds after boot rather than 2.6 hours after it. `keeper.notOpeningRounds` becomes
-`"rent-not-swept"`.
+So there is a second stop, measured from chain state rather than from a ring of samples. The keeper
+stops opening rounds once `sweep.effectiveGap` reaches `KEEPER_SWEEP_GAP_STOP_ROUNDS` (**25**), and
+the measurement is right on the first successful treasury poll — seconds after boot rather than 2.6
+hours after it. `keeper.notOpeningRounds` becomes `"rent-not-swept"`.
 
 **Why 25.** `close_round_account` refuses any round inside the 20-round retention window with
 `RoundTooRecent` whether or not it was swept, so a gap below 20 has cost nothing — there is no close
@@ -479,14 +479,57 @@ ageing reading freezes rather than drifts. A reading that is *already* past the 
 trip: gating on `pollAgeSec` was rejected because it would disable the stop exactly when the treasury
 read and the sweeps fail together.
 
-> **The one way this threshold goes wrong.** The gap has a permanent floor equal to the number of
-> rounds that never reached a terminal phase — sweeping requires `Settled` or `Abandoned`, so a round
-> wedged in `Lobby` or in the `Drawing` hole can never be swept and its unit of gap never returns.
-> Each one permanently spends a round of the 24 between healthy and the stop. COST-MODEL §4.2 records
-> **19** such rounds on the *previous* program, which against 25 would have left five. The current
-> arena is a fresh program with a gap of 1 and zero stranded rounds, so the floor is zero today —
-> but watch `closer.stranded.neverTerminal`. If it climbs, raise `KEEPER_SWEEP_GAP_STOP_ROUNDS` with
-> it, or the stop starts firing on a healthy arena.
+### The stranded-round allowance, and why the stop does not compare the raw gap
+
+The raw gap has a **permanent floor equal to the number of rounds nothing can ever sweep**. Sweeping
+requires `Settled` or `Abandoned` *and* an account the program can read, so a round wedged in `Lobby`
+or in the `Drawing` hole, and a terminal round the Delegation Program still owns, can never be swept
+and their units of gap never return. Round **#295** of the live arena is one of the second kind: the
+endpoint reads `roundCounter 669, roundsSwept 667` — a gap of **2 where healthy is 1**, for the life
+of the program. Each such round used to spend one of the 24 between healthy and the stop, and when
+they ran out this stop latched a **healthy** arena — the false positive that is worse than no brake,
+arriving on a schedule with nothing to trigger it. COST-MODEL §4.2 records **19** of them on the
+*previous* program, which against 25 would have left five.
+
+So the stop compares `effectiveGap = sweepGap − allowance`, where the allowance is the rounds the
+**closer has proved** unsweepable (`closer.stranded`, both categories). `closer.skipped` is
+deliberately *not* included: `decideClose` sweeps before it ever closes, so a skipped round was
+already swept and was never in the gap.
+
+**The allowance is capped at `KEEPER_STRANDED_ALLOWANCE_ROUNDS` (25), and the cap is the whole safety
+argument.** A validator that stops returning rounds strands *every* round in flight, so a total outage
+arrives as a growing pile of stranded rounds — the same shape as the history being forgiven. Uncapped,
+the gap and the excuse grow together: the closer cannot record a round until its cursor reaches it and
+the cursor never looks inside the retention window, so the allowance trails the gap by exactly 20 and
+the effective gap **plateaus at 21** — four short of the stop, forever, while the arena strands
+0.0235 SOL a round. The cap turns that plateau back into a climb: the same outage trips the stop at
+**~49 rounds** (~2.7 h, ~1.15 SOL), against ~25 rounds and ~0.59 SOL with no allowance at all. That
+half-SOL is the price of not stopping a healthy arena. 49 rounds against the brake's 45-sample arming
+window means the two witnesses arrive at essentially the same moment even in this stop's worst case,
+and that is the line the cap must not cross: a larger allowance would make the sweep gap materially
+the *slower* of the two, in the window it exists to cover. `sweep.allowance.capped` going
+true is the signal that the arena is back on the old treadmill and the decision is now about the
+program rather than a keeper knob. Set the variable to `0` to turn the allowance off entirely.
+
+**A restart must not read as an outage.** The stranded ledger is process memory and starts empty on
+every boot, while the rounds it describes are still in the gap — so a fresh keeper on an arena with
+two dozen dead rounds would latch its stop on the first `open_round`. While
+`sweep.allowance.ledgerComplete` is `false`, the stop therefore grants **the whole cap** instead of
+the little it has counted, and **goes on deciding**: the cap is the most the ledger could ever add, so
+a gap still past the threshold after granting all of it is a gap no amount of further looking can
+excuse. The worst case comes out the same ~50 rounds either way, which is the number
+`KEEPER_STRANDED_ALLOWANCE_ROUNDS` was chosen against.
+
+> **It deliberately does not wait for the closer, and that was a correction.** The first version
+> refused to fire at all until the walk finished. That reads as the careful choice and is not one: the
+> walk is finished by the *closer*, and the closer is the component whose failure this stop exists to
+> catch. `closeOneFinishedRound` awaits `fetchRound` and `isDelegated` outside any `try` and
+> `withReadRetry` rethrows, so a single round below the retention boundary that cannot be read wedges
+> the cursor there permanently — and under a veto that keeper's sweep-gap stop was disabled for the
+> life of the process. The same version also treated "the cursor did not advance this pass" as proof
+> the closer had finished, which is false: `sweep-first` is one pass of ordinary housekeeping, and one
+> close failure is what `CLOSE_ATTEMPTS_PER_ROUND` exists to ride out. Either would have declared an
+> empty ledger complete mid-rebuild and handed the raw gap to the threshold.
 
 ## What it costs
 
@@ -662,7 +705,9 @@ Because of that, the keeper **takes no burn sample at all** while its cursor is 
 history — published as `burn.samplingSuspended` in `/reclamation.json`. The predicate is deliberately
 *not* "the cursor is behind", which is also what a stuck sweep looks like; it is "every round the
 closer has looked at was **absent**", and every failure mode puts an *existing* round under the cursor,
-so the first one clears it. The sweep-gap stop needs no samples and stays armed throughout.
+so the first one clears it. The sweep-gap stop needs no samples and is not suspended by any of this;
+it grants a bounded allowance over roughly the same window instead — see "The stranded-round
+allowance" for why it must never *wait* for the closer.
 
 **Against a pre-v7 program it does nothing at all**, and says so in the boot banner
 (`rent  unavailable — this IDL has no close_round_account`). That veto is `programFeatures.ts`, and it
@@ -1079,7 +1124,8 @@ Configuration — safe in `fly.toml`'s `[env]`, except where noted.
 | `KEEPER_CLOSE_ROUNDS` | `1` (**on**) | reclaim finished rounds' rent (0.023497 SOL each — all but the ~0.00007 SOL of fees a round spends). `0` or `--no-close-rounds` disables it — see "Reclaiming the rent" |
 | `KEEPER_ROUND_RETENTION` | `20` (the chain's `MIN_RETAINED_ROUNDS`) | how many newest rounds are never closed. Can be **raised**, never lowered — a lower value is refused at boot |
 | `KEEPER_MIN_BALANCE_SOL` | `0.6` | below this the keeper opens no new rounds, while finishing any round in flight. Sized to cover the whole 0.470 SOL retention float plus margin, and it self-heals as closes return rent — see "The funding floor" |
-| `KEEPER_SWEEP_GAP_STOP_ROUNDS` | `25` | the `round_counter` − `rounds_swept` gap at which the keeper opens no more rounds. Must be **greater than** `KEEPER_ROUND_RETENTION` — a lower value is refused at boot, because a gap inside the retention window has cost nothing. Armed on the first treasury poll, and it **latches** — see "The sweep-gap stop" |
+| `KEEPER_SWEEP_GAP_STOP_ROUNDS` | `25` | the gap at which the keeper opens no more rounds — measured *after* the stranded-round allowance below, not on the raw `round_counter` − `rounds_swept`. Must be **greater than** `KEEPER_ROUND_RETENTION` — a lower value is refused at boot, because a gap inside the retention window has cost nothing. Right on the first treasury poll, and it **latches** — see "The sweep-gap stop" |
+| `KEEPER_STRANDED_ALLOWANCE_ROUNDS` | `25` | how many permanently unsweepable rounds come out of the gap before the stop above looks at it. `0` turns the allowance off (the stop compares the raw gap). Refused if negative or fractional. The ceiling matters as much as the allowance — see "The stranded-round allowance" |
 | `KEEPER_LOOP_STALL_PUBLISH_SECONDS` | `300` | seconds without a **completed main-loop pass** before the keeper publishes `stalledSince`, fails `/health`, and logs the diagnosis. Sized as **three full blockhash expiries** (~90s each) plus the reads, because that is a bound the code cannot drift away from — every send here is capped by blockhash expiry and only the deliberately-swallowed ones can stack. It is *not* an enumeration of the phase machine: the first version of this number was, priced the worst pass at ~120s, and was **under a pass the keeper takes at the top of every round** — `driveSettled` runs `sweepHouseTake` (whose failure is swallowed, so an expiring sweep costs its full window *and the pass carries on*) and then `openNextRound` in the same pass, which is ~220s. Refused at boot if it is not longer than `ERROR_BACKOFF_MAX_SECONDS` (30) — see "The health endpoint" |
 | `KEEPER_LOOP_STALL_EXIT_SECONDS` | `600` | seconds without a completed pass before the keeper **exits 1** so Fly's `on-fail` policy replaces the machine, which is the only self-correction there is: a failing health check does not restart a Fly Machine. Refused at boot if it is not greater than the publish threshold, so the restart can never arrive before the log line explaining it. **Do not lower it below ~300**: `on-fail` allows 10 restarts per 5-minute window and then leaves the machine `stopped`, which under `auto_start_machines = false` is terminal until a human intervenes — at 600s plus boot, two restarts cannot fall inside one window *by construction*. The 300s gap to the publish threshold is also the double-send guard: a blockhash is valid ~60s, so nothing this process put on the wire before the first alarm can still land when it exits |
 | `VITE_KEEPER_STATUS_URL` | `/keeper-status.json` | **front end only**, set in Vercel, not here. The full absolute URL of the endpoint above |

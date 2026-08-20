@@ -22,7 +22,7 @@ import { describe, expect, it } from "vitest";
 import {
   ROUND_RENT_LAMPORTS, burnBrake, recordBurnSample, serializeReclamationReport, summariseReclamation,
   sweepGapStop,
-  type ReclamationState,
+  type ReclamationState, type SweepGapVerdict,
 } from "./reclamation.ts";
 
 /** The three constants `config.ts` owns, as literals — this file must not import them, both because
@@ -57,7 +57,86 @@ const HEALTHY = 420_000;
  *  Summed rather than substituted — a broken round still pays everything a healthy one pays. */
 const BROKEN = HEALTHY + ROUND_RENT_LAMPORTS;
 
+/** `STRANDED_ALLOWANCE_ROUNDS` — how many permanently unsweepable rounds the sweep-gap stop excuses
+ *  before it starts counting them against itself again. A literal here for the reason the four above
+ *  are: this file checks the arithmetic by hand against the intended configuration.
+ *
+ *  IT IS THE SAME NUMBER AS `STOP_AT_GAP` AND THAT IS A COINCIDENCE OF JUDGEMENT, NOT A DERIVATION.
+ *  25 is the retention window plus five; this 25 is what an operator will absorb in permanently dead
+ *  rounds before a person has to look. They are written out separately so that a test which changes
+ *  one does not silently move the other. */
+const STRANDED_ALLOWANCE = 25;
+
 const run = (value: number, count: number): number[] => Array.from({ length: count }, () => value);
+
+// ---------------------------------------------------------------------------------------------
+// The fixtures, shared by the stop and by the report
+// ---------------------------------------------------------------------------------------------
+//
+// THEY LIVE UP HERE BECAUSE THE STOP READS THE WHOLE OBSERVED STATE NOW. It used to take a treasury
+// snapshot and two numbers, so its tests could build their subject in one line; it takes the closer's
+// stranded ledger as well, because the rounds nothing can ever sweep have to come out of the gap
+// before it is compared against anything. One set of fixtures for both sections is what keeps the
+// stop's tests and the report's tests arguing about the same keeper.
+
+/** The keeper's own treasury snapshot, built the way `pollTreasury` builds it — both terms read at one
+ *  instant, which is the property the staleness argument in `sweepGapStop` rests on. */
+const polled = (roundCounter: number, roundsSwept: number | null, polledAtSec = 1_759_999_940) =>
+  ({ roundCounter, roundsSwept, polledAtSec });
+
+/** A poll showing exactly `gap` unswept rounds. */
+const atGap = (gap: number, polledAtSec?: number) => polled(400 + gap, 400, polledAtSec);
+
+/** A closer whose TOTALS AGREE WITH ITS LISTS, which is every run until a list fills. The totals
+ *  default to the lengths so that a test about anything else does not have to restate them — and so
+ *  that the one test where they DISAGREE says so in a single visible line, which is the whole subject
+ *  of that test.
+ *
+ *  ITS CURSOR IS CAUGHT UP BY DEFAULT — 393 against the fixture arena's `round_counter` of 412 and a
+ *  retention window of 20, which is where a healthy keeper's cursor actually sits. That makes the
+ *  default stranded ledger COMPLETE, so a test that says nothing about the rebuild is not silently
+ *  testing a suspended stop. The tests that care about the rebuild move the cursor back on purpose. */
+const closer = (over: Partial<ReclamationState["closer"]> = {}): ReclamationState["closer"] => {
+  const skipped = over.skipped ?? [];
+  const neverTerminal = over.strandedNeverTerminal ?? [];
+  const stillDelegated = over.strandedStillDelegated ?? [];
+  return {
+    cursor: 393,
+    reclaimed: 371,
+    skipped,
+    strandedNeverTerminal: neverTerminal,
+    strandedStillDelegated: stillDelegated,
+    skippedTotal: skipped.length,
+    strandedNeverTerminalTotal: neverTerminal.length,
+    strandedStillDelegatedTotal: stillDelegated.length,
+    closing: true,
+    ...over,
+  };
+};
+
+const state = (over: Partial<ReclamationState> = {}): ReclamationState => ({
+  observedAtSec: 1_760_000_000,
+  arena: { roundCounter: 412, roundsSwept: 409, polledAtSec: 1_759_999_940 },
+  closer: closer(),
+  burnSamplesLamports: run(HEALTHY, ARM_AFTER),
+  burnSamplingSuspended: false,
+  operatorLamports: 14_950_000_000,
+  sweepStoppedSinceSec: null,
+  ...over,
+});
+
+const THRESHOLDS = {
+  burnLamportsPerRound: THRESHOLD,
+  armAfterSamples: ARM_AFTER,
+  windowSamples: WINDOW,
+  stopAtGapRounds: STOP_AT_GAP,
+  strandedAllowanceRounds: STRANDED_ALLOWANCE,
+  retentionRounds: RETENTION,
+};
+
+const ROUNDS_PER_DAY = 424;
+
+const summarise = (s: ReclamationState) => summariseReclamation(s, THRESHOLDS, ROUNDS_PER_DAY);
 
 /** The ring the keeper builds, built the way the keeper builds it: one sample at a time, through the
  *  function under test, folding its own return value back in. Never by constructing the array
@@ -298,19 +377,45 @@ describe("the window is bounded", () => {
 //   FALSE POSITIVE   the stop LATCHES a healthy arena shut, and a latched stop needs a person and a
 //                    restart to clear. There is no second chance in that direction.
 
-/** The keeper's own snapshot shape, built the way `pollTreasury` builds it — both terms read at one
- *  instant, which is the property the staleness argument in `sweepGapStop` rests on. */
-const polled = (roundCounter: number, roundsSwept: number | null, polledAtSec = 1_759_999_940) =>
-  ({ roundCounter, roundsSwept, polledAtSec });
+/** A CLOSER THAT HAS CAUGHT UP WITH WHATEVER ARENA IT IS HANDED — its cursor one round past the
+ *  retention boundary, which is where a healthy keeper's cursor actually sits and is the position
+ *  that makes its stranded ledger COMPLETE.
+ *
+ *  DERIVED FROM THE ARENA RATHER THAN A LARGE CONSTANT, because the tests below move `round_counter`
+ *  from 400 to 900 and a fixed cursor would silently fall behind partway through the table — turning
+ *  a test about the THRESHOLD into a test about a rebuild, and passing for the wrong reason. */
+const caughtUp = (arena: ReclamationState["arena"], over: Partial<ReclamationState["closer"]> = {}) =>
+  closer({ cursor: (arena?.roundCounter ?? 1) - RETENTION + 1, ...over });
 
-/** A poll showing exactly `gap` unswept rounds. */
-const atGap = (gap: number, polledAtSec?: number) => polled(400 + gap, 400, polledAtSec);
+/** ONE CALL OF THE STOP against a closer that has caught up with the arena it is given, so that a
+ *  test which says nothing about the rebuild is not silently testing one. `ledger` is the stranded
+ *  bookkeeping under test; `over` is anything else about the keeper (the latch, mostly). */
+const stop = (
+  arena: ReclamationState["arena"],
+  ledger: Partial<ReclamationState["closer"]> = {},
+  over: Partial<ReclamationState> = {},
+  thresholds = THRESHOLDS,
+) => sweepGapStop(state({ arena, closer: caughtUp(arena, ledger), ...over }), thresholds);
+
+/** The whole verdict, defaulted to the healthy answer so that each test states only what it is about.
+ *  WRITTEN OUT RATHER THAN MATCHED LOOSELY: `toMatchObject` would pass on a verdict that had quietly
+ *  stopped reporting a field, and three of these six exist so an operator can audit a subtraction that
+ *  weakens a safety device. A field that stops being published is exactly the failure worth catching. */
+const verdict = (over: Partial<SweepGapVerdict> = {}): SweepGapVerdict => ({
+  gap: null, allowance: 0, allowanceCapped: false, ledgerComplete: true, effectiveGap: null,
+  tripped: false, ...over,
+});
+
+/** A keeper that has ALREADY STOPPED — the latch, as the keeper records it. It is a chain second and
+ *  not a boolean because that is what crosses the boundary; `sweepGapStop` reads the same field the
+ *  report publishes, so there is one fact rather than two that have to agree. */
+const LATCHED: Partial<ReclamationState> = { sweepStoppedSinceSec: 1_759_999_000 };
 
 describe("the sweep-gap stop, below its threshold", () => {
   it("does nothing at the gap a healthy arena actually runs at", () => {
     // ONE, not zero: the live round is opened and is not swept until it settles, so a perfectly
     // healthy arena reads 1 forever. The live endpoint read exactly this against the deployed arena.
-    expect(sweepGapStop(atGap(1), STOP_AT_GAP, false)).toEqual({ gap: 1, tripped: false });
+    expect(stop(atGap(1))).toEqual(verdict({ gap: 1, effectiveGap: 1 }));
   });
 
   it("does nothing anywhere inside the retention window, where the rent is not due back yet", () => {
@@ -319,7 +424,7 @@ describe("the sweep-gap stop, below its threshold", () => {
     // swept, so an unswept round in here has cost nothing: there is no close it prevented. A stop
     // that fired in this range would be stopping a keeper that had lost precisely zero.
     for (let gap = 0; gap <= RETENTION; gap += 1) {
-      expect(sweepGapStop(atGap(gap), STOP_AT_GAP, false).tripped, `gap ${gap}`).toBe(false);
+      expect(stop(atGap(gap)).tripped, `gap ${gap}`).toBe(false);
     }
   });
 
@@ -328,7 +433,7 @@ describe("the sweep-gap stop, below its threshold", () => {
     // `closeOneFinishedRound`'s sweep-first branch — twenty-five rounds clear in about twenty-five
     // seconds — so these are the rounds in which a queue that is MOVING gets to finish moving.
     for (let gap = RETENTION + 1; gap < STOP_AT_GAP; gap += 1) {
-      expect(sweepGapStop(atGap(gap), STOP_AT_GAP, false).tripped, `gap ${gap}`).toBe(false);
+      expect(stop(atGap(gap)).tripped, `gap ${gap}`).toBe(false);
     }
   });
 });
@@ -339,8 +444,8 @@ describe("the sweep-gap stop, at and above its threshold", () => {
     // pair is the claim. The brake compares a mean — a continuous quantity where sitting exactly on
     // the ceiling is a real state in which nothing has gone wrong. This compares a COUNT OF ROUNDS:
     // there is no fractional round between 24 and 25, so reaching the count is the event.
-    expect(sweepGapStop(atGap(STOP_AT_GAP - 1), STOP_AT_GAP, false).tripped).toBe(false);
-    expect(sweepGapStop(atGap(STOP_AT_GAP), STOP_AT_GAP, false).tripped).toBe(true);
+    expect(stop(atGap(STOP_AT_GAP - 1)).tripped).toBe(false);
+    expect(stop(atGap(STOP_AT_GAP)).tripped).toBe(true);
   });
 
   it("stays stopped as the gap runs away, and reports the gap it stopped on", () => {
@@ -348,7 +453,7 @@ describe("the sweep-gap stop, at and above its threshold", () => {
     // verdict — and the number is carried out rather than swallowed, because "stopped" and "stopped
     // 500 rounds behind" are the same decision and very different incidents.
     for (const gap of [STOP_AT_GAP + 1, 50, 500]) {
-      expect(sweepGapStop(atGap(gap), STOP_AT_GAP, false)).toEqual({ gap, tripped: true });
+      expect(stop(atGap(gap))).toEqual(verdict({ gap, effectiveGap: gap, tripped: true }));
     }
   });
 });
@@ -363,8 +468,8 @@ describe("the sweep-gap stop latches, because its input recovers on its own and 
     // recomputed from the gap alone would read that recovery as the problem being fixed, reopen the
     // arena, and let the gap climb to the threshold again — an arena flapping between stopped and
     // spending, which is the leak with a duty cycle rather than a brake.
-    expect(sweepGapStop(atGap(1), STOP_AT_GAP, true).tripped).toBe(true);
-    expect(sweepGapStop(atGap(0), STOP_AT_GAP, true).tripped).toBe(true);
+    expect(stop(atGap(1), {}, LATCHED).tripped).toBe(true);
+    expect(stop(atGap(0), {}, LATCHED).tripped).toBe(true);
   });
 
   it("stays tripped when the evidence disappears entirely", () => {
@@ -373,8 +478,10 @@ describe("the sweep-gap stop latches, because its input recovers on its own and 
     // problem is fixed" — and this is the direction that matters, because the same two nulls are
     // exactly what must never CAUSE a trip (see the block below). The latch is what makes those two
     // positions consistent rather than contradictory.
-    expect(sweepGapStop(null, STOP_AT_GAP, true)).toEqual({ gap: null, tripped: true });
-    expect(sweepGapStop(polled(412, null), STOP_AT_GAP, true).tripped).toBe(true);
+    expect(stop(null, {}, LATCHED)).toEqual(verdict({
+      gap: null, effectiveGap: null, ledgerComplete: false, tripped: true,
+    }));
+    expect(stop(polled(412, null), {}, LATCHED).tripped).toBe(true);
   });
 
   it("stays tripped under a threshold no gap could ever reach", () => {
@@ -382,8 +489,8 @@ describe("the sweep-gap stop latches, because its input recovers on its own and 
     // misconfiguration could release is not a latch — and an operator raising
     // KEEPER_SWEEP_GAP_STOP_ROUNDS is expected to restart, which is the assertion that somebody
     // looked, rather than to have a running keeper quietly resume on the new number.
-    expect(sweepGapStop(atGap(1), Number.MAX_SAFE_INTEGER, true).tripped).toBe(true);
-    expect(sweepGapStop(atGap(1), 0, true).tripped).toBe(true);
+    expect(stop(atGap(1), {}, LATCHED, { ...THRESHOLDS, stopAtGapRounds: Number.MAX_SAFE_INTEGER }).tripped).toBe(true);
+    expect(stop(atGap(1), {}, LATCHED, { ...THRESHOLDS, stopAtGapRounds: 0 }).tripped).toBe(true);
   });
 });
 
@@ -392,7 +499,10 @@ describe("what a missing or stale poll is allowed to do, which is nothing", () =
     // NOT COMPUTED IS NOT ZERO AND IT IS CERTAINLY NOT A LEAK. This is the state every process is in
     // for its first `TREASURY_POLL_SECONDS`, and a stop that fired here would stop every keeper on
     // every boot.
-    expect(sweepGapStop(null, STOP_AT_GAP, false)).toEqual({ gap: null, tripped: false });
+    // `ledgerComplete: false` — with no poll there is no boundary to show the cursor has caught up
+    // with — but the allowance is ZERO rather than the provisional cap, because there is no gap to
+    // provision against. A keeper that has not looked publishes nothing it has not claimed.
+    expect(stop(null)).toEqual(verdict({ gap: null, effectiveGap: null, ledgerComplete: false }));
   });
 
   it("does not trip on a program with no Treasury account", () => {
@@ -400,9 +510,12 @@ describe("what a missing or stale poll is allowed to do, which is nothing", () =
     // before there is anything to read. A null `roundsSwept` differenced as zero would publish a gap
     // equal to the whole of that arena's history and stop it instantly — which is why `sweepGapOf`
     // answers null rather than defaulting, and why that null is checked here as well as there.
-    expect(sweepGapStop(polled(412, null), STOP_AT_GAP, false)).toEqual({ gap: null, tripped: false });
+    // The allowance reads 0 rather than the provisional cap here, unlike the never-polled case above:
+    // the poll LANDED, so the cursor can be compared against a boundary and the ledger is complete.
+    // Only the treasury account is missing, which is what nulls the gap.
+    expect(stop(polled(412, null))).toEqual(verdict({ gap: null, effectiveGap: null }));
     // Including at a round count far past the threshold, which is the case that would have fired.
-    expect(sweepGapStop(polled(9_999, null), STOP_AT_GAP, false).tripped).toBe(false);
+    expect(stop(polled(9_999, null)).tripped).toBe(false);
   });
 
   it("reads the same at any poll age, because both terms come from one snapshot", () => {
@@ -415,8 +528,7 @@ describe("what a missing or stale poll is allowed to do, which is nothing", () =
     // anything else. A healthy poll stays healthy however old it gets.
     for (const age of [0, 30, 600, 86_400]) {
       const arena = atGap(1, 1_760_000_000 - age);
-      expect(sweepGapStop(arena, STOP_AT_GAP, false), `age ${age}s`)
-        .toEqual({ gap: 1, tripped: false });
+      expect(stop(arena), `age ${age}s`).toEqual(verdict({ gap: 1, effectiveGap: 1 }));
     }
   });
 });
@@ -427,64 +539,366 @@ describe("a misconfigured sweep stop does nothing rather than everything", () =>
     // it unreachable — and it takes the direction every degenerate case in this file takes, for the
     // reason `burnBrake` argues: a false positive latches an arena that was working, and looks
     // exactly like the fault it claims to have found.
-    expect(sweepGapStop(atGap(500), 0, false).tripped).toBe(false);
-    expect(sweepGapStop(atGap(500), -1, false).tripped).toBe(false);
+    expect(stop(atGap(500), {}, {}, { ...THRESHOLDS, stopAtGapRounds: 0 }).tripped).toBe(false);
+    expect(stop(atGap(500), {}, {}, { ...THRESHOLDS, stopAtGapRounds: -1 }).tripped).toBe(false);
   });
 
   it("never trips on a gap that is not a finite number", () => {
     // It cannot come from `getAccountInfo`; it can come from arithmetic against something that was
     // `undefined`. A stop that fired on a NaN would fire at random, and this one latches.
-    expect(sweepGapStop(polled(Number.NaN, 400), STOP_AT_GAP, false).tripped).toBe(false);
-    expect(sweepGapStop(polled(400, Number.NaN), STOP_AT_GAP, false).tripped).toBe(false);
+    expect(stop(polled(Number.NaN, 400)).tripped).toBe(false);
+    expect(stop(polled(400, Number.NaN)).tripped).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The stranded-round allowance — the rounds that are IN the gap and can never come out of it
+// ---------------------------------------------------------------------------------------------
+//
+// THE DEFECT, WITH THE LIVE NUMBERS. Round #295 is terminal and still owned by the Delegation
+// Program. Nothing can sweep it and nothing can close it, so `Treasury.rounds_swept` can never catch
+// `Arena.round_counter` again: `roundCounter 669, roundsSwept 667` — a gap of 2 where healthy is 1,
+// for the life of the program. Twenty-three of the twenty-four rounds of headroom between healthy and
+// the stop are left, every future stranded round takes another, and when they run out the stop
+// latches a perfectly healthy arena. That is the false positive this file's header calls worse than
+// no brake, on a schedule, with nothing to trigger it.
+//
+// THE FIX HAS ITS OWN TWO DIRECTIONS AND THEY ARE THE SAME SHAPE AS THE STOP'S:
+//
+//   TOO STINGY   a legitimately stranded round still counts, and the treadmill continues — the defect
+//                above, delayed rather than removed.
+//   TOO GENEROUS   an OUTAGE is filed as an allowance. A validator that stops returning rounds strands
+//                every round in flight, so a total failure arrives as a growing pile of stranded
+//                rounds — the same shape as the history being forgiven. If the excuse grows with the
+//                gap the stop never fires at all, which is worse than the defect it replaced: the
+//                first stops a working arena, the second lets a broken one run.
+//
+// Every test below is chosen for which of those two it pins.
+
+describe("a round nothing can ever sweep does not count against the stop", () => {
+  it("reads the live arena's permanently stranded round as the healthy gap of 1", () => {
+    // THE ARENA AS IT ACTUALLY IS, on the day this was written: 669 rounds opened, 667 swept, one
+    // round (#295) stranded under the Delegation Program. The raw gap is 2 and will never be 1 again;
+    // what the stop is asked about is 1, which is exactly what a healthy arena reads.
+    const live = stop(polled(669, 667), { strandedStillDelegated: [295] });
+    expect(live.gap).toBe(2);
+    expect(live.allowance).toBe(1);
+    expect(live.effectiveGap).toBe(1);
+    expect(live.tripped).toBe(false);
+  });
+
+  it("does not latch a healthy arena that has accumulated a stop's worth of dead rounds", () => {
+    // THE DEFECT, EXECUTED. Twenty-four permanently unsweepable rounds plus the live round that is
+    // unswept until it settles IS a raw gap of 25 — the threshold, reached with nothing wrong and
+    // nothing that any keeper anywhere could have done about it. Before the allowance this stopped the
+    // arena and needed a person and a restart to clear.
+    const dead = Array.from({ length: 24 }, (_, i) => 100 + i);
+    const healthy = stop(atGap(25), { strandedNeverTerminal: dead });
+    expect(healthy.gap).toBe(STOP_AT_GAP);
+    expect(healthy.effectiveGap).toBe(1);
+    expect(healthy.tripped).toBe(false);
+  });
+
+  it("counts both kinds of stranding, because neither kind can ever be swept", () => {
+    // `never-terminal` needs `Settled` or `Abandoned` and will never have one; `still-delegated` is an
+    // account the program cannot read, so `sweep_house_take` fails its owner check exactly as
+    // `close_round_account` does. Different prospects for the RENT — forced undelegation may yet
+    // return one of them — but identical for the GAP, which is what this stop measures.
+    const both = stop(atGap(25), {
+      strandedNeverTerminal: [11, 12], strandedStillDelegated: [295],
+      strandedNeverTerminalTotal: 12, strandedStillDelegatedTotal: 12,
+    });
+    expect(both.allowance).toBe(24);
+    expect(both.effectiveGap).toBe(1);
+  });
+
+  it("still fires on rounds that are merely SLOW to be swept, which is the whole point", () => {
+    // THE TEST THAT KEEPS THE FIX HONEST. A backlog of terminal, sweepable, unswept rounds is the
+    // outage — `sweep_house_take` is the precondition of every close, so rent stops coming back at the
+    // rate rounds are opened. Nothing about it is structural and nothing about it is excused.
+    expect(stop(atGap(STOP_AT_GAP)).allowance).toBe(0);
+    expect(stop(atGap(STOP_AT_GAP)).tripped).toBe(true);
+  });
+
+  it("never excuses a SKIPPED round, which was swept before anything gave up on it", () => {
+    // THE ONE WAY THIS ARITHMETIC COULD HAND OUT FREE HEADROOM. `decideClose` answers `sweep-first`
+    // before it ever answers `close`, so a round that got as far as being skipped after
+    // CLOSE_ATTEMPTS_PER_ROUND failed closes HAD been swept — it is already inside `rounds_swept` and
+    // contributes nothing to the gap. Excusing it would subtract a round from the gap that was never
+    // in it, which is a stop quietly moved from 25 to 225 by a loss that has nothing to do with
+    // sweeping.
+    const gaveUp = stop(atGap(STOP_AT_GAP), { skipped: [17, 233], skippedTotal: 200 });
+    expect(gaveUp.allowance).toBe(0);
+    expect(gaveUp.tripped).toBe(true);
+  });
+
+  it("prices the allowance off the totals and never off the fifty-round sample", () => {
+    // The lists are capped at CLOSE_LOSS_SAMPLE (50) and the totals are not. AT THE DEFAULT ALLOWANCE
+    // OF 25 THE TWO CAN NEVER DISAGREE — the allowance's own cap binds long before the sample bound
+    // does — so this is a property that costs nothing today and is the whole difference between a
+    // working allowance and a silently wrong one the moment an operator raises
+    // KEEPER_STRANDED_ALLOWANCE_ROUNDS past fifty. Asserted at a raised cap for exactly that reason:
+    // the version of this bug that already shipped once (`ReclamationReport`'s `count`, read off a
+    // bounded list) was invisible until the list filled, and by then it understated by 4x.
+    const sample = Array.from({ length: 50 }, (_, i) => 151 + i);
+    const many = stop(
+      atGap(61),
+      { strandedNeverTerminal: sample, strandedNeverTerminalTotal: 60 },
+      {},
+      { ...THRESHOLDS, strandedAllowanceRounds: 100 },
+    );
+    expect(many.allowance).toBe(60);
+    expect(many.effectiveGap).toBe(1);
+    expect(many.tripped).toBe(false);
+  });
+});
+
+describe("the allowance is capped, so an outage cannot file itself as an excuse", () => {
+  it("stops excusing past the cap, and says so", () => {
+    const atCap = stop(atGap(26), { strandedNeverTerminalTotal: STRANDED_ALLOWANCE });
+    expect(atCap.allowance).toBe(STRANDED_ALLOWANCE);
+    expect(atCap.allowanceCapped).toBe(false);
+    expect(atCap.effectiveGap).toBe(1);
+
+    // One past it: the allowance is pinned and the extra round starts counting against the stop again,
+    // exactly as it did before this mechanism existed. `capped` is the operator's warning that the
+    // arena is back on the old treadmill and the decision is now about the program, not a keeper knob.
+    const past = stop(atGap(27), { strandedNeverTerminalTotal: STRANDED_ALLOWANCE + 1 });
+    expect(past.allowance).toBe(STRANDED_ALLOWANCE);
+    expect(past.allowanceCapped).toBe(true);
+    expect(past.effectiveGap).toBe(2);
+  });
+
+  it("trips on an unbounded pile of stranded rounds, which is what a total outage looks like", () => {
+    // A validator that stops returning rounds strands every round in flight, so the pile and the gap
+    // grow together. The cap is the only thing that makes the difference between them grow too.
+    const outage = stop(atGap(201), { strandedStillDelegatedTotal: 200 });
+    expect(outage.allowance).toBe(STRANDED_ALLOWANCE);
+    expect(outage.effectiveGap).toBe(176);
+    expect(outage.tripped).toBe(true);
+  });
+
+  it("fires ~50 rounds into a total stranding outage, walked round by round", () => {
+    // THE LOAD-BEARING TEST OF THE CAP, because the danger is not one wide reading — it is the
+    // TRAJECTORY. At outage round k the gap is 1 + k, and the closer cannot have recorded a round
+    // until its cursor reached it, which it never does inside ROUND_RETENTION: the ledger trails by
+    // exactly twenty. So the effective gap PLATEAUS at 21 — four short of the stop — until the
+    // allowance saturates, and only the cap ends the plateau.
+    const outageAtRound = (k: number, cap = STRANDED_ALLOWANCE) => stop(
+      atGap(1 + k),
+      { strandedStillDelegatedTotal: Math.max(0, k - RETENTION) },
+      {},
+      { ...THRESHOLDS, strandedAllowanceRounds: cap },
+    );
+
+    // The plateau, at four separate points, so that a change which merely moves it is not mistaken
+    // for a change that removes it.
+    for (const k of [RETENTION, 24, 44, 45]) {
+      expect(outageAtRound(k).effectiveGap, `round ${k}`).toBe(21);
+      expect(outageAtRound(k).tripped, `round ${k}`).toBe(false);
+    }
+    // And where the cap ends it: 49 rounds, ~2.7 hours at ~201s a round, ~1.15 SOL of rent stranded on
+    // the way. Against ~25 rounds and ~0.59 SOL with no allowance at all — that half-SOL is what not
+    // stopping a healthy arena costs, and 49 beside BURN_ARM_AFTER_ROUNDS's 45 means the burn brake is
+    // forming its first opinion at about the same moment rather than being left to do this alone.
+    expect(outageAtRound(48).tripped).toBe(false);
+    expect(outageAtRound(49).tripped).toBe(true);
+
+    // THE COUNTERFACTUAL, WHICH IS WHY THE CAP EXISTS AT ALL. Uncapped, the same outage never trips —
+    // not at a hundred rounds, not at five hundred, not ever. The gap and the excuse grow together and
+    // the arena strands 0.023497 SOL a round for as long as it runs, reporting a healthy 21.
+    for (const k of [49, 100, 500]) {
+      const uncapped = outageAtRound(k, Number.MAX_SAFE_INTEGER);
+      expect(uncapped.effectiveGap, `uncapped round ${k}`).toBe(21);
+      expect(uncapped.tripped, `uncapped round ${k}`).toBe(false);
+    }
+  });
+
+  it("excuses nothing at all when the cap is zero or unreadable", () => {
+    // ZERO IS THE OPERATOR'S OFF SWITCH and it must mean the stop that shipped before the allowance —
+    // the raw gap, compared straight. The unreadable cases go the same way rather than the way every
+    // other degenerate case in this file goes, and the asymmetry is deliberate: those protect a
+    // safety device from firing on a healthy arena, and this is not the device, it is the thing that
+    // WEAKENS it. A weakening nobody can read is not applied.
+    const dead = { strandedNeverTerminalTotal: 50 };
+    for (const cap of [0, Number.NaN, -5]) {
+      const off = stop(atGap(STOP_AT_GAP), dead, {}, { ...THRESHOLDS, strandedAllowanceRounds: cap });
+      expect(off.allowance, `cap ${cap}`).toBe(0);
+      expect(off.effectiveGap, `cap ${cap}`).toBe(STOP_AT_GAP);
+      expect(off.tripped, `cap ${cap}`).toBe(true);
+    }
+  });
+
+  it("publishes a negative effective gap rather than clamping one away", () => {
+    // The only visible symptom of the allowance over-counting — a stranded round the chain nonetheless
+    // recorded as swept, so it was never in the gap. Clamping at zero would delete the evidence of the
+    // one way this arithmetic can be too generous. A negative number trips nothing.
+    const over = stop(atGap(1), { strandedNeverTerminalTotal: 3 });
+    expect(over.effectiveGap).toBe(-2);
+    expect(over.tripped).toBe(false);
+  });
+});
+
+describe("the stranded ledger is process state, and a restart must not read as an outage", () => {
+  // THE WINDOW. `closer.stranded` lives on `KeeperContext` and starts EMPTY on every boot; the rounds
+  // it describes do not. So for the minutes a fresh keeper spends re-walking history, the raw gap is
+  // its full self and the RECORDED allowance is zero — and an arena with two dozen dead rounds would
+  // latch its stop on the first `open_round` after every restart. Same class of defect as the
+  // close-cursor walk in 9d53b99, where transient process state made a healthy arena publish a
+  // 2.39-day runway.
+  //
+  // WHAT THE KEEPER DOES ABOUT IT IS THE SUBJECT OF THIS BLOCK, and the first four tests are one
+  // argument: while it has not finished looking it grants the WHOLE CAP rather than the little it has
+  // counted, and goes on deciding. It does not wait for the closer. The last two are why.
+
+  /** A keeper that has just booted: cursor at #1, nothing recorded, nothing walked yet. */
+  const rebuilding = (over: Partial<ReclamationState["closer"]> = {}) =>
+    closer({ cursor: 1, closing: true, ...over });
+
+  const midRebuild = (arena: ReclamationState["arena"], over: Partial<ReclamationState> = {}) =>
+    sweepGapStop(state({ arena, closer: rebuilding(), ...over }), THRESHOLDS);
+
+  it("does not trip on an arena whose gap its own dead rounds could explain", () => {
+    // The defect, on the pass it would have happened. Twenty-four dead rounds plus the live one is a
+    // raw gap of 25 and the ledger is empty, so a stop reading the recorded allowance would compare
+    // 25 against 25 and latch. The cap is granted instead: 25 − 25 = 0.
+    const justBooted = midRebuild(atGap(25));
+    expect(justBooted.ledgerComplete).toBe(false);
+    expect(justBooted.allowance).toBe(STRANDED_ALLOWANCE);  // granted, not counted
+    expect(justBooted.effectiveGap).toBe(0);
+    expect(justBooted.tripped).toBe(false);
+
+    // AND THE PROVISION NEVER EXCEEDS THE GAP IT IS PROVISIONED AGAINST. On the live arena — raw gap
+    // 2 — a flat grant of the cap would publish `effectiveGap: -23` for the first minutes of every
+    // restart. A negative effective gap is a real signal (the allowance over-counting), and one that
+    // fires on every ordinary restart is a signal nobody reads on the day it means something.
+    const ordinary = midRebuild(polled(669, 667));
+    expect(ordinary.allowance).toBe(2);
+    expect(ordinary.effectiveGap).toBe(0);
+  });
+
+  it("reads the same arena the same way once the walk has finished", () => {
+    // The same keeper a couple of minutes later, on an arena that has not changed: the cursor has
+    // caught up, the twenty-four dead rounds are in the ledger, and the answer is the 1 it always was.
+    // The provision was replaced by the count and the verdict did not move — which is the property
+    // that makes granting the cap up front safe rather than merely convenient.
+    const walked = stop(atGap(25), { strandedNeverTerminalTotal: 24 });
+    expect(walked.ledgerComplete).toBe(true);
+    expect(walked.allowance).toBe(24);
+    expect(walked.effectiveGap).toBe(1);
+    expect(walked.tripped).toBe(false);
+  });
+
+  it("STILL trips mid-rebuild on a gap no amount of further looking could excuse", () => {
+    // THE TEST THAT KEEPS THE PROVISION HONEST. The cap is the most the ledger could ever add, so a
+    // gap still past the threshold after granting all of it is a gap that is not about stranded
+    // rounds. The keeper does not have to finish walking to know that, and it does not wait.
+    const outage = midRebuild(atGap(STOP_AT_GAP + STRANDED_ALLOWANCE));
+    expect(outage.ledgerComplete).toBe(false);
+    expect(outage.effectiveGap).toBe(STOP_AT_GAP);
+    expect(outage.tripped).toBe(true);
+  });
+
+  it("costs the same 25 rounds it costs everywhere else, and never more", () => {
+    // THE WORST CASE IS UNIFORM, which is what makes the bound in config.ts the bound in every state
+    // rather than in the lucky one. A keeper that never finishes its walk — see the two tests below —
+    // trips exactly `cap` rounds later than one that has, and `cap` is the number the operator already
+    // accepted. One round below the line, and one round over it.
+    expect(midRebuild(atGap(STOP_AT_GAP + STRANDED_ALLOWANCE - 1)).tripped).toBe(false);
+    expect(midRebuild(atGap(STOP_AT_GAP + STRANDED_ALLOWANCE)).tripped).toBe(true);
+  });
+
+  it("cannot be switched off by a closer that has stopped walking, which was the first design", () => {
+    // THE DEFECT IN THE VERSION THIS REPLACED, PINNED SO IT CANNOT COME BACK. That version refused to
+    // trip at all while the ledger was incomplete — and "incomplete" is a state a BROKEN keeper sits
+    // in permanently: `closeOneFinishedRound` awaits `fetchRound` and `isDelegated` outside any
+    // `try`, and `withReadRetry` rethrows, so one round below the retention boundary that cannot be
+    // read wedges the cursor there for the life of the process. Under a veto that arena's stop was
+    // disabled while it went on spending. Here the cursor is stuck at #300 with an empty ledger and a
+    // runaway gap, and the stop fires.
+    const wedged = sweepGapStop(state({
+      arena: atGap(500), closer: rebuilding({ cursor: 300 }),
+    }), THRESHOLDS);
+    expect(wedged.ledgerComplete).toBe(false);
+    expect(wedged.tripped).toBe(true);
+  });
+
+  it("is not fooled by one pass of ordinary housekeeping in the middle of a rebuild", () => {
+    // THE OTHER HALF OF THE SAME MISTAKE. The rejected design also treated "the cursor did not advance
+    // this pass" as proof the closer had finished — so a `sweep-first` (which is one pass of
+    // housekeeping on a healthy arena: swept now, closed next pass) or a single close failure (which
+    // CLOSE_ATTEMPTS_PER_ROUND exists to ride out) would have declared an EMPTY ledger complete and
+    // handed the raw gap of 26 straight to the threshold. Nothing about a single pass is an input to
+    // this any more: what the closer is doing right now cannot change the verdict, only how far it has
+    // WALKED can.
+    const stalled = sweepGapStop(state({
+      arena: atGap(26), closer: rebuilding({ cursor: 300 }),
+    }), THRESHOLDS);
+    expect(stalled.effectiveGap).toBe(1);
+    expect(stalled.tripped).toBe(false);
+  });
+
+  it("grants nothing to a keeper whose closer is not running at all", () => {
+    // No `--close-rounds`, or an IDL with no `close_round_account`. The cursor will never move and the
+    // ledger will never fill, so there is nothing to provision FOR — the allowance is permanently zero
+    // and this is exactly the stop that shipped before it existed. Correct, and not a regression: a
+    // keeper that closes nothing is not reclaiming rent at all.
+    const noCloser = sweepGapStop(state({
+      arena: atGap(25), closer: closer({ cursor: 1, closing: false }),
+    }), THRESHOLDS);
+    expect(noCloser.ledgerComplete).toBe(true);
+    expect(noCloser.allowance).toBe(0);
+    expect(noCloser.tripped).toBe(true);
+  });
+
+  it("is complete immediately on an arena younger than its own retention window", () => {
+    // There is no history to re-walk. `isPastRetention`'s underflow argument in `roundCloser.ts`, in
+    // this file's terms: a cursor at #1 against a `round_counter` of 4 has already seen everything
+    // there is, and the comparison is written as addition so it says so rather than going negative.
+    const young = sweepGapStop(state({
+      arena: polled(4, 3), closer: closer({ cursor: 1 }),
+    }), THRESHOLDS);
+    expect(young.ledgerComplete).toBe(true);
+    expect(young.gap).toBe(1);
+  });
+
+  it("turns the allowance off completely at a cap of zero, in BOTH ledger states", () => {
+    // The operator's kill switch has to be a kill switch. `config.ts` promises that zero means "the
+    // stop compares the raw gap, exactly as it did before this existed" — and a version of that
+    // promise that held only once the closer had caught up would leave half the mechanism running in
+    // the window an operator reaching for the switch is most likely to be in.
+    const off = { ...THRESHOLDS, strandedAllowanceRounds: 0 };
+    const walked = stop(atGap(STOP_AT_GAP), { strandedNeverTerminalTotal: 50 }, {}, off);
+    const booting = sweepGapStop(state({ arena: atGap(STOP_AT_GAP), closer: rebuilding() }), off);
+    for (const [name, v] of [["caught up", walked], ["rebuilding", booting]] as const) {
+      expect(v.allowance, name).toBe(0);
+      expect(v.effectiveGap, name).toBe(STOP_AT_GAP);
+      expect(v.tripped, name).toBe(true);
+      // AND `capped` STAYS FALSE, because there was no ceiling to reach. It reads "the allowance was
+      // working and ran out", which is a thing to act on; an operator who set the knob to zero already
+      // knows what they did, and a permanently-true alert field is one nobody reads.
+      expect(v.allowanceCapped, name).toBe(false);
+    }
+  });
+
+  it("cannot release a latch, whatever the ledger says", () => {
+    // Both new inputs, against the rule that outranks them. A stop that could be un-fired by an
+    // allowance that grew after the fact — and it does keep growing, because the closer keeps walking
+    // after the keeper stops — would be an arena flapping between stopped and spending, which is the
+    // leak with a duty cycle rather than a brake.
+    const generous = stop(atGap(1), { strandedNeverTerminalTotal: 500 }, LATCHED);
+    expect(generous.effectiveGap).toBeLessThan(0);
+    expect(generous.tripped).toBe(true);
+
+    const booting = midRebuild(atGap(1), LATCHED);
+    expect(booting.ledgerComplete).toBe(false);
+    expect(booting.tripped).toBe(true);
   });
 });
 
 // ---------------------------------------------------------------------------------------------
 // The report
 // ---------------------------------------------------------------------------------------------
-
-const ROUNDS_PER_DAY = 424;
-
-/** A closer whose TOTALS AGREE WITH ITS LISTS, which is every run until a list fills. The totals
- *  default to the lengths so that a test about anything else does not have to restate them — and so
- *  that the one test where they DISAGREE says so in a single visible line, which is the whole subject
- *  of that test. */
-const closer = (over: Partial<ReclamationState["closer"]> = {}): ReclamationState["closer"] => {
-  const skipped = over.skipped ?? [];
-  const neverTerminal = over.strandedNeverTerminal ?? [];
-  const stillDelegated = over.strandedStillDelegated ?? [];
-  return {
-    cursor: 392,
-    reclaimed: 371,
-    skipped,
-    strandedNeverTerminal: neverTerminal,
-    strandedStillDelegated: stillDelegated,
-    skippedTotal: skipped.length,
-    strandedNeverTerminalTotal: neverTerminal.length,
-    strandedStillDelegatedTotal: stillDelegated.length,
-    ...over,
-  };
-};
-
-const state = (over: Partial<ReclamationState> = {}): ReclamationState => ({
-  observedAtSec: 1_760_000_000,
-  arena: { roundCounter: 412, roundsSwept: 409, polledAtSec: 1_759_999_940 },
-  closer: closer(),
-  burnSamplesLamports: run(HEALTHY, ARM_AFTER),
-  burnSamplingSuspended: false,
-  operatorLamports: 14_950_000_000,
-  sweepStoppedSinceSec: null,
-  ...over,
-});
-
-const THRESHOLDS = {
-  burnLamportsPerRound: THRESHOLD,
-  armAfterSamples: ARM_AFTER,
-  windowSamples: WINDOW,
-  stopAtGapRounds: STOP_AT_GAP,
-};
-
-const summarise = (s: ReclamationState) => summariseReclamation(s, THRESHOLDS, ROUNDS_PER_DAY);
 
 describe("the sweep gap, which COST-MODEL names as the health metric", () => {
   it("is round_counter minus rounds_swept", () => {
@@ -514,7 +928,22 @@ describe("the sweep gap, which COST-MODEL names as the health metric", () => {
     // knows what it stops at, and a reader inventing one would be reading a healthy gap as a near
     // miss or vice versa.
     const report = summarise(state());
-    expect(report.sweep).toEqual({ tripped: false, stopAtGapRounds: STOP_AT_GAP, stoppedSinceSec: null });
+    expect(report.sweep).toEqual({
+      tripped: false,
+      stopAtGapRounds: STOP_AT_GAP,
+      // THE THREE NUMBERS OF ONE DECISION, PUBLISHED SEPARATELY. The raw gap is the top-level
+      // `sweepGap` (3 here); the allowance is what was taken off it for rounds nothing can sweep; the
+      // effective gap is what the threshold above was actually compared against. An operator handed
+      // any two of them has to do the third in their head during an incident, which is where a factor
+      // of a thousand comes from in the burn block and where a wrong "the stop is broken" comes from
+      // here. `capped` and `ledgerComplete` are the two ways the allowance can be lying by omission,
+      // so they are published beside it rather than left to be inferred from `closer.stranded`.
+      effectiveGap: 3,
+      allowance: {
+        rounds: 0, capRounds: STRANDED_ALLOWANCE, capped: false, ledgerComplete: true,
+      },
+      stoppedSinceSec: null,
+    });
   });
 
   it("says TRIPPED off the keeper's latch and not off the gap it is looking at", () => {
@@ -534,9 +963,58 @@ describe("the sweep gap, which COST-MODEL names as the health metric", () => {
     // The pass in which it first fires: the verdict is true from the gap alone, and the keeper writes
     // its latch on the strength of it. Without this the test above would pass on a report that only
     // ever echoed the latch back and had stopped reading the chain at all.
-    const wide = state({ arena: atGap(STOP_AT_GAP), sweepStoppedSinceSec: null });
+    const wide = state({
+      arena: atGap(STOP_AT_GAP), closer: caughtUp(atGap(STOP_AT_GAP)), sweepStoppedSinceSec: null,
+    });
     expect(summarise(wide).sweep.tripped).toBe(true);
     expect(summarise(wide).sweep.stoppedSinceSec).toBeNull();
+  });
+
+  it("shows the raw gap, the allowance and the effective gap as three separate numbers", () => {
+    // AN ALLOWANCE NOBODY CAN SEE IS ONE NOBODY CAN AUDIT. This subtraction deliberately weakens a
+    // safety stop, so the endpoint has to show the number the chain reported, the number the keeper
+    // took off it, and the number it actually compared — a reader given any two of the three has to do
+    // the arithmetic in their head during an incident. The raw gap stays at the top level, where it is
+    // the only figure in this report that can be checked against `getAccountInfo` by hand.
+    const report = summarise(state({
+      arena: polled(669, 667), closer: caughtUp(polled(669, 667), { strandedStillDelegated: [295] }),
+    }));
+    expect(report.sweepGap).toBe(2);
+    expect(report.sweep.allowance.rounds).toBe(1);
+    expect(report.sweep.effectiveGap).toBe(1);
+    expect(report.sweep.tripped).toBe(false);
+  });
+
+  it("says when the allowance has hit its cap, which is the field to alert on", () => {
+    // From here every further stranded round spends real headroom again and this stop is back on the
+    // treadmill the allowance removed. It is a different conversation from the one `capped: false`
+    // supports — about the program rather than about a keeper knob — so it is published rather than
+    // inferred from comparing two other numbers.
+    const report = summarise(state({
+      arena: atGap(80), closer: caughtUp(atGap(80), { strandedNeverTerminalTotal: 79 }),
+    }));
+    expect(report.sweep.allowance).toEqual({
+      rounds: STRANDED_ALLOWANCE, capRounds: STRANDED_ALLOWANCE, capped: true, ledgerComplete: true,
+    });
+    expect(report.sweep.effectiveGap).toBe(55);
+    expect(report.sweep.tripped).toBe(true);
+  });
+
+  it("says when the allowance is a PROVISION rather than a count, which is a different number", () => {
+    // `burn.samplingSuspended`'s reason, applied to the other stop: it is why a published number is
+    // not what a reader expects. Here `allowance.rounds` is 25 while the closer has recorded NOTHING —
+    // the keeper has not finished looking and is assuming the worst case for itself. Without
+    // `ledgerComplete` beside it, that renders identically to "the keeper found 25 dead rounds", and
+    // this endpoint's whole audience is somebody reading it during an incident minutes after a
+    // restart.
+    const report = summarise(state({
+      arena: atGap(30), closer: closer({ cursor: 1, strandedNeverTerminalTotal: 0 }),
+    }));
+    expect(report.sweep.allowance.ledgerComplete).toBe(false);
+    expect(report.sweep.allowance.rounds).toBe(STRANDED_ALLOWANCE);
+    expect(report.closer.stranded.count).toBe(0);   // and nothing is claimed to have been FOUND
+    expect(report.sweep.effectiveGap).toBe(5);
+    expect(report.sweep.tripped).toBe(false);
   });
 });
 
