@@ -36,7 +36,8 @@ this design changes shape rather than schedule.
 | # | Gate | Status today |
 |---|---|---|
 | G1 | **The rescue path is exercised against a genuinely unsettleable round** — not reasoned about, run (§7 E1) | **never attempted by anyone** |
-| G2 | The mint decision is made and written down: single-mint first, or pay for the vector (§2.1) | **not decided** |
+| G2 | The mint decision is made and written down (§2.1) | **DECIDED 2026-08-20: TWO MINTS.** See `ADR-001-two-mints.md`. §2.1's single-mint recommendation is superseded |
+| G12 | **The house-edge study is re-measured against the vector fight** — exact conservation, a take independent of which mint a player brought, and no stake band or sybil shape with positive expectation | **NEW, and owed because of G2.** `HOUSE-EDGE-STUDY.md` §11 and `HOUSE-SMALL-STAKE.md` are properties of the single-scalar basis and do not survive the vector |
 | G3 | `Phase::Drawing` has an exit (§5.2) | open defect, `lib.rs` `abandon_round` says so itself |
 | G4 | The vault's solvency is derivable from **the vault's own accounts alone**, with no reference to a delegated account and no daemon (§3.4) | designed here, not built |
 | G5 | `enter`'s lineup is pinned: `fighters[i].wallet == entries[i].player` checked on the base layer (§3.5) | designed here, not built |
@@ -133,6 +134,12 @@ So the two-mint version asks the operator to take custody of real money **and** 
 that says the game is fair, in the same deploy. Two irreversible bets, one move.
 
 **Recommendation: the first custodial arena is single-mint.**
+
+> **SUPERSEDED 2026-08-20 — the operator chose TWO MINTS. See `ADR-001-two-mints.md`.** The reason
+> given below for two mints is the reason it was overruled: the cross-token raid is the product, and
+> an arena whose sides are decoration is a different product wearing the same name. The rest of this
+> section stands as the argument that was weighed, not as guidance — in particular the paragraph
+> about the damage basis is now an OBLIGATION rather than a warning, tracked as G12.
 
 What that buys, and it is a lot:
 
