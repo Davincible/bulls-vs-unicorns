@@ -35,7 +35,8 @@ this design changes shape rather than schedule.
 
 | # | Gate | Status today |
 |---|---|---|
-| G1 | **The rescue path is exercised against a genuinely unsettleable round** — not reasoned about, run (§7 E1) | **never attempted by anyone** |
+| G1a | The WEDGE is produced on demand — a round nothing can resolve, abandon, undelegate, close, tick, enter or re-delegate | **PROVEN 2026-08-20, and it is a test** (`npm run test:wedge`, 15 passed / 4 todo, ~43s, ZERO devnet contact). `round.owner` stays `DELeGG…` after SIGKILL; every verb refuses; stranded rent **23,496,960 lamports** — §5.1's predicted 0.023497 SOL **to the lamport** |
+| G1b | The RESCUE runs against it — `open_refund` / `refund` | **still owed.** Needs `arena-vault` (S2). The seam is four `it.todo` entries that print on every run, including one for §5.1's easy-to-miss residual: the keeper's sweep-gap brake latches forever on a stranded round |
 | G2 | The mint decision is made and written down (§2.1) | **DECIDED 2026-08-20: TWO MINTS.** See `ADR-001-two-mints.md`. §2.1's single-mint recommendation is superseded |
 | G12 | The house-edge study is re-measured against the vector fight | **SATISFIED 2026-08-20** — and it overturned the reason it was raised. `ring` is a *partition* of `hp` in value units, so the vector fight is **bit-identical** to the shipped one (6,000/6,000 configs). Conservation residual **0**, take **1.0000% per mint**, bands **+0.0000%**, sybil **0.00000000**. See `HOUSE-EDGE-VECTOR.md` |
 | G13 | **A written price policy: source, maximum staleness, and who may set it** | **NEW, and it is the real cost of two mints.** Measured: **1% price error ≈ 150 bps** of one-round return on the gap (β = 75.3% of stake ends in the other side's token). Against the 100 bps rake, **1.34% error refunds the favoured side's whole fee and 2.67% makes it positive-EV** — inside a thin pair's intraday range, linear in the error, bounded by nothing, and no fee rate out-runs it. Risk #9 is understated |
@@ -1059,6 +1060,14 @@ discriminator, with a control" to **a census of the whole discriminator space wi
 and that widening earned its keep immediately — see §11. And the enum's shape means "forced
 undelegation" is **two** instructions, not one, with only the second permissionless; §5.1 records
 that and grades it as upstream-source rather than measured.
+
+**A ROLLUP RULE THAT CONSTRAINS THIS DESIGN, measured by the G1 harness on 2026-08-20:** under
+`--lifecycle ephemeral` the **only writable non-delegated account permitted is the fee payer**
+(`Magic11…111 failed: InvalidWritableAccount`). Every account `arena_vault::enter_delegated` intends
+to write **inside the ER** must therefore be delegated or be the fee payer. §3.3 is safe as designed —
+`enter` is a BASE-LAYER instruction by construction — but this forbids any later "just move one more
+write into the rollup" shortcut, and it is the kind of rule discovered expensively when it is not
+written down first.
 
 **E3 — Measure the entry path.** CU and transaction size for `arena_vault::enter_delegated` with
 its vault→game CPI (~14 accounts), and how many fit in one 1,232-byte transaction. This decides
