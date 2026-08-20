@@ -1,0 +1,52 @@
+// TYPE-CHECKING FOR `wedge/` — a sixth project in the solution, here for the reason the root
+// tsconfig's header and `tsconfig.e2e.json`'s header both spell out at length.
+//
+// `tsc -b` follows the references in `tsconfig.json` and nothing else. A directory nobody lists is a
+// directory that can type-error in silence — that is how `scripts/` went unchecked for months, with
+// the entire keeper in it, and how `e2e/` would have gone unchecked had that file not been added at
+// the same time as the suite. This directory drives a Solana program through the app's own
+// instruction builders and decodes account bytes by offset; a renamed export or a changed parameter
+// shape here would otherwise be discovered by a ninety-second red run instead of by a one-second
+// green gate.
+//
+// Referenced from `tsconfig.json`, so `npm run typecheck` (`tsc -b --force`) covers it.
+//
+// `lib` CARRIES DOM, and it is worth saying why, because a Node-only harness has no business
+// touching the DOM and the first version of this file left it out on exactly that reasoning. It does
+// not compile. This project imports `src/chain/round.ts` and `src/chain/program.ts` — the app's real
+// instruction builders, deliberately, so that the wedge is produced by the same code path the keeper
+// uses (see `wedge/g1.wedge.ts`'s header) — and those pull in `src/chain/idl.ts`, which branches on
+// `typeof window !== "undefined"` to decide whether to fetch the IDL over HTTP or read it off disk.
+// That file is dual-target BY DESIGN and its own header explains why; compiling it requires the
+// browser's globals to exist as types even though this project will only ever take the disk branch.
+//
+// The alternative was to stop importing the app's chain modules and hand-roll the instructions here,
+// which would buy a tighter `lib` at the cost of the thing that makes this suite worth running.
+// Wrong trade, and an easy one to call.
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.wedge.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"],
+    "skipLibCheck": true,
+
+    /* Bundler mode — matching tsconfig.app.json and tsconfig.e2e.json, because vitest resolves these
+       the same way vite does and `.ts` extensions in relative imports are the house style. This
+       project imports directly from `src/chain/` (the app's real instruction builders, on purpose —
+       see g1.wedge.ts's header), so its resolution has to match that of the files it imports. */
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* Linting */
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["wedge", "vitest.wedge.config.ts"]
+}
