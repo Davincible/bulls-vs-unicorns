@@ -27,7 +27,29 @@ decoration is a different product wearing the same name.
 
 ## What this obligates, and it is not a schedule slip
 
-### 1. THE HOUSE-EDGE STUDY IS RETIRED AND MUST BE RE-MEASURED. This is the real cost.
+### 1. THE HOUSE-EDGE STUDY IS **NOT** RETIRED. G12 ran and overturned this section.
+
+> **CORRECTED 2026-08-20, hours after this ADR was written. See `HOUSE-EDGE-VECTOR.md`.**
+>
+> This section said "None of those carry over. They are properties of `min(a.hp, d.hp)` being one
+> number." **That is false for the arena being built, and G12 measured it rather than argued it.**
+>
+> `ARCHITECTURE-N-TEAM.md` §3.1 denominates the vector in VALUE units, so `ring` is a **partition of
+> the scalar `hp`**, not a replacement for it — and the extraction economy banks every raid, so a
+> fighter's ring only ever holds their own mint. `sum(ring)` therefore IS `hp`, and the vector fight
+> is **bit-identical** to the shipped one: 6,000/6,000 round-configs agree on `hp`, `banked` and
+> `dead`, on every fighter.
+>
+> So all five measurements carry over verbatim — conservation exact (worst residual **0** micro-units
+> across 80,000 round-sims), house take **1.0000% in each mint separately**, stake bands identical to
+> **+0.0000%**, the eight-wallet sybil farm unchanged to **0.00000000**, and the bell at n=48
+> **126.4s / 78.0%** against the scalar control.
+>
+> **G12 is satisfied, not owed.** The reasoning below was sound and the conclusion was wrong, which
+> is why it was worth running rather than assuming in either direction. The gate stays in the table
+> marked satisfied, because the next person to change the basis needs to know it was checked.
+
+The original argument, kept because it is what a different vector design would have cost:
 
 This is the consequence §2.1 argued hardest about, and accepting two mints accepts it:
 
@@ -58,7 +80,29 @@ cheap before launch and expensive after — it was paid once and is now owed aga
 This is a **sandbox** change, not a deploy. It is cheap. It is also the thing most likely to be
 skipped because the numbers were true once.
 
-### 2. A price feed enters the money path
+### 2. A PRICE FEED ENTERS THE MONEY PATH, AND G12 MEASURED IT AS THE LARGEST EXPOSURE THIS DESIGN HAS
+
+**This, not the fairness study, turned out to be the real cost of two mints.** Measured:
+
+    beta = 75.3% of staked units end in the OTHER side's token at 8 seats, 89.9% at 48
+
+    1% of price error  ~=  150 bps of one-round return on the gap between the sides
+                           (measured 149.6; predicted 150.6 from beta alone, no fitting)
+                           ~180 bps at 48 seats
+
+Against the **100 bps rake**:
+
+- **1.34% price error refunds the favoured side's entire entry fee.**
+- **2.67% makes that side positive-EV outright.**
+
+That is inside the intraday range of a thin pump.fun pair. The exposure is **linear in the error and
+bounded by nothing**, and no fee rate out-runs it — raising the rake raises the error needed
+proportionally, it does not cap the loss.
+
+`ARENA-VAULT.md`'s risk #9 ("the price authority can tilt a fight, with house bots on the other
+side") is therefore **understated**. It is not one risk among several; it is the fairness property
+that two mints trades away, and it needs an owner and a written policy before real money — how the
+price is sourced, how stale it may be, and who can set it.
 
 With it, `ARENA-VAULT.md` §4.6(7)'s audit item becomes live: a written argument for why a wrong price
 cannot cause insolvency. §3.1's argument is sound in principle — credit and redemption use the same

@@ -62,6 +62,9 @@ hash table per lobby so that every configuration is scored against identical dra
 | `strategy-sensitivity.ts` | ranks the five dials (fee bps, penalty start, penalty horizon, house count, house stake). |
 | `strategy-retention.ts` | a retained player's balance over N rounds at various stake fractions. |
 | `study-*.ts` | the five experiments. |
+| `vector-core.ts` | **G12 / ADR-001-two-mints.md.** The two-mint layer: mints, the price frozen at `open_round`, the credit (`amt × price`) and claim (`units / price`) conversions, the per-slot conservation residual, and the five candidate damage bases as `FightConfig`s. There is NO second simulator — `fight-variant.ts` gained one optional `cfg.vector` knob and `parity.ts` still passes at both fee rates with it compiled in and unset. |
+| `check-vector.ts` | G12's measurements, parts `0`..`7`, documented in `HOUSE-EDGE-VECTOR.md`. `0` the bit-identity claim, `1` the candidates screened, `2` conservation over 80,000 round-simulations, `3` house take BY MINT, `4` stake bands and the sybil farm, `5` fight length and the bell, `6` claim dust, `7` extract's four regimes. Exits non-zero on any invariant failure, so it is the G12 gate and not only a report. |
+| `check-vector-price.ts` | What a WRONG frozen price is worth. `ARENA-VAULT.md` risk #9, quantified: ~150 bps of one-round return per 1% of price error against a 100 bps rake. |
 | `small-stake-farm.ts` | for a mechanic that favours small stakes, the INTENDED EFFECT (what a genuinely small player gains) measured against the FARM RATE (what an adversary splitting a budget extracts), on the same lobbies and the same hash tables. Seven parts, selectable so they can run in parallel: `0` harness self-checks, `1` the blend dial P, `2` the bounded blend `capMult`, `3` the identity gate, `4` fee schedules banded by stake, `5` a per-entry ring cap, `6` whether the operator can farm any of it. Asserts integer conservation on every fight and exits non-zero if it ever fails. |
 
 ```
@@ -69,3 +72,20 @@ cd engine
 HE_FEE_BPS=100 NODE_OPTIONS=--max-old-space-size=12288 \
   npx tsx ../sandbox/house-edge/small-stake-farm.ts 800 all    # or 0|1|2|3|4|5|6 for one part
 ```
+
+## G12 — the two-mint fight (`HOUSE-EDGE-VECTOR.md`)
+
+```
+cd engine
+HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/check-vector.ts 20000 2    # 80,000 round-sims, residual 0
+HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/check-vector.ts 4000  3    # 1.0000% take, in BOTH mints
+HE_FEE_BPS=100 npx tsx ../sandbox/house-edge/check-vector-price.ts 20000
+HE_FEE_BPS=100 NODE_OPTIONS=--max-old-space-size=12288 \
+  npx tsx ../sandbox/house-edge/check-vector.ts 4000 all               # or 0|1|2|3|4|5|6|7
+```
+
+The headline is that there is nothing to re-earn: with `basis = min(sum(A.ring), sum(D.ring))` over
+value units, the extraction economy keeps every ring mono-slot, so the two-mint fight is
+**bit-identical** to the single-scalar fight and every number in `HOUSE-EDGE-STUDY.md` §11 transfers
+unchanged. What does NOT transfer is `economy == mayhem` (0.0% of 48-seat fights conclude before the
+bell) and the price feed, which is worth ~150 bps per 1% of error.

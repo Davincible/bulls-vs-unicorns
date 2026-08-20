@@ -65,6 +65,15 @@ export interface Fighter {
    *  configuration written before this field existed can observe it. It models the wallet->X link
    *  built in TWITTER-CONNECT.md: a bit the chain could carry and the fight could read. */
   verified?: 0 | 1;
+  /** THE MINT VECTOR (G12 / ADR-001). `ring[i]` is in-ring value BY ORIGIN MINT SLOT and `vbank[i]`
+   *  is banked value by origin slot; `slot` is the fighter's OWN mint, fixed at entry by which side
+   *  they joined. All three are undefined unless `cfg.vector` is set, and when they are set the
+   *  loop maintains `sum(ring) === hp` and `sum(vbank) === banked` on every exchange — so the
+   *  scalar fields stay authoritative for the dust rule, the death test and every existing study,
+   *  and the vector is a partition of them rather than a second source of truth. */
+  ring?: bigint[];
+  vbank?: bigint[];
+  slot?: number;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -467,6 +476,11 @@ export interface FightConfig {
    *  summed once per call and then moved by `+-dmg`, the same shape as a static stake weight.
    *  `k` is in bps; undefined is 0 = off. */
   comebackBps?: bigint;
+
+  /** THE MINT VECTOR. Undefined is the single-scalar fight every measurement in this repository
+   *  was taken against. Set it and the basis is read from, and the transfer applied to, the
+   *  per-slot holdings vector instead. See `VectorSpec`. */
+  vector?: VectorSpec;
 }
 
 /** THE SHIPPED RULE, as of the variance change. `parity.ts` asserts this is byte-identical to
@@ -518,6 +532,161 @@ export const DEPLOYED_V5: FightConfig = {
   damage: "defender", defenderDraw: "bump",
 };
 
+// ---------------------------------------------------------------------------------------------
+// THE MINT VECTOR. Added for G12 (ADR-001-two-mints.md), which retired every measurement in this
+// directory by changing what `basis` reads.
+//
+// Every field below is OPTIONAL and undefined in every config written before it, so `parity.ts`
+// is unaffected and no earlier configuration can observe any of this — the same convention the
+// volatility knobs above follow. `cfg.vector === undefined` is the single-scalar fight, unchanged.
+//
+// THE MODEL, from ARCHITECTURE-N-TEAM.md §3.1: a fighter's holdings are a vector INDEXED BY ORIGIN
+// MINT SLOT and denominated in VALUE UNITS (USD micro-units), not in raw token base units. A
+// deposit of `amt` of mint m credits `units = amt * price[m]`; a raid moves units between fighters
+// PRESERVING THE SLOT INDEX; settlement pays slot i back out as `units_i / price[i]` of mint i.
+// Per-mint solvency is therefore exact by construction and the vector is a PARTITION OF A SCALAR:
+// `sum(ring) === hp` and `sum(vbank) === banked` are maintained here as invariants, not as hopes.
+// ---------------------------------------------------------------------------------------------
+
+/** ARCHITECTURE-N-TEAM.md §3.2. Two is what ADR-001 buys; three is the widest arena in the spec. */
+export const MAX_TOKENS = 3;
+
+/** Fixed point for `price[i]`, in units (USD micro-units) per token BASE unit.
+ *
+ *  §3.1 writes the conversion as a plain `units = amt * price[m]`, which silently assumes every
+ *  token's base unit is worth at least one micro-USD. It is not: UWU at $0.0033 with 6 decimals
+ *  makes one base unit worth 0.0033 micro-USD, so a plain integer multiply would price the entire
+ *  UWU side at zero. The scale is therefore explicit here — `units = amt * price / PRICE_SCALE` —
+ *  and it is the reason ADR-001 §3's "rounding stops being free" is true: this division and its
+ *  inverse at claim are the two new floors in the money path. */
+export const PRICE_SCALE = 1_000_000_000_000n;
+
+/** What a hit reads. The whole G12 question is which of these preserves the martingale. */
+export type VectorBasis =
+  /** `basis = min(sum(A.ring), sum(D.ring))` — the scalar rule read over the vector's TOTAL.
+   *  Identically equal to `min(A.hp, D.hp)` because the vector is a partition of that scalar. */
+  | "value-min"
+  /** `dmg_i = min(A.ring[i], D.ring[i]) * roll / 100`, each slot settled independently. The
+   *  "obvious" vector generalisation, and see `check-vector.ts` part 1 for what it does. */
+  | "slot-min"
+  /** `basis = min(rawA, rawD)` over RAW TOKEN BASE UNITS, price ignored — i.e. the rule you get if
+   *  the holdings vector stores tokens instead of value. §3.1's "100 raw ANSEM against 100 raw UWU
+   *  is not a fight, it is a mugging", made measurable. */
+  | "token-min";
+
+/** Which of the defender's slots a raid empties first, once the amount is known.
+ *
+ *  It cannot change HOW MUCH value moves — only its composition — so it cannot touch conservation
+ *  or the martingale. It decides what the winner is holding at the bell, which is a product
+ *  question and a claim-dust question, and in the EXTRACTION economy it decides nothing at all
+ *  because the defender's ring is mono-slot. */
+export type TakeOrder =
+  /** ARCHITECTURE-N-TEAM.md §3.4(b): slots except the defender's own, by ring DESCENDING, stably
+   *  (ties keep ascending slot index), then the defender's own slot last. */
+  | "stolen-first"
+  /** The defender's own slot first, then the rest descending. */
+  | "own-first"
+  /** `take_i = floor(dmg * ring_i / total)`, remainder walked off in `stolen-first` order so that
+   *  exactly `dmg` moves. Costs one division PER SLOT PER EXCHANGE, which is the compute argument
+   *  against it. */
+  | "proportional";
+
+export interface VectorSpec {
+  /** How many mint slots exist. ADR-001 is 2. */
+  mints: number;
+  basis: VectorBasis;
+  take: TakeOrder;
+  /** `extraction` (the deployed economy — winnings go to `banked`, safe forever) or `mayhem`
+   *  (winnings land in the attacker's RING and are re-raidable). ARCHITECTURE-N-TEAM.md §3.4(c).
+   *  Undefined is `extraction`, which is what the live arena already is. */
+  economy?: "extraction" | "mayhem";
+  /** Units per token base unit, fixed point at `PRICE_SCALE`. Read ONLY by `token-min`; every
+   *  other basis works in units, where the price has already been applied at credit. */
+  price?: bigint[];
+}
+
+/** `sum(v)`, the total the scalar `hp`/`banked` fields mirror. */
+export const vsum = (v: bigint[]): bigint => { let t = 0n; for (const x of v) t += x; return t; };
+
+/** The order in which `take` empties the defender's slots. Returns slot indices.
+ *
+ *  STABILITY IS NOT PEDANTRY — §3.4(b) says so and it is right: with integer units and equal
+ *  stakes, two stolen pots being exactly equal is common, not rare, so an unstable sort diverges
+ *  between the mirror and the Rust on ordinary lineups rather than on contrived ones. This uses
+ *  an explicit index tie-break rather than relying on `Array.prototype.sort` being stable. */
+export function takeSlots(ring: bigint[], own: number, order: TakeOrder): number[] {
+  const n = ring.length;
+  const idx: number[] = [];
+  for (let i = 0; i < n; i++) if (i !== own) idx.push(i);
+  idx.sort((x, y) => (ring[y] > ring[x] ? 1 : ring[y] < ring[x] ? -1 : x - y));
+  return order === "own-first" ? [own, ...idx] : [...idx, own];
+}
+
+/** Move exactly `dmg` units out of `ring`, slot-preserving, writing what left into `out`.
+ *
+ *  Returns the amount actually moved, which is `min(dmg, sum(ring))` — the caller has already
+ *  clamped, so under every rule measured here it is `dmg`. `out` is zeroed by the caller. */
+/** A holdings vector's worth in RAW TOKEN BASE UNITS. Only `token-min` needs this, and needing it
+ *  is the tell: it is the one rule that reaches back through the price conversion the credit step
+ *  already did. */
+export function rawOf(ring: bigint[], price: bigint[]): bigint {
+  let t = 0n;
+  for (let i = 0; i < ring.length; i++) if (ring[i] !== 0n) t += (ring[i] * PRICE_SCALE) / price[i];
+  return t;
+}
+
+/** The scalar `basis` a vector rule reads, before `roll` and before any clamp. */
+export function vectorBasis(vec: VectorSpec, A: Fighter, D: Fighter): bigint {
+  if (vec.basis === "value-min") return A.hp < D.hp ? A.hp : D.hp;
+  if (vec.basis === "slot-min") {
+    let t = 0n;
+    const ar = A.ring!, dr = D.ring!;
+    for (let i = 0; i < vec.mints; i++) t += ar[i] < dr[i] ? ar[i] : dr[i];
+    return t;
+  }
+  // token-min: the smaller RAW pile decides, then it is valued at the defender's own composition.
+  const p = vec.price!;
+  const rawA = rawOf(A.ring!, p), rawD = rawOf(D.ring!, p);
+  if (rawD === 0n) return 0n;
+  const lo = rawA < rawD ? rawA : rawD;
+  return (D.hp * lo) / rawD;
+}
+
+function drainRing(ring: bigint[], own: number, dmg: bigint, order: TakeOrder, out: bigint[]): bigint {
+  const total = vsum(ring);
+  if (total === 0n || dmg <= 0n) return 0n;
+  let want = dmg > total ? total : dmg;
+  const slots = takeSlots(ring, own, order);
+  if (order === "proportional") {
+    // Floor per slot, then walk the remainder off in the same order, so exactly `want` moves and
+    // no unit is created or destroyed. The unremaindered form loses up to `mints - 1` units per
+    // exchange, which is a SLOW fight rather than a broken one — but it is still a rule whose
+    // damage is not the damage it computed, so it is not offered.
+    let moved = 0n;
+    for (const s of slots) {
+      const t = (want * ring[s]) / total;
+      out[s] = t; ring[s] -= t; moved += t;
+    }
+    let rem = want - moved;
+    for (const s of slots) {
+      if (rem === 0n) break;
+      const room = ring[s];
+      const t = rem < room ? rem : room;
+      out[s] += t; ring[s] -= t; rem -= t;
+    }
+    return want - rem;
+  }
+  let moved = 0n;
+  for (const s of slots) {
+    if (want === 0n) break;
+    const room = ring[s];
+    if (room === 0n) continue;
+    const t = want < room ? want : room;
+    out[s] = t; ring[s] -= t; want -= t; moved += t;
+  }
+  return moved;
+}
+
 export function tickHash(seed: Buffer, cursor: bigint): Buffer {
   const pre = Buffer.alloc(40);
   seed.copy(pre, 0, 0, 32);
@@ -562,6 +731,20 @@ export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightCo
   const retain = cfg.retainBps ?? 0n;
   const retainToStake = cfg.retainCap === "stake";
   const rollCap = cfg.rollCap;
+  const vec = cfg.vector;
+  // Scratch for one exchange's per-slot take, allocated once per fight rather than per step.
+  const take: bigint[] = vec ? new Array(vec.mints).fill(0n) : [];
+  if (vec) {
+    // The vector maintains `hp`/`banked` itself; a second rule that also writes them would make the
+    // partition invariant a coincidence. Refuse rather than silently measure a third thing — this
+    // is the same objection the `legacy` + weighted-draw guard above makes.
+    if (retain !== 0n) throw new Error("cfg.vector and cfg.retainBps both move the same value — pick one");
+    if (vec.basis === "token-min" && !vec.price) throw new Error("cfg.vector.basis 'token-min' needs cfg.vector.price");
+    for (const g of f) {
+      if (!g.ring || !g.vbank || g.slot === undefined) throw new Error(`fighter ${g.wallet} has no mint vector — use makeVFighter`);
+      if (vsum(g.ring) !== g.hp || vsum(g.vbank) !== g.banked) throw new Error(`fighter ${g.wallet} enters with a vector that does not sum to its scalar`);
+    }
+  }
   const L = cfg.surgeWindow ?? 0;
   const surging = L > 1;
   let surgeWindowIdx = -1, surgeSide: 0 | 1 = 0;
@@ -652,7 +835,8 @@ export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightCo
     }
     if (rollCap !== undefined && roll > rollCap) roll = rollCap;
     let basis: bigint;
-    if (cfg.damage === "min") basis = A.hp < D.hp ? A.hp : D.hp;
+    if (vec) basis = vectorBasis(vec, A, D);
+    else if (cfg.damage === "min") basis = A.hp < D.hp ? A.hp : D.hp;
     else if (cfg.damage === "geo") basis = isqrt(A.hp * D.hp);
     else if (cfg.damage && typeof cfg.damage === "object") {
       const lo = A.hp < D.hp ? A.hp : D.hp;
@@ -684,6 +868,46 @@ export function runFight(f: Fighter[], seed: Buffer, steps: number, cfg: FightCo
     // return. The study's §2 recommendation carries this bug; the shipped rule does not.
     if (D.hp <= floorD) dmg = D.hp;
     if (dmg === 0n) continue;     // a blow too small to register moves nothing, and kills nobody
+
+    // THE VECTOR PATH. `dmg` is already clamped to `D.hp` and to the dust floor above, so the only
+    // thing left to decide is WHICH SLOTS it comes out of — except under `slot-min`, where the
+    // per-slot minima ARE the damage and the scalar `dmg` was only ever their sum.
+    if (vec) {
+      const Dr = D.ring!, Ar = A.ring!, Ab = A.vbank!;
+      for (let i = 0; i < vec.mints; i++) take[i] = 0n;
+      let moved: bigint;
+      if (vec.basis === "slot-min" && D.hp > floorD) {
+        moved = 0n;
+        for (let i = 0; i < vec.mints; i++) {
+          const lo = Ar[i] < Dr[i] ? Ar[i] : Dr[i];
+          const t = (lo * roll) / 100n;
+          if (t === 0n) continue;
+          take[i] = t; Dr[i] -= t; moved += t;
+        }
+      } else {
+        moved = drainRing(Dr, D.slot!, dmg, vec.take, take);
+      }
+      // A rule can compute a blow and then find no slot to take it from — `slot-min` does this on
+      // every exchange of a two-mint arena. It is a `continue`, exactly as `dmg === 0n` is, and NOT
+      // a kill: the fighter is untouched and the step is spent.
+      if (moved === 0n) continue;
+      dmg = moved;
+      D.hp -= dmg;
+      if (vec.economy === "mayhem") { for (let i = 0; i < vec.mints; i++) Ar[i] += take[i]; A.hp += dmg; }
+      else { for (let i = 0; i < vec.mints; i++) Ab[i] += take[i]; A.banked += dmg; }
+      if (A.side === 0) { v0 += dmg; v1 -= dmg; } else { v1 += dmg; v0 -= dmg; }
+      st.exchanges++;
+      if (trace) { trace.step[trace.count] = step; trace.v0[trace.count] = Number(v0); trace.count++; }
+      if (D.hp === 0n) {
+        D.dead = 1;
+        if (!over) {
+          let a0 = 0, b0 = 0;
+          for (const g of f) if (g.dead === 0) { if (g.side === 0) a0++; else b0++; }
+          if (a0 === 0 || b0 === 0) { st.endedAt = step + 1; over = true; if (stopWhenOver) break; }
+        }
+      }
+      continue;
+    }
 
     D.hp = sat(D.hp, dmg);
     // THE RATCHET, or not. `retain` of the hit lands back in the attacker's ring, where it is at
@@ -726,4 +950,51 @@ export function makeFighter(wallet: string, side: 0 | 1, gross: bigint, feeBps =
   const fee = (gross * feeBps) / BPS;
   const net = gross - fee;
   return { f: { wallet, side, dead: 0, stake: net, hp: net, banked: 0n, verified }, fee };
+}
+
+/** THE CREDIT FLOOR. `amt` base units of mint `slot` become this many value units. One of the two
+ *  new floor divisions ADR-001 §3 says stop being free. */
+export const creditUnits = (amt: bigint, price: bigint) => (amt * price) / PRICE_SCALE;
+
+/** THE CLAIM FLOOR, and its inverse. `units` of slot `i` redeem for this many base units of mint
+ *  `i`, at the SAME frozen price the credit used — which is §3.1's whole solvency argument.
+ *
+ *  IT FLOORS, AND THE RESIDUE STAYS IN THE ESCROW. That is a direction change from the single-mint
+ *  arena, where §11.1 measured the one rounding in the money path going the PLAYER's way. Here it
+ *  goes the house's way, bounded by one base unit per occupied slot per fighter. `check-vector.ts`
+ *  part 5 prices that bound instead of asserting it is small. */
+export const claimTokens = (units: bigint, price: bigint) => (units * PRICE_SCALE) / price;
+
+/** `enter` into a two-mint arena: a player sends `amtTokens` base units of the mint their SIDE
+ *  settles in, the fee is taken in TOKENS (so it is mint-neutral by construction, which is the
+ *  thing part 3 has to check rather than assume), and the remainder is credited into slot `slot`
+ *  of a holdings vector at the round's frozen price.
+ *
+ *  Returns the fee in tokens as well as in units, because "the house takes 1% of gross" is a claim
+ *  about tokens once there are two of them and only incidentally a claim about units. */
+export function makeVFighter(
+  wallet: string, side: 0 | 1, amtTokens: bigint, slot: number, price: bigint[], mints: number, feeBps = FEE_BPS,
+): { f: Fighter; feeTokens: bigint; feeUnits: bigint; grossUnits: bigint } {
+  const feeTokens = (amtTokens * feeBps) / BPS;
+  const netTokens = amtTokens - feeTokens;
+  const net = creditUnits(netTokens, price[slot]);
+  const ring = new Array(mints).fill(0n); ring[slot] = net;
+  const vbank = new Array(mints).fill(0n);
+  return {
+    f: { wallet, side, dead: 0, stake: net, hp: net, banked: 0n, ring, vbank, slot },
+    feeTokens,
+    feeUnits: creditUnits(feeTokens, price[slot]),
+    grossUnits: creditUnits(amtTokens, price[slot]),
+  };
+}
+
+/** What a fighter actually walks away with, PER MINT, in token base units — the number that decides
+ *  whether the game was fair to them, because it is the only one they can spend.
+ *
+ *  `ring + banked` per slot, then one floor division per slot. Value that never left their own slot
+ *  redeems in their own token; value they raided redeems in whoever's token they took it from. */
+export function claimOf(f: Fighter, price: bigint[]): bigint[] {
+  const out: bigint[] = [];
+  for (let i = 0; i < f.ring!.length; i++) out.push(claimTokens(f.ring![i] + f.vbank![i], price[i]));
+  return out;
 }
